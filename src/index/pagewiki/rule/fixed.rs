@@ -19,7 +19,10 @@ impl Fixed {
 }
 
 impl Base for Fixed {
-    fn cut<'a>(&'a self, text: &'a str) -> Pin<Box<dyn Future<Output = Result<Vec<PageWiki>, Error>> + Send + 'a>> {
+    fn cut<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PageWiki>, Error>> + Send + 'a>> {
         Box::pin(async move {
             if text.is_empty() {
                 return Ok(vec![]);

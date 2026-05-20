@@ -9,11 +9,11 @@ use async_openai::types::chat::{
 };
 use serde_json::Map;
 
-use std::future::Future;
-use std::pin::Pin;
 use crate::index::pagewiki::base::Base;
 use crate::index::pagewiki::spans::resolve_spans;
 use crate::index::pagewiki::types::{Error, Evidence, PageWiki, Span};
+use std::future::Future;
+use std::pin::Pin;
 
 /// 默认 prompt 模板。占位符：`{{text}}` / `{{scenario}}` / `{{metadata}}`。
 pub const DEFAULT_PROMPT_TEMPLATE: &str = r#"你是一个文档结构化助手。请把下面的【文档】拆分成若干语义连贯的知识页。
@@ -110,7 +110,10 @@ impl Semantic {
 }
 
 impl Base for Semantic {
-    fn cut<'a>(&'a self, text: &'a str) -> Pin<Box<dyn Future<Output = Result<Vec<PageWiki>, Error>> + Send + 'a>> {
+    fn cut<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PageWiki>, Error>> + Send + 'a>> {
         Box::pin(async move {
             let span = tracing::debug_span!(
                 "semantic.cut",

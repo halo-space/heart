@@ -2,10 +2,10 @@
 //!
 //! 详见 `openspec/changes/rag-page-wiki/design.md` 第 6 节。
 
-use std::future::Future;
-use std::pin::Pin;
 use crate::index::pagewiki::base::Base;
 use crate::index::pagewiki::types::{Error, PageWiki, Span};
+use std::future::Future;
+use std::pin::Pin;
 
 /// 单行 JSONL 的反序列化结构。
 #[derive(Debug, serde::Deserialize)]
@@ -30,7 +30,10 @@ impl Qa {
 }
 
 impl Base for Qa {
-    fn cut<'a>(&'a self, text: &'a str) -> Pin<Box<dyn Future<Output = Result<Vec<PageWiki>, Error>> + Send + 'a>> {
+    fn cut<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PageWiki>, Error>> + Send + 'a>> {
         Box::pin(async move {
             let mut out = Vec::new();
             let mut char_cursor = 0usize;

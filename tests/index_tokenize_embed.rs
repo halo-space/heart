@@ -1,13 +1,13 @@
 //! Integration tests: tokenize / embed pipeline steps.
 
+use rag::index::pagewiki::Base;
+use rag::index::pagewiki::{self, PageWiki};
+use rag::index::source::{Item, Scenario};
+use rag::index::{Builder, NoopEmbedder, NoopTokenizer};
+use serde_json::json;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use serde_json::json;
-use rag::index::{Builder, NoopTokenizer, NoopEmbedder};
-use rag::index::source::{Item, Scenario};
-use rag::index::pagewiki::Base;
-use rag::index::pagewiki::{self, PageWiki};
 
 struct SingleCutter;
 

@@ -12,7 +12,9 @@ mod tests {
 
     #[test]
     fn uuid_v4_格式正确() {
-        let re = Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$").unwrap();
+        let re =
+            Regex::new(r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$")
+                .unwrap();
         let id = new_uuid_v4();
         assert!(re.is_match(&id), "uuid 格式错误: {id}");
     }

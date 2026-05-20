@@ -2,10 +2,10 @@
 //!
 //! 详见 `openspec/changes/rag-page-wiki/design.md` 第 6 节。
 
-use std::future::Future;
-use std::pin::Pin;
 use crate::index::pagewiki::base::Base;
 use crate::index::pagewiki::types::{Error, PageWiki, Span};
+use std::future::Future;
+use std::pin::Pin;
 
 /// 滑动窗口切分器。窗口大小 `size`、重叠 `overlap`，均以字符计数。
 #[derive(Debug, Clone)]
@@ -31,7 +31,10 @@ impl SlidingWindow {
 }
 
 impl Base for SlidingWindow {
-    fn cut<'a>(&'a self, text: &'a str) -> Pin<Box<dyn Future<Output = Result<Vec<PageWiki>, Error>> + Send + 'a>> {
+    fn cut<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PageWiki>, Error>> + Send + 'a>> {
         Box::pin(async move {
             let chars: Vec<char> = text.chars().collect();
             let mut out = Vec::new();

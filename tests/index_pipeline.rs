@@ -1,11 +1,11 @@
 //! Integration tests: full 7-step pipeline end-to-end.
 
-use std::collections::HashMap;
-use rag::index::{Builder, NoopTokenizer};
-use rag::index::source::{Item, Scenario};
 use rag::index::pagewiki;
 use rag::index::pagewiki::Base;
+use rag::index::source::{Item, Scenario};
+use rag::index::{Builder, NoopTokenizer};
 use serde_json::json;
+use std::collections::HashMap;
 
 fn make_item(doc_id: &str, text: &str) -> Item {
     let mut metadata = serde_json::Map::new();
@@ -26,7 +26,10 @@ fn make_builder() -> Builder {
 #[tokio::test]
 async fn pipeline_produces_pagewikis() {
     let builder = make_builder();
-    let items = vec![make_item("doc_001", "Hello world. This is a test document.")];
+    let items = vec![make_item(
+        "doc_001",
+        "Hello world. This is a test document.",
+    )];
     let pages = builder.build(items).await.unwrap();
     assert!(!pages.is_empty());
     let p = &pages[0];
@@ -84,7 +87,13 @@ async fn embedder_sets_embedding() {
     use rag::index::NoopEmbedder;
     let mut pw_map: HashMap<Scenario, Box<dyn Base>> = HashMap::new();
     pw_map.insert(Scenario::General, Box::new(pagewiki::Fixed::new(200)));
-    let builder = Builder::new(pw_map, vec![], Box::new(NoopTokenizer), Some(Box::new(NoopEmbedder))).unwrap();
+    let builder = Builder::new(
+        pw_map,
+        vec![],
+        Box::new(NoopTokenizer),
+        Some(Box::new(NoopEmbedder)),
+    )
+    .unwrap();
     let items = vec![make_item("doc_004", "embed me")];
     let pages = builder.build(items).await.unwrap();
     assert_eq!(pages[0].embedding, Some(vec![]));

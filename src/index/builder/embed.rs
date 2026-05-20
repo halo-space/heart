@@ -1,14 +1,17 @@
 //! Embedder trait 与 NoopEmbedder。
 
+use crate::index::builder::types::Error;
 use std::future::Future;
 use std::pin::Pin;
-use crate::index::builder::types::Error;
 
 /// 为文本内容生成稠密向量表示。
 ///
 /// 实现必须是 `Send + Sync`。
 pub trait Embedder: Send + Sync {
-    fn embed<'a>(&'a self, content: &'a str) -> Pin<Box<dyn Future<Output = Result<Vec<f32>, Error>> + Send + 'a>>;
+    fn embed<'a>(
+        &'a self,
+        content: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<f32>, Error>> + Send + 'a>>;
 }
 
 /// 空操作 embedder——始终返回空向量。
@@ -19,7 +22,10 @@ pub trait Embedder: Send + Sync {
 pub struct NoopEmbedder;
 
 impl Embedder for NoopEmbedder {
-    fn embed<'a>(&'a self, _content: &'a str) -> Pin<Box<dyn Future<Output = Result<Vec<f32>, Error>> + Send + 'a>> {
+    fn embed<'a>(
+        &'a self,
+        _content: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<f32>, Error>> + Send + 'a>> {
         Box::pin(async { Ok(Vec::new()) })
     }
 }

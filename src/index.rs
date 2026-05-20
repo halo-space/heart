@@ -37,4 +37,4 @@ pub mod builder;
 pub mod pagewiki;
 pub mod source;
 
-pub use builder::{Builder, Error, Tokenizer, NoopTokenizer, Embedder, NoopEmbedder};
+pub use builder::{Builder, Embedder, Error, NoopEmbedder, NoopTokenizer, Tokenizer};

@@ -3,9 +3,9 @@
 //! 使用 `Pin<Box<dyn Future>>` 形式保证 dyn-compat，可直接用 `Box<dyn Base>`。
 //! 任何实现了 `async fn cut` 的类型只需通过 blanket impl 自动获得 `Base`。
 
+use crate::index::pagewiki::types::{Error, PageWiki};
 use std::future::Future;
 use std::pin::Pin;
-use crate::index::pagewiki::types::{Error, PageWiki};
 
 /// PageWiki 切分器统一接口（dyn-compat）。
 pub trait Base: Send + Sync {

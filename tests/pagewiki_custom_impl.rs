@@ -2,15 +2,18 @@
 //!
 //! 验证外部 crate 可以实现 `pagewiki::Base` trait，并正确返回 [`PageWiki`]。
 
+use rag::index::pagewiki::{Base, Error, PageWiki, Span};
 use std::future::Future;
 use std::pin::Pin;
-use rag::index::pagewiki::{Base, Error, PageWiki, Span};
 
 /// 按空格切分的简单切分器（演示自定义实现）。
 struct WordSplitter;
 
 impl Base for WordSplitter {
-    fn cut<'a>(&'a self, text: &'a str) -> Pin<Box<dyn Future<Output = Result<Vec<PageWiki>, Error>> + Send + 'a>> {
+    fn cut<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PageWiki>, Error>> + Send + 'a>> {
         Box::pin(async move {
             let mut out = Vec::new();
             let mut char_cursor = 0usize;

@@ -1,10 +1,10 @@
 //! 构建层核心类型：[`Error`] 与 [`Builder`]。
 
-use std::collections::HashMap;
-use crate::index::source;
-use crate::index::pagewiki;
-use crate::index::builder::tokenize::Tokenizer;
 use crate::index::builder::embed::Embedder;
+use crate::index::builder::tokenize::Tokenizer;
+use crate::index::pagewiki;
+use crate::index::source;
+use std::collections::HashMap;
 
 /// 构建层错误类型。
 #[derive(thiserror::Error, Debug)]
@@ -48,10 +48,20 @@ pub struct Builder {
 impl std::fmt::Debug for Builder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("Builder")
-            .field("pagewikis", &format!("<{} scenarios>", self.pagewikis.len()))
+            .field(
+                "pagewikis",
+                &format!("<{} scenarios>", self.pagewikis.len()),
+            )
             .field("metadata_promote_fields", &self.metadata_promote_fields)
             .field("tokenizer", &"<dyn Tokenizer>")
-            .field("embedder", &if self.embedder.is_some() { "Some(<dyn Embedder>)" } else { "None" })
+            .field(
+                "embedder",
+                &if self.embedder.is_some() {
+                    "Some(<dyn Embedder>)"
+                } else {
+                    "None"
+                },
+            )
             .finish()
     }
 }

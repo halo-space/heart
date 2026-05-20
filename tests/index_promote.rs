@@ -1,13 +1,17 @@
 //! Integration tests: metadata promotion.
 
-use std::collections::HashMap;
-use rag::index::{Builder, NoopTokenizer};
-use rag::index::source::{Item, Scenario};
 use rag::index::pagewiki;
 use rag::index::pagewiki::Base;
+use rag::index::source::{Item, Scenario};
+use rag::index::{Builder, NoopTokenizer};
 use serde_json::json;
+use std::collections::HashMap;
 
-fn make_item_with_metadata(doc_id: &str, text: &str, metadata: serde_json::Map<String, serde_json::Value>) -> Item {
+fn make_item_with_metadata(
+    doc_id: &str,
+    text: &str,
+    metadata: serde_json::Map<String, serde_json::Value>,
+) -> Item {
     let mut meta = metadata;
     meta.insert("doc_id".into(), json!(doc_id));
     Item {
@@ -63,13 +67,7 @@ async fn promote_questions_from_metadata() {
 async fn promote_tags_from_metadata() {
     let mut pw_map: HashMap<Scenario, Box<dyn Base>> = HashMap::new();
     pw_map.insert(Scenario::General, Box::new(pagewiki::Fixed::new(200)));
-    let builder = Builder::new(
-        pw_map,
-        vec!["tags".into()],
-        Box::new(NoopTokenizer),
-        None,
-    )
-    .unwrap();
+    let builder = Builder::new(pw_map, vec!["tags".into()], Box::new(NoopTokenizer), None).unwrap();
 
     let mut meta = serde_json::Map::new();
     meta.insert("tags".into(), json!(["ai", "ml"]));

@@ -1,12 +1,19 @@
 //! metadata 字段提升辅助函数。
 
-use serde_json::Value;
 use crate::index::builder::types::Error;
 use crate::index::pagewiki;
+use serde_json::Value;
 
 const ALLOWED: &[&str] = &[
-    "header", "content", "keywords", "questions",
-    "tags", "attributes", "graph", "metadata", "images",
+    "header",
+    "content",
+    "keywords",
+    "questions",
+    "tags",
+    "attributes",
+    "graph",
+    "metadata",
+    "images",
 ];
 
 /// 判断 `field` 是否允许出现在 `metadata_promote_fields` 中。
@@ -39,15 +46,15 @@ fn promote_field(pw: &mut pagewiki::PageWiki, field: &str, val: Value) -> Result
         }};
     }
     match field {
-        "header"     => deser!(pw.header, String),
-        "content"    => deser!(pw.content, String),
-        "keywords"   => deser!(pw.keywords, Vec<String>),
-        "questions"  => deser!(pw.questions, Vec<String>),
-        "tags"       => deser!(pw.tags, Vec<String>),
+        "header" => deser!(pw.header, String),
+        "content" => deser!(pw.content, String),
+        "keywords" => deser!(pw.keywords, Vec<String>),
+        "questions" => deser!(pw.questions, Vec<String>),
+        "tags" => deser!(pw.tags, Vec<String>),
         "attributes" => deser!(pw.attributes, serde_json::Map<String, Value>),
-        "graph"      => deser!(pw.graph, pagewiki::Graph),
-        "metadata"   => deser!(pw.metadata, serde_json::Map<String, Value>),
-        "images"     => deser!(pw.images, Vec<String>),
+        "graph" => deser!(pw.graph, pagewiki::Graph),
+        "metadata" => deser!(pw.metadata, serde_json::Map<String, Value>),
+        "images" => deser!(pw.images, Vec<String>),
         _ => unreachable!("is_allowed 已校验"),
     }
     Ok(())
@@ -67,7 +74,18 @@ mod tests {
         for f in ALLOWED {
             assert!(is_allowed(f), "{f} 应允许");
         }
-        for f in ["id","doc_id","version","scenario","idx","content_tokens","keyword_tokens","question_tokens","embedding","spans"] {
+        for f in [
+            "id",
+            "doc_id",
+            "version",
+            "scenario",
+            "idx",
+            "content_tokens",
+            "keyword_tokens",
+            "question_tokens",
+            "embedding",
+            "spans",
+        ] {
             assert!(!is_allowed(f), "{f} 不应允许");
         }
         assert!(!is_allowed("foo_bar"));

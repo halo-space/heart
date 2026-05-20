@@ -2,10 +2,10 @@
 //!
 //! 详见 `openspec/changes/rag-page-wiki/design.md` 第 6 节。
 
-use std::future::Future;
-use std::pin::Pin;
 use crate::index::pagewiki::base::Base;
 use crate::index::pagewiki::types::{Error, PageWiki, Span};
+use std::future::Future;
+use std::pin::Pin;
 
 /// 按字面分隔符切分器。
 #[derive(Debug, Clone)]
@@ -26,7 +26,10 @@ impl Delimiter {
 }
 
 impl Base for Delimiter {
-    fn cut<'a>(&'a self, text: &'a str) -> Pin<Box<dyn Future<Output = Result<Vec<PageWiki>, Error>> + Send + 'a>> {
+    fn cut<'a>(
+        &'a self,
+        text: &'a str,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PageWiki>, Error>> + Send + 'a>> {
         Box::pin(async move {
             let delim_char_len = self.delimiter.chars().count();
             let mut out = Vec::new();

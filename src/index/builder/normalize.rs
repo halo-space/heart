@@ -1,7 +1,7 @@
 //! 文本规范化。
 
-use std::sync::OnceLock;
 use regex::Regex;
+use std::sync::OnceLock;
 
 static TAG_RE: OnceLock<Regex> = OnceLock::new();
 

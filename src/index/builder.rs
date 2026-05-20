@@ -4,9 +4,9 @@
 //! embed / 字段提升 / 系统字段补齐 整条流水线，输出可入库的
 //! [`Vec<pagewiki::PageWiki>`](crate::index::pagewiki::PageWiki)。
 
-pub mod builder;
 pub mod embed;
 pub mod normalize;
+pub mod pipeline;
 pub mod promote;
 pub mod tokenize;
 pub mod types;

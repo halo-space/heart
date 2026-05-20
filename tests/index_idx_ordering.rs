@@ -1,13 +1,13 @@
 //! Integration tests: idx ordering and spans-based sorting.
 
+use rag::index::pagewiki::Base;
+use rag::index::pagewiki::{self, PageWiki, Span};
+use rag::index::source::{Item, Scenario};
+use rag::index::{Builder, NoopTokenizer};
+use serde_json::json;
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use serde_json::json;
-use rag::index::{Builder, NoopTokenizer};
-use rag::index::source::{Item, Scenario};
-use rag::index::pagewiki::Base;
-use rag::index::pagewiki::{self, PageWiki, Span};
 
 struct MultiPageCutter;
 
