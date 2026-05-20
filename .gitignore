@@ -1,0 +1,16 @@
+/target/
+Cargo.lock
+.env
+.env.*
+.DS_Store
+.codex/
+.idea/
+.vscode/
+*.log
+logs/
+.tmp/
+./docs
+.env
+docs/feature-design/
+openspec
+.claude/

@@ -1,0 +1,27 @@
+[package]
+name = "rag"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+description = "Rust RAG library rebuilt around v2 TextReader, IndexBuilder, Backend, and Engine layers."
+
+[lib]
+name = "rag"
+path = "src/lib.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+thiserror = "2"
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread"] }
+walkdir = "2"
+tracing = "0.1"
+async-openai = { version = "0.38.2", default-features = false, features = ["rustls", "chat-completion"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+regex = "1"
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
