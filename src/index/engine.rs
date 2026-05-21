@@ -46,15 +46,10 @@
 //! ```
 
 pub mod core;
-pub mod filter;
-pub mod fusion;
-pub mod paginate;
 pub mod rerank;
-pub mod response;
 pub mod types;
 
-pub use core::Engine;
-pub use fusion::FusionWeights;
+pub use core::{Engine, FusionWeights};
 pub use rerank::{LocalRerankConfig, LocalReranker, ModelReranker, Reranker};
 pub use types::{
     Context, DocAgg, Error, FieldsConfig, Hit, Intent, KeywordGroup, Response, TextField,
