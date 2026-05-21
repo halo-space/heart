@@ -34,7 +34,9 @@
 //! ```
 
 pub mod builder;
+pub mod engine;
 pub mod pagewiki;
 pub mod source;
+pub mod storage;
 
 pub use builder::{Builder, Embedder, Error, NoopEmbedder, NoopTokenizer, Tokenizer};
