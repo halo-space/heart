@@ -1,0 +1,16 @@
+[package]
+name = "heart-components"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.95"
+license = "MIT"
+
+[lib]
+name = "heart_components"
+path = "src/lib.rs"
+
+[dependencies]
+futures-util = "0.3"
+schema = { path = "../schema" }
+serde_json = "1"
+tokio-util = { version = "0.7", features = ["rt"] }
