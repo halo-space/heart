@@ -1,3 +1,11 @@
+[workspace]
+members = [
+    ".",
+    "components",
+    "schema",
+]
+resolver = "3"
+
 [package]
 name = "rag"
 version = "0.1.0"

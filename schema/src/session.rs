@@ -52,6 +52,10 @@ pub struct Session {
 
 impl Session {
     pub fn validate(&self) -> Result<(), Error> {
+        if self.extra.metadata.contains_key("idx") {
+            return Err(Error::InvalidInput);
+        }
+
         match (&self.summary, self.extra.idx) {
             (Some(summary), Some(idx)) if !summary.is_empty() => idx.validate(),
             (None, None) => Ok(()),
@@ -109,6 +113,26 @@ mod tests {
             created_time: 1,
             updated_time: 1,
         };
+
+        assert_eq!(session.validate(), Err(Error::InvalidInput));
+    }
+
+    #[test]
+    fn session_rejects_idx_inside_extra_metadata() {
+        let mut session = Session {
+            id: 1,
+            tenant_id: 2,
+            app_id: 3,
+            agent_id: 4,
+            user_id: 5,
+            title: None,
+            summary: None,
+            status: Status::Active,
+            extra: Extra::default(),
+            created_time: 1,
+            updated_time: 1,
+        };
+        session.extra.metadata.insert("idx".into(), json!({}));
 
         assert_eq!(session.validate(), Err(Error::InvalidInput));
     }
