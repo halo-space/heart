@@ -1,0 +1,25 @@
+/target/
+Cargo.lock
+.env
+.env.*
+.DS_Store
+.codex/
+.idea/
+.vscode/
+*.log
+logs/
+.tmp/
+.env
+
+# 仅发布 Rust 源码、项目说明和构建清单。
+/design/
+/openspec/
+/examples/
+/tests/
+/COMPONENTS.md
+/COMPONENT_AUDIT.md
+/DOCUMENTS.md
+/IMPLEMENTATION_STATUS.md
+/PROVIDERS.md
+/TRANSFORMS.md
+.claude/
