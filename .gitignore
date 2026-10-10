@@ -1,25 +1,10 @@
-/target/
-Cargo.lock
-.env
-.env.*
-.DS_Store
-.codex/
-.idea/
-.vscode/
-*.log
-logs/
-.tmp/
-.env
+# 仓库只提交源码、项目说明和 Rust 构建清单；其他本地文件一律忽略。
+/*
+!/.gitignore
+!/README.md
+!/Cargo.toml
+!/src/
+!/src/**
 
-# 仅发布 Rust 源码、项目说明和构建清单。
-/design/
-/openspec/
-/examples/
-/tests/
-/COMPONENTS.md
-/COMPONENT_AUDIT.md
-/DOCUMENTS.md
-/IMPLEMENTATION_STATUS.md
-/PROVIDERS.md
-/TRANSFORMS.md
-.claude/
+# 编辑器和系统生成文件不属于源码。
+**/.DS_Store
