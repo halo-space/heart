@@ -59,9 +59,9 @@ impl Graph {
         Ok(graph)
     }
 
-    /// Internal plan adoption used by Agent Runtime. Validation finishes
-    /// before any current state is changed.
-    pub(crate) fn adopt_plan(&mut self, plan: Plan) -> Result<(), Error> {
+    /// Update the AgentGraph with the complete plan returned by Planner.
+    /// Validation finishes before any current state is changed.
+    pub(crate) fn update(&mut self, plan: Plan) -> Result<(), Error> {
         if self
             .nodes
             .values()
@@ -69,7 +69,7 @@ impl Graph {
         {
             return Err(Error::new(
                 "INVALID_STATE",
-                "cannot adopt a plan while agent nodes are running or waiting",
+                "cannot update the plan while agent nodes are running or waiting",
             ));
         }
         let mut candidate = Graph::from_plan(plan)?;
@@ -646,7 +646,7 @@ mod tests {
             )]),
             edges: Vec::new(),
         };
-        graph.adopt_plan(replacement).unwrap();
+        graph.update(replacement).unwrap();
 
         assert_eq!(graph.history().len(), 1);
         assert_eq!(graph.history()[0].nodes["a"].status, Status::Succeeded);
@@ -660,7 +660,7 @@ mod tests {
         let snapshot = serde_json::to_value(&graph).unwrap();
         let mut restored: Graph = serde_json::from_value(snapshot).unwrap();
         let replacement = plan(&[]);
-        restored.adopt_plan(replacement).unwrap();
+        restored.update(replacement).unwrap();
 
         let snapshot = serde_json::to_value(&restored).unwrap();
         let mut restored: Graph = serde_json::from_value(snapshot).unwrap();
@@ -677,7 +677,7 @@ mod tests {
             )]),
             edges: Vec::new(),
         };
-        restored.adopt_plan(replacement).unwrap();
+        restored.update(replacement).unwrap();
         assert_ne!(restored, before);
     }
 
@@ -738,7 +738,7 @@ mod tests {
                 to: "missing".into(),
             }],
         };
-        let error = graph.adopt_plan(invalid).unwrap_err();
+        let error = graph.update(invalid).unwrap_err();
         assert_eq!(error.code, "INVALID_ARGUMENTS");
         assert_eq!(graph.plan.version, 1);
         assert!(graph.history().is_empty());
@@ -800,7 +800,7 @@ mod tests {
         let mut graph = Graph::from_plan(plan(&[])).unwrap();
         graph.start("a", 101).unwrap();
         graph.succeed("a", Messages::default(), None).unwrap();
-        graph.adopt_plan(plan(&[])).unwrap();
+        graph.update(plan(&[])).unwrap();
         let mut graph: Graph =
             serde_json::from_value(serde_json::to_value(graph).unwrap()).unwrap();
         let before = graph.clone();
@@ -830,7 +830,7 @@ mod tests {
     }
 
     #[test]
-    fn plan_adoption_never_replaces_running_or_waiting_nodes() {
+    fn plan_update_never_replaces_running_or_waiting_nodes() {
         for waiting in [false, true] {
             let mut graph = Graph::from_plan(plan(&[])).unwrap();
             graph.start("a", 101).unwrap();
@@ -838,10 +838,7 @@ mod tests {
                 graph.wait("a").unwrap();
             }
             let before = graph.clone();
-            assert_eq!(
-                graph.adopt_plan(plan(&[])).unwrap_err().code,
-                "INVALID_STATE"
-            );
+            assert_eq!(graph.update(plan(&[])).unwrap_err().code, "INVALID_STATE");
             assert_eq!(graph, before);
         }
     }

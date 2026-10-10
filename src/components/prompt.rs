@@ -169,7 +169,7 @@ fn value_to_text(value: &Value) -> Result<String, Error> {
 mod tests {
     use super::*;
     use crate::components::message::Role;
-    use crate::components::model::content::Part;
+    use crate::components::model::content::part::Part;
     use serde_json::Map;
     use serde_json::json;
 

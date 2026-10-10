@@ -1133,7 +1133,7 @@ mod tests {
                 details: serde_json::Map::from_iter([("raw".into(), serde_json::json!(call))]),
             };
             let mut message = crate::Message::new(Role::Assistant);
-            message.content.push(crate::model::content::Part {
+            message.content.push(crate::model::content::part::Part {
                 r#type: "text".into(),
                 data: serde_json::json!({"value":"answer"}),
             });
@@ -1152,7 +1152,7 @@ mod tests {
 
     fn user_input() -> Messages {
         let mut message = crate::Message::new(Role::User);
-        message.content.push(crate::model::content::Part {
+        message.content.push(crate::model::content::part::Part {
             r#type: "text".into(),
             data: serde_json::json!({"value":"hello"}),
         });
@@ -1274,7 +1274,7 @@ mod tests {
             }
             let make_message = |role| {
                 let mut message = crate::Message::new(role);
-                message.content.push(crate::model::content::Part {
+                message.content.push(crate::model::content::part::Part {
                     r#type: "text".into(),
                     data: serde_json::json!({"value": "agent result"}),
                 });
@@ -1340,7 +1340,7 @@ mod tests {
         let workflow = builder.compile().unwrap();
         let mut runtime = Runtime::new(31, workflow).unwrap();
         let mut input = crate::Message::new(Role::User);
-        input.content.push(crate::model::content::Part {
+        input.content.push(crate::model::content::part::Part {
             r#type: "text".into(),
             data: serde_json::json!({"value": "hello"}),
         });
@@ -1365,7 +1365,7 @@ mod tests {
         let workflow = builder.compile().unwrap();
         let mut runtime = Runtime::new(32, workflow).unwrap();
         let mut input = crate::Message::new(Role::User);
-        input.content.push(crate::model::content::Part {
+        input.content.push(crate::model::content::part::Part {
             r#type: "text".into(),
             data: serde_json::json!({"value": "hello"}),
         });
@@ -1392,7 +1392,7 @@ mod tests {
         let workflow = builder.compile().unwrap();
         let mut runtime = Runtime::new(33, workflow).unwrap();
         let mut input = crate::Message::new(Role::User);
-        input.content.push(crate::model::content::Part {
+        input.content.push(crate::model::content::part::Part {
             r#type: "text".into(),
             data: serde_json::json!({"value": "hello"}),
         });
@@ -1419,7 +1419,7 @@ mod tests {
         let workflow = builder.compile().unwrap();
         let mut runtime = Runtime::new(34, workflow).unwrap();
         let mut input = crate::Message::new(Role::User);
-        input.content.push(crate::model::content::Part {
+        input.content.push(crate::model::content::part::Part {
             r#type: "text".into(),
             data: serde_json::json!({"value": "hello"}),
         });
@@ -1709,7 +1709,7 @@ mod tests {
         let mut request = crate::Message::new(crate::components::message::Role::User);
         request
             .content
-            .push(crate::components::model::content::Part {
+            .push(crate::components::model::content::part::Part {
                 r#type: "text".into(),
                 data: serde_json::json!("request"),
             });
@@ -1727,7 +1727,7 @@ mod tests {
         let mut approved = crate::Message::new(crate::components::message::Role::User);
         approved
             .content
-            .push(crate::components::model::content::Part {
+            .push(crate::components::model::content::part::Part {
                 r#type: "text".into(),
                 data: serde_json::json!("approved"),
             });
@@ -1737,7 +1737,7 @@ mod tests {
         let mut changed = crate::Message::new(crate::components::message::Role::User);
         changed
             .content
-            .push(crate::components::model::content::Part {
+            .push(crate::components::model::content::part::Part {
                 r#type: "text".into(),
                 data: serde_json::json!("changed"),
             });

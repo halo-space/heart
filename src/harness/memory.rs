@@ -15,7 +15,7 @@ use crate::{
         short::{self, chat, session, trace},
     },
     message::Role,
-    model::content::Part,
+    model::content::part::Part,
 };
 
 use super::hooks::{Hooks, cancellable};

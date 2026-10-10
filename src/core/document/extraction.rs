@@ -7,8 +7,9 @@ use crate::Cancellation;
 #[cfg(test)]
 use crate::components::document::location;
 use crate::components::document::{Document, Error, Loader, Relation, Source, graph_types};
+use crate::components::event::Event as ChatEvent;
 use crate::components::message::{Message, Messages};
-use crate::components::model::{self, chat::Event as ChatEvent};
+use crate::components::model;
 
 /// Built-in loader for the framework's default local-file capability.
 #[derive(Clone, Debug, Default)]
@@ -309,7 +310,7 @@ pub mod raptor {
                     let mut input = Message::new(crate::components::message::Role::User);
                     input
                         .content
-                        .push(crate::components::model::content::Part {
+                        .push(crate::components::model::content::part::Part {
                             r#type: "text".into(),
                             data: serde_json::json!({"value": format!("Summarize these documents: {prompt}")}),
                         });
@@ -572,7 +573,7 @@ pub mod graph_impl {
                 "relation_types": self.relation_types.iter().map(|item| serde_json::json!({"name": item.name, "description": item.description, "from": item.from, "to": item.to})).collect::<Vec<_>>(),
             });
             let mut input = Message::new(crate::components::message::Role::User);
-            input.content.push(crate::components::model::content::Part {
+            input.content.push(crate::components::model::content::part::Part {
                 r#type: "text".into(),
                 data: serde_json::json!({"value": format!("Extract the graph from these documents using the declared entity and relation types. Return a JSON object with entities and relations arrays. Entity fields are id, type, name, optional attrs and evidence. Relation fields are from, to, kind, optional attrs and evidence. Do not invent evidence or identifiers absent from the source. Input: {payload}")}),
             });
@@ -928,16 +929,16 @@ mod tests {
             );
             request.validate()?;
             let mut response = Message::new(Role::Assistant);
-            response.content.push(model::content::Part {
+            response.content.push(model::content::part::Part {
                 r#type: "think".into(),
                 data: json!({"value": "not JSON"}),
             });
             // A complete text response can contain more than one text part.
-            response.content.push(model::content::Part {
+            response.content.push(model::content::part::Part {
                 r#type: "text".into(),
                 data: json!({"value": &self.text[..1]}),
             });
-            response.content.push(model::content::Part {
+            response.content.push(model::content::part::Part {
                 r#type: "text".into(),
                 data: json!({"value": &self.text[1..]}),
             });

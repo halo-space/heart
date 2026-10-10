@@ -10,7 +10,7 @@ use crate::components::agent::{Agent as AgentContract, Error, Input};
 use crate::components::event::Event;
 use crate::components::message::{Message, Messages, Role};
 use crate::components::model::chat::{Chat, Request};
-use crate::components::model::content::Part;
+use crate::components::model::content::part::Part;
 use crate::harness::hooks::{Hooks, cancellable};
 use crate::harness::memory::{History, Run};
 use crate::runtime::cancellation::Cancellation;

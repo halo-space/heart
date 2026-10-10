@@ -7,7 +7,7 @@ use serde_json::{Map, Value};
 
 use crate::Error;
 use crate::components::message::{Message, Messages, Role};
-use crate::components::model::content::Part;
+use crate::components::model::content::part::Part;
 use crate::components::node::{Node, Signal};
 use crate::components::tool::{Call, Tool, ToolDefinition, execute_without_eval};
 use crate::runtime::cancellation::Cancellation;

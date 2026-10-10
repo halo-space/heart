@@ -5,7 +5,7 @@ use crate::{
     Cancellation, Error, Message, Messages,
     function::Function,
     message::Role,
-    model::content::Part,
+    model::content::part::Part,
     skill::{Definition, Skill as Contract},
     workspace::Workspace,
 };

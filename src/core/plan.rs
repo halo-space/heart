@@ -1,5 +1,5 @@
 //! Pure model-backed Agent planning. Callers or Harness can invoke it;
-//! Runtime owns execution state and adopts the returned complete logical DAG.
+//! Runtime owns execution state and uses the returned complete logical DAG.
 
 use crate::model::chat::{Chat, Request};
 use crate::plan::{self, Error, Plan};
@@ -82,7 +82,7 @@ impl<C: Chat> plan::Planner for Planner<C> {
         let input = input(query, current_plan, feedback)?;
         let plan: Plan =
             super::structured::run(&self.chat, &self.request, input, cancellation).await?;
-        // The complete result is validated here, before any caller can adopt it.
+        // The complete result is validated here before any caller can use it.
         // No Runtime repair, version increment or hidden retry occurs.
         plan.validate()?;
         super::operation::check(cancellation)?;

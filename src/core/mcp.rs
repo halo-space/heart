@@ -21,7 +21,7 @@ use crate::{
     Cancellation, Error, Message,
     mcp::{Definition, Server as Contract},
     message::Role,
-    model::content::Part,
+    model::content::part::Part,
     tool::{Call, ToolDefinition},
 };
 

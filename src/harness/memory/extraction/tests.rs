@@ -1,5 +1,5 @@
 use super::*;
-use crate::{Message, core::memory::InMemory, model::content::Part};
+use crate::{Message, core::memory::InMemory, model::content::part::Part};
 use serde_json::json;
 use std::{
     rc::Rc,

@@ -18,7 +18,7 @@ use crate::components::evaluation::{Evaluation, Evaluator};
 use crate::components::event::Event;
 use crate::components::message::{Message, Messages, Role};
 use crate::components::model::chat::{Chat, Request, ToolChoice};
-use crate::components::model::content::Part;
+use crate::components::model::content::part::Part;
 use crate::components::tool::{Call, Evaluation as ToolEvaluation, ToolDefinition, validate_call};
 use crate::harness::access::Access;
 use crate::harness::hooks::{Hooks, cancellable};
@@ -133,8 +133,8 @@ impl<M> Builder<M> {
     }
 
     /// Attach the Agent checkpoint backend. A configured backend is written
-    /// for the Agent runtime whether or not this run adopts an AgentGraph.
-    /// Graph fields are included only when a plan has been adopted; an
+    /// for the Agent runtime whether or not this run uses an AgentGraph.
+    /// Graph fields are included only when a plan has been accepted; an
     /// ordinary run still persists its messages, usage and terminal status.
     pub fn checkpoint<C: crate::checkpoint::Checkpoint + 'static>(mut self, checkpoint: C) -> Self {
         let checkpoint = Arc::new(checkpoint);
@@ -848,15 +848,15 @@ async fn next_react_event_inner<M: Chat + 'static>(
                             state.done = true;
                             return Some((Ok(cancelled_event(&mut state)), state));
                         }
-                        let adopted = crate::core::plan::decode_plan(&message).and_then(|plan| {
+                        let updated = crate::core::plan::decode_plan(&message).and_then(|plan| {
                             if let Some(graph) = &mut state.graph {
-                                graph.adopt_plan(plan)
+                                graph.update(plan)
                             } else {
                                 state.graph = Some(Graph::from_plan(plan)?);
                                 Ok(())
                             }
                         });
-                        if let Err(error) = adopted {
+                        if let Err(error) = updated {
                             // Forward the actual Complete even when its Plan
                             // is invalid; fail next, without acknowledging it.
                             state.planning_error = Some(error);
@@ -879,7 +879,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         match planning {
                             Planning::Selected(index, call) => {
                                 let plan =
-                                    &state.graph.as_ref().expect("validated plan adopted").plan;
+                                    &state.graph.as_ref().expect("validated plan accepted").plan;
                                 let result = tool_success_message(
                                     &call,
                                     Message::function(json!({"plan": plan})),
