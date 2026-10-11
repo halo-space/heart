@@ -10,7 +10,7 @@ use crate::components::agent::{Agent as AgentContract, Error, Input};
 use crate::components::event::Event;
 use crate::components::message::{Message, Messages, Role};
 use crate::components::model::chat::{Chat, Request};
-use crate::components::model::content::part::Part;
+use crate::components::model::content::part::{Part, object as part_data};
 use crate::harness::hooks::{Hooks, cancellable};
 use crate::harness::memory::{History, Run};
 use crate::runtime::cancellation::Cancellation;
@@ -352,7 +352,7 @@ pub(crate) fn initial_messages(
         let mut message = Message::new(Role::System);
         message.content.push(Part {
             r#type: "text".into(),
-            data: serde_json::json!({ "value": prompt }),
+            data: part_data(serde_json::json!({ "value": prompt })),
         });
         messages.push(message);
     }
@@ -419,7 +419,11 @@ fn part_bytes(part: &Part) -> usize {
         .get("value")
         .and_then(serde_json::Value::as_str)
         .map(str::len)
-        .unwrap_or_else(|| part.data.to_string().len());
+        .unwrap_or_else(|| {
+            serde_json::Value::Object(part.data.clone())
+                .to_string()
+                .len()
+        });
     part.r#type.len().saturating_add(body)
 }
 
@@ -441,7 +445,7 @@ pub(crate) fn user_message(input: Input) -> Message {
             }
             Part {
                 r#type: payload.r#type,
-                data: serde_json::Value::Object(data),
+                data,
             }
         })
         .collect();
@@ -510,12 +514,12 @@ mod tests {
             let mut delta = Message::new(Role::Assistant);
             delta.content.push(Part {
                 r#type: "text".into(),
-                data: json!({"value": "hel"}),
+                data: crate::components::model::content::part::object(json!({"value": "hel"})),
             });
             let mut complete = Message::new(Role::Assistant);
             complete.content.push(Part {
                 r#type: "text".into(),
-                data: json!({"value": "hello"}),
+                data: crate::components::model::content::part::object(json!({"value": "hello"})),
             });
             let mut events = VecDeque::from([Ok(Event::Delta { message: delta })]);
             if self.include_complete {

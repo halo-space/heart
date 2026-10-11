@@ -1,6 +1,7 @@
 //! Private task dispatch for ReAct. The graph remains runtime::agent state;
 //! tasks reuse the Agent's model/Toolkit loop rather than looking up names.
 use super::*;
+use crate::components::model::content::part::object as part_data;
 use crate::runtime::agent::{graph::Start, node::Status};
 
 struct Task<M: Chat> {
@@ -58,7 +59,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
         let mut message = Message::new(Role::User);
         message.content.push(Part {
             r#type: "text".into(),
-            data: json!({"value": data.to_string()}),
+            data: part_data(json!({"value": data.to_string()})),
         });
         message.values = serde_json::from_value(data).expect("task object");
         inputs.push(message);
@@ -73,7 +74,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
         let mut instruction = Message::new(Role::System);
         instruction.content.push(Part {
             r#type: "text".into(),
-            data: json!({"value": "Complete only the current planned task objective using the original query and its committed source results. Choose tools and arguments yourself when needed. Return this task's result, not the final answer for unrelated tasks."}),
+            data: part_data(json!({"value": "Complete only the current planned task objective using the original query and its committed source results. Choose tools and arguments yourself when needed. Return this task's result, not the final answer for unrelated tasks."})),
         });
         messages.0.insert(0, instruction);
         messages.push(input);
@@ -217,7 +218,7 @@ pub(super) fn finalize<M: Chat>(state: &mut ReActState<M>) -> Result<(), Error> 
     let mut message = Message::new(Role::User);
     message.content.push(Part {
         r#type: "text".into(),
-        data: json!({"value": data.to_string()}),
+        data: part_data(json!({"value": data.to_string()})),
     });
     message.values = serde_json::from_value(data).expect("results object");
     state.messages.push(message);

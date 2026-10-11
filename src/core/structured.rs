@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 
 use crate::model::{
     chat::{Chat, Request, ResponseFormat},
-    content::Part,
+    content::part::{Part, object as part_data},
 };
 use crate::{Cancellation, Error, Message, Messages, event::Event, message::Role};
 
@@ -15,7 +15,7 @@ pub(super) fn text(role: Role, value: String) -> Message {
     let mut message = Message::new(role);
     message.content.push(Part {
         r#type: "text".into(),
-        data: json!({"value": value}),
+        data: part_data(json!({"value": value})),
     });
     message
 }

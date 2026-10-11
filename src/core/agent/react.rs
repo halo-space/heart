@@ -21,7 +21,7 @@ use crate::components::evaluation::{Evaluation, Evaluator};
 use crate::components::event::Event;
 use crate::components::message::{Message, Messages, Role};
 use crate::components::model::chat::{Chat, Request, ToolChoice};
-use crate::components::model::content::part::Part;
+use crate::components::model::content::part::{Part, object as part_data};
 use crate::components::tool::{Call, Evaluation as ToolEvaluation, ToolDefinition, validate_call};
 use crate::harness::access::Access;
 use crate::harness::hooks::{Hooks, cancellable};
@@ -1272,7 +1272,7 @@ fn tool_error_message(call: &Call, error: Error) -> Message {
         role: Role::Tool,
         content: vec![Part {
             r#type: "text".into(),
-            data: json!({"value": value}),
+            data: part_data(json!({"value": value})),
         }],
         values: Map::from_iter([
             ("error".into(), error_value),
@@ -1371,7 +1371,7 @@ mod tests {
             let mut message = Message::new(Role::Assistant);
             message.content.push(Part {
                 r#type: "text".into(),
-                data: json!({"value": text}),
+                data: part_data(json!({"value": text})),
             });
             Ok(futures_util::stream::iter(vec![Ok(Event::Complete {
                 message,
@@ -1528,18 +1528,18 @@ mod tests {
                 let mut message = Message::new(Role::Assistant);
                 message.content.push(Part {
                     r#type: "tool_call".into(),
-                    data: json!({
+                    data: part_data(json!({
                         "call_id": "call_weather_1",
                         "name": "weather",
                         "arguments": {"city": "Beijing"}
-                    }),
+                    })),
                 });
                 message
             } else {
                 let mut message = Message::new(Role::Assistant);
                 message.content.push(Part {
                     r#type: "text".into(),
-                    data: json!({"value": "北京今天晴天。"}),
+                    data: part_data(json!({"value": "北京今天晴天。"})),
                 });
                 message
             };

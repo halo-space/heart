@@ -21,7 +21,7 @@ use crate::{
     Cancellation, Error, Message,
     mcp::{Definition, Server as Contract},
     message::Role,
-    model::content::part::Part,
+    model::content::part::{Part, object as part_data},
     tool::{Call, ToolDefinition},
 };
 
@@ -314,7 +314,7 @@ impl Contract for Server {
             if let Some(text) = part.as_text() {
                 message.content.push(Part {
                     r#type: "text".into(),
-                    data: json!({"value":text.text}),
+                    data: part_data(json!({"value":text.text})),
                 });
             } else {
                 // Full media contracts are V3+, not invented by this adapter.

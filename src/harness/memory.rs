@@ -563,7 +563,9 @@ fn context(label: &str, content: &str, metadata: Map<String, Value>) -> Message 
     let mut message = Message::new(Role::User);
     message.content.push(Part {
         r#type: "text".into(),
-        data: json!({"value":format!("[{label}]\n{content}")}),
+        data: crate::components::model::content::part::object(
+            json!({"value":format!("[{label}]\n{content}")}),
+        ),
     });
     message.metadata = metadata;
     message

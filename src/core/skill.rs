@@ -5,7 +5,7 @@ use crate::{
     Cancellation, Error, Message, Messages,
     function::Function,
     message::Role,
-    model::content::part::Part,
+    model::content::part::{Part, object as part_data},
     skill::{Definition, Skill as Contract},
     workspace::Workspace,
 };
@@ -152,7 +152,7 @@ impl<F: Function<Messages, Messages>> Contract for Skill<F> {
         let mut instructions = Message::new(Role::System);
         instructions.content.push(Part {
             r#type: "text".into(),
-            data: json!({"value":self.instructions}),
+            data: part_data(json!({"value":self.instructions})),
         });
         input.0.insert(0, instructions);
         super::operation::cancellable(self.executor.call(input, cancellation), cancellation).await

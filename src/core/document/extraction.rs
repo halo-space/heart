@@ -312,7 +312,7 @@ pub mod raptor {
                         .content
                         .push(crate::components::model::content::part::Part {
                             r#type: "text".into(),
-                            data: serde_json::json!({"value": format!("Summarize these documents: {prompt}")}),
+                            data: crate::components::model::content::part::object(serde_json::json!({"value": format!("Summarize these documents: {prompt}")})),
                         });
                     let response =
                         complete_message(&self.chat, Messages::new([input]), cancellation).await?;
@@ -575,7 +575,7 @@ pub mod graph_impl {
             let mut input = Message::new(crate::components::message::Role::User);
             input.content.push(crate::components::model::content::part::Part {
                 r#type: "text".into(),
-                data: serde_json::json!({"value": format!("Extract the graph from these documents using the declared entity and relation types. Return a JSON object with entities and relations arrays. Entity fields are id, type, name, optional attrs and evidence. Relation fields are from, to, kind, optional attrs and evidence. Do not invent evidence or identifiers absent from the source. Input: {payload}")}),
+                data: crate::components::model::content::part::object(serde_json::json!({"value": format!("Extract the graph from these documents using the declared entity and relation types. Return a JSON object with entities and relations arrays. Entity fields are id, type, name, optional attrs and evidence. Relation fields are from, to, kind, optional attrs and evidence. Do not invent evidence or identifiers absent from the source. Input: {payload}")})),
             });
             let message = complete_request(
                 &self.chat,
@@ -931,16 +931,20 @@ mod tests {
             let mut response = Message::new(Role::Assistant);
             response.content.push(model::content::part::Part {
                 r#type: "think".into(),
-                data: json!({"value": "not JSON"}),
+                data: crate::components::model::content::part::object(json!({"value": "not JSON"})),
             });
             // A complete text response can contain more than one text part.
             response.content.push(model::content::part::Part {
                 r#type: "text".into(),
-                data: json!({"value": &self.text[..1]}),
+                data: crate::components::model::content::part::object(
+                    json!({"value": &self.text[..1]}),
+                ),
             });
             response.content.push(model::content::part::Part {
                 r#type: "text".into(),
-                data: json!({"value": &self.text[1..]}),
+                data: crate::components::model::content::part::object(
+                    json!({"value": &self.text[1..]}),
+                ),
             });
             Ok(FakeStream(VecDeque::from([Ok(Event::Complete {
                 message: response,

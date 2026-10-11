@@ -77,9 +77,7 @@ impl Variables {
 fn render_message(message: &Message, variables: &Variables) -> Result<Message, Error> {
     let mut message = message.clone();
     for part in &mut message.content {
-        if let Some(object) = part.data.as_object_mut()
-            && let Some(value) = object.get_mut("value")
-        {
+        if let Some(value) = part.data.get_mut("value") {
             if let Some(text) = value.as_str() {
                 *value = Value::String(render_text(text, variables)?);
             } else if value.is_number() || value.is_boolean() {
@@ -178,7 +176,7 @@ mod tests {
             role: Role::User,
             content: vec![Part {
                 r#type: "text".into(),
-                data: json!({"value": text}),
+                data: crate::components::model::content::part::object(json!({"value": text})),
             }],
             values: Map::new(),
             metadata: Map::new(),
@@ -220,7 +218,9 @@ mod tests {
             role: Role::User,
             content: vec![Part {
                 r#type: "text".into(),
-                data: json!({"value": ["not", "text"]}),
+                data: crate::components::model::content::part::object(
+                    json!({"value": ["not", "text"]}),
+                ),
             }],
             values: Map::new(),
             metadata: Map::new(),

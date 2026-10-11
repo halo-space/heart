@@ -971,7 +971,7 @@ fn messages_to_agent_input(messages: &Messages) -> AgentInput {
         .iter()
         .map(|part| AgentPayload {
             r#type: part.r#type.clone(),
-            data: part.data.clone(),
+            data: serde_json::Value::Object(part.data.clone()),
             mime_type: part
                 .data
                 .get("mime_type")
@@ -1139,7 +1139,9 @@ mod tests {
             let mut message = crate::Message::new(Role::Assistant);
             message.content.push(crate::model::content::part::Part {
                 r#type: "text".into(),
-                data: serde_json::json!({"value":"answer"}),
+                data: crate::components::model::content::part::object(
+                    serde_json::json!({"value":"answer"}),
+                ),
             });
             message.usage = Some(usage.clone());
             let mut events = vec![Ok(crate::event::Event::Complete {
@@ -1158,7 +1160,9 @@ mod tests {
         let mut message = crate::Message::new(Role::User);
         message.content.push(crate::model::content::part::Part {
             r#type: "text".into(),
-            data: serde_json::json!({"value":"hello"}),
+            data: crate::components::model::content::part::object(
+                serde_json::json!({"value":"hello"}),
+            ),
         });
         Messages::new([message])
     }
@@ -1280,7 +1284,9 @@ mod tests {
                 let mut message = crate::Message::new(role);
                 message.content.push(crate::model::content::part::Part {
                     r#type: "text".into(),
-                    data: serde_json::json!({"value": "agent result"}),
+                    data: crate::components::model::content::part::object(
+                        serde_json::json!({"value": "agent result"}),
+                    ),
                 });
                 message
             };
@@ -1346,7 +1352,9 @@ mod tests {
         let mut input = crate::Message::new(Role::User);
         input.content.push(crate::model::content::part::Part {
             r#type: "text".into(),
-            data: serde_json::json!({"value": "hello"}),
+            data: crate::components::model::content::part::object(
+                serde_json::json!({"value": "hello"}),
+            ),
         });
         let ids = Arc::new(|| 3100);
         let result =
@@ -1371,7 +1379,9 @@ mod tests {
         let mut input = crate::Message::new(Role::User);
         input.content.push(crate::model::content::part::Part {
             r#type: "text".into(),
-            data: serde_json::json!({"value": "hello"}),
+            data: crate::components::model::content::part::object(
+                serde_json::json!({"value": "hello"}),
+            ),
         });
         let result = block_on(runtime.run(
             Messages::new([input]),
@@ -1398,7 +1408,9 @@ mod tests {
         let mut input = crate::Message::new(Role::User);
         input.content.push(crate::model::content::part::Part {
             r#type: "text".into(),
-            data: serde_json::json!({"value": "hello"}),
+            data: crate::components::model::content::part::object(
+                serde_json::json!({"value": "hello"}),
+            ),
         });
         let _ = block_on(runtime.run(
             Messages::new([input]),
@@ -1425,7 +1437,9 @@ mod tests {
         let mut input = crate::Message::new(Role::User);
         input.content.push(crate::model::content::part::Part {
             r#type: "text".into(),
-            data: serde_json::json!({"value": "hello"}),
+            data: crate::components::model::content::part::object(
+                serde_json::json!({"value": "hello"}),
+            ),
         });
         let _ = block_on(runtime.run(
             Messages::new([input]),
@@ -1715,7 +1729,9 @@ mod tests {
             .content
             .push(crate::components::model::content::part::Part {
                 r#type: "text".into(),
-                data: serde_json::json!("request"),
+                data: crate::components::model::content::part::object(
+                    serde_json::json!({"value":"request"}),
+                ),
             });
         let initial = Messages::new([request]);
         let ids = Arc::new(AtomicI64::new(700));
@@ -1733,7 +1749,9 @@ mod tests {
             .content
             .push(crate::components::model::content::part::Part {
                 r#type: "text".into(),
-                data: serde_json::json!("approved"),
+                data: crate::components::model::content::part::object(
+                    serde_json::json!({"value":"approved"}),
+                ),
             });
         let approved = Messages::new([approved]);
         runtime.resolve_wait("approval", approved.clone()).unwrap();
@@ -1743,7 +1761,9 @@ mod tests {
             .content
             .push(crate::components::model::content::part::Part {
                 r#type: "text".into(),
-                data: serde_json::json!("changed"),
+                data: crate::components::model::content::part::object(
+                    serde_json::json!({"value":"changed"}),
+                ),
             });
         assert_eq!(
             runtime
@@ -1763,7 +1783,9 @@ mod tests {
         .unwrap();
         assert_eq!(
             output.as_slice()[0].content[0].data,
-            serde_json::json!("approved")
+            crate::components::model::content::part::object(
+                serde_json::json!({"value":"approved"})
+            )
         );
         let execution = &runtime.state().nodes["approval"].executions[&700];
         assert_eq!(execution.attempts.len(), 1);

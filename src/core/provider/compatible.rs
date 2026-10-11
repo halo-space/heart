@@ -14,7 +14,7 @@ use crate::message::{Message, Role};
 use crate::model::{
     self,
     chat::{Request, ResponseFormat, ToolChoice},
-    content::Part,
+    content::part::{Part, object as part_data},
     token::{InputDetails, OutputDetails, Usage},
 };
 
@@ -643,7 +643,7 @@ impl Accumulator {
         } else {
             self.message.content.push(Part {
                 r#type: kind.into(),
-                data: json!({"value": text}),
+                data: part_data(json!({"value": text})),
             });
         }
     }
@@ -711,7 +711,7 @@ impl Accumulator {
                     self.push_text(kind, text);
                     observation.content.push(Part {
                         r#type: kind.into(),
-                        data: json!({"value": text}),
+                        data: part_data(json!({"value": text})),
                     });
                 }
             }
@@ -767,7 +767,9 @@ impl Accumulator {
                 entry.arguments.push_str(arguments);
                 let part = Part {
                     r#type: "tool_call".into(),
-                    data: json!({"call_id": entry.id, "name": entry.name, "arguments": entry.arguments}),
+                    data: part_data(
+                        json!({"call_id": entry.id, "name": entry.name, "arguments": entry.arguments}),
+                    ),
                 };
                 let position = *entry.position.get_or_insert_with(|| {
                     self.message.content.push(part.clone());
@@ -775,7 +777,7 @@ impl Accumulator {
                 });
                 self.message.content[position] = part;
                 if !entry.id.is_empty() && !entry.name.is_empty() {
-                    observation.content.push(Part { r#type: "tool_call".into(), data: json!({"call_id": entry.id, "name": entry.name, "arguments": arguments}) });
+                    observation.content.push(Part { r#type: "tool_call".into(), data: part_data(json!({"call_id": entry.id, "name": entry.name, "arguments": arguments})) });
                 }
             }
         }
@@ -977,7 +979,7 @@ mod tests {
         error.metadata.insert("call_id".into(), json!("call_1"));
         error.content.push(Part {
             r#type: "text".into(),
-            data: json!({"value": "city is missing"}),
+            data: part_data(json!({"value": "city is missing"})),
         });
         assert_eq!(
             encode_message(Kind::DeepSeek, &error).unwrap()["content"],
@@ -995,7 +997,7 @@ mod tests {
     #[test]
     fn image_uses_nested_source_detail_and_does_not_invent_id_resolution() {
         let mut message = Message::new(Role::User);
-        message.content.push(Part { r#type: "image".into(), data: json!({"source":{"kind":"url","value":"https://example.com/image.png","detail":"low"}}) });
+        message.content.push(Part { r#type: "image".into(), data: part_data(json!({"source":{"kind":"url","value":"https://example.com/image.png","detail":"low"}})) });
         let wire = encode_message(Kind::OpenAI, &message).unwrap();
         assert_eq!(wire["content"][0]["image_url"]["detail"], "low");
         assert_eq!(
@@ -1106,11 +1108,13 @@ mod tests {
         history.content = vec![
             Part {
                 r#type: "think".into(),
-                data: json!({"value":"先查数据"}),
+                data: part_data(json!({"value":"先查数据"})),
             },
             Part {
                 r#type: "tool_call".into(),
-                data: json!({"call_id":"c","name":"weather","arguments":{"city":"北京"}}),
+                data: part_data(
+                    json!({"call_id":"c","name":"weather","arguments":{"city":"北京"}}),
+                ),
             },
         ];
         let wire = encode_message(Kind::DeepSeek, &history).unwrap();

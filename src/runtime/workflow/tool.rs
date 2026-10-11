@@ -345,11 +345,11 @@ mod tests {
             .content
             .extend(calls.into_iter().map(|(call_id, name, arguments)| Part {
                 r#type: "tool_call".into(),
-                data: json!({
+                data: crate::components::model::content::part::object(json!({
                     "call_id": call_id,
                     "name": name,
                     "arguments": arguments,
-                }),
+                })),
             }));
         Messages::new([assistant])
     }

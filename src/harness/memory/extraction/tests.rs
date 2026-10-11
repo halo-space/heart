@@ -162,11 +162,13 @@ fn setup(extractor: Extractor) -> (Arc<Jobs>, memory::extraction::Configured, Ar
     message.content = vec![
         Part {
             r#type: "text".into(),
-            data: json!({"value":"answer"}),
+            data: crate::components::model::content::part::object(json!({"value":"answer"})),
         },
         Part {
             r#type: "think".into(),
-            data: json!({"value":"private thinking"}),
+            data: crate::components::model::content::part::object(
+                json!({"value":"private thinking"}),
+            ),
         },
     ];
     message.values.insert("private".into(), json!(1));

@@ -42,7 +42,7 @@ fn text(role: Role, value: &str) -> Message {
     let mut message = Message::new(role);
     message.content.push(Part {
         r#type: "text".into(),
-        data: json!({"value":value}),
+        data: crate::components::model::content::part::object(json!({"value":value})),
     });
     message
 }
@@ -918,7 +918,9 @@ async fn built_in_compressor_preserves_current_usage_and_hides_think() {
         0,
         Part {
             r#type: "think".into(),
-            data: json!({"value":"private thinking"}),
+            data: crate::components::model::content::part::object(
+                json!({"value":"private thinking"}),
+            ),
         },
     );
     result.0[0]
