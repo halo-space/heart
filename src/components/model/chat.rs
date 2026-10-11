@@ -2,11 +2,10 @@ use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::components::event::Event;
 use crate::components::message::Messages;
 use crate::components::model::Error;
 pub use crate::components::tool::ToolDefinition;
-
-use crate::components::event::Event;
 
 pub type Options = Map<String, Value>;
 
