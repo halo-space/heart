@@ -38,6 +38,7 @@ trait Entry: Send + Sync {
         cancellation: Cancellation,
     ) -> LoadFuture;
     fn create(&self, input: Input, cancellation: Cancellation) -> CreateFuture;
+    fn resume(&self, input: Input, cancellation: Cancellation) -> CreateFuture;
     fn save(&self, value: chat::Chat, state: Option<Value>) -> SaveFuture;
 }
 
@@ -115,6 +116,21 @@ where
         })
     }
 
+    fn resume(&self, input: Input, cancellation: Cancellation) -> CreateFuture {
+        let config = self.0.clone();
+        Box::pin(async move {
+            let id = Identity::parse(&input.metadata)?;
+            let record = config.chat.read(id.chat_id, &cancellation).await?;
+            if !id.matches(&record) || record.r#type != short::Type::Agent {
+                return Err(Error::new(
+                    "CONFLICT",
+                    "restored Chat identity does not match",
+                ));
+            }
+            Ok(record)
+        })
+    }
+
     fn save(&self, value: chat::Chat, state: Option<Value>) -> SaveFuture {
         let config = self.0.clone();
         Box::pin(async move {
@@ -150,6 +166,21 @@ where
 pub(crate) struct History(Option<Arc<dyn Entry>>);
 
 impl History {
+    pub(crate) async fn resume(
+        &self,
+        input: Input,
+        cancellation: &Cancellation,
+    ) -> Result<Run, Error> {
+        let record = match &self.0 {
+            Some(entry) => Some(entry.resume(input, cancellation.clone()).await?),
+            None => None,
+        };
+        Ok(Run {
+            history: self.clone(),
+            record,
+            usage: Ledger::default(),
+        })
+    }
     pub(crate) fn check_identity(&self, original: &Input, modified: &Input) -> Result<(), Error> {
         if self.0.is_some() {
             for field in ["tenant_id", "user_id", "agent_id", "session_id", "chat_id"] {

@@ -12,5 +12,6 @@
 //! coordinates the result with the configured memory stores.
 
 pub(crate) mod access;
+pub(crate) mod checkpoint;
 pub(crate) mod hooks;
 pub(crate) mod memory;

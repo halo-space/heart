@@ -17,6 +17,7 @@ use crate::components::model::chat::{Chat, Request};
 use crate::components::model::content::part::{Part, object as part_data};
 use crate::components::tool::Call;
 use crate::harness::access::Access;
+use crate::harness::checkpoint::Backend;
 use crate::harness::hooks::{Hooks, cancellable};
 use crate::harness::memory::{History, Run};
 use crate::runtime::cancellation::Cancellation;
@@ -94,11 +95,7 @@ impl<M> Builder<M> {
     /// Attach the Agent checkpoint backend. Chat checkpoints contain the
     /// current messages, usage and terminal status; they do not invent a plan.
     pub fn checkpoint<C: crate::checkpoint::Checkpoint + 'static>(mut self, checkpoint: C) -> Self {
-        let checkpoint = Arc::new(checkpoint);
-        self.checkpoint = Some(Arc::new(move |id, state, cancellation| {
-            let checkpoint = Arc::clone(&checkpoint);
-            Box::pin(async move { checkpoint.save(id, state, &cancellation).await })
-        }));
+        self.checkpoint = Some(Backend::new(checkpoint));
         self
     }
 
@@ -173,11 +170,7 @@ type ToolBatchFuture = Pin<Box<dyn Future<Output = Result<Vec<Message>, Error>> 
 type ProviderFactory<S> = Arc<dyn Fn(Messages, Cancellation) -> ProviderFuture<S> + Send + Sync>;
 type EvaluatorHandle = Arc<dyn Fn(Input, Messages, Cancellation) -> EvaluationFuture + Send + Sync>;
 type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + 'static>>;
-type CheckpointSave = Arc<
-    dyn Fn(i64, Value, Cancellation) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'static>>
-        + Send
-        + Sync,
->;
+type CheckpointSave = Backend;
 
 struct EventsConfig<S> {
     provider_factory: ProviderFactory<S>,
@@ -195,7 +188,7 @@ struct EventsConfig<S> {
 /// The concrete stream returned by this Chat Agent. Its items remain the
 /// shared model Event; this type only owns cancellation and partial state.
 pub struct Events<S> {
-    provider: Pin<Box<S>>,
+    provider: Option<Pin<Box<S>>>,
     provider_factory: Option<ProviderFactory<S>>,
     cancellation: Cancellation,
     partial: Message,
@@ -231,12 +224,19 @@ impl<S> std::fmt::Debug for Events<S> {
 
 impl<S> Events<S> {
     fn new(provider: S, cancellation: Cancellation, input_tokens: u64, hooks: Hooks) -> Self {
+        let mut events = Self::empty(cancellation, hooks);
+        events.provider = Some(Box::pin(provider));
+        events.input_tokens = input_tokens;
+        events
+    }
+
+    fn empty(cancellation: Cancellation, hooks: Hooks) -> Self {
         Self {
-            provider: Box::pin(provider),
+            provider: None,
             provider_factory: None,
             cancellation,
             partial: Message::new(Role::Assistant),
-            input_tokens,
+            input_tokens: 0,
             finished: false,
             hooks,
             toolkit: None,
@@ -312,11 +312,16 @@ impl<S> Events<S> {
         let run = self.run.clone();
         let checkpoint = self.checkpoint.clone();
         let checkpoint_id = self.checkpoint_id;
-        let state = checkpoint_state(&self.messages, self.run.usage(), &result);
+        let state = checkpoint_state(
+            &self.messages,
+            self.run.usage(),
+            self.input.as_ref(),
+            &result,
+        );
         self.closing = true;
         self.pending = Some(Box::pin(async move {
             if let (Some(checkpoint), Some(id)) = (checkpoint, checkpoint_id) {
-                checkpoint(id, state, Cancellation::new()).await?;
+                checkpoint.save(id, state, Cancellation::new()).await?;
             }
             run.close(result).await
         }));
@@ -345,7 +350,7 @@ where
             match provider.as_mut().poll(cx) {
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Ok(provider)) => {
-                    this.provider = Box::pin(provider);
+                    this.provider = Some(Box::pin(provider));
                     this.pending_provider = None;
                     return Pin::new(this).poll_next(cx);
                 }
@@ -459,7 +464,14 @@ where
                 }
             };
         }
-        match this.provider.as_mut().poll_next(cx) {
+        let Some(provider) = this.provider.as_mut() else {
+            this.close(Err(Error::new(
+                "INVALID_STATE",
+                "Chat provider is unavailable",
+            )));
+            return Pin::new(this).poll_next(cx);
+        };
+        match provider.as_mut().poll_next(cx) {
             Poll::Ready(Some(Ok(Event::Delta { message }))) => {
                 collect_delta(&mut this.partial, &message);
                 Poll::Ready(Some(Ok(Event::Delta { message })))
@@ -545,6 +557,34 @@ where
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "agent run cancelled"));
         }
+        let checkpoint_id = self
+            .checkpoint
+            .as_ref()
+            .map(|_| checkpoint_id(&input.metadata))
+            .transpose()?;
+        if let (Some(checkpoint), Some(id)) = (&self.checkpoint, checkpoint_id)
+            && let Some(snapshot) = checkpoint.load(id, cancellation.clone()).await?
+        {
+            if snapshot
+                .get("query")
+                .is_some_and(|query| serde_json::to_value(&input).ok().as_ref() != Some(query))
+            {
+                return Err(Error::new(
+                    "CONFLICT",
+                    "checkpoint belongs to a different Agent input",
+                ));
+            }
+            let result = crate::harness::checkpoint::terminal(&snapshot)?.ok_or_else(|| {
+                Error::new(
+                    "INTERRUPTED",
+                    "unfinished Chat call cannot be replayed from message history",
+                )
+            })?;
+            let mut events = Events::empty(cancellation, self.hooks.clone());
+            events.closing = true;
+            events.pending = Some(Box::pin(async move { result }));
+            return Ok(events);
+        }
         let original = input.clone();
         let input = self.hooks.before_execute(input, &cancellation).await?;
         self.history.check_identity(&original, &input)?;
@@ -556,11 +596,6 @@ where
             .history
             .load(input.metadata.clone(), self.hooks.clone(), &cancellation)
             .await?;
-        let checkpoint_id = self
-            .checkpoint
-            .as_ref()
-            .map(|_| checkpoint_id(&input.metadata))
-            .transpose()?;
         let run = self.history.begin(original.clone(), &cancellation).await?;
         let prepared = async {
             let messages = initial_messages(input.clone(), prompt.as_deref(), history);
@@ -662,6 +697,7 @@ async fn execute_tool_batch(
 fn checkpoint_state(
     messages: &Messages,
     usage: Option<crate::model::token::Usage>,
+    input: Option<&Input>,
     result: &Result<Event, Error>,
 ) -> Value {
     let status = match result {
@@ -674,12 +710,15 @@ fn checkpoint_state(
         Err(_) => "failed",
         Ok(Event::Delta { .. }) => "running",
     };
-    json!({
+    let mut state = json!({
         "type": "agent",
         "status": status,
         "messages": messages,
         "usage": usage,
-    })
+        "query": input,
+    });
+    crate::harness::checkpoint::record_result(&mut state, result);
+    state
 }
 
 async fn execute_tool(

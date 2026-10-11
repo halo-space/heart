@@ -2,7 +2,7 @@
 //! Relation declarations remain immutable after compilation; execution facts
 //! are kept in the separate serializable `State`.
 
-use std::any::TypeId;
+use std::any::{Any, TypeId};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
@@ -29,6 +29,13 @@ pub const START: &str = "START";
 pub const END: &str = "END";
 
 type BoxFuture = Pin<Box<dyn Future<Output = Result<Signal<Value>, Error>> + Send + 'static>>;
+type RecoveryFuture<'a> = Pin<
+    Box<
+        dyn Future<Output = Result<Signal<Value>, crate::runtime::workflow::tool::RecoveryError>>
+            + Send
+            + 'a,
+    >,
+>;
 type RouteFn = Arc<dyn Fn(&Messages) -> Result<Vec<String>, Error> + Send + Sync + 'static>;
 type LoopFn = Arc<dyn Fn(&Messages) -> bool + Send + Sync + 'static>;
 type AgentFuture = Pin<Box<dyn Future<Output = AgentRun> + 'static>>;
@@ -154,6 +161,17 @@ fn sum_usage(left: Option<Usage>, right: Option<Usage>) -> Option<Usage> {
 #[allow(dead_code)]
 pub(crate) trait ErasedNode: Send + Sync + 'static {
     fn call(&self, input: Value, cancellation: Cancellation) -> BoxFuture;
+
+    /// Optional private recovery path for a node that can expose committed
+    /// sub-call facts. Ordinary Nodes keep the normal single-call contract.
+    fn call_with_recovery<'a>(
+        &'a self,
+        _input: Value,
+        _cancellation: Cancellation,
+        _committed: Messages,
+    ) -> Option<RecoveryFuture<'a>> {
+        None
+    }
 }
 
 #[allow(dead_code)]
@@ -166,7 +184,7 @@ struct TypedNode<N, I, O, E> {
 
 impl<N, I, O, E> ErasedNode for TypedNode<N, I, O, E>
 where
-    N: Node<I, O, E>,
+    N: Node<I, O, E> + Any,
     I: DeserializeOwned + Send + 'static,
     O: Serialize + Send + 'static,
     E: Into<Error> + Send + 'static,
@@ -202,6 +220,42 @@ where
                 Signal::Wait(wait) => Ok(Signal::Wait(wait)),
             }
         })
+    }
+
+    fn call_with_recovery<'a>(
+        &'a self,
+        input: Value,
+        cancellation: Cancellation,
+        committed: Messages,
+    ) -> Option<RecoveryFuture<'a>> {
+        let tool = (self.node.as_ref() as &dyn Any)
+            .downcast_ref::<crate::runtime::workflow::tool::ToolNode>()?;
+        let input = match serde_json::from_value::<Messages>(input) {
+            Ok(input) => input,
+            Err(error) => {
+                return Some(Box::pin(async move {
+                    Err(crate::runtime::workflow::tool::RecoveryError {
+                        completed: Messages::default(),
+                        error: Error::new("INVALID_ARGUMENTS", error.to_string()),
+                    })
+                }));
+            }
+        };
+        let future = tool.call_with_recovery(input, cancellation, committed);
+        Some(Box::pin(async move {
+            match future.await {
+                Ok(Signal::Complete(messages)) => {
+                    Ok(Signal::Complete(serde_json::to_value(messages).map_err(
+                        |error| crate::runtime::workflow::tool::RecoveryError {
+                            completed: Messages::default(),
+                            error: Error::new("INVALID_OUTPUT", error.to_string()),
+                        },
+                    )?))
+                }
+                Ok(Signal::Wait(wait)) => Ok(Signal::Wait(wait)),
+                Err(failure) => Err(failure),
+            }
+        }))
     }
 }
 
@@ -515,10 +569,10 @@ impl State {
         common.and_then(|steps| steps.into_iter().max())
     }
 
-    /// Resolves the single active wait for a node. The response is kept in
-    /// the execution facts so a restored runtime can resume without a second
-    /// mailbox or scheduler record.
-    pub fn resolve_wait(&mut self, node_id: &str, response: Messages) -> Result<(), Error> {
+    /// Applies the external response to the single active wait for a node.
+    /// The response is kept in execution facts so a restored runtime can
+    /// resume without a second mailbox or scheduler record.
+    pub(crate) fn resume(&mut self, node_id: &str, response: Messages) -> Result<(), Error> {
         let wait = match self.waits.get(node_id).cloned() {
             Some(wait) => wait,
             None => {
@@ -539,20 +593,29 @@ impl State {
                 };
             }
         };
-        let node = self.node_mut(node_id)?;
-        let execution = node.execution_mut(wait.exec_id)?;
-        for attempt in &mut execution.attempts {
-            if let Some(child) = attempt.graph.as_mut() {
-                let child_waits = child.waits.keys().cloned().collect::<Vec<_>>();
-                if child_waits.len() > 1 {
-                    return Err(Error::new(
-                        "CONFLICT",
-                        "nested workflow has multiple active waits",
-                    ));
-                }
-                if let Some(child_node_id) = child_waits.into_iter().next() {
-                    child.resolve_wait(&child_node_id, response.clone())?;
-                }
+        // Stage only this execution; child and parent validation must both
+        // succeed before any live waiting state is changed.
+        let mut execution = self
+            .node(node_id)?
+            .executions
+            .get(&wait.exec_id)
+            .ok_or_else(|| Error::new("NOT_FOUND", "execution not found"))?
+            .clone();
+        // Only the current Attempt owns the active wait. Historical Attempts
+        // remain immutable execution facts and must never be resumed or have
+        // their nested graph state changed.
+        if let Some(attempt) = execution.attempts.last_mut()
+            && let Some(child) = attempt.graph.as_mut()
+        {
+            let child_waits = child.waits.keys().cloned().collect::<Vec<_>>();
+            if child_waits.len() > 1 {
+                return Err(Error::new(
+                    "CONFLICT",
+                    "nested workflow has multiple active waits",
+                ));
+            }
+            if let Some(child_node_id) = child_waits.into_iter().next() {
+                child.resume(&child_node_id, response.clone())?;
             }
         }
         let record = execution
@@ -580,6 +643,8 @@ impl State {
         if let Some(attempt) = execution.attempts.last_mut() {
             attempt.status = crate::runtime::workflow::node::AttemptStatus::Running;
         }
+        let node = self.node_mut(node_id)?;
+        node.executions.insert(wait.exec_id, execution);
         node.status = crate::runtime::workflow::node::Status::Active;
         self.waits.remove(node_id);
         self.status = Status::Running;
@@ -587,7 +652,7 @@ impl State {
     }
 
     /// Returns one resolved wait that must be resumed by the runtime.
-    pub fn resolved_wait(&self) -> Option<(String, i64, String, Messages)> {
+    pub(crate) fn resolved_wait(&self) -> Option<(String, i64, String, Messages)> {
         self.nodes.iter().find_map(|(node_id, node)| {
             node.executions.values().find_map(|execution| {
                 if execution.status != crate::runtime::workflow::node::ExecutionStatus::Running {
@@ -989,7 +1054,13 @@ impl State {
             return Err(Error::new("INVALID_STATE", "execution is not active"));
         }
         execution.status = crate::runtime::workflow::node::ExecutionStatus::Failed;
-        if let Some(attempt) = execution.attempts.last_mut() {
+        if let Some(attempt) = execution.attempts.last_mut()
+            && matches!(
+                attempt.status,
+                crate::runtime::workflow::node::AttemptStatus::Running
+                    | crate::runtime::workflow::node::AttemptStatus::Waiting
+            )
+        {
             attempt.status = crate::runtime::workflow::node::AttemptStatus::Failed;
             attempt.error = Some(error.clone());
         }
@@ -1009,7 +1080,13 @@ impl State {
             return Err(Error::new("INVALID_STATE", "execution is not active"));
         }
         execution.status = crate::runtime::workflow::node::ExecutionStatus::Cancelled;
-        if let Some(attempt) = execution.attempts.last_mut() {
+        if let Some(attempt) = execution.attempts.last_mut()
+            && matches!(
+                attempt.status,
+                crate::runtime::workflow::node::AttemptStatus::Running
+                    | crate::runtime::workflow::node::AttemptStatus::Waiting
+            )
+        {
             attempt.status = crate::runtime::workflow::node::AttemptStatus::Cancelled;
         }
         node.status = crate::runtime::workflow::node::Status::Cancelled;
@@ -1179,7 +1256,7 @@ impl WorkflowBuilder {
         node: N,
     ) -> Result<&mut Self, GraphError>
     where
-        N: Node<I, O, E>,
+        N: Node<I, O, E> + Any,
         I: DeserializeOwned + JsonSchema + Send + 'static,
         O: Serialize + JsonSchema + Send + 'static,
         E: Into<Error> + Send + 'static,
@@ -2176,6 +2253,151 @@ mod tests {
             "CONFLICT"
         );
         assert_eq!(state.waits["answer"].wait_id, "wait_001");
+    }
+
+    #[test]
+    fn resume_only_changes_the_current_attempt_nested_wait() {
+        use crate::runtime::workflow::node::{Attempt, AttemptStatus, Execution, ExecutionStatus};
+
+        let compiled = single().compile().unwrap();
+        let mut state = State::new(compiled.definition());
+
+        let waiting_child = || {
+            let mut child = State::new(compiled.definition());
+            child.nodes.get_mut("answer").unwrap().executions.insert(
+                10,
+                Execution {
+                    exec_id: 10,
+                    status: ExecutionStatus::Waiting,
+                    attempts: vec![Attempt {
+                        status: AttemptStatus::Waiting,
+                        ..Default::default()
+                    }],
+                    waits: [(
+                        "child_wait".into(),
+                        crate::runtime::workflow::node::Wait {
+                            kind: "external".into(),
+                            status: "waiting".into(),
+                            created_time: 0,
+                            resolved_time: None,
+                            response: None,
+                        },
+                    )]
+                    .into_iter()
+                    .collect(),
+                    ..Default::default()
+                },
+            );
+            child
+                .add_wait(Wait {
+                    node_id: "answer".into(),
+                    exec_id: 10,
+                    wait_id: "child_wait".into(),
+                })
+                .unwrap();
+            child
+        };
+
+        let mut historical = waiting_child();
+        let mut current = waiting_child();
+        let execution = Execution {
+            exec_id: 1,
+            status: ExecutionStatus::Waiting,
+            attempts: vec![
+                Attempt {
+                    idx: 0,
+                    status: AttemptStatus::Succeeded,
+                    graph: Some(Box::new(historical.clone())),
+                    ..Default::default()
+                },
+                Attempt {
+                    idx: 1,
+                    status: AttemptStatus::Waiting,
+                    graph: Some(Box::new(current.clone())),
+                    ..Default::default()
+                },
+            ],
+            waits: [(
+                "wait_001".into(),
+                crate::runtime::workflow::node::Wait {
+                    kind: "external".into(),
+                    status: "waiting".into(),
+                    created_time: 0,
+                    resolved_time: None,
+                    response: None,
+                },
+            )]
+            .into_iter()
+            .collect(),
+            ..Default::default()
+        };
+        state
+            .nodes
+            .get_mut("answer")
+            .unwrap()
+            .executions
+            .insert(1, execution);
+        state
+            .add_wait(Wait {
+                node_id: "answer".into(),
+                exec_id: 1,
+                wait_id: "wait_001".into(),
+            })
+            .unwrap();
+
+        // A valid child wait must not be resolved when the parent record is
+        // invalid: the entire failed operation leaves the live graph intact.
+        let mut invalid = state.clone();
+        invalid
+            .nodes
+            .get_mut("answer")
+            .unwrap()
+            .executions
+            .get_mut(&1)
+            .unwrap()
+            .waits
+            .clear();
+        let before = invalid.clone();
+        assert_eq!(
+            invalid
+                .resume("answer", Messages::default())
+                .unwrap_err()
+                .code,
+            "INVALID_STATE"
+        );
+        assert_eq!(invalid, before);
+
+        state
+            .resume(
+                "answer",
+                Messages::new([crate::Message::function(serde_json::json!({
+                    "ok": true
+                }))]),
+            )
+            .unwrap();
+
+        historical = state.nodes["answer"].executions[&1].attempts[0]
+            .graph
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .clone();
+        current = state.nodes["answer"].executions[&1].attempts[1]
+            .graph
+            .as_ref()
+            .unwrap()
+            .as_ref()
+            .clone();
+        assert_eq!(historical.waits["answer"].wait_id, "child_wait");
+        assert_eq!(
+            historical.nodes["answer"].executions[&10].status,
+            ExecutionStatus::Waiting
+        );
+        assert!(current.waits.is_empty());
+        assert_eq!(
+            current.nodes["answer"].executions[&10].status,
+            ExecutionStatus::Running
+        );
     }
 
     #[test]

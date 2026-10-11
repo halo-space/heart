@@ -14,6 +14,14 @@ use crate::runtime::cancellation::Cancellation;
 
 type ToolFuture = Pin<Box<dyn Future<Output = Result<Message, Error>> + Send + 'static>>;
 
+/// Private recovery fact used only between the Workflow Runtime and ToolNode.
+/// It is not a second public Tool result and is never emitted as a Message.
+#[derive(Debug)]
+pub(crate) struct RecoveryError {
+    pub(crate) completed: Messages,
+    pub(crate) error: Error,
+}
+
 trait Entry: Send + Sync {
     fn definition(&self) -> ToolDefinition;
     fn execute(&self, call: Call, cancellation: Cancellation) -> ToolFuture;
@@ -153,37 +161,147 @@ impl ToolNode {
         calls: Vec<Call>,
         cancellation: Cancellation,
     ) -> Result<Messages, Error> {
+        self.execute_calls_with_recovery(calls, cancellation, Messages::default())
+            .await
+            .map_err(|failure| failure.error)
+    }
+
+    async fn execute_calls_with_recovery(
+        &self,
+        calls: Vec<Call>,
+        cancellation: Cancellation,
+        committed: Messages,
+    ) -> Result<Messages, RecoveryError> {
+        let committed_by_id = committed_messages(&committed);
+        let pending = calls
+            .iter()
+            .filter(|call| !committed_by_id.contains_key(call.call_id.as_str()))
+            .cloned()
+            .collect::<Vec<_>>();
+
+        if pending.is_empty() {
+            return Ok(order_messages(&calls, committed_by_id));
+        }
+
         match self.execution_mode {
             ExecutionMode::Sequential => {
-                let mut output = Messages::default();
-                for call in calls {
-                    output.push(self.execute_call(call, cancellation.clone()).await?);
+                let mut output = committed_by_id;
+                for call in pending {
+                    match self.execute_call(call.clone(), cancellation.clone()).await {
+                        Ok(message) => {
+                            if let Some(call_id) = message_call_id(&message) {
+                                output.insert(call_id, message);
+                            }
+                        }
+                        Err(error) => {
+                            return Err(RecoveryError {
+                                completed: order_messages(&calls, output),
+                                error,
+                            });
+                        }
+                    }
                 }
-                Ok(output)
+                Ok(order_messages(&calls, output))
             }
             ExecutionMode::Parallel => {
                 let results = join_all(
-                    calls
+                    pending
                         .iter()
                         .cloned()
                         .map(|call| self.execute_call(call, cancellation.clone())),
                 )
                 .await;
-                let mut output = Messages::default();
+                let mut output = committed_by_id;
                 let mut errors = Vec::new();
-                for (call, result) in calls.into_iter().zip(results) {
+                for (call, result) in pending.into_iter().zip(results) {
                     match result {
-                        Ok(message) => output.push(message),
+                        Ok(message) => {
+                            if let Some(call_id) = message_call_id(&message) {
+                                output.insert(call_id, message);
+                            }
+                        }
                         Err(error) => errors.push((call, error)),
                     }
                 }
                 if errors.is_empty() {
-                    Ok(output)
+                    Ok(order_messages(&calls, output))
                 } else {
-                    Err(Self::merge_parallel_errors(errors))
+                    Err(RecoveryError {
+                        completed: order_messages(&calls, output),
+                        error: Self::merge_parallel_errors(errors),
+                    })
                 }
             }
         }
+    }
+
+    /// Private Runtime entry: successful call messages from a prior Attempt
+    /// are reused by call_id, while failed or missing calls are executed.
+    pub(crate) async fn call_with_recovery(
+        &self,
+        input: Messages,
+        cancellation: Cancellation,
+        committed: Messages,
+    ) -> Result<Signal<Messages>, RecoveryError> {
+        let assistant = input
+            .as_slice()
+            .iter()
+            .rev()
+            .find(|message| message.role == Role::Assistant)
+            .ok_or_else(|| RecoveryError {
+                completed: Messages::default(),
+                error: Error::new(
+                    "INVALID_ARGUMENTS",
+                    "ToolNode requires an assistant message",
+                ),
+            })?;
+
+        self.validate_tools().map_err(|error| RecoveryError {
+            completed: Messages::default(),
+            error,
+        })?;
+        let calls = assistant
+            .content
+            .iter()
+            .filter(|part| part.r#type == "tool_call")
+            .map(decode_call)
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| RecoveryError {
+                completed: Messages::default(),
+                error,
+            })?;
+        if calls.is_empty() {
+            return Err(RecoveryError {
+                completed: Messages::default(),
+                error: Error::new(
+                    "INVALID_ARGUMENTS",
+                    "assistant message contains no tool_call",
+                ),
+            });
+        }
+        let mut call_ids = std::collections::BTreeSet::new();
+        for call in &calls {
+            if !call_ids.insert(call.call_id.clone()) {
+                return Err(RecoveryError {
+                    completed: Messages::default(),
+                    error: Error::new(
+                        "INVALID_ARGUMENTS",
+                        "assistant message contains duplicate tool call_id",
+                    )
+                    .with_details(call.call_id.clone()),
+                });
+            }
+            if let Err(error) = self.entry(&call.name) {
+                return Err(RecoveryError {
+                    completed: Messages::default(),
+                    error,
+                });
+            }
+        }
+        let output = self
+            .execute_calls_with_recovery(calls, cancellation, committed)
+            .await?;
+        Ok(Signal::Complete(output))
     }
 }
 
@@ -232,6 +350,33 @@ impl Node<Messages, Messages, Error> for ToolNode {
         let output = self.execute_calls(calls, cancellation).await?;
         Ok(Signal::Complete(output))
     }
+}
+
+fn message_call_id(message: &Message) -> Option<String> {
+    message
+        .metadata
+        .get("call_id")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+}
+
+fn committed_messages(messages: &Messages) -> std::collections::BTreeMap<String, Message> {
+    messages
+        .as_slice()
+        .iter()
+        .filter_map(|message| message_call_id(message).map(|id| (id, message.clone())))
+        .collect()
+}
+
+fn order_messages(
+    calls: &[Call],
+    messages: std::collections::BTreeMap<String, Message>,
+) -> Messages {
+    Messages::new(
+        calls
+            .iter()
+            .filter_map(|call| messages.get(&call.call_id).cloned()),
+    )
 }
 
 fn decode_call(part: &Part) -> Result<Call, Error> {
@@ -513,6 +658,77 @@ mod tests {
         assert_eq!(messages.as_slice()[0].metadata["call_id"], "call_weather");
         assert_eq!(messages.as_slice()[1].metadata["call_id"], "call_search");
         assert_eq!(messages.as_slice()[1].values["documents"][0], "document-1");
+    }
+
+    struct FlakySearch {
+        definition: crate::components::tool::ToolDefinition,
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Tool for FlakySearch {
+        fn definition(&self) -> &crate::components::tool::ToolDefinition {
+            &self.definition
+        }
+
+        async fn call(&self, call: &Call, _cancellation: &Cancellation) -> Result<Message, Error> {
+            if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(Error::new("UNAVAILABLE", "search temporarily unavailable"));
+            }
+            Ok(Message::function(json!({
+                "query": call.arguments["query"],
+                "documents": ["document-2"],
+            })))
+        }
+    }
+
+    #[test]
+    fn private_recovery_reuses_successful_call_ids_only() {
+        let weather_called = Arc::new(AtomicBool::new(false));
+        let search_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let node = ToolNode::new(Weather {
+            called: weather_called.clone(),
+            reject: false,
+        })
+        .tool(FlakySearch {
+            definition: crate::components::tool::ToolDefinition {
+                name: "search".into(),
+                description: "search documents".into(),
+                parameters: serde_json::from_value(json!({
+                    "type": "object",
+                    "required": ["query"],
+                    "properties": {"query": {"type": "string"}}
+                }))
+                .expect("valid test schema"),
+            },
+            calls: search_calls.clone(),
+        })
+        .sequential();
+        let input = request_calls([
+            ("call_weather", "weather", json!({"city": "Beijing"})),
+            ("call_search", "search", json!({"query": "rust"})),
+        ]);
+
+        let first = block_on(node.call_with_recovery(
+            input.clone(),
+            Cancellation::new(),
+            Messages::default(),
+        ))
+        .expect_err("the second call should fail on the first attempt");
+        assert_eq!(first.error.code, "UNAVAILABLE");
+        assert_eq!(first.completed.as_slice().len(), 1);
+        assert_eq!(
+            first.completed.as_slice()[0].metadata["call_id"],
+            "call_weather"
+        );
+
+        let result = block_on(node.call_with_recovery(input, Cancellation::new(), first.completed))
+            .expect("the failed call should succeed on retry");
+        let Signal::Complete(messages) = result else {
+            panic!("ToolNode unexpectedly returned Wait");
+        };
+        assert_eq!(messages.as_slice().len(), 2);
+        assert!(weather_called.load(Ordering::SeqCst));
+        assert_eq!(search_calls.load(Ordering::SeqCst), 2);
     }
 
     #[test]

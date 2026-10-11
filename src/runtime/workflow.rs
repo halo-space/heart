@@ -174,11 +174,11 @@ impl Runtime {
         Ok(())
     }
 
-    /// Resolves the active external wait for `node_id`. The next `run` call
+    /// Submits the external response for an active wait. The next `run` call
     /// resumes the same execution and Attempt; it does not allocate a new
     /// `exec_id`.
-    pub fn resolve_wait(&mut self, node_id: &str, response: Messages) -> Result<(), Error> {
-        self.state.resolve_wait(node_id, response)
+    pub fn resume(&mut self, node_id: &str, response: Messages) -> Result<(), Error> {
+        self.state.resume(node_id, response)
     }
 
     pub fn advance_step(&mut self) -> bool {
@@ -789,8 +789,14 @@ async fn invoke_with_retry(
     attempt_start: u32,
 ) -> Invocation {
     let mut attempts = Vec::new();
+    // ToolNode-only committed call facts. They remain private to this one
+    // logical execution and are rebuilt from the current Attempt on retries;
+    // ordinary Nodes keep the unchanged single-call path.
+    let mut committed_tool_messages = Messages::default();
     let retry_policy = retry.clone();
-    for offset in 0..=retry.max_retries {
+    // A resumed wait continues the same Attempt. Its existing idx consumes
+    // the original execution's retry budget; recovery never resets it.
+    for offset in 0..=retry.max_retries.saturating_sub(attempt_start) {
         let idx = attempt_start.saturating_add(offset);
         let mut attempt = node::Attempt {
             idx,
@@ -807,7 +813,31 @@ async fn invoke_with_retry(
             };
         }
         let call_result = match &target {
-            Target::Node(executor) => executor.call(input.clone(), cancellation.clone()).await,
+            Target::Node(executor) => {
+                if let Some(future) = executor.call_with_recovery(
+                    input.clone(),
+                    cancellation.clone(),
+                    committed_tool_messages.clone(),
+                ) {
+                    match future.await {
+                        Ok(Signal::Complete(value)) => {
+                            if let Ok(messages) = serde_json::from_value::<Messages>(value.clone())
+                            {
+                                attempt.messages = messages;
+                            }
+                            Ok(Signal::Complete(value))
+                        }
+                        Ok(Signal::Wait(wait)) => Ok(Signal::Wait(wait)),
+                        Err(failure) => {
+                            committed_tool_messages = failure.completed.clone();
+                            attempt.messages = failure.completed;
+                            Err(failure.error)
+                        }
+                    }
+                } else {
+                    executor.call(input.clone(), cancellation.clone()).await
+                }
+            }
             Target::Agent(executor) => {
                 let agent_input = match serde_json::from_value(input.clone()) {
                     Ok(input) => input,
@@ -943,10 +973,26 @@ async fn invoke_with_retry(
                 attempt.status = node::AttemptStatus::Failed;
                 attempt.error = Some(error.clone());
                 attempts.push(attempt);
-                if !retry_policy.should_retry(offset, &error) {
+                if !retry_policy.should_retry(idx, &error) {
                     return Invocation {
                         attempts,
                         outcome: Outcome::Failed(error),
+                        graph: None,
+                    };
+                }
+                if let Err(error) =
+                    crate::core::middleware::wait(&retry_policy, idx, &cancellation).await
+                {
+                    // Waiting does not constitute a new actual Attempt. Keep
+                    // the original failed Attempt and report run cancellation
+                    // or a timer setup error separately.
+                    return Invocation {
+                        attempts,
+                        outcome: if error.code == "CANCELLED" {
+                            Outcome::Cancelled
+                        } else {
+                            Outcome::Failed(error)
+                        },
                         graph: None,
                     };
                 }
@@ -1109,6 +1155,68 @@ mod tests {
         }
     }
 
+    struct RetryTool {
+        definition: crate::components::tool::ToolDefinition,
+        calls: Arc<AtomicI64>,
+        fail_first: bool,
+    }
+
+    impl crate::components::tool::Tool for RetryTool {
+        fn definition(&self) -> &crate::components::tool::ToolDefinition {
+            &self.definition
+        }
+
+        async fn call(
+            &self,
+            call: &crate::components::tool::Call,
+            _cancellation: &Cancellation,
+        ) -> Result<crate::Message, Error> {
+            let count = self.calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_first && count == 0 {
+                return Err(Error::new("TIMEOUT", "temporary tool failure"));
+            }
+            Ok(crate::Message::function(serde_json::json!({
+                "tool": call.name,
+                "ok": true,
+            })))
+        }
+    }
+
+    fn workflow_tool_definition(name: &str) -> crate::components::tool::ToolDefinition {
+        crate::components::tool::ToolDefinition {
+            name: name.into(),
+            description: format!("{name} test tool"),
+            parameters: serde_json::from_value(serde_json::json!({
+                "type": "object",
+                "properties": {}
+            }))
+            .unwrap(),
+        }
+    }
+
+    fn workflow_tool_input() -> Messages {
+        let mut assistant = crate::Message::new(Role::Assistant);
+        assistant.content = vec![
+            crate::model::content::part::Part {
+                r#type: "tool_call".into(),
+                data: crate::components::model::content::part::object(serde_json::json!({
+                    "call_id": "call_a",
+                    "name": "first",
+                    "arguments": {}
+                })),
+            },
+            crate::model::content::part::Part {
+                r#type: "tool_call".into(),
+                data: crate::components::model::content::part::object(serde_json::json!({
+                    "call_id": "call_b",
+                    "name": "second",
+                    "arguments": {}
+                })),
+            },
+        ];
+        Messages::new([assistant])
+    }
+
     #[derive(Clone, Copy)]
     struct FakeAgent {
         mode: &'static str,
@@ -1184,7 +1292,8 @@ mod tests {
                 "agent",
                 RetryPolicy {
                     max_retries: 1,
-                    ..Default::default()
+                    min_delay_ms: 0,
+                    max_delay_ms: 0,
                 },
             )
             .unwrap();
@@ -1675,7 +1784,7 @@ mod tests {
         );
 
         runtime
-            .resolve_wait(
+            .resume(
                 "child",
                 Messages::new([crate::Message::function(
                     serde_json::json!({"approved": true}),
@@ -1754,8 +1863,8 @@ mod tests {
                 ),
             });
         let approved = Messages::new([approved]);
-        runtime.resolve_wait("approval", approved.clone()).unwrap();
-        runtime.resolve_wait("approval", approved).unwrap();
+        runtime.resume("approval", approved.clone()).unwrap();
+        runtime.resume("approval", approved).unwrap();
         let mut changed = crate::Message::new(crate::components::message::Role::User);
         changed
             .content
@@ -1767,7 +1876,7 @@ mod tests {
             });
         assert_eq!(
             runtime
-                .resolve_wait("approval", Messages::new([changed]))
+                .resume("approval", Messages::new([changed]))
                 .unwrap_err()
                 .code,
             "CONFLICT"
@@ -1920,5 +2029,184 @@ mod tests {
         assert_eq!(execution.attempts.len(), 2);
         assert_eq!(execution.attempts[0].status, node::AttemptStatus::Failed);
         assert_eq!(execution.attempts[1].status, node::AttemptStatus::Succeeded);
+    }
+
+    #[test]
+    fn runtime_tool_retry_skips_successful_call_ids() {
+        let first_calls = Arc::new(AtomicI64::new(0));
+        let second_calls = Arc::new(AtomicI64::new(0));
+        let mut builder = WorkflowBuilder::new("tool-retry-dedup");
+        builder
+            .add_node(
+                "tools",
+                crate::runtime::workflow::tool::ToolNode::new(RetryTool {
+                    definition: workflow_tool_definition("first"),
+                    calls: first_calls.clone(),
+                    fail_first: false,
+                })
+                .tool(RetryTool {
+                    definition: workflow_tool_definition("second"),
+                    calls: second_calls.clone(),
+                    fail_first: true,
+                }),
+            )
+            .unwrap();
+        builder.add_edge(START, "tools").unwrap();
+        builder.add_edge("tools", END).unwrap();
+        builder
+            .set_retry(
+                "tools",
+                RetryPolicy {
+                    max_retries: 1,
+                    min_delay_ms: 0,
+                    max_delay_ms: 0,
+                },
+            )
+            .unwrap();
+        let workflow = builder.compile().unwrap();
+        let mut runtime = Runtime::new(18, workflow).unwrap();
+        block_on(runtime.run(
+            workflow_tool_input(),
+            Arc::new(|| 1_200),
+            Cancellation::new(),
+        ))
+        .unwrap();
+
+        assert_eq!(first_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(second_calls.load(Ordering::SeqCst), 2);
+        let execution = &runtime.state().nodes["tools"].executions[&1_200];
+        assert_eq!(execution.attempts.len(), 2);
+        assert_eq!(execution.attempts[0].messages.as_slice().len(), 1);
+        assert_eq!(execution.attempts[1].messages.as_slice().len(), 2);
+    }
+
+    fn retry_workflow(calls: Arc<AtomicI64>, policy: RetryPolicy) -> CompiledWorkflow {
+        let mut builder = WorkflowBuilder::new("async-retry");
+        builder
+            .add_node("retry", move |input: Messages, _: Cancellation| {
+                let calls = calls.clone();
+                async move {
+                    if calls.fetch_add(1, Ordering::SeqCst) == 0 {
+                        Err(Error::new("TIMEOUT", "first call failed"))
+                    } else {
+                        Ok(input)
+                    }
+                }
+            })
+            .unwrap();
+        builder.add_edge(START, "retry").unwrap();
+        builder.add_edge("retry", END).unwrap();
+        builder.set_retry("retry", policy).unwrap();
+        builder.compile().unwrap()
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn runtime_waits_for_backoff_before_starting_the_next_attempt() {
+        let calls = Arc::new(AtomicI64::new(0));
+        let workflow = retry_workflow(
+            calls.clone(),
+            RetryPolicy {
+                max_retries: 1,
+                min_delay_ms: 100,
+                max_delay_ms: 100,
+            },
+        );
+        let mut runtime = Runtime::new(90, workflow).unwrap();
+        let mut run =
+            Box::pin(runtime.run(Messages::default(), Arc::new(|| 900), Cancellation::new()));
+        assert!(futures_util::poll!(run.as_mut()).is_pending());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        tokio::time::advance(std::time::Duration::from_millis(99)).await;
+        assert!(futures_util::poll!(run.as_mut()).is_pending());
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        tokio::time::advance(std::time::Duration::from_millis(1)).await;
+        run.await.unwrap();
+        let execution = &runtime.state.nodes["retry"].executions[&900];
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert_eq!(execution.attempts.len(), 2);
+        assert_eq!(
+            execution.attempts[0].error.as_ref().unwrap().code,
+            "TIMEOUT"
+        );
+        assert_eq!(execution.attempts[1].status, node::AttemptStatus::Succeeded);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn cancellation_during_backoff_preserves_the_failed_attempt() {
+        let calls = Arc::new(AtomicI64::new(0));
+        let workflow = retry_workflow(
+            calls.clone(),
+            RetryPolicy {
+                max_retries: 1,
+                min_delay_ms: 100,
+                max_delay_ms: 100,
+            },
+        );
+        let mut runtime = Runtime::new(90, workflow).unwrap();
+        let cancellation = Cancellation::new();
+        let mut run =
+            Box::pin(runtime.run(Messages::default(), Arc::new(|| 900), cancellation.clone()));
+        assert!(futures_util::poll!(run.as_mut()).is_pending());
+        cancellation.cancel();
+        assert_eq!(run.await.unwrap_err().code, "CANCELLED");
+        let execution = &runtime.state.nodes["retry"].executions[&900];
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(execution.status, node::ExecutionStatus::Cancelled);
+        assert!(execution.error.is_none());
+        assert_eq!(execution.attempts.len(), 1);
+        assert_eq!(execution.attempts[0].status, node::AttemptStatus::Failed);
+        assert_eq!(
+            execution.attempts[0].error.as_ref().unwrap().code,
+            "TIMEOUT"
+        );
+    }
+
+    #[test]
+    fn retry_without_a_timer_returns_an_error_without_replaying_the_node() {
+        let calls = Arc::new(AtomicI64::new(0));
+        let workflow = retry_workflow(
+            calls.clone(),
+            RetryPolicy {
+                max_retries: 1,
+                min_delay_ms: 100,
+                max_delay_ms: 100,
+            },
+        );
+        let mut runtime = Runtime::new(90, workflow).unwrap();
+        let error =
+            block_on(runtime.run(Messages::default(), Arc::new(|| 900), Cancellation::new()))
+                .unwrap_err();
+        assert_eq!(error.code, "UNAVAILABLE");
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        let execution = &runtime.state.nodes["retry"].executions[&900];
+        assert_eq!(execution.attempts.len(), 1);
+        assert_eq!(
+            execution.attempts[0].error.as_ref().unwrap().code,
+            "TIMEOUT"
+        );
+    }
+
+    #[test]
+    fn resumed_attempt_does_not_reset_the_execution_retry_budget() {
+        let calls = Arc::new(AtomicI64::new(0));
+        let policy = RetryPolicy {
+            max_retries: 1,
+            min_delay_ms: 0,
+            max_delay_ms: 0,
+        };
+        let workflow = retry_workflow(calls.clone(), policy.clone());
+        let invocation = block_on(invoke_with_retry(
+            Target::Node(workflow.executor("retry").unwrap()),
+            serde_json::to_value(Messages::default()).unwrap(),
+            Cancellation::new(),
+            policy,
+            Arc::new(|| 900),
+            90,
+            1,
+        ));
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(invocation.attempts.len(), 1);
+        assert_eq!(invocation.attempts[0].idx, 1);
+        assert!(matches!(invocation.outcome, Outcome::Failed(_)));
     }
 }

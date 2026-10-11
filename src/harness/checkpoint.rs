@@ -1,0 +1,116 @@
+//! Private Agent checkpoint I/O. Component instances never enter snapshots.
+use std::{future::Future, pin::Pin, sync::Arc};
+
+use serde_json::Value;
+
+use crate::{Cancellation, Error, event::Event};
+
+type Save = Arc<
+    dyn Fn(i64, Value, Cancellation) -> Pin<Box<dyn Future<Output = Result<(), Error>>>>
+        + Send
+        + Sync,
+>;
+type Load = Arc<
+    dyn Fn(i64, Cancellation) -> Pin<Box<dyn Future<Output = Result<Value, Error>>>> + Send + Sync,
+>;
+
+#[derive(Clone)]
+pub(crate) struct Backend {
+    save: Save,
+    load: Load,
+}
+
+impl Backend {
+    pub(crate) fn new<C: crate::checkpoint::Checkpoint + 'static>(checkpoint: C) -> Self {
+        let checkpoint = Arc::new(checkpoint);
+        let writer = checkpoint.clone();
+        Self {
+            save: Arc::new(move |id, state, cancellation| {
+                let checkpoint = writer.clone();
+                Box::pin(async move { checkpoint.save(id, state, &cancellation).await })
+            }),
+            load: Arc::new(move |id, cancellation| {
+                let checkpoint = checkpoint.clone();
+                Box::pin(async move { checkpoint.load(id, &cancellation).await })
+            }),
+        }
+    }
+
+    pub(crate) async fn save(
+        &self,
+        id: i64,
+        state: Value,
+        cancellation: Cancellation,
+    ) -> Result<(), Error> {
+        (self.save)(id, state, cancellation).await
+    }
+
+    pub(crate) async fn load(
+        &self,
+        id: i64,
+        cancellation: Cancellation,
+    ) -> Result<Option<Value>, Error> {
+        match (self.load)(id, cancellation).await {
+            Ok(state) if state.is_object() && state["type"] == "agent" => {
+                if state
+                    .get("chat_id")
+                    .is_some_and(|value| value.as_i64() != Some(id))
+                {
+                    return Err(invalid("checkpoint identity does not match this run"));
+                }
+                Ok(Some(state))
+            }
+            Ok(_) => Err(invalid("checkpoint is not an Agent state")),
+            Err(error) if error.code == "NOT_FOUND" => Ok(None),
+            Err(error) => Err(error),
+        }
+    }
+}
+
+pub(crate) fn invalid(message: &str) -> Error {
+    Error::new("INVALID_STATE", message)
+}
+
+/// A terminal checkpoint is already settled: return its recorded result,
+/// without invoking a model, Tool, hooks, Memory writeback or an evaluator.
+pub(crate) fn terminal(state: &Value) -> Result<Option<Result<Event, Error>>, Error> {
+    match state["status"].as_str() {
+        Some("succeeded" | "stopped") => {
+            let message = serde_json::from_value(state["final_message"].clone())
+                .map_err(|_| invalid("terminal checkpoint has no valid final message"))?;
+            let usage = serde_json::from_value(state["final_usage"].clone())
+                .map_err(|_| invalid("terminal checkpoint has invalid final usage"))?;
+            let finish_reason = serde_json::from_value(state["finish_reason"].clone())
+                .map_err(|_| invalid("terminal checkpoint has invalid finish reason"))?;
+            Ok(Some(Ok(Event::Complete {
+                message,
+                usage,
+                finish_reason,
+            })))
+        }
+        Some("failed") => {
+            let error = serde_json::from_value(state["error"].clone())
+                .map_err(|_| invalid("failed checkpoint has no valid error"))?;
+            Ok(Some(Err(error)))
+        }
+        Some("running" | "waiting" | "paused") => Ok(None),
+        _ => Err(invalid("checkpoint has an invalid Agent status")),
+    }
+}
+
+pub(crate) fn record_result(state: &mut Value, result: &Result<Event, Error>) {
+    match result {
+        Ok(Event::Complete {
+            message,
+            usage,
+            finish_reason,
+        }) => {
+            state["final_message"] = serde_json::to_value(message).expect("Message serialization");
+            state["final_usage"] = serde_json::to_value(usage).expect("Usage serialization");
+            state["finish_reason"] =
+                serde_json::to_value(finish_reason).expect("finish reason serialization");
+        }
+        Err(error) => state["error"] = serde_json::to_value(error).expect("Error serialization"),
+        Ok(Event::Delta { .. }) => {}
+    }
+}

@@ -24,6 +24,7 @@ use crate::components::model::chat::{Chat, Request, ToolChoice};
 use crate::components::model::content::part::{Part, object as part_data};
 use crate::components::tool::{Call, Evaluation as ToolEvaluation, ToolDefinition, validate_call};
 use crate::harness::access::Access;
+use crate::harness::checkpoint::{Backend, invalid as invalid_checkpoint};
 use crate::harness::hooks::{Hooks, cancellable};
 use crate::harness::memory::{History, Run};
 use crate::runtime::agent::graph::Graph;
@@ -35,11 +36,7 @@ use execution::TaskProgress;
 type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + 'static>>;
 type EvaluatorHandle =
     std::sync::Arc<dyn Fn(Input, Messages, Cancellation) -> EvaluationFuture + Send + Sync>;
-type CheckpointSave = Arc<
-    dyn Fn(i64, Value, Cancellation) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'static>>
-        + Send
-        + Sync,
->;
+type CheckpointSave = Backend;
 
 fn plan_definition() -> ToolDefinition {
     ToolDefinition {
@@ -140,11 +137,7 @@ impl<M> Builder<M> {
     /// Graph fields are included only when a plan has been accepted; an
     /// ordinary run still persists its messages, usage and terminal status.
     pub fn checkpoint<C: crate::checkpoint::Checkpoint + 'static>(mut self, checkpoint: C) -> Self {
-        let checkpoint = Arc::new(checkpoint);
-        self.checkpoint = Some(Arc::new(move |id, state, cancellation| {
-            let checkpoint = Arc::clone(&checkpoint);
-            Box::pin(async move { checkpoint.save(id, state, &cancellation).await })
-        }));
+        self.checkpoint = Some(Backend::new(checkpoint));
         self
     }
 
@@ -262,24 +255,56 @@ where
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "react agent run cancelled"));
         }
-        let original = input.clone();
-        let input = self.hooks.before_execute(input, &cancellation).await?;
-        self.history.check_identity(&original, &input)?;
-        let prompt = self
-            .hooks
-            .prompt(self.system_prompt.clone(), &cancellation)
-            .await?;
-        let metadata = input.metadata.clone();
         let checkpoint_id = self
             .checkpoint
             .as_ref()
-            .map(|_| checkpoint_id(&original.metadata))
+            .map(|_| checkpoint_id(&input.metadata))
             .transpose()?;
-        let history = self
-            .history
-            .load(metadata.clone(), self.hooks.clone(), &cancellation)
-            .await?;
-        let run = self.history.begin(original.clone(), &cancellation).await?;
+        let restored = match (&self.checkpoint, checkpoint_id) {
+            (Some(checkpoint), Some(id)) => checkpoint.load(id, cancellation.clone()).await?,
+            _ => None,
+        };
+        if let Some(snapshot) = &restored {
+            if snapshot
+                .get("query")
+                .is_some_and(|query| serde_json::to_value(&input).ok().as_ref() != Some(query))
+            {
+                return Err(Error::new(
+                    "CONFLICT",
+                    "checkpoint belongs to a different Agent input",
+                ));
+            }
+            if let Some(result) = crate::harness::checkpoint::terminal(snapshot)? {
+                return Ok(Box::pin(futures_util::stream::iter([result])));
+            }
+        }
+        let original = input.clone();
+        let input = if restored.is_some() {
+            input
+        } else {
+            self.hooks.before_execute(input, &cancellation).await?
+        };
+        self.history.check_identity(&original, &input)?;
+        let prompt = if restored.is_some() {
+            None
+        } else {
+            self.hooks
+                .prompt(self.system_prompt.clone(), &cancellation)
+                .await?
+        };
+        let metadata = input.metadata.clone();
+        let history = if restored.is_some() {
+            Vec::new()
+        } else {
+            self.history
+                .load(metadata.clone(), self.hooks.clone(), &cancellation)
+                .await?
+        };
+        let run = if restored.is_some() {
+            self.history.resume(original.clone(), &cancellation).await?
+        } else {
+            self.history.begin(original.clone(), &cancellation).await?
+        };
         let toolkit = match self.toolkit.prepared(&cancellation).await {
             Ok(toolkit) => toolkit,
             Err(error) => return Err(run.fail(error).await),
@@ -294,7 +319,7 @@ where
         }
         let messages =
             crate::components::agent::chat::initial_messages(input, prompt.as_deref(), history);
-        let state = ReActState {
+        let mut state = ReActState {
             model: std::sync::Arc::clone(&self.model),
             toolkit: std::sync::Arc::new(toolkit),
             max_iters: self.max_iters,
@@ -340,6 +365,9 @@ where
             model_settled: false,
             input_tokens: 0,
         };
+        if let Some(snapshot) = restored {
+            restore_state(&mut state, snapshot)?;
+        }
         Ok(Box::pin(unfold(state, next_react_event::<M>)))
     }
 }
@@ -578,6 +606,12 @@ fn checkpoint_snapshot<M: Chat>(state: &ReActState<M>, result: &Result<Event, Er
         "status": result_status(result),
         "usage": state.run.usage(),
         "messages": state.messages,
+        "query": state.query,
+        "task_base": state.task_base,
+        "iteration": state.iteration.load(Ordering::Relaxed),
+        "plan_execution": state.plan_execution,
+        "plan_finalizing": state.plan_finalizing,
+        "tool_results": state.tool_results,
     });
     if let Some(graph) = state.graph.as_ref() {
         snapshot["graph"] = json!({
@@ -586,12 +620,7 @@ fn checkpoint_snapshot<M: Chat>(state: &ReActState<M>, result: &Result<Event, Er
         });
         snapshot["nodes"] = serde_json::to_value(&graph.nodes).unwrap_or_else(|_| json!({}));
     }
-    if let Some(error) = result.as_ref().err() {
-        snapshot["error"] = serde_json::to_value(error).unwrap_or(Value::Null);
-    }
-    if let Ok(Event::Complete { message, .. }) = result {
-        snapshot["final_message"] = serde_json::to_value(message).unwrap_or(Value::Null);
-    }
+    crate::harness::checkpoint::record_result(&mut snapshot, result);
     snapshot
 }
 
@@ -619,11 +648,99 @@ fn save_checkpoint<M: Chat>(
     let id = state.checkpoint_id;
     async move {
         if let (Some(save), Some(id)) = (save, id) {
-            save(id, snapshot, Cancellation::new()).await
+            save.save(id, snapshot, Cancellation::new()).await
         } else {
             Ok(())
         }
     }
+}
+
+fn restore_state<M: Chat>(state: &mut ReActState<M>, snapshot: Value) -> Result<(), Error> {
+    fn field<T: serde::de::DeserializeOwned>(snapshot: &Value, name: &str) -> Result<T, Error> {
+        serde_json::from_value(snapshot[name].clone())
+            .map_err(|_| invalid_checkpoint(&format!("invalid Agent checkpoint field: {name}")))
+    }
+    state.messages = field(&snapshot, "messages")?;
+    state.task_base = field(&snapshot, "task_base")?;
+    state.query = field(&snapshot, "query")?;
+    state.iteration = Arc::new(AtomicUsize::new(field(&snapshot, "iteration")?));
+    state.plan_execution = field(&snapshot, "plan_execution")?;
+    state.plan_finalizing = field(&snapshot, "plan_finalizing")?;
+    state.tool_results = field(&snapshot, "tool_results")?;
+    state.run.settle(field(&snapshot, "usage")?);
+    if let Some(graph) = snapshot.get("graph") {
+        let mut graph: Graph = serde_json::from_value(json!({
+            "plan": graph["plan"], "history": graph["history"], "nodes": snapshot["nodes"],
+        }))
+        .map_err(|_| invalid_checkpoint("invalid Agent checkpoint graph"))?;
+        graph.plan.validate_structure()?;
+        if graph.plan.nodes.keys().ne(graph.nodes.keys()) {
+            return Err(invalid_checkpoint(
+                "checkpoint graph nodes do not match the plan",
+            ));
+        }
+        use crate::runtime::agent::node::Status;
+        let mut interrupted = false;
+        let mut waiting = false;
+        for node in graph.nodes.values_mut() {
+            if node.status == Status::Running {
+                node.status = Status::Interrupted;
+                node.set_attempt_result(
+                    Status::Interrupted,
+                    None,
+                    Some(Error::new(
+                        "INTERRUPTED",
+                        "Agent execution interrupted before checkpoint recovery",
+                    )),
+                )?;
+                interrupted = true;
+            } else if matches!(node.status, Status::Waiting | Status::Interrupted) {
+                waiting |= node.status == Status::Waiting;
+                interrupted |= node.status == Status::Interrupted;
+            } else if node.status == Status::Succeeded {
+                if node.messages.is_none()
+                    || node
+                        .execution
+                        .as_ref()
+                        .and_then(|execution| execution.attempts.last())
+                        .is_none_or(|attempt| attempt.status != Status::Succeeded)
+                {
+                    return Err(invalid_checkpoint(
+                        "successful Agent node has no committed result",
+                    ));
+                }
+            } else if node.status == Status::Failed {
+                state.task_error = node
+                    .execution
+                    .as_ref()
+                    .and_then(|execution| execution.error.clone())
+                    .or_else(|| Some(Error::new("EXECUTION_FAILED", "restored Agent node failed")));
+            }
+        }
+        graph.activate_ready()?;
+        state.graph = Some(graph);
+        if waiting || snapshot["status"] == "waiting" || snapshot["status"] == "paused" {
+            // No response protocol is inferred from ordinary Input. Keep the
+            // saved wait intact until explicit resume integration is provided.
+            return Err(Error::new(
+                "WAITING",
+                "Agent checkpoint requires an external resume response",
+            ));
+        }
+        if interrupted {
+            state.planning_error = Some(Error::new(
+                "INTERRUPTED",
+                "unfinished Agent calls require an explicit retry policy",
+            ));
+        }
+    } else {
+        // A live provider/Tool call cannot be resumed from messages alone.
+        state.planning_error = Some(Error::new(
+            "INTERRUPTED",
+            "unfinished Agent call cannot be replayed from message history",
+        ));
+    }
+    Ok(())
 }
 
 fn running_snapshot<M: Chat>(state: &ReActState<M>) -> Value {
@@ -1423,6 +1540,36 @@ mod tests {
             complete.last().unwrap().content[0].data["value"],
             Value::String("good".into())
         );
+    }
+
+    #[test]
+    fn terminal_checkpoint_is_idempotently_returned_without_replaying_model() {
+        let calls = Arc::new(Mutex::new(0));
+        let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+        let agent = crate::agent::react()
+            .model(RepairChat {
+                calls: calls.clone(),
+            })
+            .checkpoint(checkpoint)
+            .build()
+            .unwrap();
+        let input = Input {
+            metadata: Map::from_iter([("chat_id".into(), json!(901))]),
+            payload: Vec::new(),
+        };
+        let first = block_on(agent.run(input.clone(), Cancellation::new())).unwrap();
+        let first_events = block_on(first.collect::<Vec<_>>());
+        assert!(first_events.iter().any(|event| event.is_ok()));
+        assert_eq!(*calls.lock().unwrap(), 1);
+
+        let restored = block_on(agent.run(input, Cancellation::new())).unwrap();
+        let restored_events = block_on(restored.collect::<Vec<_>>());
+        assert!(matches!(
+            restored_events.as_slice(),
+            [Ok(Event::Complete { finish_reason: Some(reason), .. })]
+                if reason == "stop"
+        ));
+        assert_eq!(*calls.lock().unwrap(), 1);
     }
 
     fn node(id: &str, name: &str) -> PlanNode {
