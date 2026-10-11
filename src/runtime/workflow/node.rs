@@ -45,7 +45,7 @@ pub enum AttemptStatus {
 pub struct Attempt {
     pub idx: u32,
     pub status: AttemptStatus,
-    pub started_time: Option<i64>,
+    pub created_time: Option<i64>,
     pub finished_time: Option<i64>,
     pub usage: Option<Usage>,
     pub finish_reason: Option<String>,
@@ -87,7 +87,7 @@ pub struct Step {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct StepAttempt {
     pub status: AttemptStatus,
-    pub started_time: Option<i64>,
+    pub created_time: Option<i64>,
     pub finished_time: Option<i64>,
     pub usage: Option<Usage>,
     pub finish_reason: Option<String>,

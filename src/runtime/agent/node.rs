@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::Error;
 use crate::components::message::Messages;
@@ -27,7 +28,45 @@ pub enum Status {
 pub struct Attempt {
     pub idx: usize,
     pub status: Status,
+    pub created_time: Option<i64>,
+    pub finished_time: Option<i64>,
     pub usage: Option<Usage>,
+    pub finish_reason: Option<String>,
+    #[serde(default)]
+    pub steps: Vec<Step>,
+    #[serde(default)]
+    pub messages: Messages,
+    pub error: Option<Error>,
+}
+
+/// One logical internal Agent operation belonging to an Attempt.
+///
+/// The runtime owns the shape and persistence of a step. Concrete Agent
+/// implementations decide when to append model, tool, evaluation or child
+/// execution steps; an empty list is valid for a node that has no internal
+/// sub-steps.
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct Step {
+    pub id: String,
+    pub kind: String,
+    pub status: String,
+    #[serde(default)]
+    pub from: Vec<String>,
+    #[serde(default)]
+    pub to: Vec<String>,
+    pub call_id: Option<String>,
+    #[serde(default)]
+    pub attempts: Vec<StepAttempt>,
+    pub error: Option<Error>,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
+pub struct StepAttempt {
+    pub status: Status,
+    pub created_time: Option<i64>,
+    pub finished_time: Option<i64>,
+    pub usage: Option<Usage>,
+    pub finish_reason: Option<String>,
     pub error: Option<Error>,
 }
 
@@ -35,6 +74,8 @@ pub struct Attempt {
 pub struct Execution {
     pub exec_id: i64,
     pub attempts: Vec<Attempt>,
+    #[serde(default)]
+    pub messages: Messages,
     pub usage: Option<Usage>,
     pub error: Option<Error>,
 }
@@ -75,9 +116,15 @@ impl State {
             attempts: vec![Attempt {
                 idx: 0,
                 status: Status::Running,
+                created_time: Some(now_millis()),
+                finished_time: None,
                 usage: None,
+                finish_reason: None,
+                steps: Vec::new(),
+                messages: Messages::default(),
                 error: None,
             }],
+            messages: Messages::default(),
             usage: None,
             error: None,
         });
@@ -100,7 +147,12 @@ impl State {
         execution.attempts.push(Attempt {
             idx,
             status: Status::Running,
+            created_time: Some(now_millis()),
+            finished_time: None,
             usage: None,
+            finish_reason: None,
+            steps: Vec::new(),
+            messages: Messages::default(),
             error: None,
         });
         execution.error = None;
@@ -115,7 +167,14 @@ impl State {
     ) -> Result<(), Error> {
         {
             let attempt = self.current_attempt_mut()?;
+            let terminal = matches!(
+                &status,
+                Status::Succeeded | Status::Failed | Status::Cancelled | Status::Interrupted
+            );
             attempt.status = status;
+            if terminal {
+                attempt.finished_time = Some(now_millis());
+            }
             attempt.usage = usage.clone();
             attempt.error = error.clone();
         }
@@ -132,6 +191,22 @@ impl State {
         self.usage = aggregate;
         Ok(())
     }
+
+    pub(crate) fn set_attempt_finish_reason(
+        &mut self,
+        finish_reason: Option<String>,
+    ) -> Result<(), Error> {
+        self.current_attempt_mut()?.finish_reason = finish_reason;
+        Ok(())
+    }
+}
+
+fn now_millis() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| i64::try_from(duration.as_millis()).ok())
+        .unwrap_or(0)
 }
 
 fn merge_usage(left: Option<Usage>, right: Option<Usage>) -> Option<Usage> {
@@ -224,6 +299,8 @@ mod tests {
         let execution = state.execution.as_ref().unwrap();
         assert_eq!(execution.attempts[0].usage, Some(first));
         assert_eq!(execution.attempts[1].usage, Some(second));
+        assert!(execution.attempts[0].created_time.is_some());
+        assert!(execution.attempts[0].finished_time.is_some());
         let missing = merge_usage(Some(Usage::default()), Some(Usage::default())).unwrap();
         assert_eq!(missing.input, None);
         assert_eq!(missing.input_details, None);

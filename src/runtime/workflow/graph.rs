@@ -104,7 +104,7 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                                 } else {
                                     AttemptStatus::Succeeded
                                 },
-                                started_time: None,
+                                created_time: None,
                                 finished_time: None,
                                 usage: call_usage.clone(),
                                 finish_reason,

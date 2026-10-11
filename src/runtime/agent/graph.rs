@@ -314,9 +314,24 @@ impl Graph {
         self.ensure_attempt(node_id)?;
         self.transition(node_id, Status::Succeeded)?;
         let state = self.state_mut(node_id)?;
-        state.messages = Some(messages);
+        state.messages = Some(messages.clone());
+        if let Some(execution) = state.execution.as_mut() {
+            execution.messages = messages.clone();
+            if let Some(attempt) = execution.attempts.last_mut() {
+                attempt.messages = messages;
+            }
+        }
         state.set_attempt_result(Status::Succeeded, usage, None)?;
         self.activate_ready()
+    }
+
+    pub(crate) fn set_finish_reason(
+        &mut self,
+        node_id: &str,
+        finish_reason: Option<String>,
+    ) -> Result<(), Error> {
+        self.state_mut(node_id)?
+            .set_attempt_finish_reason(finish_reason)
     }
 
     /// Agent plans complete only when all leaves succeeded and no node remains
@@ -568,6 +583,29 @@ mod tests {
             graph.state("a").unwrap().usage.as_ref().unwrap().total,
             Some(15)
         );
+    }
+
+    #[test]
+    fn successful_execution_keeps_messages_and_finish_reason_at_each_runtime_level() {
+        let mut graph = Graph::new(plan(&[])).unwrap();
+        graph.start("a", 901).unwrap();
+        let messages = Messages::new([crate::Message::function(serde_json::json!({
+            "answer": "ok"
+        }))]);
+        graph
+            .succeed("a", messages.clone(), None)
+            .expect("success should commit");
+        graph
+            .set_finish_reason("a", Some("stop".into()))
+            .expect("finish reason should commit");
+
+        let state = graph.state("a").unwrap();
+        let execution = state.execution.as_ref().unwrap();
+        assert_eq!(state.messages.as_ref(), Some(&messages));
+        assert_eq!(execution.messages, messages);
+        assert_eq!(execution.attempts[0].messages, messages);
+        assert_eq!(execution.attempts[0].finish_reason.as_deref(), Some("stop"));
+        assert!(execution.attempts[0].finished_time.is_some());
     }
 
     #[test]

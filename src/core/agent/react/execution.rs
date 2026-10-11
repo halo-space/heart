@@ -179,6 +179,7 @@ pub(super) fn commit<M: Chat + 'static>(
             ..
         }) if finish_reason.as_deref() == Some("cancelled") => {
             graph.cancel(&task.node_id)?;
+            graph.set_finish_reason(&task.node_id, finish_reason.clone())?;
             graph
                 .state_mut(&task.node_id)?
                 .set_attempt_result(Status::Cancelled, usage, None)?;
@@ -194,7 +195,12 @@ pub(super) fn commit<M: Chat + 'static>(
             }
             Ok((result.ok(), true))
         }
-        Ok(_) => {
+        Ok(Event::Complete { finish_reason, .. }) => {
+            graph.succeed(&task.node_id, task.messages, usage)?;
+            graph.set_finish_reason(&task.node_id, finish_reason.clone())?;
+            Ok((result.ok(), true))
+        }
+        Ok(Event::Delta { .. }) => {
             graph.succeed(&task.node_id, task.messages, usage)?;
             Ok((result.ok(), true))
         }
