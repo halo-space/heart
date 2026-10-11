@@ -449,6 +449,9 @@ pub struct Wait {
 /// scheduler or persist an external Checkpoint.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct State {
+    pub chat_id: i64,
+    #[serde(rename = "type")]
+    pub r#type: String,
     pub definition_id: String,
     pub version: String,
     pub step: u64,
@@ -466,6 +469,10 @@ pub struct State {
 
 impl State {
     pub fn new(definition: &Definition) -> Self {
+        Self::for_chat(0, definition)
+    }
+
+    pub(crate) fn for_chat(chat_id: i64, definition: &Definition) -> Self {
         let nodes = definition
             .nodes
             .keys()
@@ -480,6 +487,8 @@ impl State {
             .collect();
 
         Self {
+            chat_id,
+            r#type: "workflow".into(),
             definition_id: definition.definition_id.clone(),
             version: definition.version.clone(),
             step: 0,
@@ -489,6 +498,27 @@ impl State {
             waits: BTreeMap::new(),
             nodes,
         }
+    }
+
+    /// Child graphs share the outer run identity. Check this before any
+    /// restored execution is mutated or any component is invoked.
+    pub(crate) fn check_identity(&self, chat_id: i64) -> Result<(), Error> {
+        if self.chat_id != chat_id || self.r#type != "workflow" {
+            return Err(Error::new(
+                "CONFLICT",
+                "checkpoint identity does not match this Workflow run",
+            ));
+        }
+        for node in self.nodes.values() {
+            for execution in node.executions.values() {
+                for attempt in &execution.attempts {
+                    if let Some(child) = &attempt.graph {
+                        child.check_identity(chat_id)?;
+                    }
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Marks in-flight executions from a persisted snapshot as interrupted.

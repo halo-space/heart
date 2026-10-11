@@ -45,7 +45,6 @@ type CheckpointSave = Arc<
 /// façade; every mutation is delegated to the single graph State so callers
 /// cannot accidentally maintain a second execution model.
 pub struct Runtime {
-    chat_id: i64,
     workflow: CompiledWorkflow,
     state: State,
     max_concurrency: usize,
@@ -60,9 +59,8 @@ impl Runtime {
         if chat_id <= 0 {
             return Err(Error::new("INVALID_ARGUMENTS", "chat_id must be positive"));
         }
-        let state = State::new(workflow.definition());
+        let state = State::for_chat(chat_id, workflow.definition());
         Ok(Self {
-            chat_id,
             workflow,
             state,
             max_concurrency: 100,
@@ -83,6 +81,7 @@ impl Runtime {
         }
         let state: State = serde_json::from_value(snapshot)
             .map_err(|error| Error::new("INVALID_CHECKPOINT", error.to_string()))?;
+        state.check_identity(chat_id)?;
         if state.definition_id != workflow.definition().definition_id
             || state.version != workflow.definition().version
         {
@@ -92,7 +91,6 @@ impl Runtime {
             ));
         }
         let mut runtime = Self {
-            chat_id,
             workflow,
             state,
             max_concurrency: 100,
@@ -155,7 +153,7 @@ impl Runtime {
     }
 
     pub fn chat_id(&self) -> i64 {
-        self.chat_id
+        self.state.chat_id
     }
 
     pub fn definition(&self) -> &Definition {
@@ -230,7 +228,7 @@ impl Runtime {
         cancellation: &crate::Cancellation,
     ) -> Result<(), Error> {
         checkpoint
-            .save(self.chat_id, self.snapshot()?, cancellation)
+            .save(self.state.chat_id, self.snapshot()?, cancellation)
             .await
     }
 
@@ -246,13 +244,46 @@ impl Runtime {
         next_exec_id: Arc<dyn Fn() -> i64 + Send + Sync>,
         cancellation: crate::Cancellation,
     ) -> Result<Messages, Error> {
+        // A terminal snapshot is already closed. Re-running it is a read of
+        // the committed result and must not create another Chat/Trace record
+        // or invoke any node again.
+        if matches!(
+            self.state.status,
+            graph::Status::Succeeded | graph::Status::Failed | graph::Status::Cancelled
+        ) {
+            return self
+                .run_inner(initial_messages, next_exec_id, cancellation)
+                .await;
+        }
+        self.state.check_identity(self.state.chat_id)?;
+        if self
+            .state
+            .initial
+            .as_ref()
+            .is_some_and(|initial| initial != &initial_messages)
+        {
+            return Err(Error::new(
+                "CONFLICT",
+                "workflow initial Messages cannot change after activation",
+            ));
+        }
+        if let Some(chat_id) = messages_to_agent_input(&initial_messages)
+            .metadata
+            .get("chat_id")
+            && chat_id.as_i64() != Some(self.state.chat_id)
+        {
+            return Err(Error::new(
+                "CONFLICT",
+                "input chat_id does not match this Workflow run",
+            ));
+        }
         self.begin_history(&initial_messages, &cancellation).await?;
         let result = self
             .run_inner(initial_messages, next_exec_id, cancellation)
             .await;
         if let Some(checkpoint) = self.checkpoint.clone() {
             let state = self.snapshot()?;
-            checkpoint(self.chat_id, state, crate::Cancellation::new()).await?;
+            checkpoint(self.state.chat_id, state, crate::Cancellation::new()).await?;
         }
         self.close_history(&result).await?;
         result
@@ -335,16 +366,18 @@ impl Runtime {
         }
 
         loop {
-            if cancellation.is_cancelled() {
-                self.cancel_active();
-                self.state.status = graph::Status::Cancelled;
-                return Err(Error::new("CANCELLED", "workflow run cancelled"));
-            }
             if self.state.status == graph::Status::Succeeded {
                 return Ok(self.end_messages());
             }
             if self.state.status == graph::Status::Failed {
-                return Err(Error::new("FAILED", "workflow execution failed"));
+                return Err(self
+                    .first_failure()
+                    .unwrap_or_else(|| Error::new("FAILED", "workflow execution failed")));
+            }
+            if self.state.status == graph::Status::Cancelled || cancellation.is_cancelled() {
+                self.cancel_active();
+                self.state.status = graph::Status::Cancelled;
+                return Err(Error::new("CANCELLED", "workflow run cancelled"));
             }
             if let Some((node_id, exec_id, _wait_id, response)) = self.state.resolved_wait() {
                 let target = if let Some(workflow) = self.workflow.graph_node(&node_id) {
@@ -377,7 +410,7 @@ impl Runtime {
                     cancellation.clone(),
                     retry,
                     next_exec_id.clone(),
-                    self.chat_id,
+                    self.state.chat_id,
                     start_idx,
                 )
                 .await;
@@ -470,7 +503,7 @@ impl Runtime {
             let limit = self.max_concurrency;
             let task_cancellation = cancellation.clone();
             let task_next_exec_id = Arc::clone(&next_exec_id);
-            let chat_id = self.chat_id;
+            let chat_id = self.state.chat_id;
             let results = stream::iter(specs.into_iter().map(
                 move |(node_id, exec_id, from, input, target, retry)| {
                     let cancellation = task_cancellation.clone();
@@ -837,7 +870,7 @@ impl Runtime {
             cancellation.clone(),
             retry,
             Arc::clone(next_exec_id),
-            self.chat_id,
+            self.state.chat_id,
             previous_idx.saturating_add(1),
         )
         .await;
@@ -1997,7 +2030,63 @@ mod tests {
         );
         let trace = block_on(traces.read(5, &Cancellation::new())).unwrap();
         assert_eq!(trace.state, runtime.snapshot().unwrap());
+        assert_eq!(trace.state["chat_id"], 5);
+        assert_eq!(trace.state["type"], "workflow");
         assert_eq!(trace.state["status"], "succeeded");
+    }
+
+    #[test]
+    fn terminal_workflow_snapshot_is_idempotent_with_memory() {
+        use crate::memory::short::{chat::Store as _, trace::Store as _};
+
+        let mut builder = WorkflowBuilder::new("workflow-terminal-restore");
+        builder
+            .add_agent_node("agent", FakeAgent { mode: "single" })
+            .unwrap();
+        builder.add_edge(START, "agent").unwrap();
+        builder.add_edge("agent", END).unwrap();
+        let workflow = builder.compile().unwrap();
+        let (config, chats, traces) = workflow_memory();
+        let mut first = Runtime::new(5, workflow.clone())
+            .unwrap()
+            .memory(config.clone())
+            .unwrap();
+        block_on(first.run(workflow_input(), Arc::new(|| 5_010), Cancellation::new())).unwrap();
+        let snapshot = first.snapshot().unwrap();
+
+        let mut restored = Runtime::from_snapshot(5, workflow, snapshot)
+            .unwrap()
+            .memory(config)
+            .unwrap();
+        block_on(restored.run(workflow_input(), Arc::new(|| 5_011), Cancellation::new())).unwrap();
+
+        assert_eq!(
+            block_on(chats.read(5, &Cancellation::new()))
+                .unwrap()
+                .status,
+            crate::memory::short::chat::Status::Completed
+        );
+        assert_eq!(
+            block_on(traces.read(5, &Cancellation::new()))
+                .unwrap()
+                .state["chat_id"],
+            5
+        );
+    }
+
+    #[test]
+    fn workflow_snapshot_rejects_a_different_chat_id() {
+        let mut builder = WorkflowBuilder::new("workflow-checkpoint-identity");
+        builder.add_node("answer", crate::node::Echo).unwrap();
+        builder.add_edge(START, "answer").unwrap();
+        builder.add_edge("answer", END).unwrap();
+        let workflow = builder.compile().unwrap();
+        let runtime = Runtime::new(5, workflow.clone()).unwrap();
+        let error = match Runtime::from_snapshot(6, workflow, runtime.snapshot().unwrap()) {
+            Ok(_) => panic!("a checkpoint for another chat_id must be rejected"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "CONFLICT");
     }
 
     #[test]
