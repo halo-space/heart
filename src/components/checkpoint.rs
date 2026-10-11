@@ -14,19 +14,19 @@ pub trait Checkpoint: Send + Sync {
         id: i64,
         state: Value,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<(), Error>>;
 
     fn load(
         &self,
         id: i64,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Value, Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<Value, Error>>;
 
     fn delete(
         &self,
         id: i64,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<(), Error>>;
 
     /// Validates the serialized Runtime state before it is persisted.
     /// Backends may override this when their storage contract adds stricter

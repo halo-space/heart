@@ -286,7 +286,7 @@ pub trait Planner: Send + Sync {
         current_plan: Option<&Plan>,
         feedback: Option<&Messages>,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Plan, Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<Plan, Error>>;
 }
 
 fn has_cycle<'a>(

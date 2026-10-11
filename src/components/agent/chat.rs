@@ -1,16 +1,22 @@
+use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::task::{Context, Poll};
 
 use futures_core::Stream;
-use serde_json::Map;
+use futures_util::StreamExt;
+use serde_json::{Map, Value, json};
 
 use crate::components::agent::toolkit::Toolkit;
 use crate::components::agent::{Agent as AgentContract, Error, Input};
+use crate::components::evaluation::{Evaluation, Evaluator};
 use crate::components::event::Event;
 use crate::components::message::{Message, Messages, Role};
 use crate::components::model::chat::{Chat, Request};
 use crate::components::model::content::part::{Part, object as part_data};
+use crate::components::tool::Call;
+use crate::harness::access::Access;
 use crate::harness::hooks::{Hooks, cancellable};
 use crate::harness::memory::{History, Run};
 use crate::runtime::cancellation::Cancellation;
@@ -20,6 +26,9 @@ pub struct Builder<M = ()> {
     system_prompt: Option<String>,
     toolkit: Option<Toolkit>,
     hooks: Hooks,
+    access: Access,
+    evaluator: Option<EvaluatorHandle>,
+    checkpoint: Option<CheckpointSave>,
     history: History,
     max_concurrency: usize,
 }
@@ -30,6 +39,9 @@ pub fn builder() -> Builder {
         system_prompt: None,
         toolkit: None,
         hooks: Hooks::default(),
+        access: Access::default(),
+        evaluator: None,
+        checkpoint: None,
         history: History::default(),
         max_concurrency: 100,
     }
@@ -42,6 +54,9 @@ impl<M> Builder<M> {
             system_prompt: self.system_prompt,
             toolkit: self.toolkit,
             hooks: self.hooks,
+            access: self.access,
+            evaluator: self.evaluator,
+            checkpoint: self.checkpoint,
             history: self.history,
             max_concurrency: self.max_concurrency,
         }
@@ -54,6 +69,36 @@ impl<M> Builder<M> {
 
     pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
         self.toolkit = Some(toolkit);
+        self
+    }
+
+    /// Attach the permission policy used for every actual Tool/MCP call.
+    /// Permission is shared by Chat and ReAct; it is not checked merely when
+    /// tool definitions are sent to the model.
+    pub fn permission<P: crate::permission::Permission + 'static>(mut self, permission: P) -> Self {
+        self.access.set(permission);
+        self
+    }
+
+    /// Attach an optional final-result evaluator. Chat has no Planner loop:
+    /// a rejected final result closes the run with an evaluation error.
+    pub fn evaluator<E: Evaluator + 'static>(mut self, evaluator: E) -> Self {
+        let evaluator = Arc::new(evaluator);
+        self.evaluator = Some(Arc::new(move |input, result, cancellation| {
+            let evaluator = Arc::clone(&evaluator);
+            Box::pin(async move { evaluator.evaluate(&input, &result, &cancellation).await })
+        }));
+        self
+    }
+
+    /// Attach the Agent checkpoint backend. Chat checkpoints contain the
+    /// current messages, usage and terminal status; they do not invent a plan.
+    pub fn checkpoint<C: crate::checkpoint::Checkpoint + 'static>(mut self, checkpoint: C) -> Self {
+        let checkpoint = Arc::new(checkpoint);
+        self.checkpoint = Some(Arc::new(move |id, state, cancellation| {
+            let checkpoint = Arc::clone(&checkpoint);
+            Box::pin(async move { checkpoint.save(id, state, &cancellation).await })
+        }));
         self
     }
 
@@ -97,10 +142,13 @@ where
         }
         self.history.validate()?;
         Ok(Agent {
-            model,
+            model: Arc::new(model),
             system_prompt: self.system_prompt,
             toolkit: self.toolkit,
             hooks: self.hooks,
+            access: self.access,
+            evaluator: self.evaluator,
+            checkpoint: self.checkpoint,
             history: self.history,
             max_concurrency: self.max_concurrency,
         })
@@ -108,25 +156,64 @@ where
 }
 
 pub struct Agent<M> {
-    model: M,
+    model: Arc<M>,
     system_prompt: Option<String>,
     toolkit: Option<Toolkit>,
     hooks: Hooks,
+    access: Access,
+    evaluator: Option<EvaluatorHandle>,
+    checkpoint: Option<CheckpointSave>,
     history: History,
     max_concurrency: usize,
 }
 
-type CompletionFuture = Pin<Box<dyn Future<Output = Result<Event, Error>> + Send + 'static>>;
+type CompletionFuture = Pin<Box<dyn Future<Output = Result<Event, Error>> + 'static>>;
+type ProviderFuture<S> = Pin<Box<dyn Future<Output = Result<S, Error>> + 'static>>;
+type ToolBatchFuture = Pin<Box<dyn Future<Output = Result<Vec<Message>, Error>> + 'static>>;
+type ProviderFactory<S> = Arc<dyn Fn(Messages, Cancellation) -> ProviderFuture<S> + Send + Sync>;
+type EvaluatorHandle = Arc<dyn Fn(Input, Messages, Cancellation) -> EvaluationFuture + Send + Sync>;
+type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + 'static>>;
+type CheckpointSave = Arc<
+    dyn Fn(i64, Value, Cancellation) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'static>>
+        + Send
+        + Sync,
+>;
+
+struct EventsConfig<S> {
+    provider_factory: ProviderFactory<S>,
+    toolkit: Option<Toolkit>,
+    access: Access,
+    evaluator: Option<EvaluatorHandle>,
+    checkpoint: Option<CheckpointSave>,
+    input: Input,
+    checkpoint_id: Option<i64>,
+    metadata: Map<String, Value>,
+    messages: Messages,
+    max_concurrency: usize,
+}
 
 /// The concrete stream returned by this Chat Agent. Its items remain the
 /// shared model Event; this type only owns cancellation and partial state.
 pub struct Events<S> {
     provider: Pin<Box<S>>,
+    provider_factory: Option<ProviderFactory<S>>,
     cancellation: Cancellation,
     partial: Message,
     input_tokens: u64,
     finished: bool,
     hooks: Hooks,
+    toolkit: Option<Arc<Toolkit>>,
+    access: Access,
+    evaluator: Option<EvaluatorHandle>,
+    checkpoint: Option<CheckpointSave>,
+    input: Option<Input>,
+    checkpoint_id: Option<i64>,
+    metadata: Map<String, Value>,
+    messages: Messages,
+    max_concurrency: usize,
+    pending_tools: Option<ToolBatchFuture>,
+    pending_provider: Option<ProviderFuture<S>>,
+    tool_results: VecDeque<Message>,
     pending: Option<CompletionFuture>,
     run: Run,
     settled: bool,
@@ -146,16 +233,43 @@ impl<S> Events<S> {
     fn new(provider: S, cancellation: Cancellation, input_tokens: u64, hooks: Hooks) -> Self {
         Self {
             provider: Box::pin(provider),
+            provider_factory: None,
             cancellation,
             partial: Message::new(Role::Assistant),
             input_tokens,
             finished: false,
             hooks,
+            toolkit: None,
+            access: Access::default(),
+            evaluator: None,
+            checkpoint: None,
+            input: None,
+            checkpoint_id: None,
+            metadata: Map::new(),
+            messages: Messages::default(),
+            max_concurrency: 100,
+            pending_tools: None,
+            pending_provider: None,
+            tool_results: VecDeque::new(),
             pending: None,
             run: Run::default(),
             settled: false,
             closing: false,
         }
+    }
+
+    fn configure_tools(mut self, config: EventsConfig<S>) -> Self {
+        self.provider_factory = Some(config.provider_factory);
+        self.toolkit = config.toolkit.map(Arc::new);
+        self.access = config.access;
+        self.evaluator = config.evaluator;
+        self.checkpoint = config.checkpoint;
+        self.input = Some(config.input);
+        self.checkpoint_id = config.checkpoint_id;
+        self.metadata = config.metadata;
+        self.messages = config.messages;
+        self.max_concurrency = config.max_concurrency;
+        self
     }
 
     fn cancelled(&mut self) -> Event {
@@ -196,8 +310,16 @@ impl<S> Events<S> {
             self.settled = true;
         }
         let run = self.run.clone();
+        let checkpoint = self.checkpoint.clone();
+        let checkpoint_id = self.checkpoint_id;
+        let state = checkpoint_state(&self.messages, self.run.usage(), &result);
         self.closing = true;
-        self.pending = Some(Box::pin(async move { run.close(result).await }));
+        self.pending = Some(Box::pin(async move {
+            if let (Some(checkpoint), Some(id)) = (checkpoint, checkpoint_id) {
+                checkpoint(id, state, Cancellation::new()).await?;
+            }
+            run.close(result).await
+        }));
     }
 }
 
@@ -219,6 +341,54 @@ where
             let result = this.cancelled();
             this.close(Ok(result));
         }
+        if let Some(provider) = this.pending_provider.as_mut() {
+            match provider.as_mut().poll(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok(provider)) => {
+                    this.provider = Box::pin(provider);
+                    this.pending_provider = None;
+                    return Pin::new(this).poll_next(cx);
+                }
+                Poll::Ready(Err(error)) => {
+                    this.pending_provider = None;
+                    this.close(Err(error));
+                    return Pin::new(this).poll_next(cx);
+                }
+            }
+        }
+        if let Some(tools) = this.pending_tools.as_mut() {
+            match tools.as_mut().poll(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok(messages)) => {
+                    this.pending_tools = None;
+                    this.tool_results.extend(messages);
+                    return Pin::new(this).poll_next(cx);
+                }
+                Poll::Ready(Err(error)) => {
+                    this.pending_tools = None;
+                    this.close(Err(error));
+                    return Pin::new(this).poll_next(cx);
+                }
+            }
+        }
+        if let Some(message) = this.tool_results.pop_front() {
+            this.messages.push(message.clone());
+            let event = Event::Complete {
+                message,
+                usage: None,
+                finish_reason: Some("tool".into()),
+            };
+            if this.tool_results.is_empty()
+                && let (Some(factory), Some(_toolkit)) =
+                    (this.provider_factory.clone(), this.toolkit.clone())
+            {
+                let messages = this.messages.clone();
+                let cancellation = this.cancellation.clone();
+                this.pending_provider = Some(factory(messages, cancellation));
+                // The tool result is observable before the next model call.
+            }
+            return Poll::Ready(Some(Ok(event)));
+        }
         if let Some(pending) = this.pending.as_mut() {
             let result = pending.as_mut().poll(cx);
             if this.cancellation.is_cancelled() && !this.closing {
@@ -229,13 +399,63 @@ where
             return match result {
                 Poll::Pending => Poll::Pending,
                 Poll::Ready(result) => {
-                    if !this.closing {
-                        this.close(result);
-                        return Pin::new(this).poll_next(cx);
-                    }
-                    this.finished = true;
                     this.pending = None;
-                    Poll::Ready(Some(result))
+                    if this.closing {
+                        this.finished = true;
+                        return Poll::Ready(Some(result));
+                    }
+                    match result {
+                        Ok(event) => {
+                            let Event::Complete { message, .. } = &event else {
+                                return Poll::Ready(Some(Ok(event)));
+                            };
+                            let calls = message
+                                .content
+                                .iter()
+                                .filter(|part| part.r#type == "tool_call")
+                                .map(decode_call)
+                                .collect::<Result<Vec<_>, _>>();
+                            let calls = match calls {
+                                Ok(calls) => calls,
+                                Err(error) => {
+                                    this.close(Err(error));
+                                    return Pin::new(this).poll_next(cx);
+                                }
+                            };
+                            this.messages.push(message.clone());
+                            if calls.is_empty() {
+                                this.close(Ok(event));
+                                return Pin::new(this).poll_next(cx);
+                            }
+                            if let Some(toolkit) = this.toolkit.clone() {
+                                let access = this.access.clone();
+                                let hooks = this.hooks.clone();
+                                let metadata = this.metadata.clone();
+                                let cancellation = this.cancellation.clone();
+                                let max_concurrency = this.max_concurrency;
+                                this.pending_tools = Some(Box::pin(execute_tool_batch(
+                                    toolkit,
+                                    access,
+                                    hooks,
+                                    metadata,
+                                    calls,
+                                    cancellation,
+                                    max_concurrency,
+                                )));
+                                // The model Complete is emitted before its tool calls.
+                                return Poll::Ready(Some(Ok(event)));
+                            }
+                            this.close(Err(Error::new(
+                                "INVALID_STATE",
+                                "model returned tool calls without a configured Toolkit",
+                            )));
+                            Pin::new(this).poll_next(cx)
+                        }
+                        Err(error) => {
+                            this.close(Err(error));
+                            Pin::new(this).poll_next(cx)
+                        }
+                    }
                 }
             };
         }
@@ -256,9 +476,34 @@ where
                 this.partial = message.clone();
                 let hooks = this.hooks.clone();
                 let cancellation = this.cancellation.clone();
+                let evaluator = this.evaluator.clone();
+                let input = this.input.clone();
                 this.pending = Some(Box::pin(async move {
                     let message = hooks.after_model(message, &cancellation).await?;
                     let message = hooks.after_execute(message, &cancellation).await?;
+                    let has_tool_calls = message
+                        .content
+                        .iter()
+                        .any(|part| part.r#type == "tool_call");
+                    if !has_tool_calls && let (Some(evaluator), Some(input)) = (evaluator, input) {
+                        let evaluation = evaluator(
+                            input,
+                            Messages::new([message.clone()]),
+                            cancellation.clone(),
+                        )
+                        .await?;
+                        if !evaluation.passed {
+                            let details = evaluation
+                                .feedback
+                                .and_then(|feedback| serde_json::to_string(&feedback).ok())
+                                .unwrap_or_else(|| "final result was rejected".into());
+                            return Err(Error::new(
+                                "EVALUATION_FAILED",
+                                "agent final result was rejected",
+                            )
+                            .with_details(details));
+                        }
+                    }
                     Ok(Event::Complete {
                         message,
                         usage,
@@ -292,7 +537,7 @@ impl<M> Agent<M> {
 
 impl<M> AgentContract for Agent<M>
 where
-    M: Chat,
+    M: Chat + 'static,
 {
     type Stream = Events<M::Stream>;
 
@@ -311,25 +556,63 @@ where
             .history
             .load(input.metadata.clone(), self.hooks.clone(), &cancellation)
             .await?;
-        let run = self.history.begin(original, &cancellation).await?;
+        let checkpoint_id = self
+            .checkpoint
+            .as_ref()
+            .map(|_| checkpoint_id(&input.metadata))
+            .transpose()?;
+        let run = self.history.begin(original.clone(), &cancellation).await?;
         let prepared = async {
-            let mut request = Request {
-                messages: initial_messages(input, prompt.as_deref(), history),
+            let messages = initial_messages(input.clone(), prompt.as_deref(), history);
+            let toolkit = match &self.toolkit {
+                Some(toolkit) => Some(toolkit.prepared(&cancellation).await?),
+                None => None,
+            };
+            let tool_definitions = toolkit
+                .as_ref()
+                .map(Toolkit::definitions)
+                .unwrap_or_default();
+            let model = Arc::clone(&self.model);
+            let request = Request {
+                messages: messages.clone(),
                 stream: true,
+                tools: tool_definitions.clone(),
                 ..Request::default()
             };
-            if let Some(toolkit) = &self.toolkit {
-                request.tools = toolkit.prepared(&cancellation).await?.definitions();
-            }
             let request = self.hooks.before_model(request, &cancellation).await?;
             let input_tokens = estimate_input_tokens(&request);
-            let provider = cancellable(self.model.stream(request), &cancellation).await?;
-            Ok::<_, Error>(Events::new(
-                provider,
-                cancellation,
-                input_tokens,
-                self.hooks.clone(),
-            ))
+            let provider = cancellable(model.stream(request), &cancellation).await?;
+            let hooks = self.hooks.clone();
+            let factory: ProviderFactory<M::Stream> = Arc::new(move |messages, cancellation| {
+                let model = Arc::clone(&model);
+                let hooks = hooks.clone();
+                let tools = tool_definitions.clone();
+                Box::pin(async move {
+                    let request = Request {
+                        messages,
+                        stream: true,
+                        tools,
+                        ..Request::default()
+                    };
+                    let request = hooks.before_model(request, &cancellation).await?;
+                    model.stream(request).await
+                })
+            });
+            Ok::<_, Error>(
+                Events::new(provider, cancellation, input_tokens, self.hooks.clone())
+                    .configure_tools(EventsConfig {
+                        provider_factory: factory,
+                        toolkit,
+                        access: self.access.clone(),
+                        evaluator: self.evaluator.clone(),
+                        checkpoint: self.checkpoint.clone(),
+                        input: input.clone(),
+                        checkpoint_id,
+                        metadata: input.metadata.clone(),
+                        messages,
+                        max_concurrency: self.max_concurrency,
+                    }),
+            )
         }
         .await;
         match prepared {
@@ -340,6 +623,203 @@ where
             Err(error) => Err(run.fail(error).await),
         }
     }
+}
+
+async fn execute_tool_batch(
+    toolkit: Arc<Toolkit>,
+    access: Access,
+    hooks: Hooks,
+    metadata: Map<String, Value>,
+    calls: Vec<Call>,
+    cancellation: Cancellation,
+    max_concurrency: usize,
+) -> Result<Vec<Message>, Error> {
+    let tasks = calls.into_iter().enumerate().map(|(index, call)| {
+        let toolkit = Arc::clone(&toolkit);
+        let access = access.clone();
+        let hooks = hooks.clone();
+        let metadata = metadata.clone();
+        let cancellation = cancellation.clone();
+        async move {
+            let result = execute_tool(toolkit, access, hooks, metadata, call, cancellation).await;
+            (index, result)
+        }
+    });
+    let mut results = futures_util::stream::iter(tasks)
+        .buffer_unordered(max_concurrency.max(1))
+        .collect::<Vec<_>>()
+        .await
+        .into_iter()
+        .map(|(index, result)| result.map(|messages| (index, messages)))
+        .collect::<Result<Vec<_>, _>>()?;
+    results.sort_by_key(|(index, _)| *index);
+    Ok(results
+        .into_iter()
+        .flat_map(|(_, messages)| messages.into_iter())
+        .collect())
+}
+
+fn checkpoint_state(
+    messages: &Messages,
+    usage: Option<crate::model::token::Usage>,
+    result: &Result<Event, Error>,
+) -> Value {
+    let status = match result {
+        Ok(Event::Complete {
+            finish_reason: Some(reason),
+            ..
+        }) if reason == "cancelled" => "stopped",
+        Ok(Event::Complete { .. }) => "succeeded",
+        Err(error) if error.code == "CANCELLED" => "stopped",
+        Err(_) => "failed",
+        Ok(Event::Delta { .. }) => "running",
+    };
+    json!({
+        "type": "agent",
+        "status": status,
+        "messages": messages,
+        "usage": usage,
+    })
+}
+
+async fn execute_tool(
+    toolkit: Arc<Toolkit>,
+    access: Access,
+    hooks: Hooks,
+    mut metadata: Map<String, Value>,
+    call: Call,
+    cancellation: Cancellation,
+) -> Result<Vec<Message>, Error> {
+    if cancellation.is_cancelled() {
+        return Err(Error::new("CANCELLED", "tool call cancelled"));
+    }
+    let result = if access.is_configured() {
+        async {
+            toolkit.validate(&call)?;
+            check_permission(&access, &hooks, &mut metadata, &call, &cancellation).await?;
+            let effective = toolkit.prepare_call(call.clone(), &cancellation).await?;
+            if effective.arguments != call.arguments {
+                check_permission(&access, &hooks, &mut metadata, &effective, &cancellation).await?;
+            }
+            toolkit.call_prepared(effective, &cancellation).await
+        }
+        .await
+    } else {
+        toolkit.call(call.clone(), &cancellation).await
+    };
+    let (effective_call, business) = match result {
+        Ok(result) => result,
+        Err(error) if error.code == "CANCELLED" => return Err(error),
+        Err(error) => return Ok(vec![tool_error_message(&call, error)]),
+    };
+    let evaluation = toolkit
+        .evaluate(&effective_call, &business, &cancellation)
+        .await?;
+    let mut messages = vec![tool_success_message(&call, business)];
+    if !evaluation.passed
+        && let Some(feedback) = evaluation.feedback
+    {
+        messages.extend(feedback.as_slice().iter().cloned());
+    }
+    Ok(messages)
+}
+
+async fn check_permission(
+    access: &Access,
+    hooks: &Hooks,
+    metadata: &mut Map<String, Value>,
+    call: &Call,
+    cancellation: &Cancellation,
+) -> Result<(), Error> {
+    metadata.insert(
+        "call".into(),
+        serde_json::to_value(call)
+            .map_err(|_| Error::new("INVALID_ARGUMENTS", "cannot encode permission call"))?,
+    );
+    let request = crate::permission::Request {
+        action: "call".into(),
+        resource: call.name.clone(),
+        metadata: metadata.clone(),
+    };
+    let request = hooks.before_permission(request, cancellation).await?;
+    access.check(request.clone(), cancellation).await?;
+    hooks.after_permission(request, cancellation).await
+}
+
+fn decode_call(part: &Part) -> Result<Call, Error> {
+    let call_id = part
+        .data
+        .get("call_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "tool call_id is missing"))?;
+    let name = part
+        .data
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "tool name is missing"))?;
+    let arguments = match part.data.get("arguments") {
+        Some(Value::Object(arguments)) => arguments.clone(),
+        Some(Value::String(raw)) => serde_json::from_str(raw).map_err(|error| {
+            Error::new("INVALID_ARGUMENTS", "tool arguments are not a JSON object")
+                .with_details(format!("raw_arguments={raw}; {error}"))
+        })?,
+        Some(_) => {
+            return Err(Error::new(
+                "INVALID_ARGUMENTS",
+                "tool arguments must be a JSON object",
+            ));
+        }
+        None => Map::new(),
+    };
+    Ok(Call {
+        call_id: call_id.to_owned(),
+        name: name.to_owned(),
+        arguments,
+    })
+}
+
+fn tool_success_message(call: &Call, mut message: Message) -> Message {
+    message
+        .metadata
+        .insert("call_id".into(), Value::String(call.call_id.clone()));
+    message
+        .metadata
+        .insert("name".into(), Value::String(call.name.clone()));
+    message
+}
+
+fn tool_error_message(call: &Call, error: Error) -> Message {
+    let error_value = json!({
+        "code": error.code,
+        "message": error.message,
+        "details": error.details,
+    });
+    let value = serde_json::to_string(&error_value).unwrap_or_else(|_| error_value.to_string());
+    Message {
+        role: Role::Tool,
+        content: vec![Part {
+            r#type: "text".into(),
+            data: part_data(json!({"value": value})),
+        }],
+        values: Map::from_iter([
+            ("error".into(), error_value),
+            ("call_id".into(), Value::String(call.call_id.clone())),
+            ("name".into(), Value::String(call.name.clone())),
+        ]),
+        metadata: Map::new(),
+        usage: None,
+    }
+}
+
+fn checkpoint_id(metadata: &Map<String, Value>) -> Result<i64, Error> {
+    let id = metadata
+        .get("chat_id")
+        .and_then(Value::as_i64)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "checkpoint requires chat_id"))?;
+    Ok(id)
 }
 
 pub(crate) fn initial_messages(
@@ -473,6 +953,8 @@ mod tests {
     use crate::components::agent::Agent as AgentContract;
     use crate::components::event::Event;
     use crate::components::message::Role;
+    use crate::components::permission::{Permission, Request as PermissionRequest};
+    use crate::components::tool::{Call, Tool, ToolDefinition};
     use futures_core::Stream;
     use futures_executor::block_on;
     use serde_json::json;
@@ -540,6 +1022,93 @@ mod tests {
                 events,
                 pending: self.pending,
             })
+        }
+    }
+
+    struct SequenceChat {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl Chat for SequenceChat {
+        type Stream = FakeStream;
+
+        async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
+            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            assert!(request.stream);
+            let mut message = Message::new(Role::Assistant);
+            if call == 0 {
+                message.content.push(Part {
+                    r#type: "tool_call".into(),
+                    data: part_data(json!({
+                        "call_id": "call_1",
+                        "name": "echo",
+                        "arguments": {"value": "hello"}
+                    })),
+                });
+            } else {
+                message.content.push(Part {
+                    r#type: "text".into(),
+                    data: part_data(json!({"value": "done"})),
+                });
+            }
+            Ok(FakeStream {
+                events: VecDeque::from([Ok(Event::Complete {
+                    message,
+                    usage: None,
+                    finish_reason: Some("stop".into()),
+                })]),
+                pending: false,
+            })
+        }
+    }
+
+    struct EchoTool {
+        definition: ToolDefinition,
+        calls: Arc<AtomicBool>,
+    }
+
+    impl Tool for EchoTool {
+        fn definition(&self) -> &ToolDefinition {
+            &self.definition
+        }
+
+        async fn call(&self, _call: &Call, _cancellation: &Cancellation) -> Result<Message, Error> {
+            self.calls.store(true, Ordering::SeqCst);
+            Ok(Message {
+                role: Role::Tool,
+                content: Vec::new(),
+                values: Map::from_iter([(String::from("value"), json!("hello"))]),
+                metadata: Map::new(),
+                usage: None,
+            })
+        }
+    }
+
+    fn echo_tool(calls: Arc<AtomicBool>) -> EchoTool {
+        EchoTool {
+            definition: ToolDefinition {
+                name: "echo".into(),
+                description: "Echo a value".into(),
+                parameters: serde_json::from_value(json!({
+                    "type": "object",
+                    "properties": {"value": {"type": "string"}},
+                    "required": ["value"]
+                }))
+                .expect("valid schema"),
+            },
+            calls,
+        }
+    }
+
+    struct DenyPermission;
+
+    impl Permission for DenyPermission {
+        async fn check(
+            &self,
+            _request: &PermissionRequest,
+            _cancellation: &Cancellation,
+        ) -> Result<(), Error> {
+            Err(Error::new("PERMISSION_DENIED", "tool call denied"))
         }
     }
 
@@ -785,5 +1354,70 @@ mod tests {
                 ..
             }))) if reason == "cancelled"
         ));
+    }
+
+    #[test]
+    fn chat_executes_model_tool_calls_and_continues_with_tool_message() {
+        let model_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tool_called = Arc::new(AtomicBool::new(false));
+        let agent = builder()
+            .model(SequenceChat {
+                calls: Arc::clone(&model_calls),
+            })
+            .toolkit(Toolkit::new().tool(echo_tool(Arc::clone(&tool_called))))
+            .build()
+            .expect("agent build");
+        let mut stream =
+            block_on(agent.run(Input::default(), Cancellation::new())).expect("agent stream");
+        let events = block_on(async {
+            let mut events = Vec::new();
+            while let Some(event) = stream.next().await {
+                events.push(event.expect("event"));
+            }
+            events
+        });
+
+        assert_eq!(model_calls.load(Ordering::SeqCst), 2);
+        assert!(tool_called.load(Ordering::SeqCst));
+        assert_eq!(events.len(), 3);
+        assert!(matches!(events[0], Event::Complete { .. }));
+        assert!(
+            matches!(events[1], Event::Complete { ref message, finish_reason: Some(ref reason), .. } if message.role == Role::Tool && reason == "tool")
+        );
+        assert!(
+            matches!(events[2], Event::Complete { ref message, .. } if message.role == Role::Assistant)
+        );
+    }
+
+    #[test]
+    fn denied_chat_tool_call_becomes_direct_tool_error_for_next_model_turn() {
+        let model_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tool_called = Arc::new(AtomicBool::new(false));
+        let agent = builder()
+            .model(SequenceChat {
+                calls: Arc::clone(&model_calls),
+            })
+            .toolkit(Toolkit::new().tool(echo_tool(Arc::clone(&tool_called))))
+            .permission(DenyPermission)
+            .build()
+            .expect("agent build");
+        let mut stream =
+            block_on(agent.run(Input::default(), Cancellation::new())).expect("agent stream");
+        let events = block_on(async {
+            let mut events = Vec::new();
+            while let Some(event) = stream.next().await {
+                events.push(event.expect("event"));
+            }
+            events
+        });
+
+        assert_eq!(model_calls.load(Ordering::SeqCst), 2);
+        assert!(!tool_called.load(Ordering::SeqCst));
+        assert!(
+            matches!(events[1], Event::Complete { ref message, .. } if message.role == Role::Tool && message.values.get("error").is_some())
+        );
+        assert!(
+            matches!(events.last(), Some(Event::Complete { message, .. }) if message.role == Role::Assistant)
+        );
     }
 }

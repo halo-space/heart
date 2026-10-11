@@ -10,5 +10,5 @@ pub trait Reasoner: Send + Sync {
         &self,
         input: Messages,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Messages, Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<Messages, Error>>;
 }

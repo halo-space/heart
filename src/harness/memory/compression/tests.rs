@@ -17,7 +17,7 @@ use crate::{
     middleware::Middleware,
     model::{
         chat::{Chat, Request},
-        content::Part,
+        content::part::Part,
     },
 };
 

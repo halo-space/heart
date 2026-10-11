@@ -110,8 +110,8 @@ impl Memory for Store {
         }
         self.inner.get(user_id, agent_id, session_id, kind, c).await
     }
-    async fn delete(&self, id: i64, version: u64, c: &Cancellation) -> Result<(), Error> {
-        self.inner.delete(id, version, c).await
+    async fn delete(&self, id: i64, c: &Cancellation) -> Result<(), Error> {
+        self.inner.delete(id, c).await
     }
     async fn list(
         &self,

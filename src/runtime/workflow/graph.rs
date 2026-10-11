@@ -31,7 +31,7 @@ pub const END: &str = "END";
 type BoxFuture = Pin<Box<dyn Future<Output = Result<Signal<Value>, Error>> + Send + 'static>>;
 type RouteFn = Arc<dyn Fn(&Messages) -> Result<Vec<String>, Error> + Send + Sync + 'static>;
 type LoopFn = Arc<dyn Fn(&Messages) -> bool + Send + Sync + 'static>;
-type AgentFuture = Pin<Box<dyn Future<Output = AgentRun> + Send + 'static>>;
+type AgentFuture = Pin<Box<dyn Future<Output = AgentRun> + 'static>>;
 
 pub(crate) struct AgentRun {
     pub result: Result<Messages, Error>,

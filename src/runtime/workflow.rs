@@ -33,7 +33,7 @@ type CheckpointSave = Arc<
             i64,
             Value,
             crate::Cancellation,
-        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>
+        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'static>>
         + Send
         + Sync,
 >;

@@ -32,15 +32,11 @@ use crate::runtime::cancellation::Cancellation;
 mod execution;
 use execution::TaskProgress;
 
-type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + Send + 'static>>;
+type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + 'static>>;
 type EvaluatorHandle =
     std::sync::Arc<dyn Fn(Input, Messages, Cancellation) -> EvaluationFuture + Send + Sync>;
 type CheckpointSave = Arc<
-    dyn Fn(
-            i64,
-            Value,
-            Cancellation,
-        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>
+    dyn Fn(i64, Value, Cancellation) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'static>>
         + Send
         + Sync,
 >;
@@ -260,7 +256,7 @@ impl<M> crate::components::agent::Agent for Agent<M>
 where
     M: Chat + 'static,
 {
-    type Stream = Pin<Box<dyn Stream<Item = Result<Event, Error>> + Send + 'static>>;
+    type Stream = Pin<Box<dyn Stream<Item = Result<Event, Error>> + 'static>>;
 
     async fn run(&self, input: Input, cancellation: Cancellation) -> Result<Self::Stream, Error> {
         if cancellation.is_cancelled() {
@@ -366,7 +362,7 @@ struct ReActState<M: Chat> {
     checkpoint: Option<CheckpointSave>,
     checkpoint_id: Option<i64>,
     plan_execution: bool,
-    active_tasks: FuturesUnordered<Pin<Box<dyn Future<Output = TaskProgress<M>> + Send + 'static>>>,
+    active_tasks: FuturesUnordered<Pin<Box<dyn Future<Output = TaskProgress<M>> + 'static>>>,
     task_error: Option<Error>,
     dispatch_failed: bool,
     is_plan_task: bool,
@@ -378,7 +374,7 @@ struct ReActState<M: Chat> {
     plan_result: Option<Message>,
     planning_error: Option<Error>,
     pending_calls: VecDeque<(usize, Call)>,
-    active_tools: FuturesUnordered<Pin<Box<dyn Future<Output = ToolProgress> + Send + 'static>>>,
+    active_tools: FuturesUnordered<Pin<Box<dyn Future<Output = ToolProgress> + 'static>>>,
     tool_results: BTreeMap<usize, Message>,
     evaluations: BTreeMap<String, ToolEvaluation>,
     partial: Message,
@@ -498,7 +494,7 @@ async fn next_react_event<M: Chat + 'static>(
         if let Err(error) = save_checkpoint(&state, checkpoint_snapshot(&state, &terminal)).await {
             terminal = Err(error);
         }
-        let (graph, execution) = closeout_state(&state, &terminal);
+        let (graph, state_json) = closeout_state(&state, &terminal);
         // Drop all pending futures even if the consumer retains the terminal
         // stream. Local resources are released; external effects are not undone.
         state.active_tools.clear();
@@ -507,7 +503,10 @@ async fn next_react_event<M: Chat + 'static>(
         state.pending_plans.clear();
         state.pending_replan = None;
         state.provider = None;
-        state.run.close_with_state(terminal, graph, execution).await
+        state
+            .run
+            .close_with_state(terminal, graph, state_json)
+            .await
     } else {
         result
     };
@@ -515,7 +514,7 @@ async fn next_react_event<M: Chat + 'static>(
 }
 
 /// Build the single final Agent state projection used by Chat.graph and
-/// Trace.execution. This is a closeout snapshot, not a second runtime model;
+/// Trace.state. This is a closeout snapshot, not a second runtime model;
 /// the values are serialized from the live execution graph and node states.
 fn closeout_state<M: Chat>(
     state: &ReActState<M>,
@@ -535,7 +534,7 @@ fn closeout_state<M: Chat>(
         Ok(Event::Delta { .. }) => "running",
     };
     let graph_value = serde_json::to_value(&graph.plan).ok();
-    let mut execution = json!({
+    let mut state_json = json!({
         "chat_id": state.query.metadata.get("chat_id").cloned().unwrap_or(Value::Null),
         "type": "agent",
         "status": status,
@@ -547,13 +546,13 @@ fn closeout_state<M: Chat>(
         "nodes": graph.nodes,
     });
     if let Some(error) = result.as_ref().err() {
-        execution["error"] = serde_json::to_value(error).unwrap_or(Value::Null);
+        state_json["error"] = serde_json::to_value(error).unwrap_or(Value::Null);
     }
-    execution["messages"] = serde_json::to_value(&state.messages).unwrap_or(Value::Null);
+    state_json["messages"] = serde_json::to_value(&state.messages).unwrap_or(Value::Null);
     if let Ok(Event::Complete { message, .. }) = result {
-        execution["final_message"] = serde_json::to_value(message).unwrap_or(Value::Null);
+        state_json["final_message"] = serde_json::to_value(message).unwrap_or(Value::Null);
     }
-    (graph_value, Some(execution))
+    (graph_value, Some(state_json))
 }
 
 fn result_status(result: &Result<Event, Error>) -> &'static str {
@@ -570,7 +569,7 @@ fn result_status(result: &Result<Event, Error>) -> &'static str {
 }
 
 /// Build the Agent Runtime checkpoint independently from Chat.graph and
-/// Trace.execution. A graph enriches the snapshot when present, but it is not
+/// Trace.state. A graph enriches the snapshot when present, but it is not
 /// a precondition for checkpointing an Agent run.
 fn checkpoint_snapshot<M: Chat>(state: &ReActState<M>, result: &Result<Event, Error>) -> Value {
     let mut snapshot = json!({
@@ -613,7 +612,7 @@ fn checkpoint_id(metadata: &Map<String, Value>) -> Result<i64, Error> {
 fn save_checkpoint<M: Chat>(
     state: &ReActState<M>,
     snapshot: Value,
-) -> impl Future<Output = Result<(), Error>> + Send + 'static {
+) -> impl Future<Output = Result<(), Error>> + 'static {
     // Own just the save handle and ID, not a borrow of the whole stream state.
     // Send event streams need not also be Sync.
     let save = state.checkpoint.clone();

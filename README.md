@@ -18,7 +18,7 @@ src/
 
 ## 当前状态
 
-项目正在持续开发中，当前已经包含基础 Agent/Workflow 结构、Chat Provider、Tool/MCP/Skill、短期与长期 Memory、消息与事件契约、文档处理组件以及本地 Sandbox 等能力。完整的 AgentGraph、Workflow 持久化恢复和更多 Provider 仍在逐步完善。
+项目正在持续开发中，当前已经包含基础 Agent/Workflow 结构、Chat Provider、Tool/MCP/Skill、短期与长期 Memory、消息与事件契约、文档处理组件以及本地 Sandbox 等能力。完整的 runtime::agent 执行图、Workflow 持久化恢复和更多 Provider 仍在逐步完善。
 
 项目使用 Rust 2024 Edition，最低目标版本为 Rust 1.98。
 

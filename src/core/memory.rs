@@ -301,22 +301,13 @@ impl Memory for InMemory {
         Ok(updated)
     }
 
-    async fn delete(
-        &self,
-        id: i64,
-        version: u64,
-        cancellation: &Cancellation,
-    ) -> Result<(), Error> {
+    async fn delete(&self, id: i64, cancellation: &Cancellation) -> Result<(), Error> {
         Self::ensure_active(cancellation)?;
         let mut records = self.records.write().expect("memory lock poisoned");
         Self::ensure_active(cancellation)?;
-        let stored = records
-            .get(&id)
-            .ok_or_else(|| Error::new("NOT_FOUND", "memory not found"))?;
-        if stored.item.version != version {
-            return Err(Error::new("CONFLICT", "memory version does not match"));
+        if records.remove(&id).is_none() {
+            return Err(Error::new("NOT_FOUND", "memory not found"));
         }
-        records.remove(&id);
         Ok(())
     }
 
@@ -579,7 +570,7 @@ mod tests {
                 .code,
             "CONFLICT"
         );
-        block_on(memory.delete(1, updated.version, &cancellation)).unwrap();
+        block_on(memory.delete(1, &cancellation)).unwrap();
         assert!(
             block_on(memory.get(7, Some(9), None, Type::Fact, &cancellation))
                 .unwrap()

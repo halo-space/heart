@@ -25,9 +25,9 @@ use crate::runtime::agent::usage::Ledger;
 mod compression;
 mod extraction;
 
-type LoadFuture = Pin<Box<dyn Future<Output = Result<Vec<Message>, Error>> + Send + 'static>>;
-type CreateFuture = Pin<Box<dyn Future<Output = Result<chat::Chat, Error>> + Send + 'static>>;
-type SaveFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
+type LoadFuture = Pin<Box<dyn Future<Output = Result<Vec<Message>, Error>> + 'static>>;
+type CreateFuture = Pin<Box<dyn Future<Output = Result<chat::Chat, Error>> + 'static>>;
+type SaveFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + 'static>>;
 
 trait Entry: Send + Sync {
     fn validate(&self) -> Result<(), Error>;
@@ -38,7 +38,7 @@ trait Entry: Send + Sync {
         cancellation: Cancellation,
     ) -> LoadFuture;
     fn create(&self, input: Input, cancellation: Cancellation) -> CreateFuture;
-    fn save(&self, value: chat::Chat, execution: Option<Value>) -> SaveFuture;
+    fn save(&self, value: chat::Chat, state: Option<Value>) -> SaveFuture;
 }
 
 struct Typed<S, C, T, L>(Arc<memory::Config<S, C, T, L>>, Arc<extraction::Jobs>);
@@ -115,7 +115,7 @@ where
         })
     }
 
-    fn save(&self, value: chat::Chat, execution: Option<Value>) -> SaveFuture {
+    fn save(&self, value: chat::Chat, state: Option<Value>) -> SaveFuture {
         let config = self.0.clone();
         Box::pin(async move {
             // Cancellation of execution must not cancel its final Stopped write.
@@ -124,7 +124,7 @@ where
                 .chat
                 .update(value.clone(), &Cancellation::new())
                 .await?;
-            if let Some(execution) = execution {
+            if let Some(state) = state {
                 config
                     .trace
                     .create(
@@ -133,7 +133,7 @@ where
                             user_id: Some(value.user_id),
                             session_id: Some(value.session_id),
                             agent_id: Some(value.agent_id),
-                            execution,
+                            state,
                             created_time: value.created_time,
                             updated_time: value.updated_time,
                         },
@@ -274,7 +274,7 @@ impl Run {
         &self,
         result: Result<crate::event::Event, Error>,
         graph: Option<Value>,
-        execution: Option<Value>,
+        state: Option<Value>,
     ) -> Result<crate::event::Event, Error> {
         let result = match &result {
             Ok(crate::event::Event::Complete { message, .. })
@@ -321,7 +321,7 @@ impl Run {
             record.message = message.filter(|m| m.role == Role::Assistant);
             record.usage = self.usage.total();
             record.completed_time = Some(now_ms());
-            entry.save(record, execution).await?;
+            entry.save(record, state).await?;
         }
         result
     }

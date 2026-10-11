@@ -6,8 +6,7 @@ use crate::components::message::Messages;
 use crate::components::model::Error;
 pub use crate::components::tool::ToolDefinition;
 
-/// Compatibility export; the canonical public path is `event::Event`.
-pub use crate::components::event::Event;
+use crate::components::event::Event;
 
 pub type Options = Map<String, Value>;
 
@@ -114,7 +113,7 @@ pub trait Chat: Send + Sync {
     fn stream(
         &self,
         request: Request,
-    ) -> impl std::future::Future<Output = Result<Self::Stream, Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<Self::Stream, Error>>;
 }
 
 #[cfg(test)]

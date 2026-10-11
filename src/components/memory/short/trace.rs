@@ -10,7 +10,8 @@ pub struct Trace {
     pub user_id: Option<i64>,
     pub session_id: Option<i64>,
     pub agent_id: Option<i64>,
-    pub execution: Value,
+    /// Complete Agent/Workflow state JSON captured at Chat closeout.
+    pub state: Value,
     pub created_time: i64,
     pub updated_time: i64,
 }
@@ -20,20 +21,20 @@ pub trait Store: Send + Sync {
         &self,
         value: Trace,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Trace, Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<Trace, Error>>;
     fn read(
         &self,
         chat_id: i64,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Trace, Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<Trace, Error>>;
     fn update(
         &self,
         value: Trace,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Trace, Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<Trace, Error>>;
     fn delete(
         &self,
         chat_id: i64,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<(), Error>>;
 }

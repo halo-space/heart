@@ -55,22 +55,22 @@ pub trait Store: Send + Sync {
         &self,
         value: Chat,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Chat, Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<Chat, Error>>;
     fn read(
         &self,
         id: i64,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Chat, Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<Chat, Error>>;
     fn update(
         &self,
         value: Chat,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Chat, Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<Chat, Error>>;
     fn delete(
         &self,
         id: i64,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<(), Error>>;
 
     /// Standard history read. Options contain explicit ownership filter,
     /// created_time ordering and pagination; no business-specific list name.
@@ -78,7 +78,7 @@ pub trait Store: Send + Sync {
         &self,
         options: Map<String, Value>,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Vec<Chat>, Error>> + Send {
+    ) -> impl std::future::Future<Output = Result<Vec<Chat>, Error>> {
         async move {
             let _ = (options, cancellation);
             Err(Error::new(

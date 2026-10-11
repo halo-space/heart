@@ -91,7 +91,7 @@ mod tests {
                 user_id: Some(2),
                 session_id: Some(101),
                 agent_id: Some(3),
-                execution: Value::Object(Default::default()),
+                state: Value::Object(Default::default()),
                 created_time: 0,
                 updated_time: 0,
             },

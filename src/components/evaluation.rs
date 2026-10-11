@@ -21,5 +21,5 @@ pub trait Evaluator: Send + Sync {
         input: &Input,
         result: &Messages,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Evaluation, Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<Evaluation, Error>>;
 }

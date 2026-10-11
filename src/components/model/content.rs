@@ -23,6 +23,3 @@ pub mod part {
         pub data: Map<String, Value>,
     }
 }
-
-/// Compatibility re-export for callers using the earlier `content::Part` path.
-pub use part::Part;
