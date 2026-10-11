@@ -37,8 +37,8 @@ trait Entry: Send + Sync {
         hooks: Hooks,
         cancellation: Cancellation,
     ) -> LoadFuture;
-    fn create(&self, input: Input, cancellation: Cancellation) -> CreateFuture;
-    fn resume(&self, input: Input, cancellation: Cancellation) -> CreateFuture;
+    fn create(&self, input: Input, owner: short::Type, cancellation: Cancellation) -> CreateFuture;
+    fn resume(&self, input: Input, owner: short::Type, cancellation: Cancellation) -> CreateFuture;
     fn save(&self, value: chat::Chat, state: Option<Value>) -> SaveFuture;
 }
 
@@ -66,7 +66,7 @@ where
         Box::pin(async move { load(config, jobs, metadata, hooks, &cancellation).await })
     }
 
-    fn create(&self, input: Input, cancellation: Cancellation) -> CreateFuture {
+    fn create(&self, input: Input, owner: short::Type, cancellation: Cancellation) -> CreateFuture {
         let config = self.0.clone();
         Box::pin(async move {
             let id = Identity::parse(&input.metadata)?;
@@ -78,7 +78,7 @@ where
                 user_id: id.user_id,
                 agent_id: id.agent_id,
                 session_id: id.session_id,
-                r#type: short::Type::Agent,
+                r#type: owner.clone(),
                 status: chat::Status::Running,
                 input: Some(chat::Request {
                     metadata: input.metadata,
@@ -103,7 +103,7 @@ where
             };
             let record = config.chat.create(request.clone(), &cancellation).await?;
             if record.id != request.id
-                || !id.matches(&record)
+                || !id.matches(&record, &owner)
                 || record.input != request.input
                 || record.status != chat::Status::Running
             {
@@ -116,12 +116,12 @@ where
         })
     }
 
-    fn resume(&self, input: Input, cancellation: Cancellation) -> CreateFuture {
+    fn resume(&self, input: Input, owner: short::Type, cancellation: Cancellation) -> CreateFuture {
         let config = self.0.clone();
         Box::pin(async move {
             let id = Identity::parse(&input.metadata)?;
             let record = config.chat.read(id.chat_id, &cancellation).await?;
-            if !id.matches(&record) || record.r#type != short::Type::Agent {
+            if !id.matches(&record, &owner) {
                 return Err(Error::new(
                     "CONFLICT",
                     "restored Chat identity does not match",
@@ -171,8 +171,18 @@ impl History {
         input: Input,
         cancellation: &Cancellation,
     ) -> Result<Run, Error> {
+        self.resume_for(input, short::Type::Agent, cancellation)
+            .await
+    }
+
+    pub(crate) async fn resume_for(
+        &self,
+        input: Input,
+        owner: short::Type,
+        cancellation: &Cancellation,
+    ) -> Result<Run, Error> {
         let record = match &self.0 {
-            Some(entry) => Some(entry.resume(input, cancellation.clone()).await?),
+            Some(entry) => Some(entry.resume(input, owner, cancellation.clone()).await?),
             None => None,
         };
         Ok(Run {
@@ -237,8 +247,18 @@ impl History {
         input: Input,
         cancellation: &Cancellation,
     ) -> Result<Run, Error> {
+        self.begin_for(input, short::Type::Agent, cancellation)
+            .await
+    }
+
+    pub(crate) async fn begin_for(
+        &self,
+        input: Input,
+        owner: short::Type,
+        cancellation: &Cancellation,
+    ) -> Result<Run, Error> {
         let record = match &self.0 {
-            Some(entry) => Some(entry.create(input, cancellation.clone()).await?),
+            Some(entry) => Some(entry.create(input, owner, cancellation.clone()).await?),
             None => None,
         };
         Ok(Run {
@@ -356,6 +376,29 @@ impl Run {
         }
         result
     }
+
+    /// Workflow closeout uses the same Chat/Trace persistence path but does
+    /// not require its terminal output to be an Assistant message. A
+    /// Workflow may intentionally finish with a Function or Tool message;
+    /// Chat.message remains optional while Trace.state retains the complete
+    /// runtime scene.
+    pub(crate) async fn close_workflow(
+        &self,
+        status: chat::Status,
+        message: Option<Message>,
+        graph: Option<Value>,
+        state: Option<Value>,
+    ) -> Result<(), Error> {
+        if let (Some(entry), Some(mut record)) = (&self.history.0, self.record.clone()) {
+            record.status = status;
+            record.message = message.filter(|m| m.role == Role::Assistant);
+            record.graph = graph;
+            record.usage = self.usage.total();
+            record.completed_time = Some(now_ms());
+            entry.save(record, state).await?;
+        }
+        Ok(())
+    }
 }
 
 fn now_ms() -> i64 {
@@ -394,12 +437,12 @@ impl Identity {
         })
     }
 
-    fn matches(&self, value: &chat::Chat) -> bool {
+    fn matches(&self, value: &chat::Chat, owner: &short::Type) -> bool {
         value.tenant_id == self.tenant_id
             && value.user_id == self.user_id
             && value.agent_id == self.agent_id
             && value.session_id == self.session_id
-            && value.r#type == short::Type::Agent
+            && &value.r#type == owner
     }
 }
 
@@ -442,7 +485,7 @@ where
     let mut chats = cancellable(config.chat.list(options, cancellation), cancellation).await?;
     let mut ids = std::collections::BTreeSet::new();
     for value in &chats {
-        if value.id <= 0 || !identity.matches(value) || !ids.insert(value.id) {
+        if value.id <= 0 || !identity.matches(value, &short::Type::Agent) || !ids.insert(value.id) {
             return Err(Error::new(
                 "INVALID_ARGUMENTS",
                 "invalid memory Chat history ownership or duplicate id",
