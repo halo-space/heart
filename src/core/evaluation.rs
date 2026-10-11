@@ -1,5 +1,5 @@
 //! Agent final-output evaluation implementations. Neither model nor function
-//! evaluation retries execution, replans tasks, or changes an AgentGraph.
+//! evaluation retries execution, replans tasks, or changes the Agent execution graph.
 
 use std::future::Future;
 

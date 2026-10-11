@@ -8,7 +8,7 @@ use crate::components::model::token::Usage;
 use crate::components::plan::Plan;
 use crate::runtime::agent::node::{State, Status};
 
-/// Mutable AgentGraph execution state for one Plan version.
+/// Mutable execution-graph state for one Agent plan version.
 ///
 /// The graph only tracks logical node state and dependency activation. It does
 /// not own a Planner, Evaluator, concurrency executor, Memory, or Checkpoint.
@@ -59,7 +59,7 @@ impl Graph {
         Ok(graph)
     }
 
-    /// Update the AgentGraph with the complete plan returned by Planner.
+    /// Update the execution graph with the complete plan returned by Planner.
     /// Validation finishes before any current state is changed.
     pub(crate) fn update(&mut self, plan: Plan) -> Result<(), Error> {
         if self
@@ -89,13 +89,13 @@ impl Graph {
     pub fn state(&self, node_id: &str) -> Result<&State, Error> {
         self.nodes
             .get(node_id)
-            .ok_or_else(|| Error::new("NOT_FOUND", "agent graph node was not found"))
+            .ok_or_else(|| Error::new("NOT_FOUND", "execution graph node was not found"))
     }
 
     pub fn state_mut(&mut self, node_id: &str) -> Result<&mut State, Error> {
         self.nodes
             .get_mut(node_id)
-            .ok_or_else(|| Error::new("NOT_FOUND", "agent graph node was not found"))
+            .ok_or_else(|| Error::new("NOT_FOUND", "execution graph node was not found"))
     }
 
     /// Return the direct source node IDs for a logical node. The order is
@@ -123,7 +123,7 @@ impl Graph {
             if state.status != Status::Succeeded {
                 return Err(Error::new(
                     "INVALID_STATE",
-                    "agent graph source has not succeeded",
+                    "execution graph source has not succeeded",
                 ));
             }
             // A status flag alone is not a committed execution. Reject an
@@ -136,13 +136,13 @@ impl Graph {
             {
                 return Err(Error::new(
                     "INVALID_STATE",
-                    "agent graph source has no successful current attempt",
+                    "execution graph source has no successful current attempt",
                 ));
             }
             let source_messages = state.messages.clone().ok_or_else(|| {
                 Error::new(
                     "INVALID_STATE",
-                    "agent graph source has no committed messages",
+                    "execution graph source has no committed messages",
                 )
             })?;
             messages.insert(source, source_messages);
@@ -209,7 +209,7 @@ impl Graph {
         if running.saturating_add(starts.len()) > max_concurrency {
             return Err(Error::new(
                 "CONCURRENCY_LIMIT",
-                "agent graph batch exceeds max_concurrency",
+                "execution graph batch exceeds max_concurrency",
             ));
         }
 
@@ -219,7 +219,7 @@ impl Graph {
             if !seen.insert(start.node_id.as_str()) {
                 return Err(Error::new(
                     "INVALID_ARGUMENTS",
-                    "agent graph batch contains a duplicate node",
+                    "execution graph batch contains a duplicate node",
                 ));
             }
             self.validate_start(&start.node_id)?;
@@ -353,7 +353,7 @@ impl Graph {
         if !state.can_transition_to(&next) {
             return Err(Error::new(
                 "INVALID_STATE",
-                "agent graph node state transition is not allowed",
+                "execution graph node state transition is not allowed",
             ));
         }
         state.status = next;

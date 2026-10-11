@@ -140,7 +140,7 @@ impl<M> Builder<M> {
     }
 
     /// Attach the Agent checkpoint backend. A configured backend is written
-    /// for the Agent runtime whether or not this run uses an AgentGraph.
+    /// for the Agent runtime whether or not this run uses an execution graph.
     /// Graph fields are included only when a plan has been accepted; an
     /// ordinary run still persists its messages, usage and terminal status.
     pub fn checkpoint<C: crate::checkpoint::Checkpoint + 'static>(mut self, checkpoint: C) -> Self {
@@ -516,7 +516,7 @@ async fn next_react_event<M: Chat + 'static>(
 
 /// Build the single final Agent state projection used by Chat.graph and
 /// Trace.execution. This is a closeout snapshot, not a second runtime model;
-/// the values are serialized from the live AgentGraph and node states.
+/// the values are serialized from the live execution graph and node states.
 fn closeout_state<M: Chat>(
     state: &ReActState<M>,
     result: &Result<Event, Error>,
