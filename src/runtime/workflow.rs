@@ -244,17 +244,6 @@ impl Runtime {
         next_exec_id: Arc<dyn Fn() -> i64 + Send + Sync>,
         cancellation: crate::Cancellation,
     ) -> Result<Messages, Error> {
-        // A terminal snapshot is already closed. Re-running it is a read of
-        // the committed result and must not create another Chat/Trace record
-        // or invoke any node again.
-        if matches!(
-            self.state.status,
-            graph::Status::Succeeded | graph::Status::Failed | graph::Status::Cancelled
-        ) {
-            return self
-                .run_inner(initial_messages, next_exec_id, cancellation)
-                .await;
-        }
         self.state.check_identity(self.state.chat_id)?;
         if self
             .state
@@ -276,6 +265,17 @@ impl Runtime {
                 "CONFLICT",
                 "input chat_id does not match this Workflow run",
             ));
+        }
+        // A terminal snapshot is already closed. Re-running it is a read of
+        // the committed result and must not create another Chat/Trace record
+        // or invoke any node again.
+        if matches!(
+            self.state.status,
+            graph::Status::Succeeded | graph::Status::Failed | graph::Status::Cancelled
+        ) {
+            return self
+                .run_inner(initial_messages, next_exec_id, cancellation)
+                .await;
         }
         self.begin_history(&initial_messages, &cancellation).await?;
         let result = self
