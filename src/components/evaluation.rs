@@ -12,15 +12,14 @@ pub struct Evaluation {
     pub feedback: Option<Messages>,
 }
 
-#[allow(async_fn_in_trait)]
 /// Judge the original input against the final Agent result. A business
 /// rejection returns passed=false/feedback; technical failure returns Error.
 /// This contract does not identify plan nodes, retry tools or replan a graph.
 pub trait Evaluator: Send + Sync {
-    async fn evaluate(
+    fn evaluate(
         &self,
         input: &Input,
         result: &Messages,
         cancellation: &Cancellation,
-    ) -> Result<Evaluation, Error>;
+    ) -> impl std::future::Future<Output = Result<Evaluation, Error>> + Send;
 }

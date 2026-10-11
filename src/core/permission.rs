@@ -20,7 +20,7 @@ impl<F> Permission<F> {
 impl<F, Fut> Contract for Permission<F>
 where
     F: Fn(Request, Cancellation) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<(), Error>>,
+    Fut: Future<Output = Result<(), Error>> + Send,
 {
     async fn check(&self, request: &Request, cancellation: &Cancellation) -> Result<(), Error> {
         super::operation::check(cancellation)?;

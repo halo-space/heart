@@ -7,24 +7,23 @@ use std::{future::Future, pin::Pin, sync::Arc};
 /// {"user":{"fact":"..."},"agent":{"preference":"..."}}.
 /// Only summary/fact/preference are accepted; omitted types have no new content.
 /// The caller supplies identity, source ranges, IDs and persistence.
-#[allow(async_fn_in_trait)]
 pub trait Extractor: Send + Sync {
-    async fn extract(
+    fn extract(
         &self,
         input: &Messages,
         cancellation: &Cancellation,
-    ) -> Result<Messages, Error>;
+    ) -> impl std::future::Future<Output = Result<Messages, Error>> + Send;
     /// Complete replacement text, recomputed against fresh state on conflict.
-    async fn merge(
+    fn merge(
         &self,
         current: &Item,
         content: &str,
         cancellation: &Cancellation,
-    ) -> Result<String, Error>;
+    ) -> impl std::future::Future<Output = Result<String, Error>> + Send;
 }
 
-type ExtractFuture = Pin<Box<dyn Future<Output = Result<Messages, Error>>>>;
-type MergeFuture = Pin<Box<dyn Future<Output = Result<String, Error>>>>;
+type ExtractFuture = Pin<Box<dyn Future<Output = Result<Messages, Error>> + Send + 'static>>;
+type MergeFuture = Pin<Box<dyn Future<Output = Result<String, Error>> + Send + 'static>>;
 trait Entry: Send + Sync {
     fn extract(&self, input: Messages, cancellation: Cancellation) -> ExtractFuture;
     fn merge(&self, current: Item, content: String, cancellation: Cancellation) -> MergeFuture;

@@ -276,18 +276,17 @@ impl Plan {
     }
 }
 
-#[allow(async_fn_in_trait)]
 /// Return one complete logical DAG from the original Agent input, optional
 /// read-only plan snapshot and feedback. Implementations do not own Runtime,
 /// execution history or persistence; callers control retries.
 pub trait Planner: Send + Sync {
-    async fn plan(
+    fn plan(
         &self,
         query: &Input,
         current_plan: Option<&Plan>,
         feedback: Option<&Messages>,
         cancellation: &Cancellation,
-    ) -> Result<Plan, Error>;
+    ) -> impl std::future::Future<Output = Result<Plan, Error>> + Send;
 }
 
 fn has_cycle<'a>(

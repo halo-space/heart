@@ -17,9 +17,12 @@ pub struct Definition {
 /// A Skill is an agent-facing capability bundle. It may internally compose
 /// Prompt, Tool, Agent, MCP, or ordinary functions, but exposes one message
 /// input/output contract and does not own Runtime state.
-#[allow(async_fn_in_trait)]
 pub trait Skill: Send + Sync {
     fn definition(&self) -> &Definition;
 
-    async fn run(&self, input: Messages, cancellation: &Cancellation) -> Result<Messages, Error>;
+    fn run(
+        &self,
+        input: Messages,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Messages, Error>> + Send;
 }

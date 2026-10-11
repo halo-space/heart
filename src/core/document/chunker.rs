@@ -89,7 +89,7 @@ impl document::Chunker for Chunker {
         &self,
         documents: Vec<Document>,
         cancellation: &Cancellation,
-        next_id: &mut dyn FnMut() -> i64,
+        next_id: &mut (dyn FnMut() -> i64 + Send),
     ) -> Result<Vec<Document>, Error> {
         check_cancelled(cancellation)?;
         // IDs are assigned only after all documents have been split. A failure

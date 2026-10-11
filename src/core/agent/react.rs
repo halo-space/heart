@@ -1,8 +1,11 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 use std::task::Poll;
-use std::{cell::Cell, rc::Rc, sync::Arc};
 
 use futures_core::Stream;
 use futures_util::{
@@ -29,11 +32,15 @@ use crate::runtime::cancellation::Cancellation;
 mod execution;
 use execution::TaskProgress;
 
-type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>>>>;
+type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + Send + 'static>>;
 type EvaluatorHandle =
     std::sync::Arc<dyn Fn(Input, Messages, Cancellation) -> EvaluationFuture + Send + Sync>;
 type CheckpointSave = Arc<
-    dyn Fn(i64, Value, Cancellation) -> Pin<Box<dyn Future<Output = Result<(), Error>>>>
+    dyn Fn(
+            i64,
+            Value,
+            Cancellation,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>
         + Send
         + Sync,
 >;
@@ -253,7 +260,7 @@ impl<M> crate::components::agent::Agent for Agent<M>
 where
     M: Chat + 'static,
 {
-    type Stream = Pin<Box<dyn Stream<Item = Result<Event, Error>> + 'static>>;
+    type Stream = Pin<Box<dyn Stream<Item = Result<Event, Error>> + Send + 'static>>;
 
     async fn run(&self, input: Input, cancellation: Cancellation) -> Result<Self::Stream, Error> {
         if cancellation.is_cancelled() {
@@ -303,7 +310,7 @@ where
             access: self.access.clone(),
             evaluator: self.evaluator.clone(),
             metadata,
-            iteration: Rc::new(Cell::new(0)),
+            iteration: Arc::new(AtomicUsize::new(0)),
             provider: None,
             query: original,
             graph: None,
@@ -349,8 +356,8 @@ struct ReActState<M: Chat> {
     cancellation: Cancellation,
     messages: Messages,
     // Each planned task has private context but shares this run's model-call
-    // budget. Native non-Send futures remain supported without spawning.
-    iteration: Rc<Cell<usize>>,
+    // budget. Atomic reservation keeps the budget safe across worker threads.
+    iteration: Arc<AtomicUsize>,
     task_base: Messages,
     provider: Option<Pin<Box<M::Stream>>>,
     query: Input,
@@ -359,7 +366,7 @@ struct ReActState<M: Chat> {
     checkpoint: Option<CheckpointSave>,
     checkpoint_id: Option<i64>,
     plan_execution: bool,
-    active_tasks: FuturesUnordered<Pin<Box<dyn Future<Output = TaskProgress<M>>>>>,
+    active_tasks: FuturesUnordered<Pin<Box<dyn Future<Output = TaskProgress<M>> + Send + 'static>>>,
     task_error: Option<Error>,
     dispatch_failed: bool,
     is_plan_task: bool,
@@ -371,7 +378,7 @@ struct ReActState<M: Chat> {
     plan_result: Option<Message>,
     planning_error: Option<Error>,
     pending_calls: VecDeque<(usize, Call)>,
-    active_tools: FuturesUnordered<Pin<Box<dyn Future<Output = ToolProgress>>>>,
+    active_tools: FuturesUnordered<Pin<Box<dyn Future<Output = ToolProgress> + Send + 'static>>>,
     tool_results: BTreeMap<usize, Message>,
     evaluations: BTreeMap<String, ToolEvaluation>,
     partial: Message,
@@ -603,11 +610,21 @@ fn checkpoint_id(metadata: &Map<String, Value>) -> Result<i64, Error> {
     Ok(id)
 }
 
-async fn save_checkpoint<M: Chat>(state: &ReActState<M>, snapshot: Value) -> Result<(), Error> {
-    let (Some(save), Some(id)) = (&state.checkpoint, state.checkpoint_id) else {
-        return Ok(());
-    };
-    save(id, snapshot, Cancellation::new()).await
+fn save_checkpoint<M: Chat>(
+    state: &ReActState<M>,
+    snapshot: Value,
+) -> impl Future<Output = Result<(), Error>> + Send + 'static {
+    // Own just the save handle and ID, not a borrow of the whole stream state.
+    // Send event streams need not also be Sync.
+    let save = state.checkpoint.clone();
+    let id = state.checkpoint_id;
+    async move {
+        if let (Some(save), Some(id)) = (save, id) {
+            save(id, snapshot, Cancellation::new()).await
+        } else {
+            Ok(())
+        }
+    }
 }
 
 fn running_snapshot<M: Chat>(state: &ReActState<M>) -> Value {
@@ -1050,7 +1067,13 @@ async fn next_react_event_inner<M: Chat + 'static>(
             }
         }
 
-        if state.iteration.get() >= state.max_iters {
+        if state
+            .iteration
+            .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
+                (used < state.max_iters).then_some(used + 1)
+            })
+            .is_err()
+        {
             state.done = true;
             return Some((
                 Err(Error::new(
@@ -1060,8 +1083,6 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 state,
             ));
         }
-
-        state.iteration.set(state.iteration.get() + 1);
 
         let request = if let Some(evaluation) = state.pending_replan.take() {
             let request = match crate::core::plan::stream_request(

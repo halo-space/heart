@@ -51,22 +51,40 @@ pub struct Chat {
 }
 
 pub trait Store: Send + Sync {
-    async fn create(&self, value: Chat, cancellation: &Cancellation) -> Result<Chat, Error>;
-    async fn read(&self, id: i64, cancellation: &Cancellation) -> Result<Chat, Error>;
-    async fn update(&self, value: Chat, cancellation: &Cancellation) -> Result<Chat, Error>;
-    async fn delete(&self, id: i64, cancellation: &Cancellation) -> Result<(), Error>;
+    fn create(
+        &self,
+        value: Chat,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Chat, Error>> + Send;
+    fn read(
+        &self,
+        id: i64,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Chat, Error>> + Send;
+    fn update(
+        &self,
+        value: Chat,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Chat, Error>> + Send;
+    fn delete(
+        &self,
+        id: i64,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
 
     /// Standard history read. Options contain explicit ownership filter,
     /// created_time ordering and pagination; no business-specific list name.
-    async fn list(
+    fn list(
         &self,
         options: Map<String, Value>,
         cancellation: &Cancellation,
-    ) -> Result<Vec<Chat>, Error> {
-        let _ = (options, cancellation);
-        Err(Error::new(
-            "UNSUPPORTED",
-            "chat history listing is not supported",
-        ))
+    ) -> impl std::future::Future<Output = Result<Vec<Chat>, Error>> + Send {
+        async move {
+            let _ = (options, cancellation);
+            Err(Error::new(
+                "UNSUPPORTED",
+                "chat history listing is not supported",
+            ))
+        }
     }
 }

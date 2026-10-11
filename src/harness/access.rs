@@ -6,7 +6,7 @@ use crate::{
     permission::{Permission, Request},
 };
 
-type CheckFuture = Pin<Box<dyn Future<Output = Result<(), Error>>>>;
+type CheckFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
 
 trait Entry: Send + Sync {
     fn check(&self, request: Request, cancellation: Cancellation) -> CheckFuture;

@@ -16,8 +16,24 @@ pub struct Trace {
 }
 
 pub trait Store: Send + Sync {
-    async fn create(&self, value: Trace, cancellation: &Cancellation) -> Result<Trace, Error>;
-    async fn read(&self, chat_id: i64, cancellation: &Cancellation) -> Result<Trace, Error>;
-    async fn update(&self, value: Trace, cancellation: &Cancellation) -> Result<Trace, Error>;
-    async fn delete(&self, chat_id: i64, cancellation: &Cancellation) -> Result<(), Error>;
+    fn create(
+        &self,
+        value: Trace,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Trace, Error>> + Send;
+    fn read(
+        &self,
+        chat_id: i64,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Trace, Error>> + Send;
+    fn update(
+        &self,
+        value: Trace,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Trace, Error>> + Send;
+    fn delete(
+        &self,
+        chat_id: i64,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
 }

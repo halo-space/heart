@@ -209,7 +209,7 @@ pub mod raptor {
             &self,
             documents: &[Document],
             cancellation: &Cancellation,
-            next_id: &mut dyn FnMut() -> i64,
+            next_id: &mut (dyn FnMut() -> i64 + Send),
         ) -> Result<Output, Error> {
             if cancellation.is_cancelled() {
                 return Err(Error::new("CANCELLED", "raptor cancelled"));

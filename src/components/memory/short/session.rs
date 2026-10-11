@@ -30,8 +30,24 @@ pub struct Session {
 }
 
 pub trait Store: Send + Sync {
-    async fn create(&self, value: Session, cancellation: &Cancellation) -> Result<Session, Error>;
-    async fn read(&self, id: i64, cancellation: &Cancellation) -> Result<Session, Error>;
-    async fn update(&self, value: Session, cancellation: &Cancellation) -> Result<Session, Error>;
-    async fn delete(&self, id: i64, cancellation: &Cancellation) -> Result<(), Error>;
+    fn create(
+        &self,
+        value: Session,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Session, Error>> + Send;
+    fn read(
+        &self,
+        id: i64,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Session, Error>> + Send;
+    fn update(
+        &self,
+        value: Session,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Session, Error>> + Send;
+    fn delete(
+        &self,
+        id: i64,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
 }

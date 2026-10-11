@@ -5,7 +5,6 @@ pub type Error = crate::Error;
 
 /// Context compression is a pure component operation. Harness coordinates
 /// triggering and Session updates; runtime::agent owns run accounting.
-#[allow(async_fn_in_trait)]
 pub trait Compressor: Send + Sync {
     /// Trigger threshold used by an automatic-compression owner. This is not
     /// the target summary length or the model's max_tokens. Direct compress
@@ -14,9 +13,9 @@ pub trait Compressor: Send + Sync {
         None
     }
 
-    async fn compress(
+    fn compress(
         &self,
         input: Messages,
         cancellation: &Cancellation,
-    ) -> Result<Messages, Error>;
+    ) -> impl std::future::Future<Output = Result<Messages, Error>> + Send;
 }

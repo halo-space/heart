@@ -74,9 +74,11 @@ pub fn message(
     Ok(output)
 }
 
-#[allow(async_fn_in_trait)]
 pub trait Embed: Send + Sync {
-    async fn embed(&self, request: Request) -> Result<Message, Error>;
+    fn embed(
+        &self,
+        request: Request,
+    ) -> impl std::future::Future<Output = Result<Message, Error>> + Send;
 }
 
 #[cfg(test)]

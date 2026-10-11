@@ -72,25 +72,24 @@ pub mod hybrid {
 
 /// Search is a backend capability. It does not own an Embed instance and does
 /// not choose storage; callers provide vectors before invoking vector/hybrid.
-#[allow(async_fn_in_trait)]
 pub trait Search: Send + Sync {
-    async fn keyword(
+    fn keyword(
         &self,
         request: keyword::Request,
         cancellation: &Cancellation,
-    ) -> Result<Vec<Document>, Error>;
+    ) -> impl std::future::Future<Output = Result<Vec<Document>, Error>> + Send;
 
-    async fn vector(
+    fn vector(
         &self,
         request: vector::Request,
         cancellation: &Cancellation,
-    ) -> Result<Vec<Document>, Error>;
+    ) -> impl std::future::Future<Output = Result<Vec<Document>, Error>> + Send;
 
-    async fn hybrid(
+    fn hybrid(
         &self,
         request: hybrid::Request,
         cancellation: &Cancellation,
-    ) -> Result<Vec<Document>, Error>;
+    ) -> impl std::future::Future<Output = Result<Vec<Document>, Error>> + Send;
 }
 
 #[cfg(test)]

@@ -116,7 +116,7 @@ pub struct Agent<M> {
     max_concurrency: usize,
 }
 
-type CompletionFuture = Pin<Box<dyn Future<Output = Result<Event, Error>>>>;
+type CompletionFuture = Pin<Box<dyn Future<Output = Result<Event, Error>> + Send + 'static>>;
 
 /// The concrete stream returned by this Chat Agent. Its items remain the
 /// shared model Event; this type only owns cancellation and partial state.

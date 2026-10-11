@@ -19,11 +19,17 @@ pub struct Definition {
 
 /// MCP protocol boundary. Discovery produces normal Tool definitions; MCP is
 /// not itself a Workflow Node or a second Tool contract.
-#[allow(async_fn_in_trait)]
 pub trait Server: Send + Sync {
     fn definition(&self) -> &Definition;
 
-    async fn list_tools(&self, cancellation: &Cancellation) -> Result<Vec<ToolDefinition>, Error>;
+    fn list_tools(
+        &self,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Vec<ToolDefinition>, Error>> + Send;
 
-    async fn call(&self, call: Call, cancellation: &Cancellation) -> Result<Message, Error>;
+    fn call(
+        &self,
+        call: Call,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Message, Error>> + Send;
 }

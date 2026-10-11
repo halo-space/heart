@@ -232,53 +232,60 @@ where
     }
 }
 
-#[allow(async_fn_in_trait)]
 pub trait Memory: Send + Sync {
-    async fn write(&self, request: Request, cancellation: &Cancellation) -> Result<Item, Error>;
+    fn write(
+        &self,
+        request: Request,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Item, Error>> + Send;
 
-    async fn update(
+    fn update(
         &self,
         request: Request,
         version: u64,
         cancellation: &Cancellation,
-    ) -> Result<Item, Error>;
+    ) -> impl std::future::Future<Output = Result<Item, Error>> + Send;
 
-    async fn delete(&self, id: i64, version: u64, cancellation: &Cancellation)
-    -> Result<(), Error>;
+    fn delete(
+        &self,
+        id: i64,
+        version: u64,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
 
-    async fn get(
+    fn get(
         &self,
         user_id: i64,
         agent_id: Option<i64>,
         session_id: Option<i64>,
         r#type: Type,
         cancellation: &Cancellation,
-    ) -> Result<Option<Item>, Error>;
+    ) -> impl std::future::Future<Output = Result<Option<Item>, Error>> + Send;
 
-    async fn list(
+    fn list(
         &self,
         user_id: i64,
         agent_id: Option<i64>,
         session_id: Option<i64>,
         r#type: Type,
         cancellation: &Cancellation,
-    ) -> Result<Vec<Item>, Error>;
+    ) -> impl std::future::Future<Output = Result<Vec<Item>, Error>> + Send;
 
-    async fn keyword(
+    fn keyword(
         &self,
         request: keyword::Request,
         cancellation: &Cancellation,
-    ) -> Result<Vec<Item>, Error>;
+    ) -> impl std::future::Future<Output = Result<Vec<Item>, Error>> + Send;
 
-    async fn vector(
+    fn vector(
         &self,
         request: vector::Request,
         cancellation: &Cancellation,
-    ) -> Result<Vec<Item>, Error>;
+    ) -> impl std::future::Future<Output = Result<Vec<Item>, Error>> + Send;
 
-    async fn hybrid(
+    fn hybrid(
         &self,
         request: hybrid::Request,
         cancellation: &Cancellation,
-    ) -> Result<Vec<Item>, Error>;
+    ) -> impl std::future::Future<Output = Result<Vec<Item>, Error>> + Send;
 }

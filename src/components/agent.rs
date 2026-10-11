@@ -45,11 +45,11 @@ pub struct Payload {
 }
 
 pub trait Agent: Send + Sync {
-    type Stream: Stream<Item = Result<Event, Error>> + 'static;
+    type Stream: Stream<Item = Result<Event, Error>> + Send + 'static;
 
     fn run(
         &self,
         input: Input,
         cancellation: Cancellation,
-    ) -> impl Future<Output = Result<Self::Stream, Error>>;
+    ) -> impl Future<Output = Result<Self::Stream, Error>> + Send;
 }

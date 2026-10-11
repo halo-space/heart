@@ -3,7 +3,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use crate::{Cancellation, Error, Messages, compression::Compressor};
 
-type FutureResult = Pin<Box<dyn Future<Output = Result<Messages, Error>>>>;
+type FutureResult = Pin<Box<dyn Future<Output = Result<Messages, Error>> + Send + 'static>>;
 
 trait Entry: Send + Sync {
     fn size(&self) -> Option<u64>;
@@ -18,7 +18,7 @@ impl<P: Compressor + 'static> Entry for Typed<P> {
 
     fn compress(&self, input: Messages, cancellation: Cancellation) -> FutureResult {
         let component = self.0.clone();
-        // Create the native, potentially non-Send future on the polling thread.
+        // The owned component and arguments form a Send background task.
         Box::pin(async move { component.compress(input, &cancellation).await })
     }
 }

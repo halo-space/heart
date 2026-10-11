@@ -29,7 +29,11 @@ pub use graph::{
 };
 
 type CheckpointSave = Arc<
-    dyn Fn(i64, Value, crate::Cancellation) -> Pin<Box<dyn Future<Output = Result<(), Error>>>>
+    dyn Fn(
+            i64,
+            Value,
+            crate::Cancellation,
+        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>
         + Send
         + Sync,
 >;

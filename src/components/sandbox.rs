@@ -29,11 +29,10 @@ pub struct Response {
 /// with the application's permissions. Isolated backends must be explicitly
 /// selected; they must never silently fall back to host execution. Merely
 /// exporting a default implementation does not enable Agent execution.
-#[allow(async_fn_in_trait)]
 pub trait Sandbox: Send + Sync {
-    async fn execute(
+    fn execute(
         &self,
         request: Request,
         cancellation: &Cancellation,
-    ) -> Result<Response, Error>;
+    ) -> impl std::future::Future<Output = Result<Response, Error>> + Send;
 }

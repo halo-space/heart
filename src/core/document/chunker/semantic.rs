@@ -81,7 +81,7 @@ where
         &self,
         documents: Vec<Document>,
         cancellation: &Cancellation,
-        next_id: &mut dyn FnMut() -> i64,
+        next_id: &mut (dyn FnMut() -> i64 + Send),
     ) -> Result<Vec<Document>, Error> {
         operation::check(cancellation)?;
         let mut used: HashSet<_> = documents
@@ -97,17 +97,21 @@ where
             let mut offsets: Vec<_> = document.content.char_indices().map(|(i, _)| i).collect();
             offsets.push(document.content.len());
             let ranges = self.candidates(&document.content, &offsets, cancellation)?;
+            let range_count = ranges.len();
+            let ends = ranges.iter().map(|range| range.end).collect::<Vec<_>>();
             // Buffer futures without spawning: this works with native async
             // Embed traits and never creates a thread pool or runtime.
-            let mut results = stream::iter(ranges.iter().enumerate().map(|(index, range)| {
-                let text = &document.content[offsets[range.start]..offsets[range.end]];
+            let mut results = stream::iter(ranges.into_iter().enumerate().map(|(index, range)| {
+                // Own each candidate before creating the buffered future so
+                // the future is independent of the iterator's borrow.
+                let text = document.content[offsets[range.start]..offsets[range.end]].to_owned();
                 async move {
                     let result = if text.trim().is_empty() {
                         Ok(None)
                     } else {
                         operation::cancellable(
                             self.embed.embed(Request {
-                                input: text.to_owned(),
+                                input: text,
                                 dimensions: None,
                                 options: Default::default(),
                             }),
@@ -174,14 +178,14 @@ where
             }
             let length = offsets.len() - 1;
             let mut start = 0;
-            for index in 1..=ranges.len() {
+            for index in 1..=range_count {
                 operation::check(cancellation)?;
-                let end = ranges[index - 1].end;
+                let end = ends[index - 1];
                 let count = self.count(&document.content[offsets[start]..offsets[end]])?;
-                let should_cut = if index == ranges.len() {
+                let should_cut = if index == range_count {
                     true
                 } else {
-                    let combined = &document.content[offsets[start]..offsets[ranges[index].end]];
+                    let combined = &document.content[offsets[start]..offsets[ends[index]]];
                     self.count(combined)? > self.options.max_tokens
                         || (count >= self.options.min_tokens
                             && similarity(vectors[index - 1].as_deref(), vectors[index].as_deref())

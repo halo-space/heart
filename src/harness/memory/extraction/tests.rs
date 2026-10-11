@@ -1,10 +1,7 @@
 use super::*;
 use crate::{Message, core::memory::InMemory, model::content::part::Part};
 use serde_json::json;
-use std::{
-    rc::Rc,
-    sync::atomic::{AtomicBool, AtomicUsize, Ordering},
-};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 #[derive(Clone, Default)]
 struct Extractor {
@@ -26,7 +23,7 @@ impl memory::extraction::Extractor for Extractor {
                     && m.metadata.is_empty()
                     && m.usage.is_none())
         );
-        let local = Rc::new(1);
+        let local = Arc::new(1);
         tokio::task::yield_now().await;
         assert_eq!(*local, 1);
         if self.fail.swap(false, Ordering::SeqCst) {

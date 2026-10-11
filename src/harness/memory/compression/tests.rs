@@ -1,6 +1,5 @@
 use std::{
     collections::VecDeque,
-    rc::Rc,
     sync::atomic::{AtomicUsize, Ordering},
     time::Duration,
 };
@@ -94,8 +93,8 @@ impl crate::compression::Compressor for Compressor {
         assert!(!cancellation.is_cancelled());
         self.inputs.lock().unwrap().push(input);
         self.calls.fetch_add(1, Ordering::SeqCst);
-        // Keep Rc across a real suspension: the native Future is not Send.
-        let local = Rc::new(7);
+        // Keep shared state across a real suspension in a Send future.
+        let local = Arc::new(7);
         if let Some(gate) = &self.gate {
             gate.acquire().await.unwrap().forget();
         }
@@ -765,7 +764,7 @@ impl Middleware for Hook {
             .lock()
             .unwrap()
             .push(format!("before:{}", self.name));
-        let local = Rc::new(1);
+        let local = Arc::new(1);
         tokio::task::yield_now().await;
         assert_eq!(*local, 1);
         if self.fail {

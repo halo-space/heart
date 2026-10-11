@@ -24,18 +24,25 @@ pub struct Definition {
 
 /// Workspace persistence boundary. The framework does not prescribe a local
 /// filesystem layout or a server database schema.
-#[allow(async_fn_in_trait)]
 pub trait Workspace: Send + Sync {
     fn definition(&self) -> &Definition;
 
-    async fn read(&self, path: &str, cancellation: &Cancellation) -> Result<Vec<u8>, Error>;
+    fn read(
+        &self,
+        path: &str,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Error>> + Send;
 
-    async fn write(
+    fn write(
         &self,
         path: &str,
         data: Vec<u8>,
         cancellation: &Cancellation,
-    ) -> Result<(), Error>;
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
 
-    async fn delete(&self, path: &str, cancellation: &Cancellation) -> Result<(), Error>;
+    fn delete(
+        &self,
+        path: &str,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
 }

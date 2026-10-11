@@ -108,11 +108,13 @@ impl Request {
 
 /// A Provider chooses its concrete stream type. The public contract remains
 /// the associated stream and `Result<Event, model::Error>` items.
-#[allow(async_fn_in_trait)]
 pub trait Chat: Send + Sync {
     type Stream: Stream<Item = Result<Event, Error>> + Send + 'static;
 
-    async fn stream(&self, request: Request) -> Result<Self::Stream, Error>;
+    fn stream(
+        &self,
+        request: Request,
+    ) -> impl std::future::Future<Output = Result<Self::Stream, Error>> + Send;
 }
 
 #[cfg(test)]

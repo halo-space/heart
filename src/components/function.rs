@@ -6,9 +6,12 @@ pub type Error = crate::Error;
 
 /// A directly orchestrated business computation. Function does not know about
 /// Graph, Runtime, Messages, node IDs, or execution IDs.
-#[allow(async_fn_in_trait)]
 pub trait Function<I, O>: Send + Sync {
-    async fn call(&self, input: I, cancellation: &Cancellation) -> Result<O, Error>;
+    fn call(
+        &self,
+        input: I,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<O, Error>> + Send;
 }
 
 impl<I, O, F, Fut> Function<I, O> for F

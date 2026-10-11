@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use crate::{Cancellation, Error, middleware::Middleware};
 
-type HookFuture = Pin<Box<dyn Future<Output = Result<Value, Error>>>>;
+type HookFuture = Pin<Box<dyn Future<Output = Result<Value, Error>> + Send + 'static>>;
 
 #[derive(Clone, Copy)]
 enum Stage {

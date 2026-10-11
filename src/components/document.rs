@@ -196,34 +196,37 @@ pub mod graph_types {
     }
 }
 
-#[allow(async_fn_in_trait)]
 pub trait Loader: Send + Sync {
-    async fn load(&self, source: &Source, cancellation: &Cancellation) -> Result<Vec<u8>, Error>;
+    fn load(
+        &self,
+        source: &Source,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Error>> + Send;
 }
 
-#[allow(async_fn_in_trait)]
 pub trait Parser: Send + Sync {
-    async fn parse(&self, data: &[u8], cancellation: &Cancellation)
-    -> Result<Vec<Document>, Error>;
+    fn parse(
+        &self,
+        data: &[u8],
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Vec<Document>, Error>> + Send;
 }
 
-#[allow(async_fn_in_trait)]
 pub trait Transformer: Send + Sync {
-    async fn transform(
+    fn transform(
         &self,
         documents: Vec<Document>,
         cancellation: &Cancellation,
-    ) -> Result<Vec<Document>, Error>;
+    ) -> impl std::future::Future<Output = Result<Vec<Document>, Error>> + Send;
 }
 
-#[allow(async_fn_in_trait)]
 pub trait Chunker: Send + Sync {
     /// Split owned Documents into a complete chunk collection. The application
     /// supplies IDs; the component does not initialize its own generator.
-    async fn chunk(
+    fn chunk(
         &self,
         documents: Vec<Document>,
         cancellation: &Cancellation,
-        next_id: &mut dyn FnMut() -> i64,
-    ) -> Result<Vec<Document>, Error>;
+        next_id: &mut (dyn FnMut() -> i64 + Send),
+    ) -> impl std::future::Future<Output = Result<Vec<Document>, Error>> + Send;
 }

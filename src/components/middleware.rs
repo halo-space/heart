@@ -8,86 +8,85 @@ use crate::runtime::cancellation::Cancellation;
 
 /// Lifecycle extension contract shared by Node and Agent owners. Runtime
 /// remains responsible for execution identity, attempts and state commits.
-#[allow(async_fn_in_trait)]
 pub trait Middleware: Send + Sync {
-    async fn before_execute(
+    fn before_execute(
         &self,
         _input: &mut Value,
         _cancellation: &Cancellation,
-    ) -> Result<(), Error> {
-        Ok(())
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
+        async move { Ok(()) }
     }
 
-    async fn after_execute(
+    fn after_execute(
         &self,
         _output: &mut Value,
         _cancellation: &Cancellation,
-    ) -> Result<(), Error> {
-        Ok(())
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
+        async move { Ok(()) }
     }
 
-    async fn before_model(
+    fn before_model(
         &self,
         _input: &mut Value,
         _cancellation: &Cancellation,
-    ) -> Result<(), Error> {
-        Ok(())
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
+        async move { Ok(()) }
     }
 
-    async fn after_model(
+    fn after_model(
         &self,
         _output: &mut Value,
         _cancellation: &Cancellation,
-    ) -> Result<(), Error> {
-        Ok(())
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
+        async move { Ok(()) }
     }
 
-    async fn before_permission(
+    fn before_permission(
         &self,
         _input: &mut Value,
         _cancellation: &Cancellation,
-    ) -> Result<(), Error> {
-        Ok(())
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
+        async move { Ok(()) }
     }
 
-    async fn after_permission(
+    fn after_permission(
         &self,
         _output: &mut Value,
         _cancellation: &Cancellation,
-    ) -> Result<(), Error> {
-        Ok(())
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
+        async move { Ok(()) }
     }
 
-    async fn before_compress_context(
+    fn before_compress_context(
         &self,
         _input: &mut Value,
         _cancellation: &Cancellation,
-    ) -> Result<(), Error> {
-        Ok(())
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
+        async move { Ok(()) }
     }
 
-    async fn after_compress_context(
+    fn after_compress_context(
         &self,
         _output: &mut Value,
         _cancellation: &Cancellation,
-    ) -> Result<(), Error> {
-        Ok(())
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
+        async move { Ok(()) }
     }
 
-    async fn before_system_prompt(
+    fn before_system_prompt(
         &self,
         _input: &mut Value,
         _cancellation: &Cancellation,
-    ) -> Result<(), Error> {
-        Ok(())
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
+        async move { Ok(()) }
     }
 
-    async fn after_system_prompt(
+    fn after_system_prompt(
         &self,
         _output: &mut Value,
         _cancellation: &Cancellation,
-    ) -> Result<(), Error> {
-        Ok(())
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send {
+        async move { Ok(()) }
     }
 }
 

@@ -8,13 +8,25 @@ pub type Error = crate::Error;
 /// Storage contract for the one current checkpoint of an application `id`.
 /// The JSON value is the Runtime state as-is; the component does not define a
 /// second field hierarchy or interpret node/execution fields.
-#[allow(async_fn_in_trait)]
 pub trait Checkpoint: Send + Sync {
-    async fn save(&self, id: i64, state: Value, cancellation: &Cancellation) -> Result<(), Error>;
+    fn save(
+        &self,
+        id: i64,
+        state: Value,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
 
-    async fn load(&self, id: i64, cancellation: &Cancellation) -> Result<Value, Error>;
+    fn load(
+        &self,
+        id: i64,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Value, Error>> + Send;
 
-    async fn delete(&self, id: i64, cancellation: &Cancellation) -> Result<(), Error>;
+    fn delete(
+        &self,
+        id: i64,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
 
     /// Validates the serialized Runtime state before it is persisted.
     /// Backends may override this when their storage contract adds stricter

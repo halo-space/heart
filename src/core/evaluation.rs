@@ -48,12 +48,12 @@ impl<C: Chat> evaluation::Evaluator for Evaluator<C> {
 }
 
 /// Ordinary asynchronous functions/closures can implement the same evaluation
-/// contract directly. Owned snapshots let native non-Send futures borrow their
-/// own local values without requiring async_trait or a public wrapper.
+/// contract directly. Owned snapshots keep the native Send future independent
+/// of the caller's input borrows without async_trait or a public wrapper.
 impl<F, Fut> evaluation::Evaluator for F
 where
     F: Fn(Input, Messages, Cancellation) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<Evaluation, Error>>,
+    Fut: Future<Output = Result<Evaluation, Error>> + Send,
 {
     async fn evaluate(
         &self,

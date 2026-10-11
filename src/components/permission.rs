@@ -15,7 +15,10 @@ pub struct Request {
 
 /// Permission only decides whether an operation may proceed. It does not
 /// create a Message, NodeExecution, Attempt, or Runtime state.
-#[allow(async_fn_in_trait)]
 pub trait Permission: Send + Sync {
-    async fn check(&self, request: &Request, cancellation: &Cancellation) -> Result<(), Error>;
+    fn check(
+        &self,
+        request: &Request,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
 }

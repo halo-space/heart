@@ -12,11 +12,12 @@ use crate::components::tool::{
 };
 use crate::runtime::cancellation::Cancellation;
 
-type CallFuture = Pin<Box<dyn Future<Output = Result<(Call, Message), Error>>>>;
-type PrepareFuture = Pin<Box<dyn Future<Output = Result<Call, Error>>>>;
-type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>>>>;
-type DiscoveryFuture = Pin<Box<dyn Future<Output = Result<Vec<Arc<dyn Entry>>, Error>>>>;
-type SkillFuture = Pin<Box<dyn Future<Output = Result<Messages, Error>>>>;
+type CallFuture = Pin<Box<dyn Future<Output = Result<(Call, Message), Error>> + Send + 'static>>;
+type PrepareFuture = Pin<Box<dyn Future<Output = Result<Call, Error>> + Send + 'static>>;
+type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + Send + 'static>>;
+type DiscoveryFuture =
+    Pin<Box<dyn Future<Output = Result<Vec<Arc<dyn Entry>>, Error>> + Send + 'static>>;
+type SkillFuture = Pin<Box<dyn Future<Output = Result<Messages, Error>> + Send + 'static>>;
 
 trait SkillEntry: Send + Sync {
     fn definition(&self) -> &SkillDefinition;

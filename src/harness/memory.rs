@@ -25,9 +25,9 @@ use crate::runtime::agent::usage::Ledger;
 mod compression;
 mod extraction;
 
-type LoadFuture = Pin<Box<dyn Future<Output = Result<Vec<Message>, Error>>>>;
-type CreateFuture = Pin<Box<dyn Future<Output = Result<chat::Chat, Error>>>>;
-type SaveFuture = Pin<Box<dyn Future<Output = Result<(), Error>>>>;
+type LoadFuture = Pin<Box<dyn Future<Output = Result<Vec<Message>, Error>> + Send + 'static>>;
+type CreateFuture = Pin<Box<dyn Future<Output = Result<chat::Chat, Error>> + Send + 'static>>;
+type SaveFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
 
 trait Entry: Send + Sync {
     fn validate(&self) -> Result<(), Error>;
