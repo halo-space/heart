@@ -35,10 +35,11 @@ pub struct State {
     pub r#type: String,
     pub status: String,
     pub usage: Option<Usage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<GraphState>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub nodes: BTreeMap<String, node::State>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub history: Vec<graph::History>,
     #[serde(default)]
     pub messages: Messages,

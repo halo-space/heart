@@ -491,6 +491,67 @@ impl State {
         }
     }
 
+    /// Marks in-flight executions from a persisted snapshot as interrupted.
+    /// The logical execution remains active so Runtime can reuse its exec_id;
+    /// only a later Attempt may perform a new call. Waiting executions are
+    /// intentionally left untouched.
+    pub(crate) fn mark_interrupted(&mut self) -> bool {
+        let mut changed = false;
+        for node in self.nodes.values_mut() {
+            for execution in node.executions.values_mut() {
+                if execution.status != crate::runtime::workflow::node::ExecutionStatus::Running {
+                    continue;
+                }
+                if let Some(attempt) = execution.attempts.last_mut()
+                    && attempt.status == crate::runtime::workflow::node::AttemptStatus::Running
+                {
+                    attempt.status = crate::runtime::workflow::node::AttemptStatus::Interrupted;
+                    attempt.error = Some(Error::new(
+                        "INTERRUPTED",
+                        "workflow execution was interrupted before checkpoint recovery",
+                    ));
+                    changed = true;
+                }
+                if let Some(attempt) = execution.attempts.last_mut()
+                    && let Some(child) = attempt.graph.as_mut()
+                {
+                    changed |= child.mark_interrupted();
+                }
+            }
+        }
+        changed
+    }
+
+    pub(crate) fn interrupted_execution(&self) -> Option<(String, i64)> {
+        self.nodes.iter().find_map(|(node_id, node)| {
+            node.executions.iter().find_map(|(exec_id, execution)| {
+                (execution.idx == self.step
+                    && execution.status == crate::runtime::workflow::node::ExecutionStatus::Running
+                    && execution.attempts.last().is_some_and(|attempt| {
+                        attempt.status == crate::runtime::workflow::node::AttemptStatus::Interrupted
+                    }))
+                .then_some((node_id.clone(), *exec_id))
+            })
+        })
+    }
+
+    pub(crate) fn fail_interrupted(
+        &mut self,
+        node_id: &str,
+        exec_id: i64,
+        error: Error,
+    ) -> Result<(), Error> {
+        let node = self.node_mut(node_id)?;
+        let execution = node.execution_mut(exec_id)?;
+        if execution.status != crate::runtime::workflow::node::ExecutionStatus::Running {
+            return Err(Error::new("INVALID_STATE", "execution is not active"));
+        }
+        execution.status = crate::runtime::workflow::node::ExecutionStatus::Failed;
+        execution.error = Some(error);
+        node.status = crate::runtime::workflow::node::Status::Failed;
+        Ok(())
+    }
+
     /// Rebuilds the graph-level usage from committed node Attempt details.
     /// This is deliberately idempotent and safe to call after restore.
     pub(crate) fn recompute_usage(&mut self) {

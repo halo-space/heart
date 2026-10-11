@@ -697,10 +697,10 @@ fn restore_state<M: Chat>(state: &mut ReActState<M>, snapshot: Value) -> Result<
     state.plan_finalizing = field(&snapshot, "plan_finalizing")?;
     state.tool_results = field(&snapshot, "tool_results")?;
     state.run.settle(field(&snapshot, "usage")?);
-    if let Some(graph) = snapshot.get("graph") {
+    if let Some(graph) = snapshot.get("graph").filter(|graph| !graph.is_null()) {
         let mut graph: Graph = serde_json::from_value(json!({
             "plan": graph["plan"],
-            "history": snapshot["history"],
+            "history": snapshot.get("history").cloned().unwrap_or_else(|| json!([])),
             "nodes": snapshot["nodes"],
         }))
         .map_err(|_| invalid_checkpoint("invalid Agent checkpoint graph"))?;
@@ -1601,6 +1601,377 @@ mod tests {
                 if reason == "stop"
         ));
         assert_eq!(*calls.lock().unwrap(), 1);
+    }
+
+    struct CheckpointChat {
+        requests: Arc<Mutex<Vec<Request>>>,
+        replies: Mutex<VecDeque<Vec<Result<Event, Error>>>>,
+    }
+
+    impl Chat for CheckpointChat {
+        type Stream = futures_util::stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+
+        async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
+            self.requests.lock().unwrap().push(request);
+            Ok(futures_util::stream::iter(
+                self.replies
+                    .lock()
+                    .unwrap()
+                    .pop_front()
+                    .expect("unexpected model replay"),
+            ))
+        }
+    }
+
+    fn checkpoint_input() -> Input {
+        Input {
+            metadata: Map::from_iter([("chat_id".into(), json!(902))]),
+            payload: Vec::new(),
+        }
+    }
+
+    fn checkpoint_message(text: &str) -> Message {
+        let mut message = Message::new(Role::Assistant);
+        message.values.insert("answer".into(), json!(text));
+        message.content.push(Part {
+            r#type: "text".into(),
+            data: part_data(json!({"value": text})),
+        });
+        message
+    }
+
+    fn checkpoint_complete(text: &str) -> Result<Event, Error> {
+        Ok(Event::Complete {
+            message: checkpoint_message(text),
+            usage: Some(crate::model::token::Usage {
+                input: Some(10),
+                output: Some(5),
+                total: Some(15),
+                ..Default::default()
+            }),
+            finish_reason: Some("stop".into()),
+        })
+    }
+
+    /// A committed running scene; live futures are intentionally not persisted.
+    fn checkpoint_fixture(graph: Option<&Graph>) -> Value {
+        let messages = Messages::new([checkpoint_message("saved context")]);
+        let mut snapshot = serde_json::to_value(AgentState {
+            chat_id: Some(902),
+            r#type: "agent".into(),
+            status: "running".into(),
+            graph: graph.map(|graph| GraphState {
+                plan: graph.plan.clone(),
+            }),
+            nodes: graph.map(|graph| graph.nodes.clone()).unwrap_or_default(),
+            history: graph.map(|graph| graph.history.clone()).unwrap_or_default(),
+            messages: messages.clone(),
+            ..Default::default()
+        })
+        .unwrap();
+        snapshot["query"] = serde_json::to_value(checkpoint_input()).unwrap();
+        snapshot["task_base"] = serde_json::to_value(messages).unwrap();
+        snapshot["iteration"] = json!(1);
+        snapshot["plan_execution"] = json!(graph.is_some());
+        snapshot["plan_finalizing"] = json!(false);
+        snapshot["tool_results"] = json!({});
+        snapshot
+    }
+
+    #[test]
+    fn no_graph_checkpoint_accepts_missing_or_null_graph_without_replaying_calls() {
+        use crate::checkpoint::Checkpoint as _;
+        block_on(async {
+            for null_graph in [false, true] {
+                let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+                let mut snapshot = checkpoint_fixture(None);
+                if null_graph {
+                    snapshot["graph"] = Value::Null;
+                }
+                let saved_messages = snapshot["messages"].clone();
+                checkpoint
+                    .save(902, snapshot, &Cancellation::new())
+                    .await
+                    .unwrap();
+                let requests = Arc::new(Mutex::new(Vec::new()));
+                let agent = crate::agent::react()
+                    .model(CheckpointChat {
+                        requests: requests.clone(),
+                        replies: Mutex::new(VecDeque::new()),
+                    })
+                    .checkpoint(checkpoint.clone())
+                    .build()
+                    .unwrap();
+                let events = agent
+                    .run(checkpoint_input(), Cancellation::new())
+                    .await
+                    .unwrap()
+                    .collect::<Vec<_>>()
+                    .await;
+                assert!(matches!(events.as_slice(), [Err(error)] if error.code == "INTERRUPTED"));
+                assert!(requests.lock().unwrap().is_empty());
+                let saved = checkpoint.load(902, &Cancellation::new()).await.unwrap();
+                assert_eq!(saved["messages"], saved_messages);
+                assert_eq!(saved["status"], "failed");
+                assert!(saved.get("graph").is_none());
+                assert!(saved.get("nodes").is_none());
+                let typed: AgentState = serde_json::from_value(saved).unwrap();
+                assert_eq!(
+                    typed,
+                    serde_json::from_value(serde_json::to_value(&typed).unwrap()).unwrap()
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn restored_graph_reuses_success_and_executes_only_ready_successors() {
+        use crate::checkpoint::Checkpoint as _;
+        block_on(async {
+            let mut plan = Plan::new(1).unwrap();
+            plan.add(node("a", "research"), vec![], vec![]).unwrap();
+            plan.add(node("b", "summarize"), vec!["a".into()], vec![])
+                .unwrap();
+            let mut graph = Graph::new(plan).unwrap();
+            graph.start("a", 9001).unwrap();
+            graph
+                .succeed(
+                    "a",
+                    Messages::new([checkpoint_message("saved source")]),
+                    None,
+                )
+                .unwrap();
+            // Replan history remains top-level and is not mixed with the current graph.
+            graph.history.push(crate::runtime::agent::graph::History {
+                plan: graph.plan.clone(),
+                nodes: graph.nodes.clone(),
+            });
+            let source = graph.nodes["a"].clone();
+            let history = graph.history.clone();
+            let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+            checkpoint
+                .save(902, checkpoint_fixture(Some(&graph)), &Cancellation::new())
+                .await
+                .unwrap();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let agent = crate::agent::react()
+                .model(CheckpointChat {
+                    requests: requests.clone(),
+                    replies: Mutex::new(VecDeque::from([
+                        vec![checkpoint_complete("successor")],
+                        vec![checkpoint_complete("final")],
+                    ])),
+                })
+                .with_id_fn(|| 9002)
+                .checkpoint(checkpoint.clone())
+                .build()
+                .unwrap();
+            let events = agent
+                .run(checkpoint_input(), Cancellation::new())
+                .await
+                .unwrap()
+                .collect::<Vec<_>>()
+                .await;
+            assert!(events.iter().all(Result::is_ok), "{events:?}");
+            let (request_count, input_values) = {
+                let requests = requests.lock().unwrap();
+                (
+                    requests.len(),
+                    requests[0]
+                        .messages
+                        .as_slice()
+                        .last()
+                        .unwrap()
+                        .values
+                        .clone(),
+                )
+            };
+            assert_eq!(request_count, 2); // Successor and final summary; no source replay.
+            assert_eq!(input_values["plan_node"], "b");
+            assert_eq!(
+                input_values["sources"]["a"][0]["values"]["answer"],
+                "saved source"
+            );
+            let saved = checkpoint.load(902, &Cancellation::new()).await.unwrap();
+            let typed: AgentState = serde_json::from_value(saved).unwrap();
+            assert_eq!(typed.nodes["a"], source);
+            assert_eq!(typed.history, history);
+            assert_eq!(
+                typed.nodes["b"].status,
+                crate::runtime::agent::node::Status::Succeeded
+            );
+            assert_eq!(typed.nodes["b"].execution.as_ref().unwrap().exec_id, 9002);
+            assert_eq!(
+                typed,
+                serde_json::from_value(serde_json::to_value(&typed).unwrap()).unwrap()
+            );
+        });
+    }
+
+    #[test]
+    fn interrupted_graph_preserves_attempts_without_automatically_replaying() {
+        use crate::checkpoint::Checkpoint as _;
+        use crate::runtime::agent::node::Status;
+        block_on(async {
+            let mut plan = Plan::new(1).unwrap();
+            plan.add(node("a", "research"), vec![], vec![]).unwrap();
+            let mut graph = Graph::new(plan).unwrap();
+            graph.start("a", 9001).unwrap();
+            let created_time =
+                graph.nodes["a"].execution.as_ref().unwrap().attempts[0].created_time;
+            let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+            checkpoint
+                .save(902, checkpoint_fixture(Some(&graph)), &Cancellation::new())
+                .await
+                .unwrap();
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let agent = crate::agent::react()
+                .model(CheckpointChat {
+                    requests: requests.clone(),
+                    replies: Mutex::new(VecDeque::new()),
+                })
+                .with_id_fn(|| panic!("must not allocate another execution identity"))
+                .checkpoint(checkpoint.clone())
+                .build()
+                .unwrap();
+            let events = agent
+                .run(checkpoint_input(), Cancellation::new())
+                .await
+                .unwrap()
+                .collect::<Vec<_>>()
+                .await;
+            assert!(matches!(events.as_slice(), [Err(error)] if error.code == "INTERRUPTED"));
+            assert!(requests.lock().unwrap().is_empty());
+            let saved = checkpoint.load(902, &Cancellation::new()).await.unwrap();
+            let typed: AgentState = serde_json::from_value(saved).unwrap();
+            let execution = typed.nodes["a"].execution.as_ref().unwrap();
+            assert_eq!(execution.exec_id, 9001);
+            assert_eq!(execution.attempts.len(), 1);
+            assert_eq!(execution.attempts[0].created_time, created_time);
+            assert_eq!(execution.attempts[0].status, Status::Interrupted);
+            assert_eq!(
+                execution.attempts[0].error.as_ref().unwrap().code,
+                "INTERRUPTED"
+            );
+        });
+    }
+
+    #[test]
+    fn terminal_snapshots_round_trip_success_failure_and_cancellation_without_audit_reads() {
+        use crate::checkpoint::Checkpoint as _;
+        block_on(async {
+            for with_graph in [false, true] {
+                for status in ["succeeded", "failed", "stopped"] {
+                    let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+                    if with_graph {
+                        let mut plan = Plan::new(1).unwrap();
+                        plan.add(node("a", "research"), vec![], vec![]).unwrap();
+                        let mut graph = Graph::new(plan).unwrap();
+                        graph.start("a", 9001).unwrap();
+                        graph
+                            .succeed(
+                                "a",
+                                Messages::new([checkpoint_message("saved source")]),
+                                None,
+                            )
+                            .unwrap();
+                        let mut snapshot = checkpoint_fixture(Some(&graph));
+                        snapshot["plan_finalizing"] = json!(true);
+                        checkpoint
+                            .save(902, snapshot, &Cancellation::new())
+                            .await
+                            .unwrap();
+                    }
+                    let requests = Arc::new(Mutex::new(Vec::new()));
+                    let delta = Ok(Event::Delta {
+                        message: checkpoint_message("partial"),
+                    });
+                    let replies = match status {
+                        "succeeded" => vec![checkpoint_complete("final")],
+                        "failed" => vec![
+                            delta,
+                            Err(Error::new("UNAVAILABLE", "network interrupted")
+                                .with_details("connection closed")),
+                        ],
+                        _ => vec![
+                            delta,
+                            checkpoint_complete("must not be read after cancellation"),
+                        ],
+                    };
+                    let agent = crate::agent::react()
+                        .model(CheckpointChat {
+                            requests: requests.clone(),
+                            replies: Mutex::new(VecDeque::from([replies])),
+                        })
+                        .checkpoint(checkpoint.clone())
+                        .build()
+                        .unwrap();
+                    let cancellation = Cancellation::new();
+                    let mut stream = agent
+                        .run(checkpoint_input(), cancellation.clone())
+                        .await
+                        .unwrap();
+                    let mut events = Vec::new();
+                    while let Some(event) = stream.next().await {
+                        if status == "stopped" && matches!(&event, Ok(Event::Delta { .. })) {
+                            cancellation.cancel();
+                        }
+                        events.push(event);
+                    }
+                    let terminal = events.last().unwrap().clone();
+                    let saved = checkpoint.load(902, &Cancellation::new()).await.unwrap();
+                    assert_eq!(saved["status"], status);
+                    let typed: AgentState = serde_json::from_value(saved.clone()).unwrap();
+                    assert_eq!(typed.graph.is_some(), with_graph);
+                    assert_eq!(
+                        typed,
+                        serde_json::from_value(serde_json::to_value(&typed).unwrap()).unwrap()
+                    );
+                    if status == "failed" {
+                        assert_eq!(
+                            typed.error.as_ref().unwrap().details.as_deref(),
+                            Some("connection closed")
+                        );
+                    }
+                    if status == "stopped" {
+                        assert_eq!(
+                            typed.final_message.as_ref().unwrap().content[0].data["value"],
+                            "partial"
+                        );
+                        assert!(typed.usage.as_ref().unwrap().input.is_some());
+                    }
+                    // Empty Memory backends would fail if recovery read Session/Chat/Trace.
+                    // A terminal Checkpoint must return before any audit/history I/O.
+                    let memory = crate::memory::Config::new(
+                        crate::core::memory::short::session::InMemory::new(),
+                        crate::core::memory::short::chat::InMemory::new(),
+                        crate::core::memory::short::trace::InMemory::new(),
+                        crate::core::memory::InMemory::new(),
+                    );
+                    let restored = crate::agent::react()
+                        .model(CheckpointChat {
+                            requests: requests.clone(),
+                            replies: Mutex::new(VecDeque::new()),
+                        })
+                        .memory(memory)
+                        .checkpoint(checkpoint.clone())
+                        .build()
+                        .unwrap();
+                    let replay = restored
+                        .run(checkpoint_input(), Cancellation::new())
+                        .await
+                        .unwrap()
+                        .collect::<Vec<_>>()
+                        .await;
+                    assert_eq!(replay, vec![terminal]);
+                    assert_eq!(requests.lock().unwrap().len(), 1);
+                    assert_eq!(
+                        checkpoint.load(902, &Cancellation::new()).await.unwrap(),
+                        saved
+                    );
+                }
+            }
+        });
     }
 
     fn node(id: &str, name: &str) -> PlanNode {

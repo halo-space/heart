@@ -91,6 +91,9 @@ impl Runtime {
             max_concurrency: 100,
             checkpoint: None,
         };
+        if runtime.state.mark_interrupted() {
+            runtime.state.status = graph::Status::Running;
+        }
         runtime.state.recompute_usage();
         Ok(runtime)
     }
@@ -313,6 +316,12 @@ impl Runtime {
                     }
                 }
                 self.state.recompute_usage();
+                continue;
+            }
+            if self
+                .resume_interrupted(&next_exec_id, &cancellation)
+                .await?
+            {
                 continue;
             }
             let ready = self.ready_nodes();
@@ -696,6 +705,85 @@ impl Runtime {
         }
     }
 
+    async fn resume_interrupted(
+        &mut self,
+        next_exec_id: &Arc<dyn Fn() -> i64 + Send + Sync>,
+        cancellation: &crate::Cancellation,
+    ) -> Result<bool, Error> {
+        let Some((node_id, exec_id)) = self.state.interrupted_execution() else {
+            return Ok(false);
+        };
+        let execution = self.state.nodes[&node_id].executions[&exec_id].clone();
+        let previous_idx = execution
+            .attempts
+            .last()
+            .map(|attempt| attempt.idx)
+            .ok_or_else(|| Error::new("INVALID_STATE", "interrupted execution has no attempt"))?;
+        let retry = self.definition().nodes[&node_id].retry.clone();
+        if previous_idx >= retry.max_retries {
+            self.state.fail_interrupted(
+                &node_id,
+                exec_id,
+                Error::new(
+                    "INTERRUPTED",
+                    "workflow execution has no remaining retry budget",
+                ),
+            )?;
+            self.state.recompute_usage();
+            return Ok(true);
+        }
+        let target = self.target_for(&node_id, exec_id)?;
+        let input = self.input_for(&node_id, &execution.from)?;
+        let invocation = invoke_with_retry(
+            target,
+            input,
+            cancellation.clone(),
+            retry,
+            Arc::clone(next_exec_id),
+            self.chat_id,
+            previous_idx.saturating_add(1),
+        )
+        .await;
+        let invocation_graph = invocation.graph;
+        self.append_recovered_attempts(&node_id, exec_id, invocation.attempts)?;
+        if let Some(graph) = invocation_graph {
+            self.attach_graph(&node_id, exec_id, graph)?;
+        }
+        match invocation.outcome {
+            Outcome::Complete(value) => {
+                let messages = self.output_messages(&node_id, value)?;
+                let to = self.outgoing(&node_id, &messages)?;
+                self.state
+                    .complete_execution(&node_id, exec_id, messages, to)?;
+            }
+            Outcome::Wait(wait_id) => self.state.wait_execution(&node_id, exec_id, wait_id)?,
+            Outcome::Cancelled => self.state.cancel_execution(&node_id, exec_id)?,
+            Outcome::Failed(error) => self.state.fail_execution(&node_id, exec_id, error)?,
+        }
+        self.state.recompute_usage();
+        Ok(true)
+    }
+
+    fn target_for(&self, node_id: &str, exec_id: i64) -> Result<Target, Error> {
+        if let Some(workflow) = self.workflow.graph_node(node_id) {
+            let state = self.state.nodes[node_id]
+                .executions
+                .get(&exec_id)
+                .and_then(|execution| execution.attempts.last())
+                .and_then(|attempt| attempt.graph.clone());
+            return Ok(Target::Graph {
+                workflow: Arc::new(workflow.clone()),
+                state,
+            });
+        }
+        if let Some(agent) = self.workflow.agent(node_id) {
+            return Ok(Target::Agent(agent));
+        }
+        Ok(Target::Node(self.workflow.executor(node_id).ok_or_else(
+            || Error::new("UNSUPPORTED", "workflow node has no executor"),
+        )?))
+    }
+
     fn replace_attempts(
         &mut self,
         node_id: &str,
@@ -732,6 +820,38 @@ impl Runtime {
             ));
         }
         execution.attempts.pop();
+        execution.attempts.extend(attempts);
+        execution.usage = execution.attempts.iter().fold(None, |total, attempt| {
+            crate::components::model::token::merge(total, attempt.usage.clone())
+        });
+        Ok(())
+    }
+
+    fn append_recovered_attempts(
+        &mut self,
+        node_id: &str,
+        exec_id: i64,
+        attempts: Vec<node::Attempt>,
+    ) -> Result<(), Error> {
+        let execution = self.state.node_mut(node_id)?.execution_mut(exec_id)?;
+        let expected = u32::try_from(execution.attempts.len())
+            .map_err(|_| Error::new("INVALID_STATE", "too many attempts"))?;
+        if attempts.is_empty() || attempts[0].idx != expected {
+            return Err(Error::new(
+                "INVALID_STATE",
+                "invalid recovered attempt history",
+            ));
+        }
+        for (offset, attempt) in attempts.iter().enumerate() {
+            let expected = u32::try_from(execution.attempts.len() + offset)
+                .map_err(|_| Error::new("INVALID_STATE", "too many attempts"))?;
+            if attempt.idx != expected {
+                return Err(Error::new(
+                    "INVALID_STATE",
+                    "recovered attempt indexes are not contiguous",
+                ));
+            }
+        }
         execution.attempts.extend(attempts);
         execution.usage = execution.attempts.iter().fold(None, |total, attempt| {
             crate::components::model::token::merge(total, attempt.usage.clone())
@@ -1799,6 +1919,203 @@ mod tests {
             execution.attempts[0].graph.as_ref().unwrap().status,
             Status::Succeeded
         );
+    }
+
+    #[test]
+    fn nested_graph_checkpoint_restores_child_wait_before_parent_resume() {
+        let mut child_builder = WorkflowBuilder::new("child-checkpoint-wait");
+        child_builder
+            .add_node("approval", WaitOnce(AtomicBool::new(false)))
+            .unwrap();
+        child_builder.add_edge(START, "approval").unwrap();
+        child_builder.add_edge("approval", END).unwrap();
+        let child = child_builder.compile().unwrap();
+
+        let mut parent_builder = WorkflowBuilder::new("parent-checkpoint-wait");
+        parent_builder.add_graph_node("child", &child).unwrap();
+        parent_builder.add_edge(START, "child").unwrap();
+        parent_builder.add_edge("child", END).unwrap();
+        let parent = parent_builder.compile().unwrap();
+        let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+        let mut runtime = Runtime::new(19, parent.clone())
+            .unwrap()
+            .with_checkpoint(checkpoint.clone());
+
+        let initial = Messages::default();
+        let first = block_on(runtime.run(initial.clone(), Arc::new(|| 1_300), Cancellation::new()));
+        assert_eq!(first.unwrap_err().code, "WAITING");
+
+        let snapshot = block_on(checkpoint.load(19, &Cancellation::new())).unwrap();
+        let child_execution = &snapshot["nodes"]["child"]["executions"]["1300"];
+        assert_eq!(child_execution["status"], "waiting");
+        assert_eq!(child_execution["attempts"][0]["graph"]["status"], "paused");
+        assert!(
+            child_execution["attempts"][0]["graph"]["waits"]
+                .get("approval")
+                .is_some()
+        );
+
+        let mut restored = Runtime::from_snapshot(19, parent, snapshot).unwrap();
+        restored
+            .resume(
+                "child",
+                Messages::new([crate::Message::function(
+                    serde_json::json!({"approved": true}),
+                )]),
+            )
+            .unwrap();
+        block_on(restored.run(initial, Arc::new(|| 1_301), Cancellation::new())).unwrap();
+
+        let execution = &restored.state().nodes["child"].executions[&1_300];
+        assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+        assert_eq!(execution.attempts.len(), 1);
+        assert_eq!(
+            execution.attempts[0].graph.as_ref().unwrap().status,
+            Status::Succeeded
+        );
+        assert!(
+            execution.attempts[0]
+                .graph
+                .as_ref()
+                .unwrap()
+                .waits
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn checkpoint_recovery_retries_interrupted_node_without_allocating_a_new_execution() {
+        let mut builder = WorkflowBuilder::new("checkpoint-interrupted-node");
+        builder.add_node("answer", crate::node::Echo).unwrap();
+        builder
+            .set_retry(
+                "answer",
+                RetryPolicy {
+                    max_retries: 1,
+                    min_delay_ms: 0,
+                    max_delay_ms: 0,
+                },
+            )
+            .unwrap();
+        builder.add_edge(START, "answer").unwrap();
+        builder.add_edge("answer", END).unwrap();
+        let workflow = builder.compile().unwrap();
+
+        let mut runtime = Runtime::new(1_700, workflow.clone()).unwrap();
+        runtime.state_mut().initial = Some(Messages::default());
+        runtime
+            .start_batch(vec![("answer".into(), 17_001, Vec::new())])
+            .unwrap();
+        let snapshot = runtime.snapshot().unwrap();
+        assert_eq!(
+            snapshot["nodes"]["answer"]["executions"]["17001"]["attempts"][0]["status"],
+            "running"
+        );
+
+        let mut restored = Runtime::from_snapshot(1_700, workflow, snapshot).unwrap();
+        let allocated = Arc::new(AtomicI64::new(0));
+        let allocated_for_run = Arc::clone(&allocated);
+        block_on(restored.run(
+            Messages::default(),
+            Arc::new(move || allocated_for_run.fetch_add(1, Ordering::SeqCst)),
+            Cancellation::new(),
+        ))
+        .unwrap();
+
+        let execution = &restored.state().nodes["answer"].executions[&17_001];
+        assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+        assert_eq!(execution.attempts.len(), 2);
+        assert_eq!(
+            execution.attempts[0].status,
+            node::AttemptStatus::Interrupted
+        );
+        assert_eq!(execution.attempts[1].status, node::AttemptStatus::Succeeded);
+        assert_eq!(allocated.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn checkpoint_recovery_retries_interrupted_agent_without_allocating_a_new_execution() {
+        let mut builder = WorkflowBuilder::new("checkpoint-interrupted-agent");
+        builder
+            .add_agent_node("agent", FakeAgent { mode: "single" })
+            .unwrap();
+        builder
+            .set_retry(
+                "agent",
+                RetryPolicy {
+                    max_retries: 1,
+                    min_delay_ms: 0,
+                    max_delay_ms: 0,
+                },
+            )
+            .unwrap();
+        builder.add_edge(START, "agent").unwrap();
+        builder.add_edge("agent", END).unwrap();
+        let workflow = builder.compile().unwrap();
+
+        let mut runtime = Runtime::new(1_701, workflow.clone()).unwrap();
+        runtime.state_mut().initial = Some(user_input());
+        runtime
+            .start_batch(vec![("agent".into(), 17_011, Vec::new())])
+            .unwrap();
+        let snapshot = runtime.snapshot().unwrap();
+
+        let mut restored = Runtime::from_snapshot(1_701, workflow, snapshot).unwrap();
+        let allocated = Arc::new(AtomicI64::new(0));
+        let allocated_for_run = Arc::clone(&allocated);
+        block_on(restored.run(
+            user_input(),
+            Arc::new(move || allocated_for_run.fetch_add(1, Ordering::SeqCst)),
+            Cancellation::new(),
+        ))
+        .unwrap();
+
+        let execution = &restored.state().nodes["agent"].executions[&17_011];
+        assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+        assert_eq!(execution.attempts.len(), 2);
+        assert_eq!(
+            execution.attempts[0].status,
+            node::AttemptStatus::Interrupted
+        );
+        assert_eq!(execution.attempts[1].status, node::AttemptStatus::Succeeded);
+        assert_eq!(execution.attempts[1].steps.len(), 1);
+        assert_eq!(allocated.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn checkpoint_recovery_does_not_replay_interrupted_node_without_retry_budget() {
+        let mut builder = WorkflowBuilder::new("checkpoint-interrupted-no-retry");
+        builder.add_node("answer", crate::node::Echo).unwrap();
+        builder.add_edge(START, "answer").unwrap();
+        builder.add_edge("answer", END).unwrap();
+        let workflow = builder.compile().unwrap();
+
+        let mut runtime = Runtime::new(1_702, workflow.clone()).unwrap();
+        runtime.state_mut().initial = Some(Messages::default());
+        runtime
+            .start_batch(vec![("answer".into(), 17_021, Vec::new())])
+            .unwrap();
+        let snapshot = runtime.snapshot().unwrap();
+
+        let mut restored = Runtime::from_snapshot(1_702, workflow, snapshot).unwrap();
+        let allocated = Arc::new(AtomicI64::new(0));
+        let allocated_for_run = Arc::clone(&allocated);
+        let error = block_on(restored.run(
+            Messages::default(),
+            Arc::new(move || allocated_for_run.fetch_add(1, Ordering::SeqCst)),
+            Cancellation::new(),
+        ))
+        .unwrap_err();
+
+        assert_eq!(error.code, "INTERRUPTED");
+        let execution = &restored.state().nodes["answer"].executions[&17_021];
+        assert_eq!(execution.status, node::ExecutionStatus::Failed);
+        assert_eq!(execution.attempts.len(), 1);
+        assert_eq!(
+            execution.attempts[0].status,
+            node::AttemptStatus::Interrupted
+        );
+        assert_eq!(allocated.load(Ordering::SeqCst), 0);
     }
 
     #[test]
