@@ -28,6 +28,7 @@ use crate::harness::checkpoint::{Backend, invalid as invalid_checkpoint};
 use crate::harness::hooks::{Hooks, cancellable};
 use crate::harness::memory::{History, Run};
 use crate::runtime::agent::graph::Graph;
+use crate::runtime::agent::{GraphState, State as AgentState};
 use crate::runtime::cancellation::Cancellation;
 
 mod execution;
@@ -548,9 +549,6 @@ fn closeout_state<M: Chat>(
     state: &ReActState<M>,
     result: &Result<Event, Error>,
 ) -> (Option<Value>, Option<Value>) {
-    let Some(graph) = state.graph.as_ref() else {
-        return (None, None);
-    };
     let status = match result {
         Ok(Event::Complete {
             finish_reason: Some(reason),
@@ -561,25 +559,40 @@ fn closeout_state<M: Chat>(
         Err(_) => "failed",
         Ok(Event::Delta { .. }) => "running",
     };
-    let graph_value = serde_json::to_value(&graph.plan).ok();
-    let mut state_json = json!({
-        "chat_id": state.query.metadata.get("chat_id").cloned().unwrap_or(Value::Null),
-        "type": "agent",
-        "status": status,
-        "usage": state.run.usage(),
-        "graph": {
-            "plan": graph.plan,
-            "history": graph.history,
+    let graph_value = state
+        .graph
+        .as_ref()
+        .and_then(|graph| serde_json::to_value(&graph.plan).ok());
+    let (graph_state, nodes, history) = state
+        .graph
+        .as_ref()
+        .map(|graph| {
+            (
+                Some(GraphState {
+                    plan: graph.plan.clone(),
+                }),
+                graph.nodes.clone(),
+                graph.history.clone(),
+            )
+        })
+        .unwrap_or((None, BTreeMap::new(), Vec::new()));
+    let state_json = serde_json::to_value(AgentState {
+        chat_id: state.query.metadata.get("chat_id").and_then(Value::as_i64),
+        r#type: "agent".into(),
+        status: status.into(),
+        usage: state.run.usage(),
+        graph: graph_state,
+        nodes,
+        history,
+        messages: state.messages.clone(),
+        error: result.as_ref().err().cloned(),
+        final_message: match result {
+            Ok(Event::Complete { message, .. }) => Some(message.clone()),
+            _ => None,
         },
-        "nodes": graph.nodes,
-    });
-    if let Some(error) = result.as_ref().err() {
-        state_json["error"] = serde_json::to_value(error).unwrap_or(Value::Null);
-    }
-    state_json["messages"] = serde_json::to_value(&state.messages).unwrap_or(Value::Null);
-    if let Ok(Event::Complete { message, .. }) = result {
-        state_json["final_message"] = serde_json::to_value(message).unwrap_or(Value::Null);
-    }
+        metadata: BTreeMap::new(),
+    })
+    .unwrap_or_else(|_| json!({}));
     (graph_value, Some(state_json))
 }
 
@@ -600,26 +613,42 @@ fn result_status(result: &Result<Event, Error>) -> &'static str {
 /// Trace.state. A graph enriches the snapshot when present, but it is not
 /// a precondition for checkpointing an Agent run.
 fn checkpoint_snapshot<M: Chat>(state: &ReActState<M>, result: &Result<Event, Error>) -> Value {
-    let mut snapshot = json!({
-        "chat_id": state.checkpoint_id,
-        "type": "agent",
-        "status": result_status(result),
-        "usage": state.run.usage(),
-        "messages": state.messages,
-        "query": state.query,
-        "task_base": state.task_base,
-        "iteration": state.iteration.load(Ordering::Relaxed),
-        "plan_execution": state.plan_execution,
-        "plan_finalizing": state.plan_finalizing,
-        "tool_results": state.tool_results,
-    });
-    if let Some(graph) = state.graph.as_ref() {
-        snapshot["graph"] = json!({
-            "plan": graph.plan,
-            "history": graph.history,
-        });
-        snapshot["nodes"] = serde_json::to_value(&graph.nodes).unwrap_or_else(|_| json!({}));
-    }
+    let (graph, nodes, history) = state
+        .graph
+        .as_ref()
+        .map(|graph| {
+            (
+                Some(GraphState {
+                    plan: graph.plan.clone(),
+                }),
+                graph.nodes.clone(),
+                graph.history.clone(),
+            )
+        })
+        .unwrap_or((None, BTreeMap::new(), Vec::new()));
+    let mut snapshot = serde_json::to_value(AgentState {
+        chat_id: state.checkpoint_id,
+        r#type: "agent".into(),
+        status: result_status(result).into(),
+        usage: state.run.usage(),
+        graph,
+        nodes,
+        history,
+        messages: state.messages.clone(),
+        error: result.as_ref().err().cloned(),
+        final_message: match result {
+            Ok(Event::Complete { message, .. }) => Some(message.clone()),
+            _ => None,
+        },
+        metadata: BTreeMap::new(),
+    })
+    .unwrap_or_else(|_| json!({}));
+    snapshot["query"] = serde_json::to_value(&state.query).unwrap_or(Value::Null);
+    snapshot["task_base"] = serde_json::to_value(&state.task_base).unwrap_or(Value::Null);
+    snapshot["iteration"] = json!(state.iteration.load(Ordering::Relaxed));
+    snapshot["plan_execution"] = json!(state.plan_execution);
+    snapshot["plan_finalizing"] = json!(state.plan_finalizing);
+    snapshot["tool_results"] = serde_json::to_value(&state.tool_results).unwrap_or(Value::Null);
     crate::harness::checkpoint::record_result(&mut snapshot, result);
     snapshot
 }
@@ -670,7 +699,9 @@ fn restore_state<M: Chat>(state: &mut ReActState<M>, snapshot: Value) -> Result<
     state.run.settle(field(&snapshot, "usage")?);
     if let Some(graph) = snapshot.get("graph") {
         let mut graph: Graph = serde_json::from_value(json!({
-            "plan": graph["plan"], "history": graph["history"], "nodes": snapshot["nodes"],
+            "plan": graph["plan"],
+            "history": snapshot["history"],
+            "nodes": snapshot["nodes"],
         }))
         .map_err(|_| invalid_checkpoint("invalid Agent checkpoint graph"))?;
         graph.plan.validate_structure()?;
