@@ -59,7 +59,7 @@ impl Runtime {
         if chat_id <= 0 {
             return Err(Error::new("INVALID_ARGUMENTS", "chat_id must be positive"));
         }
-        let state = State::for_chat(chat_id, workflow.definition());
+        let state = State::new(chat_id, workflow.definition());
         Ok(Self {
             workflow,
             state,

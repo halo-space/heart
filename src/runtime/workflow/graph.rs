@@ -468,11 +468,7 @@ pub struct State {
 }
 
 impl State {
-    pub fn new(definition: &Definition) -> Self {
-        Self::for_chat(0, definition)
-    }
-
-    pub(crate) fn for_chat(chat_id: i64, definition: &Definition) -> Self {
+    pub fn new(chat_id: i64, definition: &Definition) -> Self {
         let nodes = definition
             .nodes
             .keys()
@@ -2165,7 +2161,7 @@ mod tests {
     fn state_usage_is_recomputed_from_attempt_details() {
         let builder = single();
         let workflow = builder.compile().unwrap();
-        let mut state = State::new(workflow.definition());
+        let mut state = State::new(1, workflow.definition());
         state.nodes.get_mut("answer").unwrap().executions.insert(
             11,
             crate::runtime::workflow::node::Execution {
@@ -2193,7 +2189,7 @@ mod tests {
         use crate::runtime::workflow::node::{Attempt, AttemptStatus, Execution};
 
         let workflow = single().compile().unwrap();
-        let mut child = State::new(workflow.definition());
+        let mut child = State::new(1, workflow.definition());
         let make_usage = |total, private| Usage {
             input: Some(total - 2),
             output: Some(2),
@@ -2226,7 +2222,7 @@ mod tests {
         // Deliberately stale persisted aggregates must not become another
         // billable record after restore or another consistency commit.
         child.usage = Some(make_usage(99, "stale"));
-        let mut parent = State::new(workflow.definition());
+        let mut parent = State::new(1, workflow.definition());
         parent.nodes.get_mut("answer").unwrap().executions.insert(
             11,
             Execution {
@@ -2291,7 +2287,7 @@ mod tests {
     #[test]
     fn state_initializes_start_nodes_and_indexes_waits() {
         let compiled = single().compile().unwrap();
-        let mut state = State::new(compiled.definition());
+        let mut state = State::new(1, compiled.definition());
         assert_eq!(state.step, 0);
         assert_eq!(state.status, Status::Running);
         assert_eq!(
@@ -2313,7 +2309,7 @@ mod tests {
     #[test]
     fn state_rejects_wait_for_unknown_node_and_duplicate_node_wait() {
         let compiled = single().compile().unwrap();
-        let mut state = State::new(compiled.definition());
+        let mut state = State::new(1, compiled.definition());
         assert_eq!(
             state
                 .add_wait(Wait {
@@ -2351,10 +2347,10 @@ mod tests {
         use crate::runtime::workflow::node::{Attempt, AttemptStatus, Execution, ExecutionStatus};
 
         let compiled = single().compile().unwrap();
-        let mut state = State::new(compiled.definition());
+        let mut state = State::new(1, compiled.definition());
 
         let waiting_child = || {
-            let mut child = State::new(compiled.definition());
+            let mut child = State::new(1, compiled.definition());
             child.nodes.get_mut("answer").unwrap().executions.insert(
                 10,
                 Execution {
@@ -2527,7 +2523,7 @@ mod tests {
         builder.add_edge("a", "b").unwrap();
         builder.add_edge("b", END).unwrap();
         let compiled = builder.compile().unwrap();
-        let mut state = State::new(compiled.definition());
+        let mut state = State::new(1, compiled.definition());
 
         assert_eq!(state.ready_nodes(compiled.definition()), vec!["a"]);
         state
@@ -2553,7 +2549,7 @@ mod tests {
         builder.add_join(["a", "b"], "merge").unwrap();
         builder.add_edge("merge", END).unwrap();
         let compiled = builder.compile().unwrap();
-        let mut state = State::new(compiled.definition());
+        let mut state = State::new(1, compiled.definition());
         assert_eq!(state.ready_nodes(compiled.definition()), vec!["a", "b"]);
         state
             .start_batch(
@@ -2609,7 +2605,7 @@ mod tests {
         builder.add_edge("a", END).unwrap();
         builder.add_edge("b", END).unwrap();
         let compiled = builder.compile().unwrap();
-        let mut state = State::new(compiled.definition());
+        let mut state = State::new(1, compiled.definition());
         let error = state
             .start_batch(
                 compiled.definition(),
