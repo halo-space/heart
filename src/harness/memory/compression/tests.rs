@@ -560,7 +560,9 @@ async fn background_does_not_block_switch_foreground_or_duplicate_a_session() {
 
 #[tokio::test]
 async fn rolling_summary_threshold_and_usage_are_replaced_not_accumulated() {
-    let compressor = Compressor::new(Some(20));
+    // Only the post-summary Chat is counted.  The old summary's generation
+    // Usage must not be added to this threshold a second time.
+    let compressor = Compressor::new(Some(10));
     let config = config().await.with_compression(compressor.clone());
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(40))).await;
     seed(

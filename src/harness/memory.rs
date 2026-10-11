@@ -502,11 +502,11 @@ where
     }
     let mut compression_input = messages.clone();
     let mut extraction_input = Vec::new();
-    let mut total = if session.summary.is_some() {
-        compression::tokens(session.usage.as_ref())
-    } else {
-        0
-    };
+    // The summary's own generation Usage is display/audit data only.  It is
+    // not part of the next compression window: adding it here would charge
+    // the same historical input again after the summary has replaced it.
+    // The threshold is solely the Usage of completed Chats after `from/to`.
+    let mut total: u64 = 0;
     let mut endpoints = None;
     let mut blocked = false;
     for value in chats.into_iter().skip(after) {
