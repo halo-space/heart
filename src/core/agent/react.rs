@@ -1301,9 +1301,9 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     .and_then(Value::as_str)
                     .map(str::to_owned);
                 state.messages.push(message);
-                if state.is_plan_task
-                    && let Some(call_id) = call_id
+                if let Some(call_id) = call_id
                     && let Some(evaluation) = state.evaluations.remove(&call_id)
+                    && state.is_plan_task
                     && !evaluation.passed
                     && let Some(feedback) = evaluation.feedback
                 {
