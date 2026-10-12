@@ -99,7 +99,7 @@ impl Runtime {
             history_run: None,
             history_closed: false,
         };
-        if runtime.state.mark_interrupted() {
+        if runtime.state.mark_waiting() {
             runtime.state.status = graph::Status::Running;
         }
         runtime.state.recompute_usage();
@@ -419,6 +419,11 @@ impl Runtime {
                     next_exec_id.clone(),
                     self.state.chat_id,
                     start_idx,
+                    self.state.nodes[&node_id].executions[&exec_id]
+                        .attempts
+                        .last()
+                        .map(|attempt| attempt.messages.clone())
+                        .unwrap_or_default(),
                 )
                 .await;
                 let invocation_graph = invocation.graph;
@@ -446,10 +451,7 @@ impl Runtime {
                 self.state.recompute_usage();
                 continue;
             }
-            if self
-                .resume_interrupted(&next_exec_id, &cancellation)
-                .await?
-            {
+            if self.resume_waiting(&next_exec_id, &cancellation).await? {
                 continue;
             }
             let ready = self.ready_nodes();
@@ -524,6 +526,7 @@ impl Runtime {
                             next_exec_id,
                             chat_id,
                             0,
+                            Messages::default(),
                         )
                         .await;
                         (node_id, exec_id, from, result)
@@ -842,12 +845,12 @@ impl Runtime {
         }
     }
 
-    async fn resume_interrupted(
+    async fn resume_waiting(
         &mut self,
         next_exec_id: &Arc<dyn Fn() -> i64 + Send + Sync>,
         cancellation: &crate::Cancellation,
     ) -> Result<bool, Error> {
-        let Some((node_id, exec_id)) = self.state.interrupted_execution() else {
+        let Some((node_id, exec_id)) = self.state.waiting_execution() else {
             return Ok(false);
         };
         let execution = self.state.nodes[&node_id].executions[&exec_id].clone();
@@ -855,14 +858,14 @@ impl Runtime {
             .attempts
             .last()
             .map(|attempt| attempt.idx)
-            .ok_or_else(|| Error::new("INVALID_STATE", "interrupted execution has no attempt"))?;
+            .ok_or_else(|| Error::new("INVALID_STATE", "waiting execution has no attempt"))?;
         let retry = self.definition().nodes[&node_id].retry.clone();
         if previous_idx >= retry.max_retries {
-            self.state.fail_interrupted(
+            self.state.fail_waiting(
                 &node_id,
                 exec_id,
                 Error::new(
-                    "INTERRUPTED",
+                    "RETRY_EXHAUSTED",
                     "workflow execution has no remaining retry budget",
                 ),
             )?;
@@ -879,6 +882,11 @@ impl Runtime {
             Arc::clone(next_exec_id),
             self.state.chat_id,
             previous_idx.saturating_add(1),
+            execution
+                .attempts
+                .last()
+                .map(|attempt| attempt.messages.clone())
+                .unwrap_or_default(),
         )
         .await;
         let invocation_graph = invocation.graph;
@@ -1041,6 +1049,9 @@ enum Target {
     },
 }
 
+// The final argument is the already committed ToolNode context restored from
+// Checkpoint; keeping it alongside the retry inputs makes recovery explicit.
+#[allow(clippy::too_many_arguments)]
 async fn invoke_with_retry(
     target: Target,
     input: Value,
@@ -1049,12 +1060,13 @@ async fn invoke_with_retry(
     next_exec_id: Arc<dyn Fn() -> i64 + Send + Sync>,
     chat_id: i64,
     attempt_start: u32,
+    committed: Messages,
 ) -> Invocation {
     let mut attempts = Vec::new();
     // ToolNode-only committed call facts. They remain private to this one
     // logical execution and are rebuilt from the current Attempt on retries;
     // ordinary Nodes keep the unchanged single-call path.
-    let mut committed_tool_messages = Messages::default();
+    let mut committed_tool_messages = committed;
     let retry_policy = retry.clone();
     // A resumed wait continues the same Attempt. Its existing idx consumes
     // the original execution's retry budget; recovery never resets it.
@@ -2377,8 +2389,8 @@ mod tests {
     }
 
     #[test]
-    fn checkpoint_recovery_retries_interrupted_node_without_allocating_a_new_execution() {
-        let mut builder = WorkflowBuilder::new("checkpoint-interrupted-node");
+    fn checkpoint_recovery_retries_waiting_node_without_allocating_a_new_execution() {
+        let mut builder = WorkflowBuilder::new("checkpoint-waiting-node");
         builder.add_node("answer", crate::node::Echo).unwrap();
         builder
             .set_retry(
@@ -2418,17 +2430,14 @@ mod tests {
         let execution = &restored.state().nodes["answer"].executions[&17_001];
         assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
         assert_eq!(execution.attempts.len(), 2);
-        assert_eq!(
-            execution.attempts[0].status,
-            node::AttemptStatus::Interrupted
-        );
+        assert_eq!(execution.attempts[0].status, node::AttemptStatus::Waiting);
         assert_eq!(execution.attempts[1].status, node::AttemptStatus::Succeeded);
         assert_eq!(allocated.load(Ordering::SeqCst), 0);
     }
 
     #[test]
-    fn checkpoint_recovery_retries_interrupted_agent_without_allocating_a_new_execution() {
-        let mut builder = WorkflowBuilder::new("checkpoint-interrupted-agent");
+    fn checkpoint_recovery_retries_waiting_agent_without_allocating_a_new_execution() {
+        let mut builder = WorkflowBuilder::new("checkpoint-waiting-agent");
         builder
             .add_agent_node("agent", FakeAgent { mode: "single" })
             .unwrap();
@@ -2466,18 +2475,15 @@ mod tests {
         let execution = &restored.state().nodes["agent"].executions[&17_011];
         assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
         assert_eq!(execution.attempts.len(), 2);
-        assert_eq!(
-            execution.attempts[0].status,
-            node::AttemptStatus::Interrupted
-        );
+        assert_eq!(execution.attempts[0].status, node::AttemptStatus::Waiting);
         assert_eq!(execution.attempts[1].status, node::AttemptStatus::Succeeded);
         assert_eq!(execution.attempts[1].steps.len(), 1);
         assert_eq!(allocated.load(Ordering::SeqCst), 0);
     }
 
     #[test]
-    fn checkpoint_recovery_does_not_replay_interrupted_node_without_retry_budget() {
-        let mut builder = WorkflowBuilder::new("checkpoint-interrupted-no-retry");
+    fn checkpoint_recovery_does_not_replay_waiting_node_without_retry_budget() {
+        let mut builder = WorkflowBuilder::new("checkpoint-waiting-no-retry");
         builder.add_node("answer", crate::node::Echo).unwrap();
         builder.add_edge(START, "answer").unwrap();
         builder.add_edge("answer", END).unwrap();
@@ -2500,14 +2506,11 @@ mod tests {
         ))
         .unwrap_err();
 
-        assert_eq!(error.code, "INTERRUPTED");
+        assert_eq!(error.code, "RETRY_EXHAUSTED");
         let execution = &restored.state().nodes["answer"].executions[&17_021];
         assert_eq!(execution.status, node::ExecutionStatus::Failed);
         assert_eq!(execution.attempts.len(), 1);
-        assert_eq!(
-            execution.attempts[0].status,
-            node::AttemptStatus::Interrupted
-        );
+        assert_eq!(execution.attempts[0].status, node::AttemptStatus::Waiting);
         assert_eq!(allocated.load(Ordering::SeqCst), 0);
     }
 
@@ -2913,10 +2916,59 @@ mod tests {
             Arc::new(|| 900),
             90,
             1,
+            Messages::default(),
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(invocation.attempts.len(), 1);
         assert_eq!(invocation.attempts[0].idx, 1);
         assert!(matches!(invocation.outcome, Outcome::Failed(_)));
+    }
+
+    #[test]
+    fn checkpoint_recovery_toolnode_reuses_committed_call_ids() {
+        let first_calls = Arc::new(AtomicI64::new(0));
+        let second_calls = Arc::new(AtomicI64::new(0));
+        let mut builder = WorkflowBuilder::new("tool-checkpoint-recovery");
+        builder
+            .add_node(
+                "tools",
+                crate::runtime::workflow::tool::ToolNode::new(RetryTool {
+                    definition: workflow_tool_definition("first"),
+                    calls: first_calls.clone(),
+                    fail_first: false,
+                })
+                .tool(RetryTool {
+                    definition: workflow_tool_definition("second"),
+                    calls: second_calls.clone(),
+                    fail_first: false,
+                }),
+            )
+            .unwrap();
+        builder.add_edge(START, "tools").unwrap();
+        builder.add_edge("tools", END).unwrap();
+        let workflow = builder.compile().unwrap();
+
+        let mut committed = crate::Message::function(serde_json::json!({
+            "tool": "first",
+            "ok": true,
+        }));
+        committed
+            .metadata
+            .insert("call_id".into(), serde_json::json!("call_a"));
+        let invocation = block_on(invoke_with_retry(
+            Target::Node(workflow.executor("tools").unwrap()),
+            serde_json::to_value(workflow_tool_input()).unwrap(),
+            Cancellation::new(),
+            RetryPolicy::default(),
+            Arc::new(|| 1_300),
+            19,
+            0,
+            Messages::new([committed]),
+        ));
+
+        assert!(matches!(invocation.outcome, Outcome::Complete(_)));
+        assert_eq!(first_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(second_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(invocation.attempts[0].messages.as_slice().len(), 2);
     }
 }

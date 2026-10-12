@@ -30,31 +30,46 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
         .graph
         .as_mut()
         .ok_or_else(|| Error::new("INVALID_STATE", "plan graph is not initialized"))?;
+    let capacity = state
+        .max_concurrency
+        .saturating_sub(state.active_tasks.len());
+    let resumed = state
+        .resume_nodes
+        .iter()
+        .take(capacity)
+        .cloned()
+        .collect::<Vec<_>>();
     let ready = graph
         .ready_nodes()
         .into_iter()
-        .take(
-            state
-                .max_concurrency
-                .saturating_sub(state.active_tasks.len()),
-        )
+        .take(capacity.saturating_sub(resumed.len()))
         .collect::<Vec<_>>();
-    if ready.is_empty() {
+    if resumed.is_empty() && ready.is_empty() {
         return Ok(());
     }
-    let id_fn = state
-        .id_fn
-        .ok_or_else(|| Error::new("INVALID_STATE", "plan execution requires an id function"))?;
+    let id_fn = state.id_fn;
+    if !ready.is_empty() && id_fn.is_none() {
+        return Err(Error::new(
+            "INVALID_STATE",
+            "plan execution requires an id function",
+        ));
+    }
     // Prepare and validate every source before claiming any node. Only the
     // existing Graph batch operation mutates execution identities/states.
-    let mut inputs = Vec::new();
+    let selected = resumed
+        .iter()
+        .cloned()
+        .map(|node_id| (node_id, true))
+        .chain(ready.iter().cloned().map(|node_id| (node_id, false)))
+        .collect::<Vec<_>>();
+    let mut tasks = Vec::new();
     let mut starts = Vec::new();
-    for node_id in ready {
-        let node = &graph.plan.nodes[&node_id];
+    for (node_id, resumed) in &selected {
+        let node = &graph.plan.nodes[node_id];
         let data = json!({
             "plan_node": node_id,
             "objective": node.objective,
-            "sources": graph.source_messages(&node_id)?,
+            "sources": graph.source_messages(node_id)?,
         });
         let mut message = Message::new(Role::User);
         message.content.push(Part {
@@ -62,41 +77,81 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
             data: part_data(json!({"value": data.to_string()})),
         });
         message.values = serde_json::from_value(data).expect("task object");
-        inputs.push(message);
-        starts.push(Start {
-            node_id,
-            exec_id: id_fn(),
-        });
+        let exec_id = if *resumed {
+            graph
+                .state(node_id)?
+                .execution
+                .as_ref()
+                .map(|execution| execution.exec_id)
+                .ok_or_else(|| Error::new("INVALID_STATE", "waiting Agent node has no execution"))?
+        } else {
+            id_fn.expect("validated above")()
+        };
+        if !*resumed {
+            starts.push(Start {
+                node_id: node_id.clone(),
+                exec_id,
+            });
+        }
+        let existing = if *resumed {
+            graph
+                .state(node_id)?
+                .execution
+                .as_ref()
+                .map(|execution| execution.messages.clone())
+                .unwrap_or_default()
+        } else {
+            Messages::default()
+        };
+        tasks.push((node_id.clone(), exec_id, message, existing, *resumed));
     }
-    graph.start_batch(state.max_concurrency, &starts)?;
-    for (start, input) in starts.into_iter().zip(inputs) {
-        let mut messages = state.task_base.clone();
-        let mut instruction = Message::new(Role::System);
-        instruction.content.push(Part {
-            r#type: "text".into(),
-            data: part_data(json!({"value": "Complete only the current planned task objective using the original query and its committed source results. Choose tools and arguments yourself when needed. Return this task's result, not the final answer for unrelated tasks."})),
-        });
-        messages.0.insert(0, instruction);
-        messages.push(input);
+    if !starts.is_empty() {
+        graph.start_batch(state.max_concurrency, &starts)?;
+    }
+    for node_id in resumed {
+        state.resume_nodes.remove(&node_id);
+    }
+    for (node_id, exec_id, input, existing, resumed) in tasks {
+        let mut messages = if resumed && !existing.is_empty() {
+            existing.clone()
+        } else {
+            let mut messages = state.task_base.clone();
+            let mut instruction = Message::new(Role::System);
+            instruction.content.push(Part {
+                r#type: "text".into(),
+                data: part_data(json!({"value": "Complete only the current planned task objective using the original query and its committed source results. Choose tools and arguments yourself when needed. Return this task's result, not the final answer for unrelated tasks."})),
+            });
+            messages.0.insert(0, instruction);
+            messages.push(input);
+            messages
+        };
+        if resumed
+            && state.external_resume_nodes.remove(&node_id)
+            && let Some(input) = state.resume_input.clone()
+        {
+            messages.push(crate::components::agent::chat::user_message(input));
+        }
         let mut metadata = state.metadata.clone();
-        metadata.insert("node_id".into(), json!(start.node_id));
-        metadata.insert("exec_id".into(), json!(start.exec_id));
+        metadata.insert("node_id".into(), json!(node_id));
+        metadata.insert("exec_id".into(), json!(exec_id));
         let task = Task {
-            node_id: start.node_id,
-            exec_id: start.exec_id,
-            messages: Messages::default(),
+            node_id,
+            exec_id,
+            messages: existing,
             state: ReActState {
                 model: state.model.clone(),
                 toolkit: state.toolkit.clone(),
                 max_iters: state.max_iters,
                 max_concurrency: state.max_concurrency,
                 cancellation: state.cancellation.clone(),
-                task_base: state.task_base.clone(),
+                task_base: messages.clone(),
                 messages,
                 iteration: state.iteration.clone(),
                 provider: None,
                 query: state.query.clone(),
                 graph: None,
+                resume_nodes: BTreeSet::new(),
+                external_resume_nodes: BTreeSet::new(),
                 id_fn: None,
                 checkpoint: None,
                 checkpoint_id: None,
@@ -112,6 +167,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 pending_replan: None,
                 plan_result: None,
                 planning_error: None,
+                resume_input: None,
                 pending_calls: VecDeque::new(),
                 active_tools: FuturesUnordered::new(),
                 tool_results: BTreeMap::new(),
@@ -159,6 +215,23 @@ pub(super) fn commit<M: Chat + 'static>(
         }
     }
     if !task.state.done {
+        let mut committed = task.state.messages.clone();
+        if matches!(
+            &result,
+            Ok(Event::Complete {
+                finish_reason: Some(reason),
+                ..
+            }) if reason == "tool"
+        ) && let Ok(Event::Complete { message, .. }) = &result
+        {
+            committed.push(message.clone());
+        }
+        let graph = state.graph.as_mut().expect("executing plan graph");
+        let node = graph.state_mut(&task.node_id)?;
+        node.messages = Some(committed.clone());
+        if let Some(execution) = node.execution.as_mut() {
+            execution.messages = committed;
+        }
         state.active_tasks.push(Box::pin(advance(task)));
         return Ok((result.ok(), false));
     }

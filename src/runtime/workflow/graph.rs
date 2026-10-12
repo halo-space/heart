@@ -538,11 +538,11 @@ impl State {
         Ok(())
     }
 
-    /// Marks in-flight executions from a persisted snapshot as interrupted.
+    /// Marks in-flight executions from a persisted snapshot as waiting.
     /// The logical execution remains active so Runtime can reuse its exec_id;
-    /// only a later Attempt may perform a new call. Waiting executions are
-    /// intentionally left untouched.
-    pub(crate) fn mark_interrupted(&mut self) -> bool {
+    /// only a later call may continue the same execution. Explicit external
+    /// waits are intentionally left untouched.
+    pub(crate) fn mark_waiting(&mut self) -> bool {
         let mut changed = false;
         for node in self.nodes.values_mut() {
             for execution in node.executions.values_mut() {
@@ -552,37 +552,34 @@ impl State {
                 if let Some(attempt) = execution.attempts.last_mut()
                     && attempt.status == crate::runtime::workflow::node::AttemptStatus::Running
                 {
-                    attempt.status = crate::runtime::workflow::node::AttemptStatus::Interrupted;
-                    attempt.error = Some(Error::new(
-                        "INTERRUPTED",
-                        "workflow execution was interrupted before checkpoint recovery",
-                    ));
+                    attempt.status = crate::runtime::workflow::node::AttemptStatus::Waiting;
                     changed = true;
                 }
                 if let Some(attempt) = execution.attempts.last_mut()
                     && let Some(child) = attempt.graph.as_mut()
                 {
-                    changed |= child.mark_interrupted();
+                    changed |= child.mark_waiting();
                 }
             }
         }
         changed
     }
 
-    pub(crate) fn interrupted_execution(&self) -> Option<(String, i64)> {
+    pub(crate) fn waiting_execution(&self) -> Option<(String, i64)> {
         self.nodes.iter().find_map(|(node_id, node)| {
             node.executions.iter().find_map(|(exec_id, execution)| {
                 (execution.idx == self.step
                     && execution.status == crate::runtime::workflow::node::ExecutionStatus::Running
+                    && execution.waits.is_empty()
                     && execution.attempts.last().is_some_and(|attempt| {
-                        attempt.status == crate::runtime::workflow::node::AttemptStatus::Interrupted
+                        attempt.status == crate::runtime::workflow::node::AttemptStatus::Waiting
                     }))
                 .then_some((node_id.clone(), *exec_id))
             })
         })
     }
 
-    pub(crate) fn fail_interrupted(
+    pub(crate) fn fail_waiting(
         &mut self,
         node_id: &str,
         exec_id: i64,

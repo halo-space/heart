@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::{
@@ -268,10 +268,19 @@ where
                 _ => None,
             },
         };
+        let restoring_waiting = restored.as_ref().is_some_and(is_waiting_snapshot);
+        let external_wait = restored.as_ref().is_some_and(is_external_wait_snapshot);
         if let Some(snapshot) = &restored {
-            if snapshot
-                .get("query")
-                .is_some_and(|query| serde_json::to_value(&input).ok().as_ref() != Some(query))
+            if !checkpoint_identity_matches(snapshot, &input.metadata) {
+                return Err(Error::new(
+                    "CONFLICT",
+                    "checkpoint belongs to a different Agent identity",
+                ));
+            }
+            if !restoring_waiting
+                && snapshot
+                    .get("query")
+                    .is_some_and(|query| serde_json::to_value(&input).ok().as_ref() != Some(query))
             {
                 return Err(Error::new(
                     "CONFLICT",
@@ -321,8 +330,11 @@ where
                 ))
                 .await);
         }
-        let messages =
-            crate::components::agent::chat::initial_messages(input, prompt.as_deref(), history);
+        let messages = crate::components::agent::chat::initial_messages(
+            input.clone(),
+            prompt.as_deref(),
+            history,
+        );
         let mut state = ReActState {
             model: std::sync::Arc::clone(&self.model),
             toolkit: std::sync::Arc::new(toolkit),
@@ -339,6 +351,8 @@ where
             provider: None,
             query: original,
             graph: None,
+            resume_nodes: BTreeSet::new(),
+            external_resume_nodes: BTreeSet::new(),
             // Retain assembly configuration in this run, not in Input,
             // Messages, Plan or a serialized Graph. Plan execution is enabled
             // only when the caller supplied an ID function; a planning
@@ -358,6 +372,7 @@ where
             pending_replan: None,
             plan_result: None,
             planning_error: None,
+            resume_input: None,
             pending_calls: VecDeque::new(),
             active_tools: FuturesUnordered::new(),
             tool_results: BTreeMap::new(),
@@ -371,6 +386,16 @@ where
         };
         if let Some(snapshot) = restored {
             restore_state(&mut state, snapshot)?;
+            if external_wait {
+                state.resume_input = Some(input);
+                if state.graph.is_none()
+                    && let Some(resume_input) = state.resume_input.clone()
+                {
+                    let message = crate::components::agent::chat::user_message(resume_input);
+                    state.messages.push(message.clone());
+                    state.task_base.push(message);
+                }
+            }
         }
         Ok(Box::pin(unfold(state, next_react_event::<M>)))
     }
@@ -390,6 +415,8 @@ struct ReActState<M: Chat> {
     provider: Option<Pin<Box<M::Stream>>>,
     query: Input,
     graph: Option<Graph>,
+    resume_nodes: BTreeSet<String>,
+    external_resume_nodes: BTreeSet<String>,
     id_fn: Option<fn() -> i64>,
     checkpoint: Option<CheckpointSave>,
     checkpoint_id: Option<i64>,
@@ -405,6 +432,7 @@ struct ReActState<M: Chat> {
     pending_replan: Option<Evaluation>,
     plan_result: Option<Message>,
     planning_error: Option<Error>,
+    resume_input: Option<Input>,
     pending_calls: VecDeque<(usize, Call)>,
     active_tools: FuturesUnordered<Pin<Box<dyn Future<Output = ToolProgress> + 'static>>>,
     tool_results: BTreeMap<usize, Message>,
@@ -593,7 +621,7 @@ fn closeout_state<M: Chat>(
             Ok(Event::Complete { message, .. }) => Some(message.clone()),
             _ => None,
         },
-        metadata: BTreeMap::new(),
+        metadata: state.metadata.clone().into_iter().collect(),
     })
     .unwrap_or_else(|_| json!({}));
     (graph_value, Some(state_json))
@@ -716,23 +744,37 @@ fn restore_state<M: Chat>(state: &mut ReActState<M>, snapshot: Value) -> Result<
             ));
         }
         use crate::runtime::agent::node::Status;
-        let mut interrupted = false;
-        let mut waiting = false;
+        let waiting_nodes = graph
+            .nodes
+            .iter()
+            .filter(|(_, node)| matches!(node.status, Status::Running | Status::Waiting))
+            .map(|(node_id, _)| node_id.clone())
+            .collect::<Vec<_>>();
+        let external_nodes = graph
+            .nodes
+            .iter()
+            .filter(|(_, node)| node.status == Status::Waiting)
+            .map(|(node_id, _)| node_id.clone())
+            .collect::<BTreeSet<_>>();
+        if matches!(
+            snapshot.get("status").and_then(Value::as_str),
+            Some("waiting" | "paused")
+        ) && external_nodes.is_empty()
+        {
+            return Err(invalid_checkpoint(
+                "waiting Agent checkpoint has no waiting node",
+            ));
+        }
         for node in graph.nodes.values_mut() {
             if node.status == Status::Running {
-                node.status = Status::Interrupted;
-                node.set_attempt_result(
-                    Status::Interrupted,
-                    None,
-                    Some(Error::new(
-                        "INTERRUPTED",
-                        "Agent execution interrupted before checkpoint recovery",
-                    )),
-                )?;
-                interrupted = true;
-            } else if matches!(node.status, Status::Waiting | Status::Interrupted) {
-                waiting |= node.status == Status::Waiting;
-                interrupted |= node.status == Status::Interrupted;
+                node.status = Status::Waiting;
+                if let Some(attempt) = node
+                    .execution
+                    .as_mut()
+                    .and_then(|execution| execution.attempts.last_mut())
+                {
+                    attempt.status = Status::Waiting;
+                }
             } else if node.status == Status::Succeeded {
                 if node.messages.is_none()
                     || node
@@ -754,29 +796,55 @@ fn restore_state<M: Chat>(state: &mut ReActState<M>, snapshot: Value) -> Result<
             }
         }
         graph.activate_ready()?;
+        for node_id in waiting_nodes {
+            graph.resume(&node_id)?;
+            state.resume_nodes.insert(node_id);
+        }
+        state.external_resume_nodes = external_nodes;
         state.graph = Some(graph);
-        if waiting || snapshot["status"] == "waiting" || snapshot["status"] == "paused" {
-            // No response protocol is inferred from ordinary Input. Keep the
-            // saved wait intact until explicit resume integration is provided.
-            return Err(Error::new(
-                "WAITING",
-                "Agent checkpoint requires an external resume response",
-            ));
-        }
-        if interrupted {
-            state.planning_error = Some(Error::new(
-                "INTERRUPTED",
-                "unfinished Agent calls require an explicit retry policy",
-            ));
-        }
-    } else {
-        // A live provider/Tool call cannot be resumed from messages alone.
-        state.planning_error = Some(Error::new(
-            "INTERRUPTED",
-            "unfinished Agent call cannot be replayed from message history",
-        ));
     }
     Ok(())
+}
+
+fn is_waiting_snapshot(snapshot: &Value) -> bool {
+    matches!(
+        snapshot.get("status").and_then(Value::as_str),
+        Some("running" | "waiting" | "paused")
+    ) || snapshot
+        .get("nodes")
+        .and_then(Value::as_object)
+        .is_some_and(|nodes| {
+            nodes.values().any(|node| {
+                matches!(
+                    node.get("status").and_then(Value::as_str),
+                    Some("running" | "waiting")
+                )
+            })
+        })
+}
+
+fn is_external_wait_snapshot(snapshot: &Value) -> bool {
+    snapshot.get("status").and_then(Value::as_str) == Some("waiting")
+        || snapshot
+            .get("nodes")
+            .and_then(Value::as_object)
+            .is_some_and(|nodes| {
+                nodes
+                    .values()
+                    .any(|node| node.get("status").and_then(Value::as_str) == Some("waiting"))
+            })
+}
+
+fn checkpoint_identity_matches(snapshot: &Value, metadata: &Map<String, Value>) -> bool {
+    ["tenant_id", "user_id", "agent_id", "session_id", "chat_id"]
+        .into_iter()
+        .all(|key| {
+            snapshot
+                .get("metadata")
+                .and_then(Value::as_object)
+                .and_then(|saved| saved.get(key))
+                .is_none_or(|saved| metadata.get(key) == Some(saved))
+        })
 }
 
 fn running_snapshot<M: Chat>(state: &ReActState<M>) -> Value {
@@ -1684,7 +1752,7 @@ mod tests {
     }
 
     #[test]
-    fn no_graph_checkpoint_accepts_missing_or_null_graph_without_replaying_calls() {
+    fn no_graph_checkpoint_resumes_from_the_same_run_entry_without_replaying_history() {
         use crate::checkpoint::Checkpoint as _;
         block_on(async {
             for null_graph in [false, true] {
@@ -1693,7 +1761,6 @@ mod tests {
                 if null_graph {
                     snapshot["graph"] = Value::Null;
                 }
-                let saved_messages = snapshot["messages"].clone();
                 checkpoint
                     .save(902, snapshot, &Cancellation::new())
                     .await
@@ -1702,7 +1769,7 @@ mod tests {
                 let agent = crate::agent::react()
                     .model(CheckpointChat {
                         requests: requests.clone(),
-                        replies: Mutex::new(VecDeque::new()),
+                        replies: Mutex::new(VecDeque::from([vec![checkpoint_complete("resumed")]])),
                     })
                     .checkpoint(checkpoint.clone())
                     .build()
@@ -1713,11 +1780,18 @@ mod tests {
                     .unwrap()
                     .collect::<Vec<_>>()
                     .await;
-                assert!(matches!(events.as_slice(), [Err(error)] if error.code == "INTERRUPTED"));
-                assert!(requests.lock().unwrap().is_empty());
+                assert!(events.iter().all(Result::is_ok), "{events:?}");
+                assert_eq!(requests.lock().unwrap().len(), 1);
                 let saved = checkpoint.load(902, &Cancellation::new()).await.unwrap();
-                assert_eq!(saved["messages"], saved_messages);
-                assert_eq!(saved["status"], "failed");
+                assert!(saved["messages"].as_array().is_some_and(|messages| {
+                    messages
+                        .iter()
+                        .any(|message| message["values"]["answer"] == "saved context")
+                        && messages
+                            .iter()
+                            .any(|message| message["values"]["answer"] == "resumed")
+                }));
+                assert_eq!(saved["status"], "succeeded");
                 assert!(saved.get("graph").is_none());
                 assert!(saved.get("nodes").is_none());
                 let typed: AgentState = serde_json::from_value(saved).unwrap();
@@ -1814,7 +1888,7 @@ mod tests {
     }
 
     #[test]
-    fn interrupted_graph_preserves_attempts_without_automatically_replaying() {
+    fn waiting_graph_resumes_the_existing_execution_without_allocating_a_new_id() {
         use crate::checkpoint::Checkpoint as _;
         use crate::runtime::agent::node::Status;
         block_on(async {
@@ -1833,7 +1907,10 @@ mod tests {
             let agent = crate::agent::react()
                 .model(CheckpointChat {
                     requests: requests.clone(),
-                    replies: Mutex::new(VecDeque::new()),
+                    replies: Mutex::new(VecDeque::from([
+                        vec![checkpoint_complete("resumed task")],
+                        vec![checkpoint_complete("resumed final")],
+                    ])),
                 })
                 .with_id_fn(|| panic!("must not allocate another execution identity"))
                 .checkpoint(checkpoint.clone())
@@ -1845,19 +1922,16 @@ mod tests {
                 .unwrap()
                 .collect::<Vec<_>>()
                 .await;
-            assert!(matches!(events.as_slice(), [Err(error)] if error.code == "INTERRUPTED"));
-            assert!(requests.lock().unwrap().is_empty());
+            assert!(events.iter().all(Result::is_ok), "{events:?}");
+            assert_eq!(requests.lock().unwrap().len(), 2);
             let saved = checkpoint.load(902, &Cancellation::new()).await.unwrap();
             let typed: AgentState = serde_json::from_value(saved).unwrap();
             let execution = typed.nodes["a"].execution.as_ref().unwrap();
             assert_eq!(execution.exec_id, 9001);
             assert_eq!(execution.attempts.len(), 1);
             assert_eq!(execution.attempts[0].created_time, created_time);
-            assert_eq!(execution.attempts[0].status, Status::Interrupted);
-            assert_eq!(
-                execution.attempts[0].error.as_ref().unwrap().code,
-                "INTERRUPTED"
-            );
+            assert_eq!(execution.attempts[0].status, Status::Succeeded);
+            assert!(execution.attempts[0].error.is_none());
         });
     }
 

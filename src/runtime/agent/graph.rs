@@ -256,13 +256,6 @@ impl Graph {
             .map(|attempt| attempt.status = Status::Running)
     }
 
-    pub fn interrupt(&mut self, node_id: &str) -> Result<(), Error> {
-        self.ensure_attempt(node_id)?;
-        self.transition(node_id, Status::Interrupted)?;
-        self.state_mut(node_id)?
-            .set_attempt_result(Status::Interrupted, None, None)
-    }
-
     pub fn cancel(&mut self, node_id: &str) -> Result<(), Error> {
         self.ensure_attempt(node_id)?;
         self.transition(node_id, Status::Cancelled)?;
@@ -358,7 +351,7 @@ impl Graph {
             && self.nodes.values().all(|state| {
                 matches!(
                     state.status,
-                    Status::Succeeded | Status::Failed | Status::Cancelled | Status::Interrupted
+                    Status::Succeeded | Status::Failed | Status::Cancelled
                 )
             })
     }

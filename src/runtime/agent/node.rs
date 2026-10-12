@@ -21,7 +21,6 @@ pub enum Status {
     Succeeded,
     Failed,
     Cancelled,
-    Interrupted,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -98,9 +97,7 @@ impl State {
                 | (Status::Running, Status::Succeeded)
                 | (Status::Running, Status::Failed)
                 | (Status::Running, Status::Cancelled)
-                | (Status::Running, Status::Interrupted)
                 | (Status::Waiting, Status::Running)
-                | (Status::Interrupted, Status::Running)
         )
     }
 
@@ -169,7 +166,7 @@ impl State {
             let attempt = self.current_attempt_mut()?;
             let terminal = matches!(
                 &status,
-                Status::Succeeded | Status::Failed | Status::Cancelled | Status::Interrupted
+                Status::Succeeded | Status::Failed | Status::Cancelled
             );
             attempt.status = status;
             if terminal {

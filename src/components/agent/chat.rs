@@ -565,40 +565,54 @@ where
             .as_ref()
             .map(|_| checkpoint_id(&input.metadata))
             .transpose()?;
+        let mut restored_messages = None;
+        let mut restored_waiting = false;
+        let mut restored_usage = None;
         if let Some(snapshot) = embedded_snapshot {
-            let result = crate::harness::checkpoint::terminal(&snapshot)?.ok_or_else(|| {
-                Error::new(
-                    "INTERRUPTED",
-                    "unfinished Chat call cannot be replayed from message history",
-                )
-            })?;
-            let mut events = Events::empty(cancellation, self.hooks.clone());
-            events.closing = true;
-            events.pending = Some(Box::pin(async move { result }));
-            return Ok(events);
+            if !checkpoint_identity_matches(&snapshot, &input.metadata) {
+                return Err(Error::new(
+                    "CONFLICT",
+                    "checkpoint belongs to a different Agent identity",
+                ));
+            }
+            restored_waiting = is_waiting_snapshot(&snapshot);
+            if let Some(result) = crate::harness::checkpoint::terminal(&snapshot)? {
+                let mut events = Events::empty(cancellation, self.hooks.clone());
+                events.closing = true;
+                events.pending = Some(Box::pin(async move { result }));
+                return Ok(events);
+            }
+            restored_messages = Some(checkpoint_messages(&snapshot)?);
+            restored_usage = serde_json::from_value(snapshot["usage"].clone()).ok();
         }
         if let (Some(checkpoint), Some(id)) = (&self.checkpoint, checkpoint_id)
             && let Some(snapshot) = checkpoint.load(id, cancellation.clone()).await?
         {
-            if snapshot
-                .get("query")
-                .is_some_and(|query| serde_json::to_value(&input).ok().as_ref() != Some(query))
+            if !checkpoint_identity_matches(&snapshot, &input.metadata) {
+                return Err(Error::new(
+                    "CONFLICT",
+                    "checkpoint belongs to a different Agent identity",
+                ));
+            }
+            restored_waiting = is_waiting_snapshot(&snapshot);
+            if !restored_waiting
+                && snapshot
+                    .get("query")
+                    .is_some_and(|query| serde_json::to_value(&input).ok().as_ref() != Some(query))
             {
                 return Err(Error::new(
                     "CONFLICT",
                     "checkpoint belongs to a different Agent input",
                 ));
             }
-            let result = crate::harness::checkpoint::terminal(&snapshot)?.ok_or_else(|| {
-                Error::new(
-                    "INTERRUPTED",
-                    "unfinished Chat call cannot be replayed from message history",
-                )
-            })?;
-            let mut events = Events::empty(cancellation, self.hooks.clone());
-            events.closing = true;
-            events.pending = Some(Box::pin(async move { result }));
-            return Ok(events);
+            if let Some(result) = crate::harness::checkpoint::terminal(&snapshot)? {
+                let mut events = Events::empty(cancellation, self.hooks.clone());
+                events.closing = true;
+                events.pending = Some(Box::pin(async move { result }));
+                return Ok(events);
+            }
+            restored_messages = Some(checkpoint_messages(&snapshot)?);
+            restored_usage = serde_json::from_value(snapshot["usage"].clone()).ok();
         }
         let original = input.clone();
         let input = self.hooks.before_execute(input, &cancellation).await?;
@@ -611,9 +625,18 @@ where
             .history
             .load(input.metadata.clone(), self.hooks.clone(), &cancellation)
             .await?;
-        let run = self.history.begin(original.clone(), &cancellation).await?;
+        let run = if restored_messages.is_some() {
+            self.history.resume(original.clone(), &cancellation).await?
+        } else {
+            self.history.begin(original.clone(), &cancellation).await?
+        };
         let prepared = async {
-            let messages = initial_messages(input.clone(), prompt.as_deref(), history);
+            let mut messages = restored_messages
+                .clone()
+                .unwrap_or_else(|| initial_messages(input.clone(), prompt.as_deref(), history));
+            if restored_waiting {
+                messages.push(user_message(input.clone()));
+            }
             let toolkit = match &self.toolkit {
                 Some(toolkit) => Some(toolkit.prepared(&cancellation).await?),
                 None => None,
@@ -648,26 +671,55 @@ where
                     model.stream(request).await
                 })
             });
-            Ok::<_, Error>(
-                Events::new(provider, cancellation, input_tokens, self.hooks.clone())
-                    .configure_tools(EventsConfig {
-                        provider_factory: factory,
+            let mut events = Events::new(provider, cancellation, input_tokens, self.hooks.clone())
+                .configure_tools(EventsConfig {
+                    provider_factory: factory,
+                    toolkit,
+                    access: self.access.clone(),
+                    evaluator: self.evaluator.clone(),
+                    checkpoint: self.checkpoint.clone(),
+                    input: input.clone(),
+                    checkpoint_id,
+                    metadata: input.metadata.clone(),
+                    messages: messages.clone(),
+                    max_concurrency: self.max_concurrency,
+                });
+            if restored_messages.is_some()
+                && !restored_waiting
+                && let Some(last) = messages.0.last()
+                && last.role == Role::Assistant
+            {
+                let calls = last
+                    .content
+                    .iter()
+                    .filter(|part| part.r#type == "tool_call")
+                    .map(decode_call)
+                    .collect::<Result<Vec<_>, _>>()?;
+                if !calls.is_empty() {
+                    let toolkit = events.toolkit.clone().ok_or_else(|| {
+                        Error::new("INVALID_STATE", "restored tool call has no toolkit")
+                    })?;
+                    events.provider = None;
+                    events.pending_tools = Some(Box::pin(execute_tool_batch(
                         toolkit,
-                        access: self.access.clone(),
-                        evaluator: self.evaluator.clone(),
-                        checkpoint: self.checkpoint.clone(),
-                        input: input.clone(),
-                        checkpoint_id,
-                        metadata: input.metadata.clone(),
-                        messages,
-                        max_concurrency: self.max_concurrency,
-                    }),
-            )
+                        events.access.clone(),
+                        events.hooks.clone(),
+                        events.metadata.clone(),
+                        calls,
+                        events.cancellation.clone(),
+                        events.max_concurrency,
+                    )));
+                }
+            }
+            Ok::<_, Error>(events)
         }
         .await;
         match prepared {
             Ok(mut events) => {
                 events.run = run;
+                if let Some(usage) = restored_usage {
+                    events.run.settle(Some(usage));
+                }
                 Ok(events)
             }
             Err(error) => Err(run.fail(error).await),
@@ -731,9 +783,34 @@ fn checkpoint_state(
         "messages": messages,
         "usage": usage,
         "query": input,
+        "metadata": input.map(|input| input.metadata.clone()),
     });
     crate::harness::checkpoint::record_result(&mut state, result);
     state
+}
+
+fn checkpoint_messages(snapshot: &Value) -> Result<Messages, Error> {
+    serde_json::from_value(snapshot["messages"].clone())
+        .map_err(|_| Error::new("INVALID_STATE", "checkpoint has invalid Agent messages"))
+}
+
+fn is_waiting_snapshot(snapshot: &Value) -> bool {
+    matches!(
+        snapshot.get("status").and_then(Value::as_str),
+        Some("waiting" | "paused")
+    )
+}
+
+fn checkpoint_identity_matches(snapshot: &Value, metadata: &Map<String, Value>) -> bool {
+    ["tenant_id", "user_id", "agent_id", "session_id", "chat_id"]
+        .into_iter()
+        .all(|key| {
+            snapshot
+                .get("metadata")
+                .and_then(Value::as_object)
+                .and_then(|saved| saved.get(key))
+                .is_none_or(|saved| metadata.get(key) == Some(saved))
+        })
 }
 
 async fn execute_tool(

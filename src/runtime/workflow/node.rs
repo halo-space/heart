@@ -38,7 +38,6 @@ pub enum AttemptStatus {
     Succeeded,
     Failed,
     Cancelled,
-    Interrupted,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
