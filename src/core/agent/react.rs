@@ -13,6 +13,7 @@ use futures_util::{
     future::poll_fn,
     stream::{FuturesUnordered, unfold},
 };
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::components::agent::toolkit::Toolkit;
@@ -409,6 +410,7 @@ where
             pending_calls: VecDeque::new(),
             active_tools: FuturesUnordered::new(),
             child_events: VecDeque::new(),
+            pending_subagents: BTreeMap::new(),
             tool_results: BTreeMap::new(),
             evaluations: BTreeMap::new(),
             partial: Message::new(Role::Assistant),
@@ -471,6 +473,10 @@ struct ReActState<M: Chat> {
     pending_calls: VecDeque<(usize, Call)>,
     active_tools: FuturesUnordered<Pin<Box<dyn Future<Output = ToolProgress> + 'static>>>,
     child_events: VecDeque<Result<Event, Error>>,
+    /// Child calls which have been handed off but have not yet committed a
+    /// Function message into the parent context.  This is checkpoint data,
+    /// not a second public execution identity.
+    pending_subagents: BTreeMap<String, PendingSubAgent>,
     tool_results: BTreeMap<usize, Message>,
     evaluations: BTreeMap<String, ToolEvaluation>,
     partial: Message,
@@ -517,6 +523,12 @@ enum ToolProgress {
 struct SubAgentProgress {
     events: Vec<Result<Event, Error>>,
     message: Message,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+struct PendingSubAgent {
+    index: usize,
+    call: Call,
 }
 
 // Private per-call dependencies, not a new component Context or Runtime state.
@@ -640,7 +652,20 @@ async fn execute_subagent(
         .iter()
         .find(|subagent| subagent.has_name(&name))
         .ok_or_else(|| Error::new("NOT_FOUND", "agent_spawn target is not registered"))?;
-    let mut stream = subagent.run(input, cancellation).await?;
+    // A standalone child shares the parent's top-level chat/checkpoint.  Give
+    // it an embedded capture scope so a child-local `.checkpoint(...)` cannot
+    // replace the parent's waiting snapshot.  When an outer Workflow already
+    // owns a scope, keep using that scope so its single checkpoint remains the
+    // source of truth.
+    let mut stream = if crate::harness::embedded::active() {
+        subagent.run(input, cancellation).await?
+    } else {
+        crate::harness::embedded::run(
+            crate::harness::embedded::Scope::new(None),
+            subagent.run(input, cancellation),
+        )
+        .await?
+    };
     let mut events = Vec::new();
     let mut final_message = None;
     while let Some(item) = stream.next().await {
@@ -823,6 +848,8 @@ fn checkpoint_snapshot<M: Chat>(state: &ReActState<M>, result: &Result<Event, Er
     snapshot["iteration"] = json!(state.iteration.load(Ordering::Relaxed));
     snapshot["plan_execution"] = json!(state.plan_execution);
     snapshot["plan_finalizing"] = json!(state.plan_finalizing);
+    snapshot["pending_subagents"] =
+        serde_json::to_value(&state.pending_subagents).unwrap_or(Value::Null);
     snapshot["tool_results"] = serde_json::to_value(&state.tool_results).unwrap_or(Value::Null);
     crate::harness::checkpoint::record_result(&mut snapshot, result);
     snapshot
@@ -872,7 +899,25 @@ fn restore_state<M: Chat>(state: &mut ReActState<M>, snapshot: Value) -> Result<
     state.iteration = Arc::new(AtomicUsize::new(field(&snapshot, "iteration")?));
     state.plan_execution = field(&snapshot, "plan_execution")?;
     state.plan_finalizing = field(&snapshot, "plan_finalizing")?;
+    state.pending_subagents = snapshot
+        .get("pending_subagents")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| invalid_checkpoint("invalid Agent checkpoint pending subagents"))?
+        .unwrap_or_default();
     state.tool_results = field(&snapshot, "tool_results")?;
+    // A parent waiting on a child is resumed by replaying only the registered
+    // child hand-off.  The parent model is not called again for that Call,
+    // and a committed tool result always wins over a stale pending entry.
+    let mut pending = state
+        .pending_subagents
+        .values()
+        .filter(|pending| !state.tool_results.contains_key(&pending.index))
+        .map(|pending| (pending.index, pending.call.clone()))
+        .collect::<Vec<_>>();
+    pending.sort_by_key(|(index, _)| *index);
+    state.pending_calls.extend(pending);
     state.run.settle(field(&snapshot, "usage")?);
     if let Some(graph) = snapshot.get("graph").filter(|graph| !graph.is_null()) {
         let mut graph: Graph = serde_json::from_value(json!({
@@ -904,6 +949,7 @@ fn restore_state<M: Chat>(state: &mut ReActState<M>, snapshot: Value) -> Result<
             snapshot.get("status").and_then(Value::as_str),
             Some("waiting" | "paused")
         ) && external_nodes.is_empty()
+            && state.pending_subagents.is_empty()
         {
             return Err(invalid_checkpoint(
                 "waiting Agent checkpoint has no waiting node",
@@ -947,6 +993,14 @@ fn restore_state<M: Chat>(state: &mut ReActState<M>, snapshot: Value) -> Result<
         state.external_resume_nodes = external_nodes;
         state.graph = Some(graph);
     }
+    if snapshot.get("status").and_then(Value::as_str) == Some("waiting")
+        && state.graph.is_none()
+        && state.pending_subagents.is_empty()
+    {
+        return Err(invalid_checkpoint(
+            "waiting Agent checkpoint has no waiting child or node",
+        ));
+    }
     Ok(())
 }
 
@@ -968,15 +1022,20 @@ fn is_waiting_snapshot(snapshot: &Value) -> bool {
 }
 
 fn is_external_wait_snapshot(snapshot: &Value) -> bool {
-    snapshot.get("status").and_then(Value::as_str) == Some("waiting")
-        || snapshot
-            .get("nodes")
-            .and_then(Value::as_object)
-            .is_some_and(|nodes| {
-                nodes
-                    .values()
-                    .any(|node| node.get("status").and_then(Value::as_str) == Some("waiting"))
-            })
+    let waiting_child = snapshot
+        .get("pending_subagents")
+        .and_then(Value::as_object)
+        .is_some_and(|children| !children.is_empty());
+    !waiting_child
+        && (snapshot.get("status").and_then(Value::as_str) == Some("waiting")
+            || snapshot
+                .get("nodes")
+                .and_then(Value::as_object)
+                .is_some_and(|nodes| {
+                    nodes
+                        .values()
+                        .any(|node| node.get("status").and_then(Value::as_str) == Some("waiting"))
+                }))
 }
 
 fn checkpoint_identity_matches(snapshot: &Value, metadata: &Map<String, Value>) -> bool {
@@ -998,6 +1057,17 @@ fn running_snapshot<M: Chat>(state: &ReActState<M>) -> Value {
             message: state.partial.clone(),
         }),
     )
+}
+
+fn waiting_snapshot<M: Chat>(state: &ReActState<M>) -> Value {
+    let mut snapshot = checkpoint_snapshot(
+        state,
+        &Ok(Event::Delta {
+            message: state.partial.clone(),
+        }),
+    );
+    snapshot["status"] = Value::String("waiting".into());
+    snapshot
 }
 
 async fn next_react_event_inner<M: Chat + 'static>(
@@ -1054,6 +1124,21 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 continue;
             }
             if call.name == "agent_spawn" && !state.subagents.is_empty() {
+                state.pending_subagents.insert(
+                    call.call_id.clone(),
+                    PendingSubAgent {
+                        index,
+                        call: call.clone(),
+                    },
+                );
+                // Persist the hand-off before the child starts.  If the
+                // process disappears after this point, restoration can
+                // resubmit this exact child Call without replaying the parent
+                // model.  No new public resume API or child ID is introduced.
+                if let Err(error) = save_checkpoint(&state, waiting_snapshot(&state)).await {
+                    state.done = true;
+                    return Some((Err(error), state));
+                }
                 let slots = state.tool_slots.clone();
                 let subagents = state.subagents.clone();
                 let parent = state.metadata.clone();
@@ -1186,6 +1271,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 }
                 ToolProgress::SubAgent(index, call, result, permit) => {
                     drop(permit);
+                    state.pending_subagents.remove(&call.call_id);
                     let message = match *result {
                         Ok(progress) => {
                             state.child_events.extend(progress.events);
@@ -1194,6 +1280,10 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         Err(error) => subagent_error_message(&call, &error),
                     };
                     state.tool_results.insert(index, message.clone());
+                    if let Err(error) = save_checkpoint(&state, running_snapshot(&state)).await {
+                        state.done = true;
+                        return Some((Err(error), state));
+                    }
                     state.child_events.push_back(Ok(Event::Complete {
                         message,
                         usage: None,
@@ -2130,6 +2220,66 @@ mod tests {
             assert_eq!(execution.attempts[0].created_time, created_time);
             assert_eq!(execution.attempts[0].status, Status::Succeeded);
             assert!(execution.attempts[0].error.is_none());
+        });
+    }
+
+    #[test]
+    fn waiting_child_checkpoint_replays_only_the_child_call_and_not_the_parent_model() {
+        use crate::checkpoint::Checkpoint as _;
+        block_on(async {
+            let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+            let mut snapshot = checkpoint_fixture(None);
+            snapshot["status"] = json!("waiting");
+            snapshot["pending_subagents"] = json!({
+                "spawn_1": {
+                    "index": 0,
+                    "call": {
+                        "call_id": "spawn_1",
+                        "name": "agent_spawn",
+                        "arguments": {
+                            "name": "researcher",
+                            "input": {"payload": []}
+                        }
+                    }
+                }
+            });
+            checkpoint
+                .save(902, snapshot, &Cancellation::new())
+                .await
+                .unwrap();
+
+            let child_calls = Arc::new(Mutex::new(0));
+            let child = crate::agent::chat()
+                .model(RepairChat {
+                    calls: child_calls.clone(),
+                })
+                .build()
+                .unwrap();
+            let parent_calls = Arc::new(Mutex::new(1));
+            let agent = crate::agent::react()
+                .model(RepairChat {
+                    calls: parent_calls.clone(),
+                })
+                .subagents(vec![
+                    crate::agent::SubAgent::new("researcher", child).unwrap(),
+                ])
+                .checkpoint(checkpoint.clone())
+                .build()
+                .unwrap();
+
+            let events = agent
+                .run(checkpoint_input(), Cancellation::new())
+                .await
+                .unwrap()
+                .collect::<Vec<_>>()
+                .await;
+            assert!(events.iter().all(Result::is_ok), "{events:?}");
+            assert_eq!(*child_calls.lock().unwrap(), 1);
+            assert_eq!(*parent_calls.lock().unwrap(), 2);
+            assert!(events.iter().any(|event| matches!(
+                event,
+                Ok(Event::Complete { message, .. }) if message.role == Role::Function
+            )));
         });
     }
 

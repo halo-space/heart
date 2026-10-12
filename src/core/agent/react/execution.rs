@@ -172,6 +172,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 pending_calls: VecDeque::new(),
                 active_tools: FuturesUnordered::new(),
                 child_events: VecDeque::new(),
+                pending_subagents: BTreeMap::new(),
                 tool_results: BTreeMap::new(),
                 evaluations: BTreeMap::new(),
                 partial: Message::new(Role::Assistant),

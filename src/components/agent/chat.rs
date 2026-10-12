@@ -6,6 +6,7 @@ use std::task::{Context, Poll};
 
 use futures_core::Stream;
 use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::components::agent::toolkit::Toolkit;
@@ -191,6 +192,7 @@ fn validate_subagents(subagents: &[SubAgent]) -> Result<(), Error> {
 }
 
 type CompletionFuture = Pin<Box<dyn Future<Output = Result<Event, Error>> + 'static>>;
+type CheckpointFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + 'static>>;
 type ProviderFuture<S> = Pin<Box<dyn Future<Output = Result<S, Error>> + 'static>>;
 type ToolBatch = (Vec<Message>, Vec<Result<Event, Error>>);
 type ToolBatchFuture = Pin<Box<dyn Future<Output = Result<ToolBatch, Error>> + 'static>>;
@@ -221,6 +223,13 @@ struct EventsConfig<S> {
     metadata: Map<String, Value>,
     messages: Messages,
     max_concurrency: usize,
+    pending_subagents: std::collections::BTreeMap<String, PendingSubAgent>,
+}
+
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+struct PendingSubAgent {
+    index: usize,
+    call: Call,
 }
 
 /// The concrete stream returned by this Chat Agent. Its items remain the
@@ -247,6 +256,8 @@ pub struct Events<S> {
     pending_provider: Option<ProviderFuture<S>>,
     tool_results: VecDeque<Message>,
     child_events: VecDeque<Result<Event, Error>>,
+    pending_subagents: std::collections::BTreeMap<String, PendingSubAgent>,
+    pending_checkpoint: Option<CheckpointFuture>,
     pending: Option<CompletionFuture>,
     run: Run,
     settled: bool,
@@ -293,6 +304,8 @@ impl<S> Events<S> {
             pending_provider: None,
             tool_results: VecDeque::new(),
             child_events: VecDeque::new(),
+            pending_subagents: std::collections::BTreeMap::new(),
+            pending_checkpoint: None,
             pending: None,
             run: Run::default(),
             settled: false,
@@ -312,6 +325,7 @@ impl<S> Events<S> {
         self.metadata = config.metadata;
         self.messages = config.messages;
         self.max_concurrency = config.max_concurrency;
+        self.pending_subagents = config.pending_subagents;
         self
     }
 
@@ -360,6 +374,7 @@ impl<S> Events<S> {
             self.run.usage(),
             self.input.as_ref(),
             &result,
+            &self.pending_subagents,
         );
         self.closing = true;
         self.pending = Some(Box::pin(async move {
@@ -391,6 +406,20 @@ where
             let result = this.cancelled();
             this.close(Ok(result));
         }
+        if let Some(checkpoint) = this.pending_checkpoint.as_mut() {
+            match checkpoint.as_mut().poll(cx) {
+                Poll::Pending => return Poll::Pending,
+                Poll::Ready(Ok(())) => {
+                    this.pending_checkpoint = None;
+                    return Pin::new(this).poll_next(cx);
+                }
+                Poll::Ready(Err(error)) => {
+                    this.pending_checkpoint = None;
+                    this.close(Err(error));
+                    return Pin::new(this).poll_next(cx);
+                }
+            }
+        }
         if let Some(provider) = this.pending_provider.as_mut() {
             match provider.as_mut().poll(cx) {
                 Poll::Pending => return Poll::Pending,
@@ -411,8 +440,27 @@ where
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Ok(messages)) => {
                     this.pending_tools = None;
+                    this.pending_subagents.clear();
                     this.child_events.extend(messages.1);
                     this.tool_results.extend(messages.0);
+                    let snapshot_messages = {
+                        let mut messages = this.messages.clone();
+                        messages.0.extend(this.tool_results.iter().cloned());
+                        messages
+                    };
+                    this.pending_checkpoint = Some(checkpoint_future(
+                        this.checkpoint.clone(),
+                        this.checkpoint_id,
+                        checkpoint_state(
+                            &snapshot_messages,
+                            this.run.usage(),
+                            this.input.as_ref(),
+                            &Ok(Event::Delta {
+                                message: this.partial.clone(),
+                            }),
+                            &this.pending_subagents,
+                        ),
+                    ));
                     return Pin::new(this).poll_next(cx);
                 }
                 Poll::Ready(Err(error)) => {
@@ -433,8 +481,7 @@ where
                 finish_reason: Some("tool".into()),
             };
             if this.tool_results.is_empty()
-                && let (Some(factory), Some(_toolkit)) =
-                    (this.provider_factory.clone(), this.toolkit.clone())
+                && let Some(factory) = this.provider_factory.clone()
             {
                 let messages = this.messages.clone();
                 let cancellation = this.cancellation.clone();
@@ -482,6 +529,33 @@ where
                                 return Pin::new(this).poll_next(cx);
                             }
                             if this.toolkit.is_some() || !this.subagents.is_empty() {
+                                let pending_subagents = calls
+                                    .iter()
+                                    .enumerate()
+                                    .filter(|(_, call)| call.name == "agent_spawn")
+                                    .map(|(index, call)| {
+                                        (
+                                            call.call_id.clone(),
+                                            PendingSubAgent {
+                                                index,
+                                                call: call.clone(),
+                                            },
+                                        )
+                                    })
+                                    .collect::<std::collections::BTreeMap<_, _>>();
+                                if !pending_subagents.is_empty() {
+                                    this.pending_subagents = pending_subagents;
+                                    this.pending_checkpoint = Some(checkpoint_future(
+                                        this.checkpoint.clone(),
+                                        this.checkpoint_id,
+                                        waiting_checkpoint_state(
+                                            &this.messages,
+                                            this.run.usage(),
+                                            this.input.as_ref(),
+                                            &this.pending_subagents,
+                                        ),
+                                    ));
+                                }
                                 let toolkit = this
                                     .toolkit
                                     .clone()
@@ -628,6 +702,7 @@ where
         let mut restored_messages = None;
         let mut restored_waiting = false;
         let mut restored_usage = None;
+        let mut restored_pending_subagents = std::collections::BTreeMap::new();
         if let Some(snapshot) = embedded_snapshot {
             if !checkpoint_identity_matches(&snapshot, &input.metadata) {
                 return Err(Error::new(
@@ -644,6 +719,7 @@ where
             }
             restored_messages = Some(checkpoint_messages(&snapshot)?);
             restored_usage = serde_json::from_value(snapshot["usage"].clone()).ok();
+            restored_pending_subagents = checkpoint_pending_subagents(&snapshot)?;
         }
         if let (Some(checkpoint), Some(id)) = (&checkpoint, checkpoint_id)
             && let Some(snapshot) = checkpoint.load(id, cancellation.clone()).await?
@@ -673,6 +749,7 @@ where
             }
             restored_messages = Some(checkpoint_messages(&snapshot)?);
             restored_usage = serde_json::from_value(snapshot["usage"].clone()).ok();
+            restored_pending_subagents = checkpoint_pending_subagents(&snapshot)?;
         }
         let original = input.clone();
         let restoring = restored_messages.is_some();
@@ -705,7 +782,7 @@ where
             let mut messages = restored_messages
                 .clone()
                 .unwrap_or_else(|| initial_messages(input.clone(), prompt.as_deref(), recalled));
-            if restored_waiting {
+            if restored_waiting && restored_pending_subagents.is_empty() {
                 messages.push(user_message(input.clone()));
             }
             let toolkit = match &self.toolkit {
@@ -721,15 +798,22 @@ where
                 tool_definitions.push(self.subagents[0].definition());
             }
             let model = Arc::clone(&self.model);
-            let request = Request {
-                messages: messages.clone(),
-                stream: true,
-                tools: tool_definitions.clone(),
-                ..Request::default()
+            // A child-wait checkpoint already contains the exact child Call.
+            // Do not invoke the parent model before restoring that hand-off.
+            let (provider, input_tokens) = if restored_pending_subagents.is_empty() {
+                let request = Request {
+                    messages: messages.clone(),
+                    stream: true,
+                    tools: tool_definitions.clone(),
+                    ..Request::default()
+                };
+                let request = self.hooks.before_model(request, &cancellation).await?;
+                let input_tokens = estimate_input_tokens(&request);
+                let provider = cancellable(model.stream(request), &cancellation).await?;
+                (Some(provider), input_tokens)
+            } else {
+                (None, 0)
             };
-            let request = self.hooks.before_model(request, &cancellation).await?;
-            let input_tokens = estimate_input_tokens(&request);
-            let provider = cancellable(model.stream(request), &cancellation).await?;
             let hooks = self.hooks.clone();
             let factory: ProviderFactory<M::Stream> = Arc::new(move |messages, cancellation| {
                 let model = Arc::clone(&model);
@@ -746,21 +830,55 @@ where
                     model.stream(request).await
                 })
             });
-            let mut events = Events::new(provider, cancellation, input_tokens, self.hooks.clone())
-                .configure_tools(EventsConfig {
-                    provider_factory: factory,
-                    toolkit,
-                    subagents: self.subagents.clone(),
-                    access: self.access.clone(),
-                    evaluator: self.evaluator.clone(),
-                    checkpoint,
-                    input: input.clone(),
-                    checkpoint_id,
-                    metadata: input.metadata.clone(),
-                    messages: messages.clone(),
-                    max_concurrency: self.max_concurrency,
-                });
-            if restored_messages.is_some()
+            let mut events = match provider {
+                Some(provider) => Events::new(
+                    provider,
+                    cancellation.clone(),
+                    input_tokens,
+                    self.hooks.clone(),
+                ),
+                None => Events::empty(cancellation.clone(), self.hooks.clone()),
+            }
+            .configure_tools(EventsConfig {
+                provider_factory: factory,
+                toolkit,
+                subagents: self.subagents.clone(),
+                access: self.access.clone(),
+                evaluator: self.evaluator.clone(),
+                checkpoint,
+                input: input.clone(),
+                checkpoint_id,
+                metadata: input.metadata.clone(),
+                messages: messages.clone(),
+                max_concurrency: self.max_concurrency,
+                pending_subagents: restored_pending_subagents.clone(),
+            });
+            if !restored_pending_subagents.is_empty() {
+                let calls = restored_pending_subagents
+                    .values()
+                    .map(|pending| (pending.index, pending.call.clone()))
+                    .collect::<Vec<_>>();
+                let mut calls = calls;
+                calls.sort_by_key(|(index, _)| *index);
+                let calls = calls.into_iter().map(|(_, call)| call).collect::<Vec<_>>();
+                let toolkit = events
+                    .toolkit
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(Toolkit::new()));
+                events.provider = None;
+                events.pending_tools = Some(Box::pin(execute_tool_batch(
+                    ToolBatchConfig {
+                        toolkit,
+                        subagents: events.subagents.clone(),
+                        access: events.access.clone(),
+                        hooks: events.hooks.clone(),
+                        metadata: events.metadata.clone(),
+                        cancellation: events.cancellation.clone(),
+                        max_concurrency: events.max_concurrency,
+                    },
+                    calls,
+                )));
+            } else if restored_messages.is_some()
                 && !restored_waiting
                 && let Some(last) = messages.0.last()
                 && last.role == Role::Assistant
@@ -898,7 +1016,18 @@ async fn execute_subagent(
         .iter()
         .find(|subagent| subagent.has_name(name))
         .ok_or_else(|| Error::new("NOT_FOUND", "agent_spawn target is not registered"))?;
-    let mut stream = subagent.run(input, cancellation).await?;
+    // Child Agents do not own a second top-level Checkpoint.  Capture a
+    // standalone child's internal scene under an embedded scope; an enclosing
+    // Workflow scope remains authoritative when this Agent is nested there.
+    let mut stream = if crate::harness::embedded::active() {
+        subagent.run(input, cancellation).await?
+    } else {
+        crate::harness::embedded::run(
+            crate::harness::embedded::Scope::new(None),
+            subagent.run(input, cancellation),
+        )
+        .await?
+    };
     let mut events = Vec::new();
     let mut final_message = None;
     while let Some(item) = stream.next().await {
@@ -951,6 +1080,7 @@ fn checkpoint_state(
     usage: Option<crate::model::token::Usage>,
     input: Option<&Input>,
     result: &Result<Event, Error>,
+    pending_subagents: &std::collections::BTreeMap<String, PendingSubAgent>,
 ) -> Value {
     let status = match result {
         Ok(Event::Complete {
@@ -969,9 +1099,57 @@ fn checkpoint_state(
         "usage": usage,
         "query": input,
         "metadata": input.map(|input| input.metadata.clone()),
+        "pending_subagents": pending_subagents,
     });
     crate::harness::checkpoint::record_result(&mut state, result);
     state
+}
+
+fn waiting_checkpoint_state(
+    messages: &Messages,
+    usage: Option<crate::model::token::Usage>,
+    input: Option<&Input>,
+    pending_subagents: &std::collections::BTreeMap<String, PendingSubAgent>,
+) -> Value {
+    let mut state = checkpoint_state(
+        messages,
+        usage,
+        input,
+        &Ok(Event::Delta {
+            message: Message::new(Role::Assistant),
+        }),
+        pending_subagents,
+    );
+    state["status"] = Value::String("waiting".into());
+    state
+}
+
+fn checkpoint_future(
+    checkpoint: Option<CheckpointSave>,
+    checkpoint_id: Option<i64>,
+    state: Value,
+) -> CheckpointFuture {
+    Box::pin(async move {
+        if crate::harness::embedded::capture(state.clone()) {
+            Ok(())
+        } else if let (Some(checkpoint), Some(id)) = (checkpoint, checkpoint_id) {
+            checkpoint.save(id, state, Cancellation::new()).await
+        } else {
+            Ok(())
+        }
+    })
+}
+
+fn checkpoint_pending_subagents(
+    snapshot: &Value,
+) -> Result<std::collections::BTreeMap<String, PendingSubAgent>, Error> {
+    snapshot
+        .get("pending_subagents")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| Error::new("INVALID_STATE", "checkpoint has invalid pending subagents"))
+        .map(|pending| pending.unwrap_or_default())
 }
 
 fn checkpoint_messages(snapshot: &Value) -> Result<Messages, Error> {
@@ -1703,6 +1881,96 @@ mod tests {
         assert!(
             matches!(events[2], Event::Complete { ref message, .. } if message.role == Role::Assistant)
         );
+    }
+
+    #[test]
+    fn chat_waiting_child_checkpoint_does_not_call_parent_before_child_restore() {
+        use crate::checkpoint::Checkpoint as _;
+
+        struct CountingChat {
+            calls: Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        impl Chat for CountingChat {
+            type Stream = FakeStream;
+
+            async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
+                assert!(request.stream);
+                self.calls.fetch_add(1, Ordering::SeqCst);
+                let mut message = Message::new(Role::Assistant);
+                message.content.push(Part {
+                    r#type: "text".into(),
+                    data: part_data(json!({"value": "child complete"})),
+                });
+                Ok(FakeStream {
+                    events: VecDeque::from([Ok(Event::Complete {
+                        message,
+                        usage: None,
+                        finish_reason: Some("stop".into()),
+                    })]),
+                    pending: false,
+                })
+            }
+        }
+
+        block_on(async {
+            let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+            checkpoint
+                .save(
+                    991,
+                    json!({
+                        "type": "agent",
+                        "chat_id": 991,
+                        "status": "waiting",
+                        "messages": [],
+                        "usage": null,
+                        "query": {"metadata": {"chat_id": 991}, "payload": []},
+                        "metadata": {"chat_id": 991},
+                        "pending_subagents": {
+                            "spawn_1": {
+                                "index": 0,
+                                "call": {
+                                    "call_id": "spawn_1",
+                                    "name": "agent_spawn",
+                                    "arguments": {"name": "child", "input": {"payload": []}}
+                                }
+                            }
+                        }
+                    }),
+                    &Cancellation::new(),
+                )
+                .await
+                .unwrap();
+            let parent_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let child_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let child = builder()
+                .model(CountingChat {
+                    calls: child_calls.clone(),
+                })
+                .build()
+                .unwrap();
+            let parent = builder()
+                .model(CountingChat {
+                    calls: parent_calls.clone(),
+                })
+                .subagents(vec![SubAgent::new("child", child).unwrap()])
+                .checkpoint(checkpoint)
+                .build()
+                .unwrap();
+            let input = Input {
+                metadata: Map::from_iter([("chat_id".into(), json!(991))]),
+                payload: Vec::new(),
+            };
+            let events = parent
+                .run(input, Cancellation::new())
+                .await
+                .unwrap()
+                .collect::<Vec<_>>()
+                .await;
+            assert!(events.iter().all(Result::is_ok), "{events:?}");
+            assert_eq!(child_calls.load(Ordering::SeqCst), 1);
+            assert_eq!(parent_calls.load(Ordering::SeqCst), 1);
+        });
     }
 
     #[test]
