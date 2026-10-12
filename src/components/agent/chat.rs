@@ -9,7 +9,7 @@ use futures_util::StreamExt;
 use serde_json::{Map, Value, json};
 
 use crate::components::agent::toolkit::Toolkit;
-use crate::components::agent::{Agent as AgentContract, Error, Input};
+use crate::components::agent::{Agent as AgentContract, Error, Input, SubAgent};
 use crate::components::evaluation::{Evaluation, Evaluator};
 use crate::components::event::Event;
 use crate::components::message::{Message, Messages, Role};
@@ -26,6 +26,7 @@ pub struct Builder<M = ()> {
     model: Option<M>,
     system_prompt: Option<String>,
     toolkit: Option<Toolkit>,
+    subagents: Vec<SubAgent>,
     hooks: Hooks,
     access: Access,
     evaluator: Option<EvaluatorHandle>,
@@ -39,6 +40,7 @@ pub fn builder() -> Builder {
         model: None,
         system_prompt: None,
         toolkit: None,
+        subagents: Vec::new(),
         hooks: Hooks::default(),
         access: Access::default(),
         evaluator: None,
@@ -54,6 +56,7 @@ impl<M> Builder<M> {
             model: Some(model),
             system_prompt: self.system_prompt,
             toolkit: self.toolkit,
+            subagents: self.subagents,
             hooks: self.hooks,
             access: self.access,
             evaluator: self.evaluator,
@@ -70,6 +73,13 @@ impl<M> Builder<M> {
 
     pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
         self.toolkit = Some(toolkit);
+        self
+    }
+
+    /// Register the heterogeneous Agent set available to the built-in
+    /// `agent_spawn` delegation path. SubAgents are not Toolkit entries.
+    pub fn subagents(mut self, subagents: impl IntoIterator<Item = SubAgent>) -> Self {
+        self.subagents.extend(subagents);
         self
     }
 
@@ -138,10 +148,12 @@ where
             ));
         }
         self.history.validate()?;
+        validate_subagents(&self.subagents)?;
         Ok(Agent {
             model: Arc::new(model),
             system_prompt: self.system_prompt,
             toolkit: self.toolkit,
+            subagents: self.subagents,
             hooks: self.hooks,
             access: self.access,
             evaluator: self.evaluator,
@@ -156,6 +168,7 @@ pub struct Agent<M> {
     model: Arc<M>,
     system_prompt: Option<String>,
     toolkit: Option<Toolkit>,
+    subagents: Vec<SubAgent>,
     hooks: Hooks,
     access: Access,
     evaluator: Option<EvaluatorHandle>,
@@ -164,17 +177,42 @@ pub struct Agent<M> {
     max_concurrency: usize,
 }
 
+fn validate_subagents(subagents: &[SubAgent]) -> Result<(), Error> {
+    let mut names = std::collections::BTreeSet::new();
+    for subagent in subagents {
+        if !names.insert(subagent.name()) {
+            return Err(Error::new(
+                "INVALID_ARGUMENTS",
+                "subagent names must be unique",
+            ));
+        }
+    }
+    Ok(())
+}
+
 type CompletionFuture = Pin<Box<dyn Future<Output = Result<Event, Error>> + 'static>>;
 type ProviderFuture<S> = Pin<Box<dyn Future<Output = Result<S, Error>> + 'static>>;
-type ToolBatchFuture = Pin<Box<dyn Future<Output = Result<Vec<Message>, Error>> + 'static>>;
+type ToolBatch = (Vec<Message>, Vec<Result<Event, Error>>);
+type ToolBatchFuture = Pin<Box<dyn Future<Output = Result<ToolBatch, Error>> + 'static>>;
 type ProviderFactory<S> = Arc<dyn Fn(Messages, Cancellation) -> ProviderFuture<S> + Send + Sync>;
 type EvaluatorHandle = Arc<dyn Fn(Input, Messages, Cancellation) -> EvaluationFuture + Send + Sync>;
 type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + 'static>>;
 type CheckpointSave = Backend;
 
+struct ToolBatchConfig {
+    toolkit: Arc<Toolkit>,
+    subagents: Vec<SubAgent>,
+    access: Access,
+    hooks: Hooks,
+    metadata: Map<String, Value>,
+    cancellation: Cancellation,
+    max_concurrency: usize,
+}
+
 struct EventsConfig<S> {
     provider_factory: ProviderFactory<S>,
     toolkit: Option<Toolkit>,
+    subagents: Vec<SubAgent>,
     access: Access,
     evaluator: Option<EvaluatorHandle>,
     checkpoint: Option<CheckpointSave>,
@@ -196,6 +234,7 @@ pub struct Events<S> {
     finished: bool,
     hooks: Hooks,
     toolkit: Option<Arc<Toolkit>>,
+    subagents: Vec<SubAgent>,
     access: Access,
     evaluator: Option<EvaluatorHandle>,
     checkpoint: Option<CheckpointSave>,
@@ -207,6 +246,7 @@ pub struct Events<S> {
     pending_tools: Option<ToolBatchFuture>,
     pending_provider: Option<ProviderFuture<S>>,
     tool_results: VecDeque<Message>,
+    child_events: VecDeque<Result<Event, Error>>,
     pending: Option<CompletionFuture>,
     run: Run,
     settled: bool,
@@ -240,6 +280,7 @@ impl<S> Events<S> {
             finished: false,
             hooks,
             toolkit: None,
+            subagents: Vec::new(),
             access: Access::default(),
             evaluator: None,
             checkpoint: None,
@@ -251,6 +292,7 @@ impl<S> Events<S> {
             pending_tools: None,
             pending_provider: None,
             tool_results: VecDeque::new(),
+            child_events: VecDeque::new(),
             pending: None,
             run: Run::default(),
             settled: false,
@@ -261,6 +303,7 @@ impl<S> Events<S> {
     fn configure_tools(mut self, config: EventsConfig<S>) -> Self {
         self.provider_factory = Some(config.provider_factory);
         self.toolkit = config.toolkit.map(Arc::new);
+        self.subagents = config.subagents;
         self.access = config.access;
         self.evaluator = config.evaluator;
         self.checkpoint = config.checkpoint;
@@ -368,7 +411,8 @@ where
                 Poll::Pending => return Poll::Pending,
                 Poll::Ready(Ok(messages)) => {
                     this.pending_tools = None;
-                    this.tool_results.extend(messages);
+                    this.child_events.extend(messages.1);
+                    this.tool_results.extend(messages.0);
                     return Pin::new(this).poll_next(cx);
                 }
                 Poll::Ready(Err(error)) => {
@@ -377,6 +421,9 @@ where
                     return Pin::new(this).poll_next(cx);
                 }
             }
+        }
+        if let Some(event) = this.child_events.pop_front() {
+            return Poll::Ready(Some(event));
         }
         if let Some(message) = this.tool_results.pop_front() {
             this.messages.push(message.clone());
@@ -434,20 +481,27 @@ where
                                 this.close(Ok(event));
                                 return Pin::new(this).poll_next(cx);
                             }
-                            if let Some(toolkit) = this.toolkit.clone() {
+                            if this.toolkit.is_some() || !this.subagents.is_empty() {
+                                let toolkit = this
+                                    .toolkit
+                                    .clone()
+                                    .unwrap_or_else(|| Arc::new(Toolkit::new()));
                                 let access = this.access.clone();
                                 let hooks = this.hooks.clone();
                                 let metadata = this.metadata.clone();
                                 let cancellation = this.cancellation.clone();
                                 let max_concurrency = this.max_concurrency;
                                 this.pending_tools = Some(Box::pin(execute_tool_batch(
-                                    toolkit,
-                                    access,
-                                    hooks,
-                                    metadata,
+                                    ToolBatchConfig {
+                                        toolkit,
+                                        subagents: this.subagents.clone(),
+                                        access,
+                                        hooks,
+                                        metadata,
+                                        cancellation,
+                                        max_concurrency,
+                                    },
                                     calls,
-                                    cancellation,
-                                    max_concurrency,
                                 )));
                                 // The model Complete is emitted before its tool calls.
                                 return Poll::Ready(Some(Ok(event)));
@@ -662,6 +716,10 @@ where
                 .as_ref()
                 .map(Toolkit::definitions)
                 .unwrap_or_default();
+            let mut tool_definitions = tool_definitions;
+            if !self.subagents.is_empty() {
+                tool_definitions.push(self.subagents[0].definition());
+            }
             let model = Arc::clone(&self.model);
             let request = Request {
                 messages: messages.clone(),
@@ -692,6 +750,7 @@ where
                 .configure_tools(EventsConfig {
                     provider_factory: factory,
                     toolkit,
+                    subagents: self.subagents.clone(),
                     access: self.access.clone(),
                     evaluator: self.evaluator.clone(),
                     checkpoint,
@@ -713,18 +772,22 @@ where
                     .map(decode_call)
                     .collect::<Result<Vec<_>, _>>()?;
                 if !calls.is_empty() {
-                    let toolkit = events.toolkit.clone().ok_or_else(|| {
-                        Error::new("INVALID_STATE", "restored tool call has no toolkit")
-                    })?;
+                    let toolkit = events
+                        .toolkit
+                        .clone()
+                        .unwrap_or_else(|| Arc::new(Toolkit::new()));
                     events.provider = None;
                     events.pending_tools = Some(Box::pin(execute_tool_batch(
-                        toolkit,
-                        events.access.clone(),
-                        events.hooks.clone(),
-                        events.metadata.clone(),
+                        ToolBatchConfig {
+                            toolkit,
+                            subagents: events.subagents.clone(),
+                            access: events.access.clone(),
+                            hooks: events.hooks.clone(),
+                            metadata: events.metadata.clone(),
+                            cancellation: events.cancellation.clone(),
+                            max_concurrency: events.max_concurrency,
+                        },
                         calls,
-                        events.cancellation.clone(),
-                        events.max_concurrency,
                     )));
                 }
             }
@@ -744,23 +807,35 @@ where
     }
 }
 
-async fn execute_tool_batch(
-    toolkit: Arc<Toolkit>,
-    access: Access,
-    hooks: Hooks,
-    metadata: Map<String, Value>,
-    calls: Vec<Call>,
-    cancellation: Cancellation,
-    max_concurrency: usize,
-) -> Result<Vec<Message>, Error> {
+async fn execute_tool_batch(config: ToolBatchConfig, calls: Vec<Call>) -> Result<ToolBatch, Error> {
+    let ToolBatchConfig {
+        toolkit,
+        subagents,
+        access,
+        hooks,
+        metadata,
+        cancellation,
+        max_concurrency,
+    } = config;
     let tasks = calls.into_iter().enumerate().map(|(index, call)| {
         let toolkit = Arc::clone(&toolkit);
+        let subagents = subagents.clone();
         let access = access.clone();
         let hooks = hooks.clone();
         let metadata = metadata.clone();
         let cancellation = cancellation.clone();
         async move {
-            let result = execute_tool(toolkit, access, hooks, metadata, call, cancellation).await;
+            let result = if call.name == "agent_spawn" && !subagents.is_empty() {
+                match execute_subagent(subagents, metadata, call.clone(), cancellation).await {
+                    Ok(result) => Ok(result),
+                    Err(error) if error.code == "CANCELLED" => Err(error),
+                    Err(error) => Ok((vec![subagent_error_message(&call, &error)], Vec::new())),
+                }
+            } else {
+                execute_tool(toolkit, access, hooks, metadata, call, cancellation)
+                    .await
+                    .map(|messages| (messages, Vec::new()))
+            };
             (index, result)
         }
     });
@@ -772,10 +847,103 @@ async fn execute_tool_batch(
         .map(|(index, result)| result.map(|messages| (index, messages)))
         .collect::<Result<Vec<_>, _>>()?;
     results.sort_by_key(|(index, _)| *index);
-    Ok(results
-        .into_iter()
-        .flat_map(|(_, messages)| messages.into_iter())
-        .collect())
+    let mut messages = Vec::new();
+    let mut events = Vec::new();
+    for (_, (batch, child_events)) in results {
+        messages.extend(batch);
+        events.extend(child_events);
+    }
+    Ok((messages, events))
+}
+
+async fn execute_subagent(
+    subagents: Vec<SubAgent>,
+    parent: Map<String, Value>,
+    call: Call,
+    cancellation: Cancellation,
+) -> Result<(Vec<Message>, Vec<Result<Event, Error>>), Error> {
+    let name = call
+        .arguments
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.trim().is_empty())
+        .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "agent_spawn name is missing"))?;
+    let input_value = call
+        .arguments
+        .get("input")
+        .cloned()
+        .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "agent_spawn input is missing"))?;
+    let mut input: Input = serde_json::from_value(input_value).map_err(|_| {
+        Error::new(
+            "INVALID_ARGUMENTS",
+            "agent_spawn input must be agent::Input",
+        )
+    })?;
+    for key in ["chat_id", "session_id", "user_id", "agent_id"] {
+        if let Some(value) = parent.get(key) {
+            input
+                .metadata
+                .entry(key.to_owned())
+                .or_insert_with(|| value.clone());
+        }
+    }
+    let depth = parent.get("depth").and_then(Value::as_u64).unwrap_or(1);
+    if depth >= 2 {
+        return Err(Error::new("INVALID_ARGUMENTS", "SubAgent depth limit is 2"));
+    }
+    input
+        .metadata
+        .insert("depth".into(), Value::from(depth + 1));
+    let subagent = subagents
+        .iter()
+        .find(|subagent| subagent.has_name(name))
+        .ok_or_else(|| Error::new("NOT_FOUND", "agent_spawn target is not registered"))?;
+    let mut stream = subagent.run(input, cancellation).await?;
+    let mut events = Vec::new();
+    let mut final_message = None;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(event) => {
+                if let Event::Complete { message, .. } = &event {
+                    final_message = Some(message.clone());
+                }
+                events.push(Ok(event));
+            }
+            Err(error) => {
+                return Ok((vec![subagent_error_message(&call, &error)], events));
+            }
+        }
+    }
+    let mut message = final_message
+        .ok_or_else(|| Error::new("INVALID_RESPONSE", "SubAgent stream ended without Complete"))?;
+    message.role = Role::Function;
+    message
+        .metadata
+        .insert("call_id".into(), Value::String(call.call_id.clone()));
+    message
+        .metadata
+        .insert("name".into(), Value::String(call.name.clone()));
+    Ok((vec![message], events))
+}
+
+fn subagent_error_message(call: &Call, error: &Error) -> Message {
+    let value = json!({
+        "code": error.code,
+        "message": error.message,
+        "details": error.details,
+        "call_id": call.call_id,
+        "name": call.name,
+    });
+    Message {
+        role: Role::Function,
+        content: vec![Part {
+            r#type: "text".into(),
+            data: part_data(json!({"value": value.to_string()})),
+        }],
+        values: Map::from_iter([(String::from("error"), value)]),
+        metadata: Map::new(),
+        usage: None,
+    }
 }
 
 fn checkpoint_state(

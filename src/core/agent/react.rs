@@ -16,7 +16,7 @@ use futures_util::{
 use serde_json::{Map, Value, json};
 
 use crate::components::agent::toolkit::Toolkit;
-use crate::components::agent::{Error, Input};
+use crate::components::agent::{Error, Input, SubAgent};
 use crate::components::evaluation::{Evaluation, Evaluator};
 use crate::components::event::Event;
 use crate::components::message::{Message, Messages, Role};
@@ -52,6 +52,7 @@ pub struct Builder<M = ()> {
     model: Option<M>,
     system_prompt: Option<String>,
     toolkit: Toolkit,
+    subagents: Vec<SubAgent>,
     max_iters: usize,
     max_concurrency: usize,
     hooks: Hooks,
@@ -67,6 +68,7 @@ pub fn builder() -> Builder {
         model: None,
         system_prompt: None,
         toolkit: Toolkit::new(),
+        subagents: Vec::new(),
         max_iters: 20,
         max_concurrency: 100,
         hooks: Hooks::default(),
@@ -84,6 +86,7 @@ impl<M> Builder<M> {
             model: Some(model),
             system_prompt: self.system_prompt,
             toolkit: self.toolkit,
+            subagents: self.subagents,
             max_iters: self.max_iters,
             max_concurrency: self.max_concurrency,
             hooks: self.hooks,
@@ -102,6 +105,13 @@ impl<M> Builder<M> {
 
     pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
         self.toolkit = toolkit;
+        self
+    }
+
+    /// Register the heterogeneous Agent set available to the built-in
+    /// `agent_spawn` delegation path. SubAgents are not Toolkit entries.
+    pub fn subagents(mut self, subagents: impl IntoIterator<Item = SubAgent>) -> Self {
+        self.subagents.extend(subagents);
         self
     }
 
@@ -206,10 +216,12 @@ where
                 "plan is reserved for the built-in Planner",
             ));
         }
+        validate_subagents(&self.subagents)?;
         Ok(Agent {
             model: std::sync::Arc::new(model),
             system_prompt: self.system_prompt,
             toolkit: std::sync::Arc::new(self.toolkit),
+            subagents: std::sync::Arc::new(self.subagents),
             max_iters: self.max_iters,
             max_concurrency: self.max_concurrency,
             hooks: self.hooks,
@@ -226,6 +238,7 @@ pub struct Agent<M> {
     model: std::sync::Arc<M>,
     system_prompt: Option<String>,
     toolkit: std::sync::Arc<Toolkit>,
+    subagents: std::sync::Arc<Vec<SubAgent>>,
     max_iters: usize,
     max_concurrency: usize,
     hooks: Hooks,
@@ -234,6 +247,19 @@ pub struct Agent<M> {
     id_fn: Option<fn() -> i64>,
     evaluator: Option<EvaluatorHandle>,
     checkpoint: Option<CheckpointSave>,
+}
+
+fn validate_subagents(subagents: &[SubAgent]) -> Result<(), Error> {
+    let mut names = BTreeSet::new();
+    for subagent in subagents {
+        if !names.insert(subagent.name()) {
+            return Err(Error::new(
+                "INVALID_ARGUMENTS",
+                "subagent names must be unique",
+            ));
+        }
+    }
+    Ok(())
 }
 
 impl<M> Agent<M> {
@@ -344,6 +370,7 @@ where
         let mut state = ReActState {
             model: std::sync::Arc::clone(&self.model),
             toolkit: std::sync::Arc::new(toolkit),
+            subagents: self.subagents.clone(),
             max_iters: self.max_iters,
             max_concurrency: self.max_concurrency,
             cancellation,
@@ -381,6 +408,7 @@ where
             resume_input: None,
             pending_calls: VecDeque::new(),
             active_tools: FuturesUnordered::new(),
+            child_events: VecDeque::new(),
             tool_results: BTreeMap::new(),
             evaluations: BTreeMap::new(),
             partial: Message::new(Role::Assistant),
@@ -410,6 +438,7 @@ where
 struct ReActState<M: Chat> {
     model: std::sync::Arc<M>,
     toolkit: std::sync::Arc<Toolkit>,
+    subagents: std::sync::Arc<Vec<SubAgent>>,
     max_iters: usize,
     max_concurrency: usize,
     cancellation: Cancellation,
@@ -441,6 +470,7 @@ struct ReActState<M: Chat> {
     resume_input: Option<Input>,
     pending_calls: VecDeque<(usize, Call)>,
     active_tools: FuturesUnordered<Pin<Box<dyn Future<Output = ToolProgress> + 'static>>>,
+    child_events: VecDeque<Result<Event, Error>>,
     tool_results: BTreeMap<usize, Message>,
     evaluations: BTreeMap<String, ToolEvaluation>,
     partial: Message,
@@ -476,6 +506,17 @@ enum ToolProgress {
         Option<tokio::sync::OwnedSemaphorePermit>,
     ),
     Evaluated(String, Result<ToolEvaluation, Error>),
+    SubAgent(
+        usize,
+        Call,
+        Box<Result<SubAgentProgress, Error>>,
+        Option<tokio::sync::OwnedSemaphorePermit>,
+    ),
+}
+
+struct SubAgentProgress {
+    events: Vec<Result<Event, Error>>,
+    message: Message,
 }
 
 // Private per-call dependencies, not a new component Context or Runtime state.
@@ -546,6 +587,103 @@ async fn call_with_permission(
         .call_prepared(effective, &state.cancellation)
         .await
         .map_err(PermissionFailure::Tool)
+}
+
+fn decode_subagent_input(
+    call: &Call,
+    parent: &Map<String, Value>,
+) -> Result<(String, Input), Error> {
+    let name = call
+        .arguments
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|name| !name.trim().is_empty())
+        .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "agent_spawn name is missing"))?
+        .to_owned();
+    let input = call
+        .arguments
+        .get("input")
+        .cloned()
+        .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "agent_spawn input is missing"))?;
+    let mut input: Input = serde_json::from_value(input).map_err(|_| {
+        Error::new(
+            "INVALID_ARGUMENTS",
+            "agent_spawn input must be agent::Input",
+        )
+    })?;
+    for key in ["chat_id", "session_id", "user_id", "agent_id"] {
+        if let Some(value) = parent.get(key) {
+            input
+                .metadata
+                .entry(key.to_owned())
+                .or_insert_with(|| value.clone());
+        }
+    }
+    let depth = parent.get("depth").and_then(Value::as_u64).unwrap_or(1);
+    if depth >= 2 {
+        return Err(Error::new("INVALID_ARGUMENTS", "SubAgent depth limit is 2"));
+    }
+    input
+        .metadata
+        .insert("depth".into(), Value::from(depth + 1));
+    Ok((name, input))
+}
+
+async fn execute_subagent(
+    subagents: Arc<Vec<SubAgent>>,
+    call: Call,
+    parent: Map<String, Value>,
+    cancellation: Cancellation,
+) -> Result<SubAgentProgress, Error> {
+    let (name, input) = decode_subagent_input(&call, &parent)?;
+    let subagent = subagents
+        .iter()
+        .find(|subagent| subagent.has_name(&name))
+        .ok_or_else(|| Error::new("NOT_FOUND", "agent_spawn target is not registered"))?;
+    let mut stream = subagent.run(input, cancellation).await?;
+    let mut events = Vec::new();
+    let mut final_message = None;
+    while let Some(item) = stream.next().await {
+        match item {
+            Ok(event) => {
+                if let Event::Complete { message, .. } = &event {
+                    final_message = Some(message.clone());
+                }
+                events.push(Ok(event));
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    let mut message = final_message
+        .ok_or_else(|| Error::new("INVALID_RESPONSE", "SubAgent stream ended without Complete"))?;
+    message.role = Role::Function;
+    message
+        .metadata
+        .insert("call_id".into(), Value::String(call.call_id.clone()));
+    message
+        .metadata
+        .insert("name".into(), Value::String(call.name.clone()));
+    Ok(SubAgentProgress { events, message })
+}
+
+fn subagent_error_message(call: &Call, error: &Error) -> Message {
+    let value = json!({
+        "code": error.code,
+        "message": error.message,
+        "details": error.details,
+        "call_id": call.call_id,
+        "name": call.name,
+    });
+    Message {
+        role: Role::Function,
+        content: vec![Part {
+            r#type: "text".into(),
+            data: part_data(json!({"value": value.to_string()})),
+        }],
+        values: Map::from_iter([(String::from("error"), value)]),
+        metadata: Map::new(),
+        usage: None,
+    }
 }
 
 async fn next_react_event<M: Chat + 'static>(
@@ -875,6 +1013,10 @@ async fn next_react_event_inner<M: Chat + 'static>(
             return Some((Ok(cancelled_event(&mut state)), state));
         }
 
+        if let Some(event) = state.child_events.pop_front() {
+            return Some((event, state));
+        }
+
         if let Some(error) = state.planning_error.take() {
             state.done = true;
             return Some((Err(error), state));
@@ -909,6 +1051,34 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     ));
                 }
                 state.pending_plans.push_back((index, call));
+                continue;
+            }
+            if call.name == "agent_spawn" && !state.subagents.is_empty() {
+                let slots = state.tool_slots.clone();
+                let subagents = state.subagents.clone();
+                let parent = state.metadata.clone();
+                let cancellation = state.cancellation.clone();
+                state.active_tools.push(Box::pin(async move {
+                    let permit = match cancellable(
+                        async {
+                            slots
+                                .acquire_owned()
+                                .await
+                                .map_err(|_| Error::new("CANCELLED", "agent capacity closed"))
+                        },
+                        &cancellation,
+                    )
+                    .await
+                    {
+                        Ok(permit) => permit,
+                        Err(error) => {
+                            return ToolProgress::SubAgent(index, call, Box::new(Err(error)), None);
+                        }
+                    };
+                    let result =
+                        execute_subagent(subagents, call.clone(), parent, cancellation).await;
+                    ToolProgress::SubAgent(index, call, Box::new(result), Some(permit))
+                }));
                 continue;
             }
             let execution = ToolExecution {
@@ -1013,6 +1183,25 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         }),
                         state,
                     ));
+                }
+                ToolProgress::SubAgent(index, call, result, permit) => {
+                    drop(permit);
+                    let message = match *result {
+                        Ok(progress) => {
+                            state.child_events.extend(progress.events);
+                            progress.message
+                        }
+                        Err(error) => subagent_error_message(&call, &error),
+                    };
+                    state.tool_results.insert(index, message.clone());
+                    state.child_events.push_back(Ok(Event::Complete {
+                        message,
+                        usage: None,
+                        finish_reason: Some("agent".into()),
+                    }));
+                    if let Some(event) = state.child_events.pop_front() {
+                        return Some((event, state));
+                    }
                 }
             }
         }
@@ -1344,6 +1533,9 @@ async fn next_react_event_inner<M: Chat + 'static>(
             } else {
                 let mut tools = state.toolkit.definitions();
                 tools.push(plan_definition());
+                if !state.subagents.is_empty() {
+                    tools.push(state.subagents[0].definition());
+                }
                 tools
             };
             if state.plan_finalizing {
@@ -2183,6 +2375,83 @@ mod tests {
                 finish_reason: Some("stop".into()),
             })]))
         }
+    }
+
+    struct SpawnChat {
+        calls: Arc<Mutex<usize>>,
+    }
+
+    impl Chat for SpawnChat {
+        type Stream = futures_util::stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+
+        async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
+            assert!(request.stream);
+            let mut calls = self.calls.lock().expect("spawn chat lock poisoned");
+            let index = *calls;
+            *calls += 1;
+            let mut message = Message::new(Role::Assistant);
+            if index == 0 {
+                message.content.push(Part {
+                    r#type: "tool_call".into(),
+                    data: part_data(json!({
+                        "call_id": "spawn_1",
+                        "name": "agent_spawn",
+                        "arguments": {
+                            "name": "researcher",
+                            "input": {"payload": []}
+                        }
+                    })),
+                });
+            } else {
+                message.content.push(Part {
+                    r#type: "text".into(),
+                    data: part_data(json!({"value": "parent complete"})),
+                });
+            }
+            Ok(futures_util::stream::iter(vec![Ok(Event::Complete {
+                message,
+                usage: None,
+                finish_reason: Some("stop".into()),
+            })]))
+        }
+    }
+
+    #[test]
+    fn agent_spawn_runs_registered_child_and_returns_to_parent() {
+        let child = crate::agent::chat()
+            .model(RepairChat {
+                calls: Arc::new(Mutex::new(0)),
+            })
+            .build()
+            .unwrap();
+        let parent = crate::agent::react()
+            .model(SpawnChat {
+                calls: Arc::new(Mutex::new(0)),
+            })
+            .subagents(vec![
+                crate::agent::SubAgent::new("researcher", child).unwrap(),
+            ])
+            .build()
+            .unwrap();
+        let stream = block_on(parent.run(Input::default(), Cancellation::new())).unwrap();
+        let events = block_on(stream.collect::<Vec<_>>());
+        let messages = events
+            .into_iter()
+            .filter_map(Result::ok)
+            .filter_map(|event| match event {
+                Event::Complete { message, .. } => Some(message),
+                Event::Delta { .. } => None,
+            })
+            .collect::<Vec<_>>();
+        assert!(
+            messages
+                .iter()
+                .any(|message| message.role == Role::Function)
+        );
+        assert_eq!(
+            messages.last().unwrap().content[0].data["value"],
+            "parent complete"
+        );
     }
 
     struct WeatherTool {

@@ -141,6 +141,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
             state: ReActState {
                 model: state.model.clone(),
                 toolkit: state.toolkit.clone(),
+                subagents: state.subagents.clone(),
                 max_iters: state.max_iters,
                 max_concurrency: state.max_concurrency,
                 cancellation: state.cancellation.clone(),
@@ -170,6 +171,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 resume_input: None,
                 pending_calls: VecDeque::new(),
                 active_tools: FuturesUnordered::new(),
+                child_events: VecDeque::new(),
                 tool_results: BTreeMap::new(),
                 evaluations: BTreeMap::new(),
                 partial: Message::new(Role::Assistant),
