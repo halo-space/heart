@@ -560,8 +560,14 @@ where
             return Err(Error::new("CANCELLED", "agent run cancelled"));
         }
         let embedded_snapshot = crate::harness::embedded::restore();
-        let checkpoint_id = self
-            .checkpoint
+        let embedded = crate::harness::embedded::active();
+        let checkpoint = self.checkpoint.clone().filter(|_| !embedded);
+        let history = if embedded {
+            History::default()
+        } else {
+            self.history.clone()
+        };
+        let checkpoint_id = checkpoint
             .as_ref()
             .map(|_| checkpoint_id(&input.metadata))
             .transpose()?;
@@ -585,7 +591,7 @@ where
             restored_messages = Some(checkpoint_messages(&snapshot)?);
             restored_usage = serde_json::from_value(snapshot["usage"].clone()).ok();
         }
-        if let (Some(checkpoint), Some(id)) = (&self.checkpoint, checkpoint_id)
+        if let (Some(checkpoint), Some(id)) = (&checkpoint, checkpoint_id)
             && let Some(snapshot) = checkpoint.load(id, cancellation.clone()).await?
         {
             if !checkpoint_identity_matches(&snapshot, &input.metadata) {
@@ -615,25 +621,36 @@ where
             restored_usage = serde_json::from_value(snapshot["usage"].clone()).ok();
         }
         let original = input.clone();
-        let input = self.hooks.before_execute(input, &cancellation).await?;
-        self.history.check_identity(&original, &input)?;
-        let prompt = self
-            .hooks
-            .prompt(self.system_prompt.clone(), &cancellation)
-            .await?;
-        let history = self
-            .history
-            .load(input.metadata.clone(), self.hooks.clone(), &cancellation)
-            .await?;
-        let run = if restored_messages.is_some() {
-            self.history.resume(original.clone(), &cancellation).await?
+        let restoring = restored_messages.is_some();
+        let input = if restoring {
+            input
         } else {
-            self.history.begin(original.clone(), &cancellation).await?
+            self.hooks.before_execute(input, &cancellation).await?
+        };
+        history.check_identity(&original, &input)?;
+        let prompt = if restoring {
+            None
+        } else {
+            self.hooks
+                .prompt(self.system_prompt.clone(), &cancellation)
+                .await?
+        };
+        let recalled = if restoring {
+            Vec::new()
+        } else {
+            history
+                .load(input.metadata.clone(), self.hooks.clone(), &cancellation)
+                .await?
+        };
+        let run = if restored_messages.is_some() {
+            history.resume(original.clone(), &cancellation).await?
+        } else {
+            history.begin(original.clone(), &cancellation).await?
         };
         let prepared = async {
             let mut messages = restored_messages
                 .clone()
-                .unwrap_or_else(|| initial_messages(input.clone(), prompt.as_deref(), history));
+                .unwrap_or_else(|| initial_messages(input.clone(), prompt.as_deref(), recalled));
             if restored_waiting {
                 messages.push(user_message(input.clone()));
             }
@@ -677,7 +694,7 @@ where
                     toolkit,
                     access: self.access.clone(),
                     evaluator: self.evaluator.clone(),
-                    checkpoint: self.checkpoint.clone(),
+                    checkpoint,
                     input: input.clone(),
                     checkpoint_id,
                     metadata: input.metadata.clone(),

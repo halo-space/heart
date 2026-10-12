@@ -579,23 +579,6 @@ impl State {
         })
     }
 
-    pub(crate) fn fail_waiting(
-        &mut self,
-        node_id: &str,
-        exec_id: i64,
-        error: Error,
-    ) -> Result<(), Error> {
-        let node = self.node_mut(node_id)?;
-        let execution = node.execution_mut(exec_id)?;
-        if execution.status != crate::runtime::workflow::node::ExecutionStatus::Running {
-            return Err(Error::new("INVALID_STATE", "execution is not active"));
-        }
-        execution.status = crate::runtime::workflow::node::ExecutionStatus::Failed;
-        execution.error = Some(error);
-        node.status = crate::runtime::workflow::node::Status::Failed;
-        Ok(())
-    }
-
     /// Rebuilds the graph-level usage from committed node Attempt details.
     /// This is deliberately idempotent and safe to call after restore.
     pub(crate) fn recompute_usage(&mut self) {

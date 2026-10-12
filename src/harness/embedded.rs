@@ -49,6 +49,12 @@ pub(crate) fn restore() -> Option<Value> {
     CURRENT.try_with(Scope::take_restore).ok().flatten()
 }
 
+/// Embedded runs are owned by the outer Workflow, even on their first call
+/// when there is no Agent scene to restore yet.
+pub(crate) fn active() -> bool {
+    CURRENT.try_with(|_| ()).is_ok()
+}
+
 pub(crate) fn capture(state: Value) -> bool {
     CURRENT.try_with(|scope| scope.capture(state)).is_ok()
 }

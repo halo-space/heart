@@ -256,14 +256,20 @@ where
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "react agent run cancelled"));
         }
-        let checkpoint_id = self
-            .checkpoint
+        let embedded = crate::harness::embedded::active();
+        let checkpoint = self.checkpoint.clone().filter(|_| !embedded);
+        let history = if embedded {
+            History::default()
+        } else {
+            self.history.clone()
+        };
+        let checkpoint_id = checkpoint
             .as_ref()
             .map(|_| checkpoint_id(&input.metadata))
             .transpose()?;
         let restored = match crate::harness::embedded::restore() {
             Some(snapshot) => Some(snapshot),
-            None => match (&self.checkpoint, checkpoint_id) {
+            None => match (&checkpoint, checkpoint_id) {
                 (Some(checkpoint), Some(id)) => checkpoint.load(id, cancellation.clone()).await?,
                 _ => None,
             },
@@ -297,7 +303,7 @@ where
         } else {
             self.hooks.before_execute(input, &cancellation).await?
         };
-        self.history.check_identity(&original, &input)?;
+        history.check_identity(&original, &input)?;
         let prompt = if restored.is_some() {
             None
         } else {
@@ -306,17 +312,17 @@ where
                 .await?
         };
         let metadata = input.metadata.clone();
-        let history = if restored.is_some() {
+        let recalled = if restored.is_some() {
             Vec::new()
         } else {
-            self.history
+            history
                 .load(metadata.clone(), self.hooks.clone(), &cancellation)
                 .await?
         };
         let run = if restored.is_some() {
-            self.history.resume(original.clone(), &cancellation).await?
+            history.resume(original.clone(), &cancellation).await?
         } else {
-            self.history.begin(original.clone(), &cancellation).await?
+            history.begin(original.clone(), &cancellation).await?
         };
         let toolkit = match self.toolkit.prepared(&cancellation).await {
             Ok(toolkit) => toolkit,
@@ -333,7 +339,7 @@ where
         let messages = crate::components::agent::chat::initial_messages(
             input.clone(),
             prompt.as_deref(),
-            history,
+            recalled,
         );
         let mut state = ReActState {
             model: std::sync::Arc::clone(&self.model),
@@ -358,7 +364,7 @@ where
             // only when the caller supplied an ID function; a planning
             // confirmation or ordinary model/Tool call never allocates one.
             id_fn: self.id_fn,
-            checkpoint: self.checkpoint.clone(),
+            checkpoint,
             checkpoint_id,
             plan_execution: false,
             active_tasks: FuturesUnordered::new(),

@@ -860,18 +860,6 @@ impl Runtime {
             .map(|attempt| attempt.idx)
             .ok_or_else(|| Error::new("INVALID_STATE", "waiting execution has no attempt"))?;
         let retry = self.definition().nodes[&node_id].retry.clone();
-        if previous_idx >= retry.max_retries {
-            self.state.fail_waiting(
-                &node_id,
-                exec_id,
-                Error::new(
-                    "RETRY_EXHAUSTED",
-                    "workflow execution has no remaining retry budget",
-                ),
-            )?;
-            self.state.recompute_usage();
-            return Ok(true);
-        }
         let target = self.target_for(&node_id, exec_id)?;
         let input = self.input_for(&node_id, &execution.from)?;
         let invocation = invoke_with_retry(
@@ -881,7 +869,11 @@ impl Runtime {
             retry,
             Arc::clone(next_exec_id),
             self.state.chat_id,
-            previous_idx.saturating_add(1),
+            // A running Attempt found in a restored snapshot was never
+            // committed as a completed/failed attempt. Normalize it to
+            // waiting, then resume that same Attempt rather than treating
+            // process recovery as a user-visible retry.
+            previous_idx,
             execution
                 .attempts
                 .last()
@@ -890,7 +882,7 @@ impl Runtime {
         )
         .await;
         let invocation_graph = invocation.graph;
-        self.append_recovered_attempts(&node_id, exec_id, invocation.attempts)?;
+        self.replace_resumed_attempts(&node_id, exec_id, invocation.attempts)?;
         if let Some(graph) = invocation_graph {
             self.attach_graph(&node_id, exec_id, graph)?;
         }
@@ -970,38 +962,6 @@ impl Runtime {
             ));
         }
         execution.attempts.pop();
-        execution.attempts.extend(attempts);
-        execution.usage = execution.attempts.iter().fold(None, |total, attempt| {
-            crate::components::model::token::merge(total, attempt.usage.clone())
-        });
-        Ok(())
-    }
-
-    fn append_recovered_attempts(
-        &mut self,
-        node_id: &str,
-        exec_id: i64,
-        attempts: Vec<node::Attempt>,
-    ) -> Result<(), Error> {
-        let execution = self.state.node_mut(node_id)?.execution_mut(exec_id)?;
-        let expected = u32::try_from(execution.attempts.len())
-            .map_err(|_| Error::new("INVALID_STATE", "too many attempts"))?;
-        if attempts.is_empty() || attempts[0].idx != expected {
-            return Err(Error::new(
-                "INVALID_STATE",
-                "invalid recovered attempt history",
-            ));
-        }
-        for (offset, attempt) in attempts.iter().enumerate() {
-            let expected = u32::try_from(execution.attempts.len() + offset)
-                .map_err(|_| Error::new("INVALID_STATE", "too many attempts"))?;
-            if attempt.idx != expected {
-                return Err(Error::new(
-                    "INVALID_STATE",
-                    "recovered attempt indexes are not contiguous",
-                ));
-            }
-        }
         execution.attempts.extend(attempts);
         execution.usage = execution.attempts.iter().fold(None, |total, attempt| {
             crate::components::model::token::merge(total, attempt.usage.clone())
@@ -1502,6 +1462,36 @@ mod tests {
     #[derive(Clone, Copy)]
     struct FakeAgent {
         mode: &'static str,
+    }
+
+    struct RestoringAgent;
+
+    impl Agent for RestoringAgent {
+        type Stream = stream::Iter<std::vec::IntoIter<Result<crate::event::Event, Error>>>;
+
+        async fn run(
+            &self,
+            _input: AgentInput,
+            _cancellation: Cancellation,
+        ) -> Result<Self::Stream, Error> {
+            let value = if crate::harness::embedded::restore().is_some() {
+                "restored_scene"
+            } else {
+                "fresh"
+            };
+            let mut message = crate::Message::new(Role::Assistant);
+            message.content.push(crate::model::content::part::Part {
+                r#type: "text".into(),
+                data: crate::components::model::content::part::object(
+                    serde_json::json!({"value": value}),
+                ),
+            });
+            Ok(stream::iter(vec![Ok(crate::event::Event::Complete {
+                message,
+                usage: None,
+                finish_reason: Some("stop".into()),
+            })]))
+        }
     }
 
     struct MeteredAgent {
@@ -2429,14 +2419,13 @@ mod tests {
 
         let execution = &restored.state().nodes["answer"].executions[&17_001];
         assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
-        assert_eq!(execution.attempts.len(), 2);
-        assert_eq!(execution.attempts[0].status, node::AttemptStatus::Waiting);
-        assert_eq!(execution.attempts[1].status, node::AttemptStatus::Succeeded);
+        assert_eq!(execution.attempts.len(), 1);
+        assert_eq!(execution.attempts[0].status, node::AttemptStatus::Succeeded);
         assert_eq!(allocated.load(Ordering::SeqCst), 0);
     }
 
     #[test]
-    fn checkpoint_recovery_retries_waiting_agent_without_allocating_a_new_execution() {
+    fn checkpoint_recovery_resumes_agent_attempt_without_allocating_new_identity() {
         let mut builder = WorkflowBuilder::new("checkpoint-waiting-agent");
         builder
             .add_agent_node("agent", FakeAgent { mode: "single" })
@@ -2474,15 +2463,64 @@ mod tests {
 
         let execution = &restored.state().nodes["agent"].executions[&17_011];
         assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
-        assert_eq!(execution.attempts.len(), 2);
-        assert_eq!(execution.attempts[0].status, node::AttemptStatus::Waiting);
-        assert_eq!(execution.attempts[1].status, node::AttemptStatus::Succeeded);
-        assert_eq!(execution.attempts[1].steps.len(), 1);
+        assert_eq!(execution.attempts.len(), 1);
+        assert_eq!(execution.attempts[0].status, node::AttemptStatus::Succeeded);
+        assert_eq!(execution.attempts[0].idx, 0);
         assert_eq!(allocated.load(Ordering::SeqCst), 0);
     }
 
     #[test]
-    fn checkpoint_recovery_does_not_replay_waiting_node_without_retry_budget() {
+    fn checkpoint_recovery_passes_embedded_agent_scene_to_the_same_attempt() {
+        let mut builder = WorkflowBuilder::new("checkpoint-embedded-agent-scene");
+        builder.add_agent_node("agent", RestoringAgent).unwrap();
+        builder.add_edge(START, "agent").unwrap();
+        builder.add_edge("agent", END).unwrap();
+        let workflow = builder.compile().unwrap();
+
+        let mut runtime = Runtime::new(1_703, workflow.clone()).unwrap();
+        runtime.state_mut().initial = Some(user_input());
+        runtime
+            .start_batch(vec![("agent".into(), 17_031, Vec::new())])
+            .unwrap();
+        runtime
+            .state_mut()
+            .nodes
+            .get_mut("agent")
+            .unwrap()
+            .executions
+            .get_mut(&17_031)
+            .unwrap()
+            .attempts[0]
+            .agent = Some(serde_json::json!({
+            "type": "agent",
+            "status": "running",
+            "messages": [{"role": "assistant", "content": []}]
+        }));
+        let snapshot = runtime.snapshot().unwrap();
+
+        let mut restored = Runtime::from_snapshot(1_703, workflow, snapshot).unwrap();
+        let allocated = Arc::new(AtomicI64::new(0));
+        let allocated_for_run = Arc::clone(&allocated);
+        block_on(restored.run(
+            user_input(),
+            Arc::new(move || allocated_for_run.fetch_add(1, Ordering::SeqCst)),
+            Cancellation::new(),
+        ))
+        .unwrap();
+
+        let execution = &restored.state().nodes["agent"].executions[&17_031];
+        assert_eq!(execution.attempts.len(), 1);
+        assert_eq!(execution.attempts[0].idx, 0);
+        assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+        assert_eq!(
+            execution.messages.0[0].content[0].data["value"],
+            serde_json::json!("restored_scene")
+        );
+        assert_eq!(allocated.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn checkpoint_recovery_resumes_running_node_without_retry_budget() {
         let mut builder = WorkflowBuilder::new("checkpoint-waiting-no-retry");
         builder.add_node("answer", crate::node::Echo).unwrap();
         builder.add_edge(START, "answer").unwrap();
@@ -2499,18 +2537,18 @@ mod tests {
         let mut restored = Runtime::from_snapshot(1_702, workflow, snapshot).unwrap();
         let allocated = Arc::new(AtomicI64::new(0));
         let allocated_for_run = Arc::clone(&allocated);
-        let error = block_on(restored.run(
+        let result = block_on(restored.run(
             Messages::default(),
             Arc::new(move || allocated_for_run.fetch_add(1, Ordering::SeqCst)),
             Cancellation::new(),
         ))
-        .unwrap_err();
+        .unwrap();
 
-        assert_eq!(error.code, "RETRY_EXHAUSTED");
+        assert!(result.is_empty());
         let execution = &restored.state().nodes["answer"].executions[&17_021];
-        assert_eq!(execution.status, node::ExecutionStatus::Failed);
+        assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
         assert_eq!(execution.attempts.len(), 1);
-        assert_eq!(execution.attempts[0].status, node::AttemptStatus::Waiting);
+        assert_eq!(execution.attempts[0].status, node::AttemptStatus::Succeeded);
         assert_eq!(allocated.load(Ordering::SeqCst), 0);
     }
 
