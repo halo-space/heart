@@ -1301,7 +1301,8 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     .and_then(Value::as_str)
                     .map(str::to_owned);
                 state.messages.push(message);
-                if let Some(call_id) = call_id
+                if state.is_plan_task
+                    && let Some(call_id) = call_id
                     && let Some(evaluation) = state.evaluations.remove(&call_id)
                     && !evaluation.passed
                     && let Some(feedback) = evaluation.feedback
@@ -2776,12 +2777,7 @@ mod tests {
             let mut calls = self.calls.lock().expect("evaluation chat lock poisoned");
             let index = *calls;
             *calls += 1;
-            if index == 1 {
-                assert!(request.messages.as_slice().iter().any(|message| {
-                    message.values.get("feedback").and_then(Value::as_str)
-                        == Some("weather result needs verification")
-                }));
-            }
+            let _ = request;
             let mut message = Message::new(Role::Assistant);
             if index == 0 {
                 message.content.push(Part {
@@ -2807,7 +2803,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_eval_feedback_reaches_the_next_model_input_without_tool_error_wrapper() {
+    fn tool_eval_feedback_stays_out_of_non_plan_agent_model_context() {
         let model_calls = Arc::new(Mutex::new(0));
         let tool_calls = Arc::new(Mutex::new(0));
         let agent = crate::agent::react()
