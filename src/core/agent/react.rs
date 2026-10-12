@@ -1295,7 +1295,23 @@ async fn next_react_event_inner<M: Chat + 'static>(
         // original Call order, and no next inference sees an incomplete batch.
         if state.pending_plans.is_empty() && state.planning.is_none() {
             for (_, message) in std::mem::take(&mut state.tool_results) {
+                let call_id = message
+                    .metadata
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .map(str::to_owned);
                 state.messages.push(message);
+                if let Some(call_id) = call_id
+                    && let Some(evaluation) = state.evaluations.remove(&call_id)
+                    && !evaluation.passed
+                    && let Some(feedback) = evaluation.feedback
+                {
+                    // Business evaluation feedback is part of the current
+                    // Agent node's next model input. It follows the actual
+                    // Tool Message, remains ordinary Messages, and never
+                    // becomes a technical error or a tool_result envelope.
+                    state.messages.0.extend(feedback.0);
+                }
             }
         }
 
@@ -2665,6 +2681,10 @@ mod tests {
     struct EvalFailingTool {
         inner: WeatherTool,
     }
+
+    struct EvalRejectingTool {
+        inner: WeatherTool,
+    }
     impl Tool for EvalFailingTool {
         fn definition(&self) -> &ToolDefinition {
             self.inner.definition()
@@ -2679,6 +2699,29 @@ mod tests {
             _cancellation: &Cancellation,
         ) -> Result<crate::tool::Evaluation, Error> {
             Err(Error::new("TIMEOUT", "evaluation service timed out"))
+        }
+    }
+
+    impl Tool for EvalRejectingTool {
+        fn definition(&self) -> &ToolDefinition {
+            self.inner.definition()
+        }
+
+        async fn call(&self, call: &Call, cancellation: &Cancellation) -> Result<Message, Error> {
+            self.inner.call(call, cancellation).await
+        }
+
+        async fn eval(
+            &self,
+            _call: &Call,
+            _message: &Message,
+            _cancellation: &Cancellation,
+        ) -> Result<crate::tool::Evaluation, Error> {
+            Ok(crate::tool::Evaluation::failed(Messages::new([
+                Message::function(json!({
+                    "feedback": "weather result needs verification"
+                })),
+            ])))
         }
     }
 
@@ -2719,6 +2762,80 @@ mod tests {
         assert_eq!(error.code, "TIMEOUT");
         assert!(block_on(events.next()).is_none());
         assert_eq!(*model_calls.lock().unwrap(), 1);
+        assert_eq!(*tool_calls.lock().unwrap(), 1);
+    }
+
+    struct EvalFeedbackChat {
+        calls: Arc<Mutex<usize>>,
+    }
+
+    impl Chat for EvalFeedbackChat {
+        type Stream = futures_util::stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+
+        async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
+            let mut calls = self.calls.lock().expect("evaluation chat lock poisoned");
+            let index = *calls;
+            *calls += 1;
+            if index == 1 {
+                assert!(request.messages.as_slice().iter().any(|message| {
+                    message.values.get("feedback").and_then(Value::as_str)
+                        == Some("weather result needs verification")
+                }));
+            }
+            let mut message = Message::new(Role::Assistant);
+            if index == 0 {
+                message.content.push(Part {
+                    r#type: "tool_call".into(),
+                    data: part_data(json!({
+                        "call_id": "call_weather_eval",
+                        "name": "weather",
+                        "arguments": {"city": "Beijing"}
+                    })),
+                });
+            } else {
+                message.content.push(Part {
+                    r#type: "text".into(),
+                    data: part_data(json!({"value": "verified"})),
+                });
+            }
+            Ok(futures_util::stream::iter(vec![Ok(Event::Complete {
+                message,
+                usage: None,
+                finish_reason: Some("stop".into()),
+            })]))
+        }
+    }
+
+    #[test]
+    fn tool_eval_feedback_reaches_the_next_model_input_without_tool_error_wrapper() {
+        let model_calls = Arc::new(Mutex::new(0));
+        let tool_calls = Arc::new(Mutex::new(0));
+        let agent = crate::agent::react()
+            .model(EvalFeedbackChat {
+                calls: model_calls.clone(),
+            })
+            .toolkit(
+                Toolkit::new().tool(EvalRejectingTool {
+                    inner: WeatherTool {
+                        calls: tool_calls.clone(),
+                        definition: ToolDefinition {
+                            name: "weather".into(),
+                            description: "weather".into(),
+                            parameters: serde_json::from_value(json!({
+                                "type": "object",
+                                "properties": {"city": {"type": "string"}}
+                            }))
+                            .unwrap(),
+                        },
+                    },
+                }),
+            )
+            .build()
+            .unwrap();
+        let events = block_on(agent.run(Input::default(), Cancellation::new())).unwrap();
+        let events = block_on(events.collect::<Vec<_>>());
+        assert!(events.iter().all(Result::is_ok), "{events:?}");
+        assert_eq!(*model_calls.lock().unwrap(), 2);
         assert_eq!(*tool_calls.lock().unwrap(), 1);
     }
 
