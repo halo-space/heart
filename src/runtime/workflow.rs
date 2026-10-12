@@ -1093,17 +1093,38 @@ async fn invoke_with_retry(
                 attempt.steps = run.steps;
                 attempt.messages = run.messages;
                 attempt.usage = run.usage;
+                let agent_wait_id = run
+                    .scene
+                    .as_ref()
+                    .and_then(|scene| scene.get("wait_id"))
+                    .and_then(Value::as_str)
+                    .filter(|wait_id| !wait_id.trim().is_empty())
+                    .map(str::to_owned);
                 attempt.agent = run.scene.map(|mut scene| {
                     // An embedded Agent does not own a top-level checkpoint,
                     // so the Workflow supplies the single run identity.
                     scene["chat_id"] = Value::from(chat_id);
                     scene
                 });
-                run.result.and_then(|messages| {
-                    serde_json::to_value(messages)
+                match run.result {
+                    Ok(messages) => serde_json::to_value(messages)
                         .map(Signal::Complete)
-                        .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))
-                })
+                        .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string())),
+                    // Agent implementations use the shared Error contract for
+                    // an external wait.  Translate it at the Workflow
+                    // boundary into the same Signal used by ordinary Nodes;
+                    // it must never consume retry budget or become a failure.
+                    Err(error) if error.code == "WAITING" => {
+                        let wait_id = agent_wait_id
+                            .as_deref()
+                            .or(error.details.as_deref())
+                            .filter(|wait_id| !wait_id.trim().is_empty())
+                            .unwrap_or("agent")
+                            .to_owned();
+                        Ok(Signal::Wait(crate::components::node::Wait { wait_id }))
+                    }
+                    Err(error) => Err(error),
+                }
             }
             Target::Graph { workflow, state } => {
                 match run_subgraph(
@@ -1465,6 +1486,39 @@ mod tests {
     }
 
     struct RestoringAgent;
+
+    struct WaitingAgent;
+
+    impl Agent for WaitingAgent {
+        type Stream = stream::Iter<std::vec::IntoIter<Result<crate::event::Event, Error>>>;
+
+        async fn run(
+            &self,
+            _input: AgentInput,
+            _cancellation: Cancellation,
+        ) -> Result<Self::Stream, Error> {
+            if crate::harness::embedded::restore().is_none() {
+                crate::harness::embedded::capture(serde_json::json!({
+                    "type": "agent",
+                    "status": "waiting",
+                    "wait_id": "approval"
+                }));
+                return Err(Error::new("WAITING", "agent is waiting for approval"));
+            }
+            let mut message = crate::Message::new(Role::Assistant);
+            message.content.push(crate::model::content::part::Part {
+                r#type: "text".into(),
+                data: crate::components::model::content::part::object(
+                    serde_json::json!({"value": "approved"}),
+                ),
+            });
+            Ok(stream::iter(vec![Ok(crate::event::Event::Complete {
+                message,
+                usage: None,
+                finish_reason: Some("stop".into()),
+            })]))
+        }
+    }
 
     impl Agent for RestoringAgent {
         type Stream = stream::Iter<std::vec::IntoIter<Result<crate::event::Event, Error>>>;
@@ -2467,6 +2521,41 @@ mod tests {
         assert_eq!(execution.attempts[0].status, node::AttemptStatus::Succeeded);
         assert_eq!(execution.attempts[0].idx, 0);
         assert_eq!(allocated.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn embedded_agent_wait_uses_workflow_wait_and_resumes_same_execution() {
+        let mut builder = WorkflowBuilder::new("embedded-agent-wait");
+        builder.add_agent_node("agent", WaitingAgent).unwrap();
+        builder.add_edge(START, "agent").unwrap();
+        builder.add_edge("agent", END).unwrap();
+        let workflow = builder.compile().unwrap();
+
+        let mut runtime = Runtime::new(1_704, workflow).unwrap();
+        let first = block_on(runtime.run(user_input(), Arc::new(|| 17_041), Cancellation::new()));
+        assert_eq!(first.unwrap_err().code, "WAITING");
+        assert_eq!(runtime.state().status, Status::Paused);
+        let execution = &runtime.state().nodes["agent"].executions[&17_041];
+        assert_eq!(execution.status, node::ExecutionStatus::Waiting);
+        assert_eq!(execution.attempts.len(), 1);
+        assert_eq!(execution.attempts[0].status, node::AttemptStatus::Waiting);
+        assert_eq!(runtime.state().waits["agent"].wait_id, "approval");
+
+        runtime
+            .resume(
+                "agent",
+                Messages::new([crate::Message::function(serde_json::json!({
+                    "approved": true
+                }))]),
+            )
+            .unwrap();
+        block_on(runtime.run(user_input(), Arc::new(|| 17_042), Cancellation::new())).unwrap();
+
+        let execution = &runtime.state().nodes["agent"].executions[&17_041];
+        assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+        assert_eq!(execution.attempts.len(), 1);
+        assert_eq!(execution.attempts[0].idx, 0);
+        assert!(runtime.state().waits.is_empty());
     }
 
     #[test]
