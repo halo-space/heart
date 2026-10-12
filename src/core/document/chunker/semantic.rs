@@ -1,11 +1,16 @@
 //! Contiguous semantic splitting with an explicit Embed instance. Length
 //! calculation is internal by default, with an optional user function.
 
-use std::{collections::HashSet, ops::Range};
+use std::{
+    collections::{HashMap, HashSet},
+    ops::Range,
+    sync::{Arc, Mutex},
+};
 
 use futures_util::{StreamExt, stream};
 use serde::Deserialize;
 use serde_json::Value;
+use sha2::{Digest, Sha256};
 
 use crate::{
     Cancellation, Error,
@@ -28,6 +33,8 @@ fn one() -> usize {
     1
 }
 
+type VectorCache = Arc<Mutex<HashMap<String, Vec<Option<Vec<f64>>>>>>;
+
 /// Defaults to the coarse UTF-8 estimate. The application supplies the Embed
 /// instance and may replace length calculation without adding a counter
 /// component or modifying the Embed contract. Length is not billing Usage.
@@ -49,6 +56,7 @@ pub fn new<E: Embed>(options: Value, embed: E) -> Result<Chunker<E>, Error> {
         options,
         embed,
         length: estimate,
+        cache: Arc::new(Mutex::new(HashMap::new())),
     })
 }
 
@@ -56,6 +64,9 @@ pub struct Chunker<E, L = fn(&str) -> Result<usize, Error>> {
     options: Options,
     embed: E,
     length: L,
+    // Successful candidate vectors are a private, in-process retry cache.
+    // It is deliberately not a second Runtime/Checkpoint state structure.
+    cache: VectorCache,
 }
 
 impl<E, L> Chunker<E, L> {
@@ -69,6 +80,7 @@ impl<E, L> Chunker<E, L> {
             options: self.options,
             embed: self.embed,
             length,
+            cache: self.cache,
         }
     }
 }
@@ -99,13 +111,25 @@ where
             let ranges = self.candidates(&document.content, &offsets, cancellation)?;
             let range_count = ranges.len();
             let ends = ranges.iter().map(|range| range.end).collect::<Vec<_>>();
+            let cache_key = candidate_cache_key(&document.content, &ranges);
+            let cached = self
+                .cache
+                .lock()
+                .ok()
+                .and_then(|cache| cache.get(&cache_key).cloned())
+                .filter(|vectors| vectors.len() == range_count)
+                .unwrap_or_else(|| vec![None; range_count]);
             // Buffer futures without spawning: this works with native async
             // Embed traits and never creates a thread pool or runtime.
             let mut results = stream::iter(ranges.into_iter().enumerate().map(|(index, range)| {
                 // Own each candidate before creating the buffered future so
                 // the future is independent of the iterator's borrow.
                 let text = document.content[offsets[range.start]..offsets[range.end]].to_owned();
+                let cached_vector = cached[index].clone();
                 async move {
+                    if let Some(vector) = cached_vector {
+                        return (index, Ok(Some(vector)));
+                    }
                     let result = if text.trim().is_empty() {
                         Ok(None)
                     } else {
@@ -159,6 +183,14 @@ where
                                 ));
                             }
                             dimension = Some(vector.len());
+                        }
+                        if let Ok(mut cache) = self.cache.lock() {
+                            if cache.get(&cache_key).is_none() {
+                                cache.insert(cache_key.clone(), vec![None; range_count]);
+                            }
+                            if let Some(entry) = cache.get_mut(&cache_key) {
+                                entry[index] = vector.clone();
+                            }
                         }
                         vectors.push(vector);
                     }
@@ -237,6 +269,16 @@ where
         operation::check(cancellation)?;
         Ok(chunks)
     }
+}
+
+fn candidate_cache_key(content: &str, ranges: &[Range<usize>]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(content.as_bytes());
+    for range in ranges {
+        hasher.update(range.start.to_le_bytes());
+        hasher.update(range.end.to_le_bytes());
+    }
+    format!("{:x}", hasher.finalize())
 }
 
 impl<E, L> Chunker<E, L>
@@ -330,4 +372,70 @@ fn invalid(message: &str) -> Error {
 
 fn estimate(text: &str) -> Result<usize, Error> {
     Ok(text.len().div_ceil(4))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    use futures_executor::block_on;
+    use serde_json::json;
+
+    use super::*;
+    use crate::{
+        document::{Chunker as _, Document},
+        message::{Message, Role},
+    };
+
+    struct FailFirst {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl Embed for FailFirst {
+        fn embed(
+            &self,
+            _request: Request,
+        ) -> impl std::future::Future<Output = Result<Message, Error>> + Send {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(if call == 0 {
+                Err(Error::new("TIMEOUT", "temporary embed failure"))
+            } else {
+                let mut message = Message::new(Role::Assistant);
+                message.values.insert("vector".into(), json!([1.0, 1.0]));
+                Ok(message)
+            })
+        }
+    }
+
+    #[test]
+    fn retries_only_failed_candidates_from_the_private_cache() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let chunker = new(
+            json!({
+                "max_tokens": 8,
+                "min_tokens": 1,
+                "threshold": 0.5,
+                "max_concurrency": 1
+            }),
+            FailFirst {
+                calls: calls.clone(),
+            },
+        )
+        .unwrap();
+        let documents = vec![Document {
+            content: "first. second. third.".into(),
+            ..Document::default()
+        }];
+        let cancellation = Cancellation::new();
+        let first = block_on(chunker.chunk(documents.clone(), &cancellation, &mut || 1));
+        assert!(first.is_err());
+        let second = block_on(chunker.chunk(documents, &cancellation, &mut || 2));
+        assert!(second.is_ok());
+        // The first batch embeds all three candidates; the second call only
+        // retries the one that failed in the first batch.
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
 }

@@ -1121,7 +1121,12 @@ async fn invoke_with_retry(
                 attempt.steps = run.steps;
                 attempt.messages = run.messages;
                 attempt.usage = run.usage;
-                attempt.agent = run.scene;
+                attempt.agent = run.scene.map(|mut scene| {
+                    // An embedded Agent does not own a top-level checkpoint,
+                    // so the Workflow supplies the single run identity.
+                    scene["chat_id"] = Value::from(chat_id);
+                    scene
+                });
                 run.result.and_then(|messages| {
                     serde_json::to_value(messages)
                         .map(Signal::Complete)
