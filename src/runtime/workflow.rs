@@ -391,7 +391,14 @@ impl Runtime {
                         state: child_state,
                     }
                 } else if let Some(agent) = self.workflow.agent(&node_id) {
-                    Target::Agent(agent)
+                    Target::Agent(
+                        agent,
+                        self.state.nodes[&node_id]
+                            .executions
+                            .get(&exec_id)
+                            .and_then(|execution| execution.attempts.last())
+                            .and_then(|attempt| attempt.agent.clone()),
+                    )
                 } else {
                     Target::Node(self.workflow.executor(&node_id).ok_or_else(|| {
                         Error::new("UNSUPPORTED", "workflow node has no executor")
@@ -479,7 +486,7 @@ impl Runtime {
                         state: None,
                     }
                 } else if let Some(agent) = self.workflow.agent(&node_id) {
-                    Target::Agent(agent)
+                    Target::Agent(agent, None)
                 } else {
                     Target::Node(self.workflow.executor(&node_id).ok_or_else(|| {
                         Error::new("UNSUPPORTED", "workflow node has no executor")
@@ -907,7 +914,12 @@ impl Runtime {
             });
         }
         if let Some(agent) = self.workflow.agent(node_id) {
-            return Ok(Target::Agent(agent));
+            let restore = self.state.nodes[node_id]
+                .executions
+                .get(&exec_id)
+                .and_then(|execution| execution.attempts.last())
+                .and_then(|attempt| attempt.agent.clone());
+            return Ok(Target::Agent(agent, restore));
         }
         Ok(Target::Node(self.workflow.executor(node_id).ok_or_else(
             || Error::new("UNSUPPORTED", "workflow node has no executor"),
@@ -1022,7 +1034,7 @@ enum Outcome {
 
 enum Target {
     Node(Arc<dyn graph::ErasedNode + 'static>),
-    Agent(Arc<dyn graph::ErasedAgent + 'static>),
+    Agent(Arc<dyn graph::ErasedAgent + 'static>, Option<Value>),
     Graph {
         workflow: Arc<CompiledWorkflow>,
         state: Option<Box<graph::State>>,
@@ -1088,7 +1100,7 @@ async fn invoke_with_retry(
                     executor.call(input.clone(), cancellation.clone()).await
                 }
             }
-            Target::Agent(executor) => {
+            Target::Agent(executor, restore) => {
                 let agent_input = match serde_json::from_value(input.clone()) {
                     Ok(input) => input,
                     Err(error) => {
@@ -1103,10 +1115,13 @@ async fn invoke_with_retry(
                         };
                     }
                 };
-                let run = executor.call(agent_input, cancellation.clone()).await;
+                let run = executor
+                    .call(agent_input, cancellation.clone(), restore.clone())
+                    .await;
                 attempt.steps = run.steps;
                 attempt.messages = run.messages;
                 attempt.usage = run.usage;
+                attempt.agent = run.scene;
                 run.result.and_then(|messages| {
                     serde_json::to_value(messages)
                         .map(Signal::Complete)

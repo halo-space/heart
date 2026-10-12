@@ -261,9 +261,12 @@ where
             .as_ref()
             .map(|_| checkpoint_id(&input.metadata))
             .transpose()?;
-        let restored = match (&self.checkpoint, checkpoint_id) {
-            (Some(checkpoint), Some(id)) => checkpoint.load(id, cancellation.clone()).await?,
-            _ => None,
+        let restored = match crate::harness::embedded::restore() {
+            Some(snapshot) => Some(snapshot),
+            None => match (&self.checkpoint, checkpoint_id) {
+                (Some(checkpoint), Some(id)) => checkpoint.load(id, cancellation.clone()).await?,
+                _ => None,
+            },
         };
         if let Some(snapshot) = &restored {
             if snapshot
@@ -676,7 +679,9 @@ fn save_checkpoint<M: Chat>(
     let save = state.checkpoint.clone();
     let id = state.checkpoint_id;
     async move {
-        if let (Some(save), Some(id)) = (save, id) {
+        if crate::harness::embedded::capture(snapshot.clone()) {
+            Ok(())
+        } else if let (Some(save), Some(id)) = (save, id) {
             save.save(id, snapshot, Cancellation::new()).await
         } else {
             Ok(())

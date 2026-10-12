@@ -53,6 +53,9 @@ pub struct Attempt {
     pub steps: Vec<Step>,
     #[serde(default)]
     pub messages: Messages,
+    /// Embedded Agent runtime state owned by this Workflow Attempt.
+    #[serde(default)]
+    pub agent: Option<serde_json::Value>,
     pub graph: Option<Box<crate::runtime::workflow::graph::State>>,
     pub error: Option<Error>,
 }

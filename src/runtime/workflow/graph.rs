@@ -45,10 +45,16 @@ pub(crate) struct AgentRun {
     pub messages: Messages,
     pub steps: Vec<Step>,
     pub usage: Option<Usage>,
+    pub scene: Option<Value>,
 }
 
 pub(crate) trait ErasedAgent: Send + Sync + 'static {
-    fn call(&self, input: agent::Input, cancellation: Cancellation) -> AgentFuture;
+    fn call(
+        &self,
+        input: agent::Input,
+        cancellation: Cancellation,
+        restore: Option<Value>,
+    ) -> AgentFuture;
 }
 
 struct TypedAgent<A> {
@@ -56,99 +62,114 @@ struct TypedAgent<A> {
 }
 
 impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
-    fn call(&self, input: agent::Input, cancellation: Cancellation) -> AgentFuture {
+    fn call(
+        &self,
+        input: agent::Input,
+        cancellation: Cancellation,
+        restore: Option<Value>,
+    ) -> AgentFuture {
         let agent = Arc::clone(&self.agent);
         Box::pin(async move {
-            let mut messages = Messages::default();
-            let mut steps = Vec::new();
-            let mut usage = None;
-            let stream = match agent.run(input, cancellation.clone()).await {
-                Ok(stream) => stream,
-                Err(error) => {
-                    return AgentRun {
-                        result: Err(error),
-                        messages,
-                        steps,
-                        usage,
-                    };
-                }
-            };
-            futures_util::pin_mut!(stream);
-            let mut final_assistant = None;
-            while let Some(event) = stream.next().await {
-                match event {
-                    Ok(Event::Delta { .. }) => {}
-                    Ok(Event::Complete {
-                        message,
-                        usage: call_usage,
-                        finish_reason,
-                    }) => {
-                        let cancelled = finish_reason.as_deref() == Some("cancelled");
-                        let kind = match message.role {
-                            Role::Assistant => "model",
-                            Role::Tool => "tool",
-                            Role::Function => "function",
-                            _ => "agent",
-                        };
-                        let index = steps.len() + 1;
-                        steps.push(Step {
-                            id: format!("complete_{index}"),
-                            kind: kind.into(),
-                            status: if cancelled { "cancelled" } else { "succeeded" }.into(),
-                            from: Vec::new(),
-                            to: Vec::new(),
-                            call_id: None,
-                            attempts: vec![StepAttempt {
-                                status: if cancelled {
-                                    AttemptStatus::Cancelled
-                                } else {
-                                    AttemptStatus::Succeeded
-                                },
-                                created_time: None,
-                                finished_time: None,
-                                usage: call_usage.clone(),
-                                finish_reason,
-                                error: None,
-                            }],
-                            error: None,
-                        });
-                        usage = sum_usage(usage, call_usage);
-                        if message.role == Role::Assistant {
-                            final_assistant = Some(message.clone());
-                        }
-                        messages.push(message);
-                        if cancelled {
-                            return AgentRun {
-                                result: Err(Error::new("CANCELLED", "agent run cancelled")),
-                                messages,
-                                steps,
-                                usage,
-                            };
-                        }
-                    }
+            let scope = crate::harness::embedded::Scope::new(restore);
+            let mut run = crate::harness::embedded::run(scope.clone(), async move {
+                let mut messages = Messages::default();
+                let mut steps = Vec::new();
+                let mut usage = None;
+                let stream = match agent.run(input, cancellation.clone()).await {
+                    Ok(stream) => stream,
                     Err(error) => {
                         return AgentRun {
                             result: Err(error),
                             messages,
                             steps,
                             usage,
+                            scene: None,
                         };
                     }
+                };
+                futures_util::pin_mut!(stream);
+                let mut final_assistant = None;
+                while let Some(event) = stream.next().await {
+                    match event {
+                        Ok(Event::Delta { .. }) => {}
+                        Ok(Event::Complete {
+                            message,
+                            usage: call_usage,
+                            finish_reason,
+                        }) => {
+                            let cancelled = finish_reason.as_deref() == Some("cancelled");
+                            let kind = match message.role {
+                                Role::Assistant => "model",
+                                Role::Tool => "tool",
+                                Role::Function => "function",
+                                _ => "agent",
+                            };
+                            let index = steps.len() + 1;
+                            steps.push(Step {
+                                id: format!("complete_{index}"),
+                                kind: kind.into(),
+                                status: if cancelled { "cancelled" } else { "succeeded" }.into(),
+                                from: Vec::new(),
+                                to: Vec::new(),
+                                call_id: None,
+                                attempts: vec![StepAttempt {
+                                    status: if cancelled {
+                                        AttemptStatus::Cancelled
+                                    } else {
+                                        AttemptStatus::Succeeded
+                                    },
+                                    created_time: None,
+                                    finished_time: None,
+                                    usage: call_usage.clone(),
+                                    finish_reason,
+                                    error: None,
+                                }],
+                                error: None,
+                            });
+                            usage = sum_usage(usage, call_usage);
+                            if message.role == Role::Assistant {
+                                final_assistant = Some(message.clone());
+                            }
+                            messages.push(message);
+                            if cancelled {
+                                return AgentRun {
+                                    result: Err(Error::new("CANCELLED", "agent run cancelled")),
+                                    messages,
+                                    steps,
+                                    usage,
+                                    scene: None,
+                                };
+                            }
+                        }
+                        Err(error) => {
+                            return AgentRun {
+                                result: Err(error),
+                                messages,
+                                steps,
+                                usage,
+                                scene: None,
+                            };
+                        }
+                    }
                 }
-            }
-            AgentRun {
-                result: final_assistant
-                    .map(|message| Messages::new([message]))
-                    .ok_or_else(|| {
-                        Error::new(
-                            "INVALID_RESPONSE",
-                            "agent produced no final Assistant Complete",
-                        )
-                    }),
-                messages,
-                steps,
-                usage,
-            }
+                AgentRun {
+                    result: final_assistant
+                        .map(|message| Messages::new([message]))
+                        .ok_or_else(|| {
+                            Error::new(
+                                "INVALID_RESPONSE",
+                                "agent produced no final Assistant Complete",
+                            )
+                        }),
+                    messages,
+                    steps,
+                    usage,
+                    scene: None,
+                }
+            })
+            .await;
+            run.scene = scope.latest();
+            run
         })
     }
 }

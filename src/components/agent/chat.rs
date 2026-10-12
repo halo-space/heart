@@ -320,7 +320,9 @@ impl<S> Events<S> {
         );
         self.closing = true;
         self.pending = Some(Box::pin(async move {
-            if let (Some(checkpoint), Some(id)) = (checkpoint, checkpoint_id) {
+            if crate::harness::embedded::capture(state.clone()) {
+                // The outer Workflow owns the embedded Agent checkpoint.
+            } else if let (Some(checkpoint), Some(id)) = (checkpoint, checkpoint_id) {
                 checkpoint.save(id, state, Cancellation::new()).await?;
             }
             run.close(result).await
@@ -557,11 +559,24 @@ where
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "agent run cancelled"));
         }
+        let embedded_snapshot = crate::harness::embedded::restore();
         let checkpoint_id = self
             .checkpoint
             .as_ref()
             .map(|_| checkpoint_id(&input.metadata))
             .transpose()?;
+        if let Some(snapshot) = embedded_snapshot {
+            let result = crate::harness::checkpoint::terminal(&snapshot)?.ok_or_else(|| {
+                Error::new(
+                    "INTERRUPTED",
+                    "unfinished Chat call cannot be replayed from message history",
+                )
+            })?;
+            let mut events = Events::empty(cancellation, self.hooks.clone());
+            events.closing = true;
+            events.pending = Some(Box::pin(async move { result }));
+            return Ok(events);
+        }
         if let (Some(checkpoint), Some(id)) = (&self.checkpoint, checkpoint_id)
             && let Some(snapshot) = checkpoint.load(id, cancellation.clone()).await?
         {
