@@ -993,14 +993,9 @@ fn restore_state<M: Chat>(state: &mut ReActState<M>, snapshot: Value) -> Result<
         state.external_resume_nodes = external_nodes;
         state.graph = Some(graph);
     }
-    if snapshot.get("status").and_then(Value::as_str) == Some("waiting")
-        && state.graph.is_none()
-        && state.pending_subagents.is_empty()
-    {
-        return Err(invalid_checkpoint(
-            "waiting Agent checkpoint has no waiting child or node",
-        ));
-    }
+    // A waiting snapshot without a plan graph is a valid external wait.  The
+    // next call with the same chat_id supplies the continuation payload; no
+    // internal node or wait ID is required in the public input.
     Ok(())
 }
 
@@ -2088,6 +2083,60 @@ mod tests {
                     serde_json::from_value(serde_json::to_value(&typed).unwrap()).unwrap()
                 );
             }
+        });
+    }
+
+    #[test]
+    fn external_wait_without_graph_consumes_the_next_input_on_the_same_run() {
+        use crate::checkpoint::Checkpoint as _;
+
+        block_on(async {
+            let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+            let mut snapshot = checkpoint_fixture(None);
+            snapshot["status"] = json!("waiting");
+            checkpoint
+                .save(902, snapshot, &Cancellation::new())
+                .await
+                .unwrap();
+
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let agent = crate::agent::react()
+                .model(CheckpointChat {
+                    requests: requests.clone(),
+                    replies: Mutex::new(VecDeque::from([vec![checkpoint_complete("continued")]])),
+                })
+                .checkpoint(checkpoint.clone())
+                .build()
+                .unwrap();
+            let mut input = checkpoint_input();
+            input.payload.push(crate::agent::Payload {
+                r#type: "text".into(),
+                data: json!({"value": "approval response"}),
+                mime_type: None,
+            });
+
+            let events = agent
+                .run(input, Cancellation::new())
+                .await
+                .unwrap()
+                .collect::<Vec<_>>()
+                .await;
+            assert!(events.iter().all(Result::is_ok), "{events:?}");
+            assert_eq!(requests.lock().unwrap().len(), 1);
+            let requests = requests.lock().unwrap();
+            let request = &requests[0];
+            assert!(request.messages.as_slice().iter().any(|message| {
+                message.role == Role::User
+                    && message
+                        .content
+                        .iter()
+                        .any(|part| part.data.get("value") == Some(&json!("approval response")))
+            }));
+            drop(requests);
+            assert_eq!(
+                checkpoint.load(902, &Cancellation::new()).await.unwrap()["status"],
+                "succeeded"
+            );
         });
     }
 
