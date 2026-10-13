@@ -419,11 +419,7 @@ impl Runtime {
                     next_exec_id.clone(),
                     self.state.chat_id,
                     start_idx,
-                    self.state.nodes[&node_id].executions[&exec_id]
-                        .attempts
-                        .last()
-                        .map(|attempt| attempt.messages.clone())
-                        .unwrap_or_default(),
+                    committed_tool_messages(&self.state.nodes[&node_id].executions[&exec_id]),
                 )
                 .await;
                 let invocation_graph = invocation.graph;
@@ -874,11 +870,7 @@ impl Runtime {
             // waiting, then resume that same Attempt rather than treating
             // process recovery as a user-visible retry.
             previous_idx,
-            execution
-                .attempts
-                .last()
-                .map(|attempt| attempt.messages.clone())
-                .unwrap_or_default(),
+            committed_tool_messages(&execution),
         )
         .await;
         let invocation_graph = invocation.graph;
@@ -1007,6 +999,23 @@ enum Target {
         workflow: Arc<CompiledWorkflow>,
         state: Option<Box<graph::State>>,
     },
+}
+
+// Reconstruct successful sub-call facts from the entire logical execution,
+// not just its latest Attempt: an in-flight retry may have no messages yet.
+// This is private ToolNode recovery input, never a partial normal Node output.
+fn committed_tool_messages(execution: &node::Execution) -> Messages {
+    let mut committed = std::collections::BTreeMap::new();
+    for message in execution
+        .attempts
+        .iter()
+        .flat_map(|attempt| attempt.messages.as_slice())
+    {
+        if let Some(call_id) = message.metadata.get("call_id").and_then(Value::as_str) {
+            committed.insert(call_id, message);
+        }
+    }
+    Messages::new(committed.into_values().cloned())
 }
 
 // The final argument is the already committed ToolNode context restored from
@@ -3097,5 +3106,213 @@ mod tests {
         assert_eq!(first_calls.load(Ordering::SeqCst), 0);
         assert_eq!(second_calls.load(Ordering::SeqCst), 1);
         assert_eq!(invocation.attempts[0].messages.as_slice().len(), 2);
+    }
+
+    fn recovery_tools(
+        calls: &[Arc<AtomicI64>; 3],
+        parallel: bool,
+        fail_first: bool,
+    ) -> tool::ToolNode {
+        let node = tool::ToolNode::new(RetryTool {
+            definition: workflow_tool_definition("first"),
+            calls: calls[0].clone(),
+            fail_first: false,
+        })
+        .tool(RetryTool {
+            definition: workflow_tool_definition("second"),
+            calls: calls[1].clone(),
+            fail_first,
+        })
+        .tool(RetryTool {
+            definition: workflow_tool_definition("third"),
+            calls: calls[2].clone(),
+            fail_first: false,
+        });
+        if parallel { node.parallel() } else { node }
+    }
+
+    fn recovery_workflow(node: tool::ToolNode) -> CompiledWorkflow {
+        let mut builder = WorkflowBuilder::new("tool-process-recovery");
+        builder.add_node("tools", node).unwrap();
+        builder.add_edge(START, "tools").unwrap();
+        builder.add_edge("tools", END).unwrap();
+        builder
+            .set_retry(
+                "tools",
+                RetryPolicy {
+                    max_retries: 1,
+                    min_delay_ms: 0,
+                    max_delay_ms: 0,
+                },
+            )
+            .unwrap();
+        builder.compile().unwrap()
+    }
+
+    #[test]
+    fn tool_checkpoint_recovers_in_a_fresh_process_without_replaying_successes() {
+        const FIXTURE: &str = "HEART_TOOL_RECOVERY_FIXTURE";
+        const MODE: &str = "HEART_TOOL_RECOVERY_PARALLEL";
+        const RETRY: &str = "HEART_TOOL_RECOVERY_RETRY";
+        let calls = std::array::from_fn(|_| Arc::new(AtomicI64::new(0)));
+        if let Some(path) = std::env::var_os(FIXTURE) {
+            let parallel = std::env::var_os(MODE).is_some();
+            let prior_attempt = std::env::var_os(RETRY).is_some();
+            let snapshot: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+            let workflow = recovery_workflow(recovery_tools(&calls, parallel, !prior_attempt));
+            let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+            let mut runtime = Runtime::from_snapshot(19, workflow, snapshot)
+                .unwrap()
+                .with_checkpoint(checkpoint.clone());
+            let input = runtime.state.initial.clone().unwrap();
+            let output = block_on(runtime.run(
+                input.clone(),
+                Arc::new(|| panic!("recovery must reuse the existing exec_id")),
+                Cancellation::new(),
+            ))
+            .unwrap();
+
+            assert_eq!(calls[0].load(Ordering::SeqCst), 0);
+            let retries = if prior_attempt { 1 } else { 2 };
+            assert_eq!(calls[1].load(Ordering::SeqCst), retries);
+            assert_eq!(calls[2].load(Ordering::SeqCst), i64::from(!parallel));
+            let execution = &runtime.state.nodes["tools"].executions[&1_300];
+            assert_eq!(execution.attempts.len(), 2);
+            assert_eq!(execution.attempts[0].idx, 0);
+            assert_eq!(execution.attempts[0].status, node::AttemptStatus::Failed);
+            assert_eq!(
+                execution.attempts[0].error.as_ref().unwrap().code,
+                "TIMEOUT"
+            );
+            assert_eq!(execution.attempts[1].idx, 1);
+            assert_eq!(execution.attempts[1].status, node::AttemptStatus::Succeeded);
+            assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+            assert!(execution.error.is_none());
+            let ids = output
+                .as_slice()
+                .iter()
+                .map(|message| message.metadata["call_id"].as_str().unwrap())
+                .collect::<Vec<_>>();
+            assert_eq!(ids, ["call_a", "call_b", "call_c"]);
+            let terminal = block_on(checkpoint.load(19, &Cancellation::new())).unwrap();
+            assert_eq!(terminal, runtime.snapshot().unwrap());
+            // A second process-local restore of the saved terminal result is
+            // a read, not another tool invocation or attempt.
+            let mut terminal_runtime = Runtime::from_snapshot(
+                19,
+                recovery_workflow(recovery_tools(&calls, parallel, !prior_attempt)),
+                terminal,
+            )
+            .unwrap();
+            assert_eq!(
+                block_on(terminal_runtime.run(
+                    input,
+                    Arc::new(|| panic!("terminal restore must not allocate an id")),
+                    Cancellation::new(),
+                ))
+                .unwrap(),
+                output
+            );
+            assert_eq!(calls[1].load(Ordering::SeqCst), retries);
+            return;
+        }
+
+        for (parallel, prior_attempt) in
+            [(false, false), (true, false), (false, true), (true, true)]
+        {
+            let calls = std::array::from_fn(|_| Arc::new(AtomicI64::new(0)));
+            let tools = recovery_tools(&calls, parallel, true);
+            let mut input = workflow_tool_input();
+            input.0[0].content.push(crate::model::content::part::Part {
+                r#type: "tool_call".into(),
+                data: crate::model::content::part::object(serde_json::json!({
+                    "call_id": "call_c", "name": "third", "arguments": {}
+                })),
+            });
+            let partial = block_on(tools.call_with_recovery(
+                input.clone(),
+                Cancellation::new(),
+                Messages::default(),
+            ))
+            .unwrap_err();
+            assert_eq!(partial.error.code, "TIMEOUT");
+            assert_eq!(partial.completed.0.len(), if parallel { 2 } else { 1 });
+            let mut runtime = Runtime::new(19, recovery_workflow(tools)).unwrap();
+            runtime.state.initial = Some(input);
+            runtime
+                .start_batch(vec![("tools".into(), 1_300, vec![])])
+                .unwrap();
+            // Model the saved in-flight scene, not an already terminal failed
+            // run: these sub-call facts are present, but normal output and
+            // downstream activation have not been committed.
+            runtime
+                .state
+                .nodes
+                .get_mut("tools")
+                .unwrap()
+                .executions
+                .get_mut(&1_300)
+                .unwrap()
+                .attempts[0]
+                .messages = partial.completed;
+            if prior_attempt {
+                let execution = runtime
+                    .state
+                    .nodes
+                    .get_mut("tools")
+                    .unwrap()
+                    .executions
+                    .get_mut(&1_300)
+                    .unwrap();
+                execution.attempts[0].status = node::AttemptStatus::Failed;
+                execution.attempts[0].error = Some(partial.error);
+                // A crash after starting the next Attempt must not lose
+                // successful calls retained only in the previous Attempt.
+                execution.attempts.push(node::Attempt {
+                    idx: 1,
+                    ..Default::default()
+                });
+            }
+            assert!(
+                runtime.state.nodes["tools"].executions[&1_300]
+                    .messages
+                    .0
+                    .is_empty()
+            );
+            let checkpoint = crate::core::checkpoint::InMemory::new();
+            block_on(runtime.save_checkpoint(&checkpoint, &Cancellation::new())).unwrap();
+            let saved = block_on(checkpoint.load(19, &Cancellation::new())).unwrap();
+            let path = std::env::temp_dir().join(format!(
+                "heart-tool-recovery-{}-{}-{parallel}.json",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos()
+            ));
+            std::fs::write(&path, serde_json::to_vec(&saved).unwrap()).unwrap();
+            drop(runtime);
+            let mut process = std::process::Command::new(std::env::current_exe().unwrap());
+            process.args([
+                "--exact",
+                "runtime::workflow::tests::tool_checkpoint_recovers_in_a_fresh_process_without_replaying_successes",
+                "--nocapture",
+            ]).env(FIXTURE, &path).env_remove(MODE).env_remove(RETRY);
+            if parallel {
+                process.env(MODE, "1");
+            }
+            if prior_attempt {
+                process.env(RETRY, "1");
+            }
+            let result = process.output();
+            std::fs::remove_file(path).unwrap();
+            let result = result.unwrap();
+            assert!(
+                result.status.success(),
+                "child recovery failed: {}\n{}",
+                String::from_utf8_lossy(&result.stdout),
+                String::from_utf8_lossy(&result.stderr)
+            );
+        }
     }
 }
