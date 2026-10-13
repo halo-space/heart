@@ -1083,6 +1083,7 @@ fn checkpoint_state(
         }) if reason == "cancelled" => "stopped",
         Ok(Event::Complete { .. }) => "succeeded",
         Err(error) if error.code == "CANCELLED" => "stopped",
+        Err(error) if error.code == "WAITING" => "waiting",
         Err(_) => "failed",
         Ok(Event::Delta { .. }) => "running",
     };

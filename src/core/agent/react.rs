@@ -2134,16 +2134,18 @@ mod tests {
                 .await;
             assert!(events.iter().all(Result::is_ok), "{events:?}");
             assert_eq!(requests.lock().unwrap().len(), 1);
-            let requests = requests.lock().unwrap();
-            let request = &requests[0];
-            assert!(request.messages.as_slice().iter().any(|message| {
-                message.role == Role::User
-                    && message
-                        .content
-                        .iter()
-                        .any(|part| part.data.get("value") == Some(&json!("approval response")))
-            }));
-            drop(requests);
+            let contains_response = {
+                let requests = requests.lock().unwrap();
+                let request = &requests[0];
+                request.messages.as_slice().iter().any(|message| {
+                    message.role == Role::User
+                        && message
+                            .content
+                            .iter()
+                            .any(|part| part.data.get("value") == Some(&json!("approval response")))
+                })
+            };
+            assert!(contains_response);
             assert_eq!(
                 checkpoint.load(902, &Cancellation::new()).await.unwrap()["status"],
                 "succeeded"
@@ -2200,6 +2202,130 @@ mod tests {
                 "succeeded"
             );
         });
+    }
+
+    #[test]
+    fn waiting_with_memory_keeps_chat_open_and_writes_trace_only_at_final_closeout() {
+        use crate::checkpoint::Checkpoint as _;
+        use crate::memory::short::{chat, session, trace};
+        use crate::memory::short::{chat::Store as _, session::Store as _, trace::Store as _};
+
+        block_on(async {
+            // Both Agent implementations use the same Memory waiting boundary.
+            for react in [false, true] {
+                let memory = crate::memory::Config::new(
+                    crate::core::memory::short::session::InMemory::new(),
+                    crate::core::memory::short::chat::InMemory::new(),
+                    crate::core::memory::short::trace::InMemory::new(),
+                    crate::core::memory::InMemory::new(),
+                );
+                memory
+                    .session
+                    .create(
+                        session::Session {
+                            id: 900,
+                            tenant_id: 1,
+                            user_id: 2,
+                            r#type: crate::memory::short::Type::Agent,
+                            title: None,
+                            summary: None,
+                            usage: None,
+                            status: session::Status::Active,
+                            metadata: Map::new(),
+                            created_time: 0,
+                            updated_time: 0,
+                        },
+                        &Cancellation::new(),
+                    )
+                    .await
+                    .unwrap();
+                let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+                let model = CheckpointChat {
+                    requests: Arc::new(Mutex::new(Vec::new())),
+                    replies: Mutex::new(VecDeque::from([
+                        vec![Err(Error::new("WAITING", "approval is required"))],
+                        vec![checkpoint_complete("approved")],
+                    ])),
+                };
+                let input = Input {
+                    metadata: serde_json::from_value(json!({
+                        "chat_id": 902, "session_id": 900, "tenant_id": 1,
+                        "user_id": 2, "agent_id": 3
+                    }))
+                    .unwrap(),
+                    payload: Vec::new(),
+                };
+                let agent: Box<dyn TestAgent> = if react {
+                    Box::new(
+                        crate::agent::react()
+                            .model(model)
+                            .memory(memory.clone())
+                            .checkpoint(checkpoint.clone())
+                            .build()
+                            .unwrap(),
+                    )
+                } else {
+                    Box::new(
+                        crate::agent::chat()
+                            .model(model)
+                            .memory(memory.clone())
+                            .checkpoint(checkpoint.clone())
+                            .build()
+                            .unwrap(),
+                    )
+                };
+                let first = agent.events(input.clone()).await;
+                assert!(matches!(first.as_slice(), [Err(error)] if error.code == "WAITING"));
+                let open = memory.chat.read(902, &Cancellation::new()).await.unwrap();
+                assert_eq!(open.status, chat::Status::Running);
+                assert!(open.completed_time.is_none());
+                assert_eq!(
+                    memory
+                        .trace
+                        .read(902, &Cancellation::new())
+                        .await
+                        .unwrap_err()
+                        .code,
+                    "NOT_FOUND"
+                );
+                assert_eq!(
+                    checkpoint.load(902, &Cancellation::new()).await.unwrap()["status"],
+                    "waiting"
+                );
+
+                let second = agent.events(input).await;
+                assert!(second.iter().all(Result::is_ok), "{second:?}");
+                let closed = memory.chat.read(902, &Cancellation::new()).await.unwrap();
+                assert_eq!(closed.status, chat::Status::Completed);
+                assert_eq!(closed.created_time, open.created_time);
+                assert!(closed.completed_time.is_some());
+                // Chat currently only projects its Chat; ReAct additionally
+                // projects the complete Agent State at its final closeout.
+                if react {
+                    let trace: trace::Trace =
+                        memory.trace.read(902, &Cancellation::new()).await.unwrap();
+                    assert_eq!(trace.state["status"], "succeeded");
+                }
+            }
+        });
+    }
+
+    type TestEvents<'a> = Pin<Box<dyn Future<Output = Vec<Result<Event, Error>>> + 'a>>;
+
+    trait TestAgent {
+        fn events(&self, input: Input) -> TestEvents<'_>;
+    }
+
+    impl<A: AgentContract> TestAgent for A {
+        fn events(&self, input: Input) -> TestEvents<'_> {
+            Box::pin(async move {
+                self.run(input, Cancellation::new())
+                    .await
+                    .unwrap()
+                    .collect::<Vec<_>>()
+                    .await
+            })
+        }
     }
 
     #[test]

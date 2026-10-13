@@ -379,7 +379,12 @@ impl Run {
             if terminal_status {
                 record.completed_time = Some(now_ms());
             }
-            entry.save(record, state).await?;
+            // Waiting only suspends this invocation. Checkpoint owns the
+            // resumable scene; the final audit Trace is written once when
+            // the same Chat actually terminates.
+            entry
+                .save(record, if terminal_status { state } else { None })
+                .await?;
         }
         result
     }
