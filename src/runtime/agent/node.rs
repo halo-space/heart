@@ -33,6 +33,8 @@ pub struct Attempt {
     pub finish_reason: Option<String>,
     #[serde(default)]
     pub steps: Vec<Step>,
+    /// Messages retained for this attempt, including input and internal
+    /// evaluation feedback. They need not equal the node's downstream output.
     #[serde(default)]
     pub messages: Messages,
     pub error: Option<Error>,

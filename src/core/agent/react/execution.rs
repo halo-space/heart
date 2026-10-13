@@ -233,8 +233,9 @@ pub(super) fn commit<M: Chat + 'static>(
         let node = graph.state_mut(&task.node_id)?;
         node.messages = Some(committed.clone());
         if let Some(execution) = node.execution.as_mut() {
-            execution.messages = committed;
+            execution.messages = committed.clone();
         }
+        node.current_attempt_mut()?.messages = committed;
         state.active_tasks.push(Box::pin(advance(task)));
         return Ok((result.ok(), false));
     }
@@ -243,7 +244,11 @@ pub(super) fn commit<M: Chat + 'static>(
     // Individual forwarded Events retain their per-call Usage unchanged.
     state.run.settle(usage.clone());
     let graph = state.graph.as_mut().expect("executing plan graph");
-    match &result {
+    let mut context = task.state.messages.clone();
+    // An eval error may stop the task before the normal ordered drain. Keep
+    // successful call facts already emitted in that incomplete batch too.
+    context.0.extend(task.state.tool_results.values().cloned());
+    let committed = match &result {
         Err(error) => {
             graph.fail_with_usage(&task.node_id, Some(error.clone()), usage)?;
             state.task_error.get_or_insert_with(|| error.clone());
@@ -280,7 +285,15 @@ pub(super) fn commit<M: Chat + 'static>(
             graph.succeed(&task.node_id, task.messages, usage)?;
             Ok((result.ok(), true))
         }
-    }
+    };
+    // Attempt messages retain the actual invocation context, including Tool
+    // evaluation feedback used by this task. Node/execution messages remain
+    // the result stream exposed to dependent tasks, not internal feedback.
+    graph
+        .state_mut(&task.node_id)?
+        .current_attempt_mut()?
+        .messages = context;
+    committed
 }
 
 pub(super) fn finalize<M: Chat>(state: &mut ReActState<M>) -> Result<(), Error> {
@@ -307,3 +320,6 @@ pub(super) fn finalize<M: Chat>(state: &mut ReActState<M>) -> Result<(), Error> 
     state.plan_finalizing = true;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;
