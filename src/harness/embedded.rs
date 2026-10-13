@@ -1,4 +1,4 @@
-//! Private execution scope used when an Agent is embedded in a Workflow.
+//! Private scene ownership for Workflow-embedded Agents and nested SubAgents.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -49,8 +49,9 @@ pub(crate) fn restore() -> Option<Value> {
     CURRENT.try_with(Scope::take_restore).ok().flatten()
 }
 
-/// Embedded runs are owned by the outer Workflow, even on their first call
-/// when there is no Agent scene to restore yet.
+/// An embedded run has an enclosing owner, even on its first call when there
+/// is no Agent scene to restore yet. It must not open another top-level
+/// Memory or Checkpoint lifecycle.
 pub(crate) fn active() -> bool {
     CURRENT.try_with(|_| ()).is_ok()
 }

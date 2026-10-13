@@ -1016,21 +1016,15 @@ async fn execute_subagent(
         .iter()
         .find(|subagent| subagent.has_name(name))
         .ok_or_else(|| Error::new("NOT_FOUND", "agent_spawn target is not registered"))?;
-    // Child Agents do not own a second top-level Checkpoint.  Capture a
-    // standalone child's internal scene under an embedded scope; an enclosing
-    // Workflow scope remains authoritative when this Agent is nested there.
-    let mut stream = if crate::harness::embedded::active() {
-        subagent.run(input, cancellation).await?
-    } else {
-        crate::harness::embedded::run(
-            crate::harness::embedded::Scope::new(None),
-            subagent.run(input, cancellation),
-        )
-        .await?
-    };
+    // Use a child-local capture scope even inside a Workflow. The enclosing
+    // scope belongs to the parent Agent, and child stream polls must not
+    // overwrite it with the child's checkpoints.
+    let scope = crate::harness::embedded::Scope::new(None);
+    let mut stream =
+        crate::harness::embedded::run(scope.clone(), subagent.run(input, cancellation)).await?;
     let mut events = Vec::new();
     let mut final_message = None;
-    while let Some(item) = stream.next().await {
+    while let Some(item) = crate::harness::embedded::run(scope.clone(), stream.next()).await {
         match item {
             Ok(event) => {
                 if let Event::Complete { message, .. } = &event {

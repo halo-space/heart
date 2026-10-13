@@ -652,23 +652,15 @@ async fn execute_subagent(
         .iter()
         .find(|subagent| subagent.has_name(&name))
         .ok_or_else(|| Error::new("NOT_FOUND", "agent_spawn target is not registered"))?;
-    // A standalone child shares the parent's top-level chat/checkpoint.  Give
-    // it an embedded capture scope so a child-local `.checkpoint(...)` cannot
-    // replace the parent's waiting snapshot.  When an outer Workflow already
-    // owns a scope, keep using that scope so its single checkpoint remains the
-    // source of truth.
-    let mut stream = if crate::harness::embedded::active() {
-        subagent.run(input, cancellation).await?
-    } else {
-        crate::harness::embedded::run(
-            crate::harness::embedded::Scope::new(None),
-            subagent.run(input, cancellation),
-        )
-        .await?
-    };
+    // A child must never consume or overwrite the enclosing Agent's scene,
+    // including when that Agent is itself embedded in a Workflow. Scope both
+    // initialization and every subsequent stream poll, not just `run`.
+    let scope = crate::harness::embedded::Scope::new(None);
+    let mut stream =
+        crate::harness::embedded::run(scope.clone(), subagent.run(input, cancellation)).await?;
     let mut events = Vec::new();
     let mut final_message = None;
-    while let Some(item) = stream.next().await {
+    while let Some(item) = crate::harness::embedded::run(scope.clone(), stream.next()).await {
         match item {
             Ok(event) => {
                 if let Event::Complete { message, .. } = &event {
@@ -2668,6 +2660,56 @@ mod tests {
             messages.last().unwrap().content[0].data["value"],
             "parent complete"
         );
+    }
+
+    struct WaitingSubAgent;
+
+    impl AgentContract for WaitingSubAgent {
+        type Stream = futures_util::stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+
+        async fn run(
+            &self,
+            _input: Input,
+            _cancellation: Cancellation,
+        ) -> Result<Self::Stream, Error> {
+            // A real waiting Agent captures its resumable scene before
+            // returning control to the enclosing runtime.
+            assert!(crate::harness::embedded::capture(json!({
+                "owner": "child"
+            })));
+            Err(Error::new("WAITING", "child is waiting for approval"))
+        }
+    }
+
+    #[test]
+    fn subagent_scene_does_not_overwrite_parent_embedded_scene() {
+        block_on(async {
+            let parent_scope = crate::harness::embedded::Scope::new(None);
+            parent_scope.capture(json!({"owner": "parent"}));
+            let child = crate::agent::SubAgent::new("reviewer", WaitingSubAgent).unwrap();
+            let call = Call {
+                call_id: "spawn_1".into(),
+                name: "agent_spawn".into(),
+                arguments: serde_json::from_value(json!({
+                    "name": "reviewer",
+                    "input": {"payload": []}
+                }))
+                .unwrap(),
+            };
+
+            let result = crate::harness::embedded::run(
+                parent_scope.clone(),
+                execute_subagent(Arc::new(vec![child]), call, Map::new(), Cancellation::new()),
+            )
+            .await;
+
+            let error = match result {
+                Ok(_) => panic!("waiting child unexpectedly completed"),
+                Err(error) => error,
+            };
+            assert_eq!(error.code, "WAITING");
+            assert_eq!(parent_scope.latest(), Some(json!({"owner": "parent"})));
+        });
     }
 
     struct WeatherTool {
