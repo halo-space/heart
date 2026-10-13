@@ -195,7 +195,8 @@ type CompletionFuture = Pin<Box<dyn Future<Output = Result<Event, Error>> + 'sta
 type CheckpointFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + 'static>>;
 type ProviderFuture<S> = Pin<Box<dyn Future<Output = Result<S, Error>> + 'static>>;
 type ToolBatch = (Vec<Message>, Vec<Result<Event, Error>>);
-type ToolBatchFuture = Pin<Box<dyn Future<Output = Result<ToolBatch, Error>> + 'static>>;
+type ToolBatchFuture =
+    Pin<Box<dyn Future<Output = Result<ToolBatch, Box<ToolBatchFailure>>> + 'static>>;
 type ProviderFactory<S> = Arc<dyn Fn(Messages, Cancellation) -> ProviderFuture<S> + Send + Sync>;
 type EvaluatorHandle = Arc<dyn Fn(Input, Messages, Cancellation) -> EvaluationFuture + Send + Sync>;
 type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + 'static>>;
@@ -209,6 +210,7 @@ struct ToolBatchConfig {
     metadata: Map<String, Value>,
     cancellation: Cancellation,
     max_concurrency: usize,
+    restores: std::collections::BTreeMap<String, Value>,
 }
 
 struct EventsConfig<S> {
@@ -230,6 +232,20 @@ struct EventsConfig<S> {
 struct PendingSubAgent {
     index: usize,
     call: Call,
+    #[serde(default)]
+    scene: Option<Value>,
+}
+
+#[derive(Debug)]
+struct ToolBatchFailure {
+    error: Error,
+    scenes: std::collections::BTreeMap<String, Value>,
+}
+
+#[derive(Debug)]
+struct SubAgentFailure {
+    error: Error,
+    scene: Option<Value>,
 }
 
 /// The concrete stream returned by this Chat Agent. Its items remain the
@@ -465,7 +481,12 @@ where
                 }
                 Poll::Ready(Err(error)) => {
                     this.pending_tools = None;
-                    this.close(Err(error));
+                    for (call_id, scene) in error.scenes {
+                        if let Some(pending) = this.pending_subagents.get_mut(&call_id) {
+                            pending.scene = Some(scene);
+                        }
+                    }
+                    this.close(Err(error.error));
                     return Pin::new(this).poll_next(cx);
                 }
             }
@@ -539,6 +560,7 @@ where
                                             PendingSubAgent {
                                                 index,
                                                 call: call.clone(),
+                                                scene: None,
                                             },
                                         )
                                     })
@@ -574,6 +596,16 @@ where
                                         metadata,
                                         cancellation,
                                         max_concurrency,
+                                        restores: this
+                                            .pending_subagents
+                                            .iter()
+                                            .filter_map(|(call_id, pending)| {
+                                                pending
+                                                    .scene
+                                                    .clone()
+                                                    .map(|scene| (call_id.clone(), scene))
+                                            })
+                                            .collect(),
                                     },
                                     calls,
                                 )));
@@ -875,6 +907,13 @@ where
                         metadata: events.metadata.clone(),
                         cancellation: events.cancellation.clone(),
                         max_concurrency: events.max_concurrency,
+                        restores: events
+                            .pending_subagents
+                            .iter()
+                            .filter_map(|(call_id, pending)| {
+                                pending.scene.clone().map(|scene| (call_id.clone(), scene))
+                            })
+                            .collect(),
                     },
                     calls,
                 )));
@@ -904,6 +943,7 @@ where
                             metadata: events.metadata.clone(),
                             cancellation: events.cancellation.clone(),
                             max_concurrency: events.max_concurrency,
+                            restores: std::collections::BTreeMap::new(),
                         },
                         calls,
                     )));
@@ -925,7 +965,10 @@ where
     }
 }
 
-async fn execute_tool_batch(config: ToolBatchConfig, calls: Vec<Call>) -> Result<ToolBatch, Error> {
+async fn execute_tool_batch(
+    config: ToolBatchConfig,
+    calls: Vec<Call>,
+) -> Result<ToolBatch, Box<ToolBatchFailure>> {
     let ToolBatchConfig {
         toolkit,
         subagents,
@@ -934,6 +977,7 @@ async fn execute_tool_batch(config: ToolBatchConfig, calls: Vec<Call>) -> Result
         metadata,
         cancellation,
         max_concurrency,
+        restores,
     } = config;
     let tasks = calls.into_iter().enumerate().map(|(index, call)| {
         let toolkit = Arc::clone(&toolkit);
@@ -942,17 +986,48 @@ async fn execute_tool_batch(config: ToolBatchConfig, calls: Vec<Call>) -> Result
         let hooks = hooks.clone();
         let metadata = metadata.clone();
         let cancellation = cancellation.clone();
+        let restore = restores.get(&call.call_id).cloned();
         async move {
             let result = if call.name == "agent_spawn" && !subagents.is_empty() {
-                match execute_subagent(subagents, metadata, call.clone(), cancellation).await {
+                match execute_subagent(subagents, metadata, call.clone(), restore, cancellation)
+                    .await
+                {
                     Ok(result) => Ok(result),
-                    Err(error) if error.code == "CANCELLED" => Err(error),
-                    Err(error) => Ok((vec![subagent_error_message(&call, &error)], Vec::new())),
+                    Err(failure) if failure.error.code == "CANCELLED" => {
+                        Err(Box::new(ToolBatchFailure {
+                            error: failure.error,
+                            scenes: failure
+                                .scene
+                                .into_iter()
+                                .map(|scene| (call.call_id.clone(), scene))
+                                .collect(),
+                        }))
+                    }
+                    Err(failure) if failure.error.code == "WAITING" => {
+                        Err(Box::new(ToolBatchFailure {
+                            error: failure.error,
+                            scenes: failure
+                                .scene
+                                .into_iter()
+                                .map(|scene| (call.call_id.clone(), scene))
+                                .collect(),
+                        }))
+                    }
+                    Err(failure) => Ok((
+                        vec![subagent_error_message(&call, &failure.error)],
+                        Vec::new(),
+                    )),
                 }
             } else {
                 execute_tool(toolkit, access, hooks, metadata, call, cancellation)
                     .await
                     .map(|messages| (messages, Vec::new()))
+                    .map_err(|error| {
+                        Box::new(ToolBatchFailure {
+                            error,
+                            scenes: std::collections::BTreeMap::new(),
+                        })
+                    })
             };
             (index, result)
         }
@@ -978,25 +1053,34 @@ async fn execute_subagent(
     subagents: Vec<SubAgent>,
     parent: Map<String, Value>,
     call: Call,
+    restore: Option<Value>,
     cancellation: Cancellation,
-) -> Result<(Vec<Message>, Vec<Result<Event, Error>>), Error> {
+) -> Result<(Vec<Message>, Vec<Result<Event, Error>>), Box<SubAgentFailure>> {
     let name = call
         .arguments
         .get("name")
         .and_then(Value::as_str)
         .filter(|name| !name.trim().is_empty())
-        .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "agent_spawn name is missing"))?;
-    let input_value = call
-        .arguments
-        .get("input")
-        .cloned()
-        .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "agent_spawn input is missing"))?;
-    let mut input: Input = serde_json::from_value(input_value).map_err(|_| {
-        Error::new(
-            "INVALID_ARGUMENTS",
-            "agent_spawn input must be agent::Input",
-        )
+        .ok_or_else(|| {
+            Box::new(SubAgentFailure {
+                error: Error::new("INVALID_ARGUMENTS", "agent_spawn name is missing"),
+                scene: None,
+            })
+        })?;
+    let input_value = call.arguments.get("input").cloned().ok_or_else(|| {
+        Box::new(SubAgentFailure {
+            error: Error::new("INVALID_ARGUMENTS", "agent_spawn input is missing"),
+            scene: None,
+        })
     })?;
+    let mut input: Input = serde_json::from_value(input_value)
+        .map_err(|_| {
+            Error::new(
+                "INVALID_ARGUMENTS",
+                "agent_spawn input must be agent::Input",
+            )
+        })
+        .map_err(|error| Box::new(SubAgentFailure { error, scene: None }))?;
     for key in ["chat_id", "session_id", "user_id", "agent_id"] {
         if let Some(value) = parent.get(key) {
             input
@@ -1007,7 +1091,10 @@ async fn execute_subagent(
     }
     let depth = parent.get("depth").and_then(Value::as_u64).unwrap_or(1);
     if depth >= 2 {
-        return Err(Error::new("INVALID_ARGUMENTS", "SubAgent depth limit is 2"));
+        return Err(Box::new(SubAgentFailure {
+            error: Error::new("INVALID_ARGUMENTS", "SubAgent depth limit is 2"),
+            scene: None,
+        }));
     }
     input
         .metadata
@@ -1015,13 +1102,27 @@ async fn execute_subagent(
     let subagent = subagents
         .iter()
         .find(|subagent| subagent.has_name(name))
-        .ok_or_else(|| Error::new("NOT_FOUND", "agent_spawn target is not registered"))?;
+        .ok_or_else(|| {
+            Box::new(SubAgentFailure {
+                error: Error::new("NOT_FOUND", "agent_spawn target is not registered"),
+                scene: None,
+            })
+        })?;
     // Use a child-local capture scope even inside a Workflow. The enclosing
     // scope belongs to the parent Agent, and child stream polls must not
     // overwrite it with the child's checkpoints.
-    let scope = crate::harness::embedded::Scope::new(None);
+    let scope = crate::harness::embedded::Scope::new(restore);
     let mut stream =
-        crate::harness::embedded::run(scope.clone(), subagent.run(input, cancellation)).await?;
+        match crate::harness::embedded::run(scope.clone(), subagent.run(input, cancellation)).await
+        {
+            Ok(stream) => stream,
+            Err(error) => {
+                return Err(Box::new(SubAgentFailure {
+                    error,
+                    scene: scope.latest(),
+                }));
+            }
+        };
     let mut events = Vec::new();
     let mut final_message = None;
     while let Some(item) = crate::harness::embedded::run(scope.clone(), stream.next()).await {
@@ -1033,12 +1134,19 @@ async fn execute_subagent(
                 events.push(Ok(event));
             }
             Err(error) => {
-                return Ok((vec![subagent_error_message(&call, &error)], events));
+                return Err(Box::new(SubAgentFailure {
+                    error,
+                    scene: scope.latest(),
+                }));
             }
         }
     }
-    let mut message = final_message
-        .ok_or_else(|| Error::new("INVALID_RESPONSE", "SubAgent stream ended without Complete"))?;
+    let mut message = final_message.ok_or_else(|| {
+        Box::new(SubAgentFailure {
+            error: Error::new("INVALID_RESPONSE", "SubAgent stream ended without Complete"),
+            scene: scope.latest(),
+        })
+    })?;
     message.role = Role::Function;
     message
         .metadata
@@ -1551,6 +1659,35 @@ mod tests {
         }
     }
 
+    struct WaitingSubAgent;
+
+    impl AgentContract for WaitingSubAgent {
+        type Stream = futures_util::stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+
+        async fn run(
+            &self,
+            _input: Input,
+            _cancellation: Cancellation,
+        ) -> Result<Self::Stream, Error> {
+            if crate::harness::embedded::restore().is_none() {
+                assert!(crate::harness::embedded::capture(json!({
+                    "owner": "chat-child"
+                })));
+                return Err(Error::new("WAITING", "child is waiting for approval"));
+            }
+            let mut message = Message::new(Role::Assistant);
+            message.content.push(Part {
+                r#type: "text".into(),
+                data: part_data(json!({"value": "child approved"})),
+            });
+            Ok(futures_util::stream::iter(vec![Ok(Event::Complete {
+                message,
+                usage: None,
+                finish_reason: Some("stop".into()),
+            })]))
+        }
+    }
+
     struct EchoTool {
         definition: ToolDefinition,
         calls: Arc<AtomicBool>,
@@ -1965,6 +2102,45 @@ mod tests {
             assert!(events.iter().all(Result::is_ok), "{events:?}");
             assert_eq!(child_calls.load(Ordering::SeqCst), 1);
             assert_eq!(parent_calls.load(Ordering::SeqCst), 1);
+        });
+    }
+
+    #[test]
+    fn chat_subagent_waiting_scene_is_resumed_for_the_same_call() {
+        block_on(async {
+            let child = SubAgent::new("reviewer", WaitingSubAgent).unwrap();
+            let call = Call {
+                call_id: "spawn_1".into(),
+                name: "agent_spawn".into(),
+                arguments: serde_json::from_value(json!({
+                    "name": "reviewer",
+                    "input": {"payload": []}
+                }))
+                .unwrap(),
+            };
+            let failure = execute_subagent(
+                vec![child.clone()],
+                Map::new(),
+                call.clone(),
+                None,
+                Cancellation::new(),
+            )
+            .await
+            .expect_err("child should wait before approval");
+            assert_eq!(failure.error.code, "WAITING");
+            assert_eq!(failure.scene, Some(json!({"owner": "chat-child"})));
+
+            let progress = execute_subagent(
+                vec![child],
+                Map::new(),
+                call,
+                failure.scene,
+                Cancellation::new(),
+            )
+            .await
+            .expect("saved child scene should resume");
+            assert_eq!(progress.0[0].role, Role::Function);
+            assert_eq!(progress.0[0].content[0].data["value"], "child approved");
         });
     }
 
