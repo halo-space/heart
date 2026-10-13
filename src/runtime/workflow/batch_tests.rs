@@ -203,3 +203,132 @@ fn ordinary_batch_node_retries_only_failed_items_and_submits_once() {
         }
     }
 }
+
+fn stateless_batch_workflow(
+    source_calls: Arc<AtomicUsize>,
+    item_calls: Arc<Mutex<Vec<i64>>>,
+) -> CompiledWorkflow {
+    let mut builder = WorkflowBuilder::new("batch-snapshot-fallback");
+    builder
+        .add_node("source", move |_: Messages, _: Cancellation| {
+            let source_calls = source_calls.clone();
+            async move {
+                source_calls.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, Error>(Tasks {
+                    tasks: vec![30, 10, 20],
+                })
+            }
+        })
+        .unwrap();
+    builder
+        .add_node("batch", move |input: Tasks, _: Cancellation| {
+            let item_calls = item_calls.clone();
+            async move {
+                let mut results = Vec::new();
+                for id in input.tasks {
+                    item_calls.lock().unwrap().push(id);
+                    results.push(id * 10);
+                }
+                Ok::<_, Error>(Results { results })
+            }
+        })
+        .unwrap();
+    builder.add_edge(graph::START, "source").unwrap();
+    builder.add_fan_out_edges("source", "batch").unwrap();
+    builder.add_edge("batch", graph::END).unwrap();
+    builder
+        .set_attrs("batch", binding("tasks", "source"))
+        .unwrap();
+    builder.compile().unwrap()
+}
+
+#[test]
+fn restoring_full_runtime_reuses_successful_nodes_and_does_not_guess_internal_batch_facts() {
+    use crate::checkpoint::Checkpoint as _;
+    block_on(async {
+        let original_calls = Arc::new(AtomicUsize::new(0));
+        let workflow = stateless_batch_workflow(original_calls.clone(), Default::default());
+        let mut original = Runtime::new(902, workflow).unwrap();
+        original.state.initial = Some(Messages::default());
+        original
+            .start_batch(vec![("source".into(), 2000, vec![])])
+            .unwrap();
+        let source = original
+            .workflow
+            .executor("source")
+            .unwrap()
+            .call(
+                serde_json::to_value(Messages::default()).unwrap(),
+                Cancellation::new(),
+            )
+            .await
+            .unwrap();
+        let Signal::Complete(value) = source else {
+            panic!("source must complete");
+        };
+        let messages = original.output_messages("source", value).unwrap();
+        original
+            .complete("source", 2000, messages, vec!["batch".into()])
+            .unwrap();
+        assert!(original.advance_step());
+        original
+            .start_batch(vec![(
+                "batch".into(),
+                2001,
+                vec![ExecutionRef {
+                    node_id: "source".into(),
+                    exec_id: 2000,
+                }],
+            )])
+            .unwrap();
+        assert_eq!(original_calls.load(Ordering::SeqCst), 1);
+        let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+        original
+            .save_checkpoint(checkpoint.as_ref(), &Cancellation::new())
+            .await
+            .unwrap();
+        let saved = checkpoint.load(902, &Cancellation::new()).await.unwrap();
+        let encoded = serde_json::to_vec(&saved).unwrap();
+        drop(original);
+
+        // Reconstruct components with no process-local cache. The snapshot
+        // contains a successful source and an unfinished batch, but no item
+        // results: restoring the graph must not infer missing internal facts.
+        let source_calls = Arc::new(AtomicUsize::new(0));
+        let item_calls = Arc::new(Mutex::new(Vec::new()));
+        let mut restored = Runtime::from_snapshot(
+            902,
+            stateless_batch_workflow(source_calls.clone(), item_calls.clone()),
+            serde_json::from_slice(&encoded).unwrap(),
+        )
+        .unwrap()
+        .with_checkpoint(checkpoint.clone());
+        let result = restored
+            .run(
+                Messages::default(),
+                Arc::new(|| panic!("restore must reuse existing execution identities")),
+                Cancellation::new(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(source_calls.load(Ordering::SeqCst), 0);
+        assert_eq!(*item_calls.lock().unwrap(), [30, 10, 20]);
+        assert_eq!(
+            result.0[0].values["results"],
+            serde_json::json!([300, 100, 200])
+        );
+        assert_eq!(restored.state.nodes["batch"].executions.len(), 1);
+        let execution = &restored.state.nodes["batch"].executions[&2001];
+        assert_eq!(execution.attempts.len(), 1);
+        assert_eq!(execution.attempts[0].idx, 0);
+        assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+        assert_eq!(
+            serde_json::to_value(&restored.state.nodes["source"]).unwrap(),
+            saved["nodes"]["source"]
+        );
+        assert_eq!(
+            checkpoint.load(902, &Cancellation::new()).await.unwrap(),
+            restored.snapshot().unwrap()
+        );
+    });
+}
