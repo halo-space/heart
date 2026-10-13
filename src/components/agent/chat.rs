@@ -211,6 +211,7 @@ struct ToolBatchConfig {
     cancellation: Cancellation,
     max_concurrency: usize,
     restores: std::collections::BTreeMap<String, Value>,
+    committed: std::collections::BTreeMap<String, Message>,
 }
 
 struct EventsConfig<S> {
@@ -234,12 +235,15 @@ struct PendingSubAgent {
     call: Call,
     #[serde(default)]
     scene: Option<Value>,
+    #[serde(default)]
+    message: Option<Message>,
 }
 
 #[derive(Debug)]
 struct ToolBatchFailure {
     error: Error,
     scenes: std::collections::BTreeMap<String, Value>,
+    completed: std::collections::BTreeMap<String, Message>,
 }
 
 #[derive(Debug)]
@@ -486,6 +490,11 @@ where
                             pending.scene = Some(scene);
                         }
                     }
+                    for (call_id, message) in error.completed {
+                        if let Some(pending) = this.pending_subagents.get_mut(&call_id) {
+                            pending.message = Some(message);
+                        }
+                    }
                     this.close(Err(error.error));
                     return Pin::new(this).poll_next(cx);
                 }
@@ -561,6 +570,7 @@ where
                                                 index,
                                                 call: call.clone(),
                                                 scene: None,
+                                                message: None,
                                             },
                                         )
                                     })
@@ -604,6 +614,16 @@ where
                                                     .scene
                                                     .clone()
                                                     .map(|scene| (call_id.clone(), scene))
+                                            })
+                                            .collect(),
+                                        committed: this
+                                            .pending_subagents
+                                            .iter()
+                                            .filter_map(|(call_id, pending)| {
+                                                pending
+                                                    .message
+                                                    .clone()
+                                                    .map(|message| (call_id.clone(), message))
                                             })
                                             .collect(),
                                     },
@@ -914,6 +934,16 @@ where
                                 pending.scene.clone().map(|scene| (call_id.clone(), scene))
                             })
                             .collect(),
+                        committed: events
+                            .pending_subagents
+                            .iter()
+                            .filter_map(|(call_id, pending)| {
+                                pending
+                                    .message
+                                    .clone()
+                                    .map(|message| (call_id.clone(), message))
+                            })
+                            .collect(),
                     },
                     calls,
                 )));
@@ -944,6 +974,7 @@ where
                             cancellation: events.cancellation.clone(),
                             max_concurrency: events.max_concurrency,
                             restores: std::collections::BTreeMap::new(),
+                            committed: std::collections::BTreeMap::new(),
                         },
                         calls,
                     )));
@@ -978,6 +1009,7 @@ async fn execute_tool_batch(
         cancellation,
         max_concurrency,
         restores,
+        committed,
     } = config;
     let tasks = calls.into_iter().enumerate().map(|(index, call)| {
         let toolkit = Arc::clone(&toolkit);
@@ -987,7 +1019,11 @@ async fn execute_tool_batch(
         let metadata = metadata.clone();
         let cancellation = cancellation.clone();
         let restore = restores.get(&call.call_id).cloned();
+        let committed = committed.get(&call.call_id).cloned();
         async move {
+            if let Some(message) = committed {
+                return (index, call, Ok((vec![message], Vec::new())));
+            }
             let result = if call.name == "agent_spawn" && !subagents.is_empty() {
                 match execute_subagent(subagents, metadata, call.clone(), restore, cancellation)
                     .await
@@ -1001,6 +1037,7 @@ async fn execute_tool_batch(
                                 .into_iter()
                                 .map(|scene| (call.call_id.clone(), scene))
                                 .collect(),
+                            completed: std::collections::BTreeMap::new(),
                         }))
                     }
                     Err(failure) if failure.error.code == "WAITING" => {
@@ -1011,6 +1048,7 @@ async fn execute_tool_batch(
                                 .into_iter()
                                 .map(|scene| (call.call_id.clone(), scene))
                                 .collect(),
+                            completed: std::collections::BTreeMap::new(),
                         }))
                     }
                     Err(failure) => Ok((
@@ -1019,17 +1057,18 @@ async fn execute_tool_batch(
                     )),
                 }
             } else {
-                execute_tool(toolkit, access, hooks, metadata, call, cancellation)
+                execute_tool(toolkit, access, hooks, metadata, call.clone(), cancellation)
                     .await
                     .map(|messages| (messages, Vec::new()))
                     .map_err(|error| {
                         Box::new(ToolBatchFailure {
                             error,
                             scenes: std::collections::BTreeMap::new(),
+                            completed: std::collections::BTreeMap::new(),
                         })
                     })
             };
-            (index, result)
+            (index, call, result)
         }
     });
     let mut results = futures_util::stream::iter(tasks)
@@ -1037,14 +1076,32 @@ async fn execute_tool_batch(
         .collect::<Vec<_>>()
         .await
         .into_iter()
-        .map(|(index, result)| result.map(|messages| (index, messages)))
-        .collect::<Result<Vec<_>, _>>()?;
-    results.sort_by_key(|(index, _)| *index);
+        .collect::<Vec<_>>();
+    results.sort_by_key(|(index, _, _)| *index);
+    let mut failures = Vec::new();
     let mut messages = Vec::new();
     let mut events = Vec::new();
-    for (_, (batch, child_events)) in results {
-        messages.extend(batch);
-        events.extend(child_events);
+    let mut completed = std::collections::BTreeMap::new();
+    for (index, call, result) in results {
+        match result {
+            Ok((batch, child_events)) => {
+                if call.name == "agent_spawn"
+                    && let Some(message) = batch.first()
+                {
+                    completed.insert(call.call_id.clone(), message.clone());
+                }
+                messages.extend(batch);
+                events.extend(child_events);
+            }
+            Err(failure) => failures.push((index, failure)),
+        }
+    }
+    if let Some((_, failure)) = failures.into_iter().min_by_key(|(index, _)| *index) {
+        return Err(Box::new(ToolBatchFailure {
+            error: failure.error,
+            scenes: failure.scenes,
+            completed,
+        }));
     }
     Ok((messages, events))
 }
@@ -1661,6 +1718,10 @@ mod tests {
 
     struct WaitingSubAgent;
 
+    struct CountingSubAgent {
+        calls: Arc<std::sync::atomic::AtomicUsize>,
+    }
+
     impl AgentContract for WaitingSubAgent {
         type Stream = futures_util::stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
 
@@ -1679,6 +1740,28 @@ mod tests {
             message.content.push(Part {
                 r#type: "text".into(),
                 data: part_data(json!({"value": "child approved"})),
+            });
+            Ok(futures_util::stream::iter(vec![Ok(Event::Complete {
+                message,
+                usage: None,
+                finish_reason: Some("stop".into()),
+            })]))
+        }
+    }
+
+    impl AgentContract for CountingSubAgent {
+        type Stream = futures_util::stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+
+        async fn run(
+            &self,
+            _input: Input,
+            _cancellation: Cancellation,
+        ) -> Result<Self::Stream, Error> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            let mut message = Message::new(Role::Assistant);
+            message.content.push(Part {
+                r#type: "text".into(),
+                data: part_data(json!({"value": "done child"})),
             });
             Ok(futures_util::stream::iter(vec![Ok(Event::Complete {
                 message,
@@ -2141,6 +2224,87 @@ mod tests {
             .expect("saved child scene should resume");
             assert_eq!(progress.0[0].role, Role::Function);
             assert_eq!(progress.0[0].content[0].data["value"], "child approved");
+        });
+    }
+
+    #[test]
+    fn chat_parallel_subagents_keep_completed_siblings_when_one_waits() {
+        block_on(async {
+            let completed_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let subagents = vec![
+                SubAgent::new(
+                    "done",
+                    CountingSubAgent {
+                        calls: completed_calls.clone(),
+                    },
+                )
+                .unwrap(),
+                SubAgent::new("waiting", WaitingSubAgent).unwrap(),
+            ];
+            let calls = vec![
+                Call {
+                    call_id: "spawn_done".into(),
+                    name: "agent_spawn".into(),
+                    arguments: serde_json::from_value(json!({
+                        "name": "done",
+                        "input": {"payload": []}
+                    }))
+                    .unwrap(),
+                },
+                Call {
+                    call_id: "spawn_waiting".into(),
+                    name: "agent_spawn".into(),
+                    arguments: serde_json::from_value(json!({
+                        "name": "waiting",
+                        "input": {"payload": []}
+                    }))
+                    .unwrap(),
+                },
+            ];
+            let first = execute_tool_batch(
+                ToolBatchConfig {
+                    toolkit: Arc::new(Toolkit::new()),
+                    subagents: subagents.clone(),
+                    access: Access::default(),
+                    hooks: Hooks::default(),
+                    metadata: Map::new(),
+                    cancellation: Cancellation::new(),
+                    max_concurrency: 2,
+                    restores: std::collections::BTreeMap::new(),
+                    committed: std::collections::BTreeMap::new(),
+                },
+                calls.clone(),
+            )
+            .await
+            .expect_err("one child should wait");
+            assert_eq!(first.error.code, "WAITING");
+            assert!(first.completed.contains_key("spawn_done"));
+            let waiting_scene = first
+                .scenes
+                .get("spawn_waiting")
+                .cloned()
+                .expect("waiting child scene");
+
+            let mut restores = std::collections::BTreeMap::new();
+            restores.insert("spawn_waiting".into(), waiting_scene);
+            let resumed = execute_tool_batch(
+                ToolBatchConfig {
+                    toolkit: Arc::new(Toolkit::new()),
+                    subagents,
+                    access: Access::default(),
+                    hooks: Hooks::default(),
+                    metadata: Map::new(),
+                    cancellation: Cancellation::new(),
+                    max_concurrency: 2,
+                    restores,
+                    committed: first.completed,
+                },
+                calls,
+            )
+            .await
+            .expect("waiting child should resume with completed sibling");
+            assert_eq!(resumed.0.len(), 2);
+            assert_eq!(completed_calls.load(Ordering::SeqCst), 1);
         });
     }
 
