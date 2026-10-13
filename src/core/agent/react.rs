@@ -515,20 +515,29 @@ enum ToolProgress {
     SubAgent(
         usize,
         Call,
-        Box<Result<SubAgentProgress, Error>>,
+        Box<Result<SubAgentProgress, Box<SubAgentFailure>>>,
         Option<tokio::sync::OwnedSemaphorePermit>,
     ),
 }
 
+#[derive(Debug)]
 struct SubAgentProgress {
     events: Vec<Result<Event, Error>>,
     message: Message,
+}
+
+#[derive(Debug)]
+struct SubAgentFailure {
+    error: Error,
+    scene: Option<Value>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 struct PendingSubAgent {
     index: usize,
     call: Call,
+    #[serde(default)]
+    scene: Option<Value>,
 }
 
 // Private per-call dependencies, not a new component Context or Runtime state.
@@ -645,19 +654,35 @@ async fn execute_subagent(
     subagents: Arc<Vec<SubAgent>>,
     call: Call,
     parent: Map<String, Value>,
+    restore: Option<Value>,
     cancellation: Cancellation,
-) -> Result<SubAgentProgress, Error> {
-    let (name, input) = decode_subagent_input(&call, &parent)?;
+) -> Result<SubAgentProgress, Box<SubAgentFailure>> {
+    let (name, input) = decode_subagent_input(&call, &parent)
+        .map_err(|error| Box::new(SubAgentFailure { error, scene: None }))?;
     let subagent = subagents
         .iter()
         .find(|subagent| subagent.has_name(&name))
-        .ok_or_else(|| Error::new("NOT_FOUND", "agent_spawn target is not registered"))?;
+        .ok_or_else(|| {
+            Box::new(SubAgentFailure {
+                error: Error::new("NOT_FOUND", "agent_spawn target is not registered"),
+                scene: None,
+            })
+        })?;
     // A child must never consume or overwrite the enclosing Agent's scene,
     // including when that Agent is itself embedded in a Workflow. Scope both
     // initialization and every subsequent stream poll, not just `run`.
-    let scope = crate::harness::embedded::Scope::new(None);
+    let scope = crate::harness::embedded::Scope::new(restore);
     let mut stream =
-        crate::harness::embedded::run(scope.clone(), subagent.run(input, cancellation)).await?;
+        match crate::harness::embedded::run(scope.clone(), subagent.run(input, cancellation)).await
+        {
+            Ok(stream) => stream,
+            Err(error) => {
+                return Err(Box::new(SubAgentFailure {
+                    error,
+                    scene: scope.latest(),
+                }));
+            }
+        };
     let mut events = Vec::new();
     let mut final_message = None;
     while let Some(item) = crate::harness::embedded::run(scope.clone(), stream.next()).await {
@@ -668,11 +693,20 @@ async fn execute_subagent(
                 }
                 events.push(Ok(event));
             }
-            Err(error) => return Err(error),
+            Err(error) => {
+                return Err(Box::new(SubAgentFailure {
+                    error,
+                    scene: scope.latest(),
+                }));
+            }
         }
     }
-    let mut message = final_message
-        .ok_or_else(|| Error::new("INVALID_RESPONSE", "SubAgent stream ended without Complete"))?;
+    let mut message = final_message.ok_or_else(|| {
+        Box::new(SubAgentFailure {
+            error: Error::new("INVALID_RESPONSE", "SubAgent stream ended without Complete"),
+            scene: scope.latest(),
+        })
+    })?;
     message.role = Role::Function;
     message
         .metadata
@@ -1118,6 +1152,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     PendingSubAgent {
                         index,
                         call: call.clone(),
+                        scene: None,
                     },
                 );
                 // Persist the hand-off before the child starts.  If the
@@ -1131,6 +1166,10 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 let slots = state.tool_slots.clone();
                 let subagents = state.subagents.clone();
                 let parent = state.metadata.clone();
+                let restore = state
+                    .pending_subagents
+                    .get(&call.call_id)
+                    .and_then(|pending| pending.scene.clone());
                 let cancellation = state.cancellation.clone();
                 state.active_tools.push(Box::pin(async move {
                     let permit = match cancellable(
@@ -1146,11 +1185,17 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     {
                         Ok(permit) => permit,
                         Err(error) => {
-                            return ToolProgress::SubAgent(index, call, Box::new(Err(error)), None);
+                            return ToolProgress::SubAgent(
+                                index,
+                                call,
+                                Box::new(Err(Box::new(SubAgentFailure { error, scene: None }))),
+                                None,
+                            );
                         }
                     };
                     let result =
-                        execute_subagent(subagents, call.clone(), parent, cancellation).await;
+                        execute_subagent(subagents, call.clone(), parent, restore, cancellation)
+                            .await;
                     ToolProgress::SubAgent(index, call, Box::new(result), Some(permit))
                 }));
                 continue;
@@ -1260,13 +1305,27 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 }
                 ToolProgress::SubAgent(index, call, result, permit) => {
                     drop(permit);
+                    if let Err(failure) = &*result
+                        && failure.error.code == "WAITING"
+                    {
+                        if let Some(pending) = state.pending_subagents.get_mut(&call.call_id) {
+                            pending.scene = failure.scene.clone();
+                        }
+                        if let Err(error) = save_checkpoint(&state, waiting_snapshot(&state)).await
+                        {
+                            state.done = true;
+                            return Some((Err(error), state));
+                        }
+                        state.done = true;
+                        return Some((Err(failure.error.clone()), state));
+                    }
                     state.pending_subagents.remove(&call.call_id);
                     let message = match *result {
                         Ok(progress) => {
                             state.child_events.extend(progress.events);
                             progress.message
                         }
-                        Err(error) => subagent_error_message(&call, &error),
+                        Err(failure) => subagent_error_message(&call, &failure.error),
                     };
                     state.tool_results.insert(index, message.clone());
                     if let Err(error) = save_checkpoint(&state, running_snapshot(&state)).await {
@@ -2853,10 +2912,22 @@ mod tests {
         ) -> Result<Self::Stream, Error> {
             // A real waiting Agent captures its resumable scene before
             // returning control to the enclosing runtime.
-            assert!(crate::harness::embedded::capture(json!({
-                "owner": "child"
-            })));
-            Err(Error::new("WAITING", "child is waiting for approval"))
+            if crate::harness::embedded::restore().is_none() {
+                assert!(crate::harness::embedded::capture(json!({
+                    "owner": "child"
+                })));
+                return Err(Error::new("WAITING", "child is waiting for approval"));
+            }
+            let mut message = Message::new(Role::Assistant);
+            message.content.push(Part {
+                r#type: "text".into(),
+                data: part_data(json!({"value": "child approved"})),
+            });
+            Ok(futures_util::stream::iter(vec![Ok(Event::Complete {
+                message,
+                usage: None,
+                finish_reason: Some("stop".into()),
+            })]))
         }
     }
 
@@ -2878,7 +2949,13 @@ mod tests {
 
             let result = crate::harness::embedded::run(
                 parent_scope.clone(),
-                execute_subagent(Arc::new(vec![child]), call, Map::new(), Cancellation::new()),
+                execute_subagent(
+                    Arc::new(vec![child]),
+                    call,
+                    Map::new(),
+                    None,
+                    Cancellation::new(),
+                ),
             )
             .await;
 
@@ -2886,8 +2963,47 @@ mod tests {
                 Ok(_) => panic!("waiting child unexpectedly completed"),
                 Err(error) => error,
             };
-            assert_eq!(error.code, "WAITING");
+            assert_eq!(error.error.code, "WAITING");
             assert_eq!(parent_scope.latest(), Some(json!({"owner": "parent"})));
+        });
+    }
+
+    #[test]
+    fn waiting_subagent_is_resumed_from_its_saved_scene_before_parent_continues() {
+        block_on(async {
+            let child = crate::agent::SubAgent::new("reviewer", WaitingSubAgent).unwrap();
+            let call = Call {
+                call_id: "spawn_1".into(),
+                name: "agent_spawn".into(),
+                arguments: serde_json::from_value(json!({
+                    "name": "reviewer",
+                    "input": {"payload": []}
+                }))
+                .unwrap(),
+            };
+            let failure = execute_subagent(
+                Arc::new(vec![child.clone()]),
+                call.clone(),
+                Map::new(),
+                None,
+                Cancellation::new(),
+            )
+            .await
+            .expect_err("child should wait before approval");
+            assert_eq!(failure.error.code, "WAITING");
+            assert_eq!(failure.scene, Some(json!({"owner": "child"})));
+
+            let progress = execute_subagent(
+                Arc::new(vec![child]),
+                call,
+                Map::new(),
+                failure.scene,
+                Cancellation::new(),
+            )
+            .await
+            .expect("saved child scene should resume");
+            assert_eq!(progress.message.role, Role::Function);
+            assert_eq!(progress.message.content[0].data["value"], "child approved");
         });
     }
 
