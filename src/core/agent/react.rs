@@ -748,6 +748,7 @@ fn closeout_state<M: Chat>(
         }) if reason == "cancelled" => "stopped",
         Ok(Event::Complete { .. }) => "succeeded",
         Err(error) if error.code == "CANCELLED" => "stopped",
+        Err(error) if error.code == "WAITING" => "waiting",
         Err(_) => "failed",
         Ok(Event::Delta { .. }) => "running",
     };
@@ -796,6 +797,7 @@ fn result_status(result: &Result<Event, Error>) -> &'static str {
         }) if reason == "cancelled" => "stopped",
         Ok(Event::Complete { .. }) => "succeeded",
         Err(error) if error.code == "CANCELLED" => "stopped",
+        Err(error) if error.code == "WAITING" => "waiting",
         Err(_) => "failed",
         Ok(Event::Delta { .. }) => "running",
     }
@@ -2142,6 +2144,57 @@ mod tests {
                         .any(|part| part.data.get("value") == Some(&json!("approval response")))
             }));
             drop(requests);
+            assert_eq!(
+                checkpoint.load(902, &Cancellation::new()).await.unwrap()["status"],
+                "succeeded"
+            );
+        });
+    }
+
+    #[test]
+    fn model_waiting_checkpoint_reuses_the_same_run_entry() {
+        use crate::checkpoint::Checkpoint as _;
+
+        block_on(async {
+            let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let agent = crate::agent::react()
+                .model(CheckpointChat {
+                    requests: requests.clone(),
+                    replies: Mutex::new(VecDeque::from([
+                        vec![Err(Error::new("WAITING", "approval is required"))],
+                        vec![checkpoint_complete("continued after approval")],
+                    ])),
+                })
+                .checkpoint(checkpoint.clone())
+                .build()
+                .unwrap();
+
+            let first = agent
+                .run(checkpoint_input(), Cancellation::new())
+                .await
+                .unwrap()
+                .collect::<Vec<_>>()
+                .await;
+            assert!(matches!(first.as_slice(), [Err(error)] if error.code == "WAITING"));
+            assert_eq!(
+                checkpoint.load(902, &Cancellation::new()).await.unwrap()["status"],
+                "waiting"
+            );
+
+            let second = agent
+                .run(checkpoint_input(), Cancellation::new())
+                .await
+                .unwrap()
+                .collect::<Vec<_>>()
+                .await;
+            assert!(second.iter().all(Result::is_ok), "{second:?}");
+            assert!(matches!(
+                second.as_slice(),
+                [Ok(Event::Complete { message, .. })]
+                    if message.values["answer"] == "continued after approval"
+            ));
+            assert_eq!(requests.lock().unwrap().len(), 2);
             assert_eq!(
                 checkpoint.load(902, &Cancellation::new()).await.unwrap()["status"],
                 "succeeded"

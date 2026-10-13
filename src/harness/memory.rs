@@ -351,6 +351,7 @@ impl Run {
                 },
                 Some(message.clone()),
             ),
+            Err(error) if error.code == "WAITING" => (chat::Status::Running, None),
             Err(error) => (
                 if error.code == "CANCELLED" {
                     chat::Status::Stopped
@@ -367,11 +368,17 @@ impl Run {
             }
         };
         if let (Some(entry), Some(mut record)) = (&self.history.0, self.record.clone()) {
+            let terminal_status = matches!(
+                &status,
+                chat::Status::Completed | chat::Status::Failed | chat::Status::Stopped
+            );
             record.graph = graph;
             record.status = status;
             record.message = message.filter(|m| m.role == Role::Assistant);
             record.usage = self.usage.total();
-            record.completed_time = Some(now_ms());
+            if terminal_status {
+                record.completed_time = Some(now_ms());
+            }
             entry.save(record, state).await?;
         }
         result
