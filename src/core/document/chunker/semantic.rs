@@ -101,6 +101,7 @@ where
             .filter_map(|document| document.id)
             .collect();
         let mut chunks = Vec::new();
+        let mut cache_keys = HashSet::new();
         for document in documents {
             operation::check(cancellation)?;
             if document.content.is_empty() {
@@ -112,6 +113,7 @@ where
             let range_count = ranges.len();
             let ends = ranges.iter().map(|range| range.end).collect::<Vec<_>>();
             let cache_key = candidate_cache_key(&document.content, &ranges);
+            cache_keys.insert(cache_key.clone());
             let cached = self
                 .cache
                 .lock()
@@ -267,6 +269,14 @@ where
             chunk.id = Some(id);
         }
         operation::check(cancellation)?;
+        // Keep successful candidates while the entire call is incomplete,
+        // including failures in later documents or final ID assignment. Once
+        // delivered, the retry-only state must not leak into a new batch.
+        if let Ok(mut cache) = self.cache.lock() {
+            for key in cache_keys {
+                cache.remove(&key);
+            }
+        }
         Ok(chunks)
     }
 }
@@ -437,5 +447,96 @@ mod tests {
         // The first batch embeds all three candidates; the second call only
         // retries the one that failed in the first batch.
         assert_eq!(calls.load(Ordering::SeqCst), 4);
+    }
+
+    #[test]
+    fn successful_batch_releases_retry_cache_before_the_next_independent_call() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let chunker = new(
+            json!({"max_tokens":8,"min_tokens":1,"threshold":0.5,"max_concurrency":2}),
+            FailFirst {
+                calls: calls.clone(),
+            },
+        )
+        .unwrap();
+        let documents = vec![Document {
+            content: "first. second. third.".into(),
+            ..Default::default()
+        }];
+        let cancellation = Cancellation::new();
+        assert!(block_on(chunker.chunk(documents.clone(), &cancellation, &mut || 1)).is_err());
+        assert!(block_on(chunker.chunk(documents.clone(), &cancellation, &mut || 2)).is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 4);
+        assert!(
+            chunker.cache.lock().unwrap().is_empty(),
+            "terminal batches must release retry-only work state"
+        );
+        assert!(block_on(chunker.chunk(documents, &cancellation, &mut || 3)).is_ok());
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            7,
+            "a new call must not replay another batch's completed work"
+        );
+    }
+
+    struct FailLaterDocument {
+        calls: Arc<AtomicUsize>,
+        failed: std::sync::atomic::AtomicBool,
+    }
+
+    impl Embed for FailLaterDocument {
+        async fn embed(&self, request: Request) -> Result<Message, Error> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            if request.input == "second." && !self.failed.swap(true, Ordering::SeqCst) {
+                return Err(Error::new("TIMEOUT", "later document failed"));
+            }
+            let mut message = Message::new(Role::Assistant);
+            message.values.insert("vector".into(), json!([1.0, 1.0]));
+            Ok(message)
+        }
+    }
+
+    #[test]
+    fn retry_cache_survives_until_all_documents_and_ids_are_delivered() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let chunker = new(
+            json!({"max_tokens":8,"min_tokens":1,"threshold":0.5}),
+            FailLaterDocument {
+                calls: calls.clone(),
+                failed: std::sync::atomic::AtomicBool::new(false),
+            },
+        )
+        .unwrap();
+        let documents = ["first.", "second."]
+            .map(|content| Document {
+                content: content.into(),
+                ..Default::default()
+            })
+            .to_vec();
+        let cancellation = Cancellation::new();
+        assert!(
+            block_on(
+                chunker.chunk(documents.clone(), &cancellation, &mut || panic!(
+                    "partial failure must not allocate chunk ids"
+                ))
+            )
+            .is_err()
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        // Even when all embeds succeed, duplicate final IDs prevent delivery
+        // and must not discard successful candidate work required by a retry.
+        let error =
+            block_on(chunker.chunk(documents.clone(), &cancellation, &mut || 1)).unwrap_err();
+        assert_eq!(error.code, "INVALID_ARGUMENTS");
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        let mut id = 10;
+        let chunks = block_on(chunker.chunk(documents, &cancellation, &mut || {
+            id += 1;
+            id
+        }))
+        .unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 3);
+        assert_eq!(chunks.len(), 2);
+        assert!(chunker.cache.lock().unwrap().is_empty());
     }
 }

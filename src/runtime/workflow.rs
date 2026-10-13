@@ -8,6 +8,9 @@ pub mod graph;
 pub mod node;
 pub mod tool;
 
+#[cfg(test)]
+mod batch_tests;
+
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::future::Future;
