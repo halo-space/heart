@@ -1,0 +1,17 @@
+[package]
+name = "heart-node-macro-keyword-fixture"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+
+[workspace]
+
+[dependencies]
+type = { package = "halo-agents", path = "../../.." }
+serde = { version = "1", features = ["derive"] }
+schemars = "0.8"
+
+[[bin]]
+name = "keyword_alias"
+path = "main.rs"

@@ -1,0 +1,80 @@
+[package]
+name = "heart-node-macro-fixtures"
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+
+[workspace]
+
+[dependencies]
+heart = { package = "halo-agents", path = "../../.." }
+serde = { version = "1", features = ["derive"] }
+schemars = "0.8"
+
+[[bin]]
+name = "pass_renamed"
+path = "cases/pass_renamed.rs"
+[[bin]]
+name = "pass_cfg"
+path = "cases/pass_cfg.rs"
+[[bin]]
+name = "sync_function"
+path = "cases/sync_function.rs"
+[[bin]]
+name = "wrong_arity"
+path = "cases/wrong_arity.rs"
+[[bin]]
+name = "borrowed_input"
+path = "cases/borrowed_input.rs"
+[[bin]]
+name = "borrowed_output"
+path = "cases/borrowed_output.rs"
+[[bin]]
+name = "borrowed_cancellation"
+path = "cases/borrowed_cancellation.rs"
+[[bin]]
+name = "unknown_option"
+path = "cases/unknown_option.rs"
+[[bin]]
+name = "conflicting_options"
+path = "cases/conflicting_options.rs"
+[[bin]]
+name = "loose_method"
+path = "cases/loose_method.rs"
+[[bin]]
+name = "missing_method"
+path = "cases/missing_method.rs"
+[[bin]]
+name = "mutable_receiver"
+path = "cases/mutable_receiver.rs"
+[[bin]]
+name = "method_owned_cancellation"
+path = "cases/method_owned_cancellation.rs"
+[[bin]]
+name = "call_returns_signal"
+path = "cases/call_returns_signal.rs"
+[[bin]]
+name = "signal_returns_plain"
+path = "cases/signal_returns_plain.rs"
+[[bin]]
+name = "generic_function"
+path = "cases/generic_function.rs"
+[[bin]]
+name = "trait_impl"
+path = "cases/trait_impl.rs"
+[[bin]]
+name = "missing_schema"
+path = "cases/missing_schema.rs"
+[[bin]]
+name = "missing_serialize"
+path = "cases/missing_serialize.rs"
+[[bin]]
+name = "missing_error_conversion"
+path = "cases/missing_error_conversion.rs"
+[[bin]]
+name = "non_send_function"
+path = "cases/non_send_function.rs"
+[[bin]]
+name = "non_send_method"
+path = "cases/non_send_method.rs"
