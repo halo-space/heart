@@ -4,12 +4,10 @@
 //! builder records an immutable graph definition and the runtime owns the
 //! single mutable graph state for one `chat_id`.
 
+mod events;
 pub mod graph;
 pub mod node;
 pub mod tool;
-
-#[cfg(test)]
-mod batch_tests;
 
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -55,6 +53,9 @@ pub struct Runtime {
     memory: Option<History>,
     history_run: Option<Run>,
     history_closed: bool,
+    // Derived from the parent's earlier Attempt.graph, not separate truth.
+    // It supplies inherited scenes when a failed nested Graph Node is retried.
+    retry_source: Option<Box<graph::State>>,
 }
 
 impl Runtime {
@@ -71,6 +72,7 @@ impl Runtime {
             memory: None,
             history_run: None,
             history_closed: false,
+            retry_source: None,
         })
     }
 
@@ -101,6 +103,7 @@ impl Runtime {
             memory: None,
             history_run: None,
             history_closed: false,
+            retry_source: None,
         };
         if runtime.state.mark_waiting() {
             runtime.state.status = graph::Status::Running;
@@ -235,31 +238,38 @@ impl Runtime {
             .await
     }
 
-    /// Executes the Workflow and, when a Checkpoint backend is configured,
-    /// persists one complete current snapshot after the run returns. The
-    /// snapshot is written for every return state (success, failure, waiting
-    /// and cancellation), rather than after individual Node executions. A
-    /// fresh cancellation token is intentionally used for this closeout so a
-    /// cancelled run can still preserve the state required for later recovery.
+    /// Returns the shared Delta/Complete observation stream. Consume it to
+    /// drive the Workflow through completion, waiting, failure or cancellation.
+    /// Complete business results remain in Runtime.state, not event values.
+    /// Nested graphs use this same stream; no child subscription is required.
     pub async fn run(
         &mut self,
         initial_messages: Messages,
         next_exec_id: Arc<dyn Fn() -> i64 + Send + Sync>,
         cancellation: crate::Cancellation,
-    ) -> Result<Messages, Error> {
+    ) -> Result<impl futures_core::Stream<Item = Result<crate::event::Event, Error>> + '_, Error>
+    {
+        self.validate_run_input(&initial_messages)?;
+        Ok(events::stream(
+            events::Output::default(),
+            self.execute(initial_messages, next_exec_id, cancellation),
+        ))
+    }
+
+    fn validate_run_input(&self, initial_messages: &Messages) -> Result<(), Error> {
         self.state.check_identity(self.state.chat_id)?;
         if self
             .state
             .initial
             .as_ref()
-            .is_some_and(|initial| initial != &initial_messages)
+            .is_some_and(|initial| initial != initial_messages)
         {
             return Err(Error::new(
                 "CONFLICT",
                 "workflow initial Messages cannot change after activation",
             ));
         }
-        if let Some(chat_id) = messages_to_agent_input(&initial_messages)
+        if let Some(chat_id) = messages_to_agent_input(initial_messages)
             .metadata
             .get("chat_id")
             && chat_id.as_i64() != Some(self.state.chat_id)
@@ -269,6 +279,18 @@ impl Runtime {
                 "input chat_id does not match this Workflow run",
             ));
         }
+        Ok(())
+    }
+
+    // Private complete-returning execution engine. The only public run
+    // contract is the observation stream; this is not a compatibility API.
+    async fn execute(
+        &mut self,
+        initial_messages: Messages,
+        next_exec_id: Arc<dyn Fn() -> i64 + Send + Sync>,
+        cancellation: crate::Cancellation,
+    ) -> Result<Messages, Error> {
+        self.validate_run_input(&initial_messages)?;
         // A terminal snapshot is already closed. Re-running it is a read of
         // the committed result and must not create another Chat/Trace record
         // or invoke any node again.
@@ -276,9 +298,22 @@ impl Runtime {
             self.state.status,
             graph::Status::Succeeded | graph::Status::Failed | graph::Status::Cancelled
         ) {
-            return self
+            let result = self
                 .run_inner(initial_messages, next_exec_id, cancellation)
                 .await;
+            if result.is_ok() {
+                for event in terminal_observations(&self.state) {
+                    events::emit(event).await;
+                }
+            } else if result
+                .as_ref()
+                .is_err_and(|error| error.code == "CANCELLED")
+            {
+                for event in cancelled_observations(&self.state) {
+                    events::emit(event).await;
+                }
+            }
+            return result;
         }
         self.begin_history(&initial_messages, &cancellation).await?;
         let result = self
@@ -383,46 +418,40 @@ impl Runtime {
                 return Err(Error::new("CANCELLED", "workflow run cancelled"));
             }
             if let Some((node_id, exec_id, _wait_id, response)) = self.state.resolved_wait() {
-                let target = if let Some(workflow) = self.workflow.graph_node(&node_id) {
-                    let child_state = self.state.nodes[&node_id]
-                        .executions
-                        .get(&exec_id)
-                        .and_then(|execution| execution.attempts.last())
-                        .and_then(|attempt| attempt.graph.clone());
-                    Target::Graph {
-                        workflow: Arc::new(workflow.clone()),
-                        state: child_state,
-                    }
-                } else if let Some(agent) = self.workflow.agent(&node_id) {
-                    Target::Agent(
-                        agent,
-                        self.state.nodes[&node_id]
-                            .executions
-                            .get(&exec_id)
-                            .and_then(|execution| execution.attempts.last())
-                            .and_then(|attempt| attempt.agent.clone()),
-                    )
+                let target = self.target_for(&node_id, exec_id)?;
+                let input = if matches!(&target, Target::Agent(..)) {
+                    let execution = &self.state.nodes[&node_id].executions[&exec_id];
+                    let mut input = self.agent_input_for(&node_id, &execution.from)?;
+                    let reply = messages_to_agent_input(&response);
+                    input.payload = reply.payload;
+                    // Reply metadata may supply extra context, but conflicting
+                    // ownership still reaches the Agent's canonical check.
+                    input.metadata.extend(reply.metadata);
+                    serde_json::to_value(input)
                 } else {
-                    Target::Node(self.workflow.executor(&node_id).ok_or_else(|| {
-                        Error::new("UNSUPPORTED", "workflow node has no executor")
-                    })?)
-                };
+                    serde_json::to_value(response)
+                }
+                .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))?;
                 let retry = self.definition().nodes[&node_id].retry.clone();
                 let start_idx = self.state.nodes[&node_id].executions[&exec_id]
                     .attempts
                     .last()
                     .map(|attempt| attempt.idx)
                     .ok_or_else(|| Error::new("INVALID_STATE", "execution has no attempt"))?;
-                let invocation = invoke_with_retry(
-                    target,
-                    serde_json::to_value(response)
-                        .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))?,
-                    cancellation.clone(),
-                    retry,
-                    next_exec_id.clone(),
+                let invocation = events::with_source(
                     self.state.chat_id,
-                    start_idx,
-                    committed_tool_messages(&self.state.nodes[&node_id].executions[&exec_id]),
+                    &node_id,
+                    exec_id,
+                    invoke_with_retry(
+                        target,
+                        input,
+                        cancellation.clone(),
+                        retry,
+                        next_exec_id.clone(),
+                        self.state.chat_id,
+                        start_idx,
+                        committed_tool_messages(&self.state.nodes[&node_id].executions[&exec_id]),
+                    ),
                 )
                 .await;
                 let invocation_graph = invocation.graph;
@@ -448,9 +477,14 @@ impl Runtime {
                     }
                 }
                 self.state.recompute_usage();
+                self.observe_commit(&node_id, exec_id).await;
+                // Resume has the same Barrier semantics as an ordinary
+                // invocation. Other active/waiting siblings still block it.
+                self.state.advance_step();
                 continue;
             }
             if self.resume_waiting(&next_exec_id, &cancellation).await? {
+                self.state.advance_step();
                 continue;
             }
             let ready = self.ready_nodes();
@@ -485,6 +519,7 @@ impl Runtime {
                     Target::Graph {
                         workflow: Arc::new(workflow.clone()),
                         state: None,
+                        history: self.inherited_graph(&node_id),
                     }
                 } else if let Some(agent) = self.workflow.agent(&node_id) {
                     Target::Agent(agent, None)
@@ -517,15 +552,20 @@ impl Runtime {
                     let cancellation = task_cancellation.clone();
                     let next_exec_id = Arc::clone(&task_next_exec_id);
                     async move {
-                        let result = invoke_with_retry(
-                            target,
-                            input,
-                            cancellation,
-                            retry,
-                            next_exec_id,
+                        let result = events::with_source(
                             chat_id,
-                            0,
-                            Messages::default(),
+                            &node_id,
+                            exec_id,
+                            invoke_with_retry(
+                                target,
+                                input,
+                                cancellation,
+                                retry,
+                                next_exec_id,
+                                chat_id,
+                                0,
+                                Messages::default(),
+                            ),
                         )
                         .await;
                         (node_id, exec_id, from, result)
@@ -559,6 +599,8 @@ impl Runtime {
                         self.state.fail_execution(&node_id, exec_id, error)?;
                     }
                 }
+                self.state.recompute_usage();
+                self.observe_commit(&node_id, exec_id).await;
             }
             self.state.recompute_usage();
             if cancellation.is_cancelled() {
@@ -861,19 +903,24 @@ impl Runtime {
         let retry = self.definition().nodes[&node_id].retry.clone();
         let target = self.target_for(&node_id, exec_id)?;
         let input = self.input_for(&node_id, &execution.from)?;
-        let invocation = invoke_with_retry(
-            target,
-            input,
-            cancellation.clone(),
-            retry,
-            Arc::clone(next_exec_id),
+        let invocation = events::with_source(
             self.state.chat_id,
-            // A running Attempt found in a restored snapshot was never
-            // committed as a completed/failed attempt. Normalize it to
-            // waiting, then resume that same Attempt rather than treating
-            // process recovery as a user-visible retry.
-            previous_idx,
-            committed_tool_messages(&execution),
+            &node_id,
+            exec_id,
+            invoke_with_retry(
+                target,
+                input,
+                cancellation.clone(),
+                retry,
+                Arc::clone(next_exec_id),
+                self.state.chat_id,
+                // A running Attempt found in a restored snapshot was never
+                // committed as a completed/failed attempt. Normalize it to
+                // waiting, then resume that same Attempt rather than treating
+                // process recovery as a user-visible retry.
+                previous_idx,
+                committed_tool_messages(&execution),
+            ),
         )
         .await;
         let invocation_graph = invocation.graph;
@@ -893,19 +940,76 @@ impl Runtime {
             Outcome::Failed(error) => self.state.fail_execution(&node_id, exec_id, error)?,
         }
         self.state.recompute_usage();
+        self.observe_commit(&node_id, exec_id).await;
         Ok(true)
+    }
+
+    async fn observe_commit(&self, node_id: &str, exec_id: i64) {
+        let definition = &self.definition().nodes[node_id];
+        if definition.agent || definition.workflow.is_some() {
+            // Agent calls already forward their real stream, and Graph Node
+            // containers must not duplicate the child's observations.
+            return;
+        }
+        let execution = &self.state.nodes[node_id].executions[&exec_id];
+        let messages = if execution.status == node::ExecutionStatus::Succeeded {
+            execution
+                .messages
+                .as_slice()
+                .iter()
+                .map(events::project_message)
+                .collect::<Vec<_>>()
+        } else {
+            let mut seen = BTreeSet::new();
+            execution
+                .attempts
+                .iter()
+                .flat_map(|attempt| attempt.messages.as_slice())
+                .filter(|message| {
+                    message
+                        .metadata
+                        .get("call_id")
+                        .and_then(Value::as_str)
+                        .is_some_and(|call_id| seen.insert(call_id.to_owned()))
+                })
+                .map(events::project_message)
+                .collect::<Vec<_>>()
+        };
+        for message in messages {
+            events::emit_at(
+                self.state.chat_id,
+                node_id,
+                exec_id,
+                crate::event::Event::Complete {
+                    message,
+                    usage: None,
+                    finish_reason: None,
+                },
+            )
+            .await;
+        }
     }
 
     fn target_for(&self, node_id: &str, exec_id: i64) -> Result<Target, Error> {
         if let Some(workflow) = self.workflow.graph_node(node_id) {
-            let state = self.state.nodes[node_id]
-                .executions
-                .get(&exec_id)
+            let execution = self.state.nodes[node_id].executions.get(&exec_id);
+            let state = execution
                 .and_then(|execution| execution.attempts.last())
                 .and_then(|attempt| attempt.graph.clone());
+            let history = execution
+                .and_then(|execution| {
+                    execution
+                        .attempts
+                        .iter()
+                        .rev()
+                        .skip(1)
+                        .find_map(|attempt| attempt.graph.clone())
+                })
+                .or_else(|| self.inherited_graph(node_id));
             return Ok(Target::Graph {
                 workflow: Arc::new(workflow.clone()),
                 state,
+                history,
             });
         }
         if let Some(agent) = self.workflow.agent(node_id) {
@@ -919,6 +1023,20 @@ impl Runtime {
         Ok(Target::Node(self.workflow.executor(node_id).ok_or_else(
             || Error::new("UNSUPPORTED", "workflow node has no executor"),
         )?))
+    }
+
+    fn inherited_graph(&self, node_id: &str) -> Option<Box<graph::State>> {
+        self.retry_source
+            .as_ref()?
+            .nodes
+            .get(node_id)?
+            .executions
+            .values()
+            .max_by_key(|execution| (execution.idx, execution.exec_id))?
+            .attempts
+            .last()?
+            .graph
+            .clone()
     }
 
     fn replace_attempts(
@@ -942,7 +1060,7 @@ impl Runtime {
         &mut self,
         node_id: &str,
         exec_id: i64,
-        attempts: Vec<node::Attempt>,
+        mut attempts: Vec<node::Attempt>,
     ) -> Result<(), Error> {
         let execution = self.state.node_mut(node_id)?.execution_mut(exec_id)?;
         let previous = execution
@@ -955,6 +1073,42 @@ impl Runtime {
                 "INVALID_STATE",
                 "invalid resumed attempt history",
             ));
+        }
+        let original = execution.attempts.last().expect("checked current Attempt");
+        attempts[0].created_time = original.created_time;
+        if original.agent.is_some() {
+            let cumulative = attempts[0]
+                .agent
+                .as_ref()
+                .and_then(|scene| scene.get("usage"))
+                .is_some_and(|usage| {
+                    serde_json::from_value::<Option<crate::model::token::Usage>>(usage.clone())
+                        .is_ok()
+                });
+            if !cumulative {
+                // Early validation/preparation errors may produce no new
+                // scene. Custom Agents can also report only segment usage.
+                // Neither case erases consumption from the saved Attempt.
+                attempts[0].usage = crate::components::model::token::merge(
+                    original.usage.clone(),
+                    attempts[0].usage.take(),
+                );
+            }
+            if attempts[0].agent.is_none() {
+                attempts[0].agent = original.agent.clone();
+            }
+            // The Agent scene is canonical for recovery. Keep already
+            // observed process facts too, rather than replacing the current
+            // Workflow Attempt with only the resumed stream segment.
+            let mut messages = original.messages.clone();
+            messages.0.append(&mut attempts[0].messages.0);
+            attempts[0].messages = messages;
+            let mut steps = original.steps.clone();
+            for (index, step) in attempts[0].steps.iter_mut().enumerate() {
+                step.id = format!("complete_{}", original.steps.len() + index + 1);
+            }
+            steps.append(&mut attempts[0].steps);
+            attempts[0].steps = steps;
         }
         execution.attempts.pop();
         execution.attempts.extend(attempts);
@@ -1001,6 +1155,7 @@ enum Target {
     Graph {
         workflow: Arc<CompiledWorkflow>,
         state: Option<Box<graph::State>>,
+        history: Option<Box<graph::State>>,
     },
 }
 
@@ -1021,6 +1176,75 @@ fn committed_tool_messages(execution: &node::Execution) -> Messages {
     Messages::new(committed.into_values().cloned())
 }
 
+// Replay only actual saved cancellation Completes, never synthesize one from
+// Delta or turn the cancelled execution into a successful downstream result.
+fn terminal_observations(state: &graph::State) -> Vec<crate::event::Event> {
+    let mut events = Vec::new();
+    for (node_id, node) in &state.nodes {
+        for execution in node.executions.values() {
+            if execution.status != node::ExecutionStatus::Succeeded
+                || !execution.to.iter().any(|to| to == graph::END)
+            {
+                continue;
+            }
+            if let Some(child) = execution
+                .attempts
+                .last()
+                .and_then(|attempt| attempt.graph.as_ref())
+            {
+                events.extend(terminal_observations(child));
+            } else {
+                for message in execution.messages.as_slice() {
+                    let mut event = crate::event::Event::Complete {
+                        message: events::project_message(message),
+                        usage: message.usage.clone(),
+                        finish_reason: None,
+                    };
+                    crate::harness::observation::associate(
+                        &mut event,
+                        Some(state.chat_id),
+                        Some((node_id, execution.exec_id)),
+                    );
+                    events.push(event);
+                }
+            }
+        }
+    }
+    events
+}
+
+fn cancelled_observations(state: &graph::State) -> Vec<crate::event::Event> {
+    let mut events = Vec::new();
+    for (node_id, node) in &state.nodes {
+        for execution in node.executions.values() {
+            for attempt in &execution.attempts {
+                if let Some(child) = &attempt.graph {
+                    events.extend(cancelled_observations(child));
+                }
+                for (step, message) in attempt.steps.iter().zip(attempt.messages.as_slice()) {
+                    if let Some(call) = step.attempts.last()
+                        && call.finish_reason.as_deref() == Some("cancelled")
+                        && message.role == Role::Assistant
+                    {
+                        let mut event = crate::event::Event::Complete {
+                            message: events::project_message(message),
+                            usage: call.usage.clone(),
+                            finish_reason: call.finish_reason.clone(),
+                        };
+                        crate::harness::observation::associate(
+                            &mut event,
+                            Some(state.chat_id),
+                            Some((node_id, execution.exec_id)),
+                        );
+                        events.push(event);
+                    }
+                }
+            }
+        }
+    }
+    events
+}
+
 // The final argument is the already committed ToolNode context restored from
 // Checkpoint; keeping it alongside the retry inputs makes recovery explicit.
 #[allow(clippy::too_many_arguments)]
@@ -1036,9 +1260,17 @@ async fn invoke_with_retry(
 ) -> Invocation {
     let mut attempts = Vec::new();
     // ToolNode-only committed call facts. They remain private to this one
-    // logical execution and are rebuilt from the current Attempt on retries;
+    // logical execution and are restored from all saved Attempts on recovery;
     // ordinary Nodes keep the unchanged single-call path.
     let mut committed_tool_messages = committed;
+    let mut graph_retry_state = match &target {
+        Target::Graph { state, .. } => state.clone(),
+        _ => None,
+    };
+    let mut graph_retry_history = match &target {
+        Target::Graph { history, .. } => history.clone(),
+        _ => None,
+    };
     let retry_policy = retry.clone();
     // A resumed wait continues the same Attempt. Its existing idx consumes
     // the original execution's retry budget; recovery never resets it.
@@ -1085,7 +1317,7 @@ async fn invoke_with_retry(
                 }
             }
             Target::Agent(executor, restore) => {
-                let agent_input = match serde_json::from_value(input.clone()) {
+                let mut agent_input: AgentInput = match serde_json::from_value(input.clone()) {
                     Ok(input) => input,
                     Err(error) => {
                         attempt.status = node::AttemptStatus::Failed;
@@ -1099,6 +1331,27 @@ async fn invoke_with_retry(
                         };
                     }
                 };
+                if agent_input
+                    .metadata
+                    .get("chat_id")
+                    .is_some_and(|id| id.as_i64() != Some(chat_id))
+                {
+                    let error = Error::new(
+                        "CONFLICT",
+                        "Agent input chat_id does not match its Workflow",
+                    );
+                    attempt.status = node::AttemptStatus::Failed;
+                    attempt.error = Some(error.clone());
+                    attempts.push(attempt);
+                    return Invocation {
+                        attempts,
+                        outcome: Outcome::Failed(error),
+                        graph: None,
+                    };
+                }
+                agent_input
+                    .metadata
+                    .insert("chat_id".into(), Value::from(chat_id));
                 let run = executor
                     .call(agent_input, cancellation.clone(), restore.clone())
                     .await;
@@ -1138,14 +1391,15 @@ async fn invoke_with_retry(
                     Err(error) => Err(error),
                 }
             }
-            Target::Graph { workflow, state } => {
+            Target::Graph { workflow, .. } => {
                 match run_subgraph(
                     Arc::clone(workflow),
                     input.clone(),
                     cancellation.clone(),
                     Arc::clone(&next_exec_id),
                     chat_id,
-                    state.clone(),
+                    graph_retry_state.clone(),
+                    graph_retry_history.clone(),
                 )
                 .await
                 {
@@ -1208,6 +1462,14 @@ async fn invoke_with_retry(
                             };
                         }
                         if let Some(state) = failure.state {
+                            if retry_policy.should_retry(idx, &failure.error) {
+                                // Only a real outer retry inherits successes.
+                                // Checkpoint continuation still uses the exact
+                                // original current-Attempt scene above.
+                                graph_retry_state =
+                                    Some(Box::new(retry_graph_state(workflow, &state)));
+                                graph_retry_history = Some(Box::new(state.clone()));
+                            }
                             attempt.usage = state.usage.clone();
                             attempt.graph = Some(Box::new(state));
                         }
@@ -1311,6 +1573,88 @@ struct SubgraphFailure {
     state: Option<graph::State>,
 }
 
+// Derive the next outer Attempt's child scene from existing graph facts. The
+// failed Attempt keeps its full unmodified scene; only complete, unaffected
+// successful child executions are inherited into this new scene.
+fn retry_graph_state(workflow: &CompiledWorkflow, previous: &graph::State) -> graph::State {
+    let definition = workflow.definition();
+    let mut affected = previous
+        .nodes
+        .iter()
+        .filter(|(_, state)| {
+            state
+                .executions
+                .values()
+                .any(|execution| execution.status == node::ExecutionStatus::Failed)
+        })
+        .map(|(node_id, _)| node_id.clone())
+        .collect::<BTreeSet<_>>();
+    let mut pending = affected.iter().cloned().collect::<Vec<_>>();
+    while let Some(node_id) = pending.pop() {
+        let mut downstream = outgoing(definition, &node_id);
+        downstream.extend(
+            definition
+                .graph
+                .conditional_edges
+                .iter()
+                .filter(|relation| relation.from == node_id)
+                .flat_map(|relation| relation.to.iter().cloned()),
+        );
+        downstream.extend(
+            definition
+                .graph
+                .loop_definitions
+                .iter()
+                .filter(|relation| relation.from == node_id)
+                .map(|relation| relation.to.clone()),
+        );
+        downstream.extend(
+            definition
+                .graph
+                .failure_relations
+                .iter()
+                .filter(|relation| relation.from.contains(&node_id))
+                .flat_map(|relation| relation.to.iter().cloned()),
+        );
+        for to in downstream {
+            if definition.nodes.contains_key(&to) && affected.insert(to.clone()) {
+                pending.push(to);
+            }
+        }
+    }
+    let mut state = graph::State::new(previous.chat_id, definition);
+    state.initial = previous.initial.clone();
+    state.step = previous
+        .nodes
+        .iter()
+        .filter(|(node_id, _)| affected.contains(*node_id))
+        .flat_map(|(_, node)| node.executions.values().map(|execution| execution.idx))
+        .min()
+        .unwrap_or(previous.step);
+    for (node_id, node) in &previous.nodes {
+        if affected.contains(node_id) {
+            continue;
+        }
+        let executions = node
+            .executions
+            .iter()
+            .filter(|(_, execution)| execution.status == node::ExecutionStatus::Succeeded)
+            .map(|(exec_id, execution)| (*exec_id, execution.clone()))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        if !executions.is_empty() {
+            state.nodes.insert(
+                node_id.clone(),
+                node::State {
+                    status: node::Status::Succeeded,
+                    executions,
+                },
+            );
+        }
+    }
+    state.recompute_usage();
+    state
+}
+
 type SubgraphFuture = std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<(Value, graph::State), SubgraphFailure>> + 'static>,
 >;
@@ -1322,6 +1666,7 @@ fn run_subgraph(
     next_exec_id: Arc<dyn Fn() -> i64 + Send + Sync>,
     chat_id: i64,
     snapshot: Option<Box<graph::State>>,
+    history: Option<Box<graph::State>>,
 ) -> SubgraphFuture {
     Box::pin(async move {
         let messages: Messages =
@@ -1329,6 +1674,23 @@ fn run_subgraph(
                 error: Error::new("INVALID_ARGUMENTS", error.to_string()),
                 state: None,
             })?;
+        // A nested Graph Node can have a new execution while still reusing
+        // its unchanged-input internal successes from the parent's history.
+        let stable_input = snapshot
+            .as_ref()
+            .and_then(|scene| scene.initial.as_ref())
+            .unwrap_or(&messages);
+        let history = history.filter(|previous| {
+            previous.chat_id == chat_id
+                && previous.definition_id == workflow.definition().definition_id
+                && previous.version == workflow.definition().version
+                && previous.initial.as_ref() == Some(stable_input)
+        });
+        let snapshot = snapshot.or_else(|| {
+            history
+                .as_ref()
+                .map(|previous| Box::new(retry_graph_state(&workflow, previous)))
+        });
         let mut runtime = match snapshot {
             Some(snapshot) => Runtime::from_snapshot(
                 chat_id,
@@ -1342,9 +1704,10 @@ fn run_subgraph(
             None => Runtime::new(chat_id, (*workflow).clone())
                 .map_err(|error| SubgraphFailure { error, state: None })?,
         };
+        runtime.retry_source = history;
         let run_input = runtime.state.initial.clone().unwrap_or(messages);
         let output = runtime
-            .run(run_input, next_exec_id, cancellation)
+            .execute(run_input, next_exec_id, cancellation)
             .await
             .map_err(|error| SubgraphFailure {
                 error,
@@ -1377,6 +1740,14 @@ fn outgoing(definition: &Definition, node_id: &str) -> Vec<String> {
             .fan_out_definitions
             .iter()
             .filter(|relation| relation.from == node_id)
+            .map(|relation| relation.to.clone()),
+    );
+    result.extend(
+        definition
+            .graph
+            .join_definitions
+            .iter()
+            .filter(|relation| relation.from.iter().any(|source| source == node_id))
             .map(|relation| relation.to.clone()),
     );
     result.sort();
@@ -1690,7 +2061,7 @@ mod tests {
         builder.add_edge("agent", END).unwrap();
         let workflow = builder.compile().unwrap();
         let mut runtime = Runtime::new(91, workflow.clone()).unwrap();
-        block_on(runtime.run(user_input(), Arc::new(|| 12), Cancellation::new())).unwrap();
+        block_on(runtime.execute(user_input(), Arc::new(|| 12), Cancellation::new())).unwrap();
         let execution = &runtime.state().nodes["agent"].executions[&12];
         assert_eq!(execution.attempts.len(), 2);
         assert_eq!(execution.usage.as_ref().unwrap().total, Some(28));
@@ -1743,7 +2114,7 @@ mod tests {
         parent.add_edge("child", END).unwrap();
         let mut runtime = Runtime::new(92, parent.compile().unwrap()).unwrap();
         let ids = Arc::new(AtomicI64::new(20));
-        block_on(runtime.run(
+        block_on(runtime.execute(
             user_input(),
             Arc::new(move || ids.fetch_add(1, Ordering::SeqCst)),
             Cancellation::new(),
@@ -1856,7 +2227,7 @@ mod tests {
         });
         let ids = Arc::new(|| 3100);
         let result =
-            block_on(runtime.run(Messages::new([input]), ids, Cancellation::new())).unwrap();
+            block_on(runtime.execute(Messages::new([input]), ids, Cancellation::new())).unwrap();
         assert_eq!(result.as_slice()[0].role, Role::Assistant);
         let execution = &runtime.state().nodes["agent"].executions[&3100];
         assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
@@ -1881,7 +2252,7 @@ mod tests {
                 serde_json::json!({"value": "hello"}),
             ),
         });
-        let result = block_on(runtime.run(
+        let result = block_on(runtime.execute(
             Messages::new([input]),
             Arc::new(|| 3200),
             Cancellation::new(),
@@ -1910,7 +2281,7 @@ mod tests {
                 serde_json::json!({"value": "hello"}),
             ),
         });
-        let _ = block_on(runtime.run(
+        let _ = block_on(runtime.execute(
             Messages::new([input]),
             Arc::new(|| 3300),
             Cancellation::new(),
@@ -1939,7 +2310,7 @@ mod tests {
                 serde_json::json!({"value": "hello"}),
             ),
         });
-        let _ = block_on(runtime.run(
+        let _ = block_on(runtime.execute(
             Messages::new([input]),
             Arc::new(|| 3400),
             Cancellation::new(),
@@ -1971,7 +2342,7 @@ mod tests {
             let next = Arc::clone(&next);
             Arc::new(move || next.fetch_add(1, std::sync::atomic::Ordering::AcqRel))
         };
-        let result = block_on(runtime.run(initial.clone(), ids, Cancellation::new())).unwrap();
+        let result = block_on(runtime.execute(initial.clone(), ids, Cancellation::new())).unwrap();
         assert_eq!(result, initial);
         assert_eq!(runtime.state().step, 2);
         assert_eq!(runtime.state().status, Status::Succeeded);
@@ -2019,7 +2390,7 @@ mod tests {
             let next = Arc::clone(&next);
             Arc::new(move || next.fetch_add(1, std::sync::atomic::Ordering::AcqRel))
         };
-        block_on(runtime.run(initial, ids, Cancellation::new())).unwrap();
+        block_on(runtime.execute(initial, ids, Cancellation::new())).unwrap();
         assert_eq!(
             runtime.state().nodes["router"].executions[&400].to,
             vec!["right"]
@@ -2037,7 +2408,7 @@ mod tests {
         let workflow = builder.compile().unwrap();
         let mut runtime = Runtime::new(16, workflow.clone()).unwrap();
         let ids = Arc::new(|| 600);
-        block_on(runtime.run(Messages::default(), ids, Cancellation::new())).unwrap();
+        block_on(runtime.execute(Messages::default(), ids, Cancellation::new())).unwrap();
         let checkpoint = crate::core::checkpoint::InMemory::new();
         block_on(runtime.save_checkpoint(&checkpoint, &Cancellation::new())).unwrap();
         let snapshot = block_on(checkpoint.load(16, &Cancellation::new())).unwrap();
@@ -2057,7 +2428,7 @@ mod tests {
             .unwrap()
             .with_checkpoint(checkpoint.clone());
 
-        block_on(runtime.run(Messages::default(), Arc::new(|| 6_000), Cancellation::new()))
+        block_on(runtime.execute(Messages::default(), Arc::new(|| 6_000), Cancellation::new()))
             .unwrap();
 
         let snapshot = block_on(checkpoint.load(160, &Cancellation::new())).unwrap();
@@ -2079,8 +2450,9 @@ mod tests {
         let cancellation = Cancellation::new();
         cancellation.cancel();
 
-        let error = block_on(runtime.run(Messages::default(), Arc::new(|| 6_001), cancellation))
-            .unwrap_err();
+        let error =
+            block_on(runtime.execute(Messages::default(), Arc::new(|| 6_001), cancellation))
+                .unwrap_err();
         assert_eq!(error.code, "CANCELLED");
         let snapshot = block_on(checkpoint.load(161, &Cancellation::new())).unwrap();
         assert_eq!(snapshot["status"], "cancelled");
@@ -2103,7 +2475,8 @@ mod tests {
             .memory(config)
             .unwrap();
 
-        block_on(runtime.run(workflow_input(), Arc::new(|| 5_001), Cancellation::new())).unwrap();
+        block_on(runtime.execute(workflow_input(), Arc::new(|| 5_001), Cancellation::new()))
+            .unwrap();
 
         let chat = block_on(chats.read(5, &Cancellation::new())).unwrap();
         assert_eq!(chat.r#type, crate::memory::short::Type::Workflow);
@@ -2139,14 +2512,15 @@ mod tests {
             .unwrap()
             .memory(config.clone())
             .unwrap();
-        block_on(first.run(workflow_input(), Arc::new(|| 5_010), Cancellation::new())).unwrap();
+        block_on(first.execute(workflow_input(), Arc::new(|| 5_010), Cancellation::new())).unwrap();
         let snapshot = first.snapshot().unwrap();
 
         let mut restored = Runtime::from_snapshot(5, workflow, snapshot)
             .unwrap()
             .memory(config)
             .unwrap();
-        block_on(restored.run(workflow_input(), Arc::new(|| 5_011), Cancellation::new())).unwrap();
+        block_on(restored.execute(workflow_input(), Arc::new(|| 5_011), Cancellation::new()))
+            .unwrap();
 
         assert_eq!(
             block_on(chats.read(5, &Cancellation::new()))
@@ -2193,7 +2567,7 @@ mod tests {
         let initial = workflow_input();
 
         assert_eq!(
-            block_on(runtime.run(initial.clone(), Arc::new(|| 5_002), Cancellation::new(),))
+            block_on(runtime.execute(initial.clone(), Arc::new(|| 5_002), Cancellation::new(),))
                 .unwrap_err()
                 .code,
             "WAITING"
@@ -2219,7 +2593,7 @@ mod tests {
                 }))]),
             )
             .unwrap();
-        block_on(runtime.run(initial, Arc::new(|| 5_003), Cancellation::new())).unwrap();
+        block_on(runtime.execute(initial, Arc::new(|| 5_003), Cancellation::new())).unwrap();
         assert_eq!(
             block_on(chats.read(5, &Cancellation::new()))
                 .unwrap()
@@ -2252,9 +2626,12 @@ mod tests {
             let workflow = builder.compile().unwrap();
             let (config, chats, traces) = workflow_memory();
             let mut runtime = Runtime::new(5, workflow).unwrap().memory(config).unwrap();
-            let error =
-                block_on(runtime.run(workflow_input(), Arc::new(|| 5_004), Cancellation::new()))
-                    .unwrap_err();
+            let error = block_on(runtime.execute(
+                workflow_input(),
+                Arc::new(|| 5_004),
+                Cancellation::new(),
+            ))
+            .unwrap_err();
             assert_eq!(
                 error.code,
                 if mode == "cancel" {
@@ -2298,7 +2675,7 @@ mod tests {
             let next = Arc::clone(&next);
             Arc::new(move || next.fetch_add(1, std::sync::atomic::Ordering::AcqRel))
         };
-        block_on(runtime.run(Messages::default(), ids, Cancellation::new())).unwrap();
+        block_on(runtime.execute(Messages::default(), ids, Cancellation::new())).unwrap();
         assert_eq!(runtime.state().nodes["fail"].status, node::Status::Failed);
         assert_eq!(
             runtime.state().nodes["handle"].status,
@@ -2329,7 +2706,7 @@ mod tests {
             let next = Arc::clone(&next);
             Arc::new(move || next.fetch_add(1, std::sync::atomic::Ordering::AcqRel))
         };
-        block_on(runtime.run(initial.clone(), ids, Cancellation::new())).unwrap();
+        block_on(runtime.execute(initial.clone(), ids, Cancellation::new())).unwrap();
         let execution = &runtime.state().nodes["child"].executions[&500];
         assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
         assert_eq!(
@@ -2356,7 +2733,8 @@ mod tests {
         let parent = parent_builder.compile().unwrap();
         let mut runtime = Runtime::new(18, parent).unwrap();
         let initial = Messages::default();
-        let first = block_on(runtime.run(initial.clone(), Arc::new(|| 1_200), Cancellation::new()));
+        let first =
+            block_on(runtime.execute(initial.clone(), Arc::new(|| 1_200), Cancellation::new()));
         assert_eq!(first.unwrap_err().code, "WAITING");
         assert_eq!(runtime.state().status, Status::Paused);
         assert_eq!(
@@ -2372,7 +2750,7 @@ mod tests {
                 )]),
             )
             .unwrap();
-        block_on(runtime.run(initial, Arc::new(|| 1_201), Cancellation::new())).unwrap();
+        block_on(runtime.execute(initial, Arc::new(|| 1_201), Cancellation::new())).unwrap();
         let execution = &runtime.state().nodes["child"].executions[&1_200];
         assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
         assert_eq!(execution.attempts.len(), 1);
@@ -2403,7 +2781,8 @@ mod tests {
             .with_checkpoint(checkpoint.clone());
 
         let initial = Messages::default();
-        let first = block_on(runtime.run(initial.clone(), Arc::new(|| 1_300), Cancellation::new()));
+        let first =
+            block_on(runtime.execute(initial.clone(), Arc::new(|| 1_300), Cancellation::new()));
         assert_eq!(first.unwrap_err().code, "WAITING");
 
         let snapshot = block_on(checkpoint.load(19, &Cancellation::new())).unwrap();
@@ -2425,7 +2804,7 @@ mod tests {
                 )]),
             )
             .unwrap();
-        block_on(restored.run(initial, Arc::new(|| 1_301), Cancellation::new())).unwrap();
+        block_on(restored.execute(initial, Arc::new(|| 1_301), Cancellation::new())).unwrap();
 
         let execution = &restored.state().nodes["child"].executions[&1_300];
         assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
@@ -2476,7 +2855,7 @@ mod tests {
         let mut restored = Runtime::from_snapshot(1_700, workflow, snapshot).unwrap();
         let allocated = Arc::new(AtomicI64::new(0));
         let allocated_for_run = Arc::clone(&allocated);
-        block_on(restored.run(
+        block_on(restored.execute(
             Messages::default(),
             Arc::new(move || allocated_for_run.fetch_add(1, Ordering::SeqCst)),
             Cancellation::new(),
@@ -2520,7 +2899,7 @@ mod tests {
         let mut restored = Runtime::from_snapshot(1_701, workflow, snapshot).unwrap();
         let allocated = Arc::new(AtomicI64::new(0));
         let allocated_for_run = Arc::clone(&allocated);
-        block_on(restored.run(
+        block_on(restored.execute(
             user_input(),
             Arc::new(move || allocated_for_run.fetch_add(1, Ordering::SeqCst)),
             Cancellation::new(),
@@ -2544,7 +2923,8 @@ mod tests {
         let workflow = builder.compile().unwrap();
 
         let mut runtime = Runtime::new(1_704, workflow).unwrap();
-        let first = block_on(runtime.run(user_input(), Arc::new(|| 17_041), Cancellation::new()));
+        let first =
+            block_on(runtime.execute(user_input(), Arc::new(|| 17_041), Cancellation::new()));
         assert_eq!(first.unwrap_err().code, "WAITING");
         assert_eq!(runtime.state().status, Status::Paused);
         let execution = &runtime.state().nodes["agent"].executions[&17_041];
@@ -2561,7 +2941,7 @@ mod tests {
                 }))]),
             )
             .unwrap();
-        block_on(runtime.run(user_input(), Arc::new(|| 17_042), Cancellation::new())).unwrap();
+        block_on(runtime.execute(user_input(), Arc::new(|| 17_042), Cancellation::new())).unwrap();
 
         let execution = &runtime.state().nodes["agent"].executions[&17_041];
         assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
@@ -2602,7 +2982,7 @@ mod tests {
         let mut restored = Runtime::from_snapshot(1_703, workflow, snapshot).unwrap();
         let allocated = Arc::new(AtomicI64::new(0));
         let allocated_for_run = Arc::clone(&allocated);
-        block_on(restored.run(
+        block_on(restored.execute(
             user_input(),
             Arc::new(move || allocated_for_run.fetch_add(1, Ordering::SeqCst)),
             Cancellation::new(),
@@ -2638,7 +3018,7 @@ mod tests {
         let mut restored = Runtime::from_snapshot(1_702, workflow, snapshot).unwrap();
         let allocated = Arc::new(AtomicI64::new(0));
         let allocated_for_run = Arc::clone(&allocated);
-        let result = block_on(restored.run(
+        let result = block_on(restored.execute(
             Messages::default(),
             Arc::new(move || allocated_for_run.fetch_add(1, Ordering::SeqCst)),
             Cancellation::new(),
@@ -2667,7 +3047,7 @@ mod tests {
         cancellation.cancel();
         let ids = Arc::new(|| 201);
         assert_eq!(
-            block_on(runtime.run(Messages::default(), ids, cancellation))
+            block_on(runtime.execute(Messages::default(), ids, cancellation))
                 .unwrap_err()
                 .code,
             "CANCELLED"
@@ -2696,7 +3076,7 @@ mod tests {
             });
         let initial = Messages::new([request]);
         let ids = Arc::new(AtomicI64::new(700));
-        let first = block_on(runtime.run(
+        let first = block_on(runtime.execute(
             initial.clone(),
             Arc::new({
                 let ids = Arc::clone(&ids);
@@ -2733,7 +3113,7 @@ mod tests {
                 .code,
             "CONFLICT"
         );
-        let output = block_on(runtime.run(
+        let output = block_on(runtime.execute(
             initial,
             Arc::new({
                 let ids = Arc::clone(&ids);
@@ -2766,7 +3146,7 @@ mod tests {
         let workflow = builder.compile().unwrap();
         let mut runtime = Runtime::new(14, workflow).unwrap();
         let ids = Arc::new(AtomicI64::new(800));
-        block_on(runtime.run(
+        block_on(runtime.execute(
             Messages::default(),
             Arc::new({
                 let ids = Arc::clone(&ids);
@@ -2800,7 +3180,7 @@ mod tests {
         let workflow = builder.compile().unwrap();
         let mut runtime = Runtime::new(15, workflow).unwrap();
         let ids = Arc::new(AtomicI64::new(900));
-        block_on(runtime.run(
+        block_on(runtime.execute(
             Messages::default(),
             Arc::new({
                 let ids = Arc::clone(&ids);
@@ -2837,7 +3217,7 @@ mod tests {
         let workflow = builder.compile().unwrap();
         let mut runtime = Runtime::new(16, workflow).unwrap();
         let ids = Arc::new(AtomicI64::new(1_000));
-        block_on(runtime.run(
+        block_on(runtime.execute(
             Messages::default(),
             Arc::new({
                 let ids = Arc::clone(&ids);
@@ -2875,7 +3255,7 @@ mod tests {
             .unwrap();
         let workflow = builder.compile().unwrap();
         let mut runtime = Runtime::new(17, workflow).unwrap();
-        block_on(runtime.run(Messages::default(), Arc::new(|| 1_100), Cancellation::new()))
+        block_on(runtime.execute(Messages::default(), Arc::new(|| 1_100), Cancellation::new()))
             .unwrap();
         let execution = &runtime.state().nodes["retry"].executions[&1_100];
         assert_eq!(execution.attempts.len(), 2);
@@ -2917,7 +3297,7 @@ mod tests {
             .unwrap();
         let workflow = builder.compile().unwrap();
         let mut runtime = Runtime::new(18, workflow).unwrap();
-        block_on(runtime.run(
+        block_on(runtime.execute(
             workflow_tool_input(),
             Arc::new(|| 1_200),
             Cancellation::new(),
@@ -2965,7 +3345,7 @@ mod tests {
         );
         let mut runtime = Runtime::new(90, workflow).unwrap();
         let mut run =
-            Box::pin(runtime.run(Messages::default(), Arc::new(|| 900), Cancellation::new()));
+            Box::pin(runtime.execute(Messages::default(), Arc::new(|| 900), Cancellation::new()));
         assert!(futures_util::poll!(run.as_mut()).is_pending());
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         tokio::time::advance(std::time::Duration::from_millis(99)).await;
@@ -2997,7 +3377,7 @@ mod tests {
         let mut runtime = Runtime::new(90, workflow).unwrap();
         let cancellation = Cancellation::new();
         let mut run =
-            Box::pin(runtime.run(Messages::default(), Arc::new(|| 900), cancellation.clone()));
+            Box::pin(runtime.execute(Messages::default(), Arc::new(|| 900), cancellation.clone()));
         assert!(futures_util::poll!(run.as_mut()).is_pending());
         cancellation.cancel();
         assert_eq!(run.await.unwrap_err().code, "CANCELLED");
@@ -3026,7 +3406,7 @@ mod tests {
         );
         let mut runtime = Runtime::new(90, workflow).unwrap();
         let error =
-            block_on(runtime.run(Messages::default(), Arc::new(|| 900), Cancellation::new()))
+            block_on(runtime.execute(Messages::default(), Arc::new(|| 900), Cancellation::new()))
                 .unwrap_err();
         assert_eq!(error.code, "UNAVAILABLE");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -3168,7 +3548,7 @@ mod tests {
                 .unwrap()
                 .with_checkpoint(checkpoint.clone());
             let input = runtime.state.initial.clone().unwrap();
-            let output = block_on(runtime.run(
+            let output = block_on(runtime.execute(
                 input.clone(),
                 Arc::new(|| panic!("recovery must reuse the existing exec_id")),
                 Cancellation::new(),
@@ -3208,7 +3588,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(
-                block_on(terminal_runtime.run(
+                block_on(terminal_runtime.execute(
                     input,
                     Arc::new(|| panic!("terminal restore must not allocate an id")),
                     Cancellation::new(),

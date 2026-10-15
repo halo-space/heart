@@ -1,25 +1,29 @@
-//! Process-local deferred long-memory work. No second persistent state model:
-//! successful stages stay in this Harness job until a later request resumes it.
+//! Stage-preserving long Memory processing. Production progress is saved in
+//! Session metadata before external writes and after acknowledged completion.
 use crate::harness::hooks::cancellable;
 use crate::{
     Cancellation, Error, Messages,
-    memory::{self, Item, Memory, Request, short::session},
+    memory::{self, Item, Memory, Request},
     message::Role,
 };
+use serde::{Deserialize, Serialize};
+#[cfg(test)]
 use std::{
     collections::BTreeMap,
     sync::{Arc, Mutex},
 };
 
+#[cfg(test)]
 #[derive(Default)]
 pub(super) struct Jobs(Mutex<BTreeMap<i64, Job>>);
 
 pub(super) struct Work {
-    pub(super) jobs: Arc<Jobs>,
     pub(super) agent_id: i64,
     pub(super) input: Messages,
 }
 
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub(super) struct Job {
     user_id: i64,
     agent_id: i64,
@@ -27,8 +31,9 @@ pub(super) struct Job {
     to: i64,
     input: Messages,
     tasks: Option<Vec<Task>>,
-    commit: Option<session::Session>,
 }
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 struct Task {
     agent_id: Option<i64>,
     kind: memory::Type,
@@ -36,45 +41,15 @@ struct Task {
     prepared: Option<Prepared>,
     done: bool,
 }
+#[derive(Clone, Deserialize, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 struct Prepared {
     previous: Option<Item>,
     request: Request,
 }
 
+#[cfg(test)]
 impl Jobs {
-    pub(super) fn expected(&self, session_id: i64) -> Option<session::Session> {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .get(&session_id)
-            .and_then(|job| job.commit.clone())
-    }
-    pub(super) fn confirm(&self, session_id: i64, current: &session::Session) -> bool {
-        let mut jobs = self.0.lock().unwrap_or_else(|e| e.into_inner());
-        let confirmed = jobs
-            .get(&session_id)
-            .and_then(|job| job.commit.as_ref())
-            .is_some_and(|expected| {
-                current.id == expected.id
-                    && current.tenant_id == expected.tenant_id
-                    && current.user_id == expected.user_id
-                    && current.r#type == expected.r#type
-                    && current.summary == expected.summary
-                    && current.usage == expected.usage
-                    && current.metadata.get("from") == expected.metadata.get("from")
-                    && current.metadata.get("to") == expected.metadata.get("to")
-            });
-        if confirmed {
-            jobs.get_mut(&session_id).unwrap().commit = None;
-        }
-        confirmed
-    }
-    pub(super) fn discard(&self, session_id: i64) {
-        self.0
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .remove(&session_id);
-    }
     pub(super) fn contains(&self, session_id: i64) -> bool {
         self.0
             .lock()
@@ -120,21 +95,92 @@ impl Job {
             to,
             input,
             tasks: None,
-            commit: None,
         })
     }
-    pub(super) fn awaiting_commit(mut self, expected: session::Session) -> Self {
-        self.commit = Some(expected);
-        self
+    pub(super) fn covers(&self, from: i64, to: i64) -> bool {
+        self.from == from && to.checked_add(1) == Some(self.to)
+    }
+    pub(super) fn validate(&self, user_id: i64) -> Result<(), Error> {
+        if self.user_id != user_id
+            || user_id <= 0
+            || self.agent_id <= 0
+            || self.from <= 0
+            || self.to <= self.from
+        {
+            return Err(invalid());
+        }
+        if let Some(tasks) = &self.tasks {
+            if !self.input.0.is_empty() || tasks.len() > 6 {
+                return Err(invalid());
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            for task in tasks {
+                if task.agent_id.is_some_and(|id| id != self.agent_id)
+                    || task.content.trim().is_empty()
+                    || !seen.insert((task.agent_id, format!("{:?}", task.kind)))
+                    || (task.done && task.prepared.is_none())
+                {
+                    return Err(invalid());
+                }
+                if let Some(prepared) = &task.prepared {
+                    let request = &prepared.request;
+                    if request.id <= 0
+                        || request.user_id != user_id
+                        || request.agent_id != task.agent_id
+                        || request.session_id.is_some()
+                        || request.r#type != task.kind
+                        || request.content.trim().is_empty()
+                        || request.from > self.from
+                        || request.from < 0
+                        || request.to < self.to
+                        || request.vector.is_some()
+                    {
+                        return Err(invalid());
+                    }
+                    if let Some(previous) = &prepared.previous
+                        && (previous.id != request.id
+                            || previous.version == 0
+                            || previous.user_id != user_id
+                            || previous.agent_id != task.agent_id
+                            || previous.session_id.is_some()
+                            || previous.r#type != task.kind
+                            || previous.content.trim().is_empty()
+                            || previous.from < 0
+                            || previous.to <= previous.from)
+                    {
+                        return Err(invalid());
+                    }
+                }
+            }
+        } else if self.input.0.iter().any(|message| {
+            !matches!(message.role, Role::User | Role::Assistant)
+                || !message.values.is_empty()
+                || !message.metadata.is_empty()
+                || message.usage.is_some()
+                || message.content.iter().any(|part| part.r#type != "text")
+        }) {
+            return Err(invalid());
+        }
+        Ok(())
     }
 }
 
+pub(super) trait Progress {
+    fn save(
+        &mut self,
+        job: &Job,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<(), Error>>;
+}
+
 /// Drop requeues failures/panics; no mutex is held while a component awaits.
+#[cfg(test)]
 struct Ticket {
     jobs: Arc<Jobs>,
     session_id: i64,
     job: Option<Job>,
 }
+#[cfg(test)]
 impl Drop for Ticket {
     fn drop(&mut self) {
         if let Some(job) = self.job.take() {
@@ -143,7 +189,8 @@ impl Drop for Ticket {
     }
 }
 
-pub(super) async fn resume<L: Memory>(
+#[cfg(test)]
+async fn resume<L: Memory>(
     jobs: Arc<Jobs>,
     session_id: i64,
     component: &memory::extraction::Configured,
@@ -164,13 +211,33 @@ pub(super) async fn resume<L: Memory>(
         session_id,
         job: Some(job),
     };
-    let job = ticket.job.as_mut().unwrap();
-    if job.commit.is_some() {
-        return Err(Error::new(
-            "INVALID_STATE",
-            "Session commit must be confirmed before extraction",
-        ));
+    struct Local;
+    impl Progress for Local {
+        async fn save(&mut self, _: &Job, _: &Cancellation) -> Result<(), Error> {
+            Ok(())
+        }
     }
+    resume_job(
+        ticket.job.as_mut().unwrap(),
+        &mut Local,
+        component,
+        store,
+        next_id,
+        cancellation,
+    )
+    .await?;
+    ticket.job = None;
+    Ok(())
+}
+
+pub(super) async fn resume_job<L: Memory, P: Progress>(
+    job: &mut Job,
+    progress: &mut P,
+    component: &memory::extraction::Configured,
+    store: &L,
+    next_id: fn() -> i64,
+    cancellation: &Cancellation,
+) -> Result<(), Error> {
     if job.tasks.is_none() {
         let output = cancellable(
             component.extract(job.input.clone(), cancellation),
@@ -206,14 +273,15 @@ pub(super) async fn resume<L: Memory>(
         // A successful extraction is never repeated on a write retry. Retain
         // the smaller extracted content, not another copy of raw history.
         job.input = Messages::default();
+        progress.save(job, cancellation).await?;
     }
     let mut error = None;
-    for task in job.tasks.as_mut().unwrap() {
-        if task.done {
+    for index in 0..job.tasks.as_ref().unwrap().len() {
+        if job.tasks.as_ref().unwrap()[index].done {
             continue;
         }
-        match write(
-            task,
+        let prepared = prepare(
+            &mut job.tasks.as_mut().unwrap()[index],
             job.user_id,
             job.from,
             job.to,
@@ -222,9 +290,30 @@ pub(super) async fn resume<L: Memory>(
             next_id,
             cancellation,
         )
-        .await
-        {
-            Ok(()) => task.done = true,
+        .await;
+        match prepared {
+            Ok(already_committed) => {
+                if already_committed {
+                    job.tasks.as_mut().unwrap()[index].done = true;
+                }
+                // Retain successful merge and the allocated ID before writing.
+                // A failed progress save must stop before the external effect.
+                progress.save(job, cancellation).await?;
+                if !already_committed {
+                    let result =
+                        write_prepared(&job.tasks.as_ref().unwrap()[index], store, cancellation)
+                            .await;
+                    match result {
+                        Ok(()) => {
+                            job.tasks.as_mut().unwrap()[index].done = true;
+                            progress.save(job, cancellation).await?;
+                        }
+                        Err(value) => {
+                            error.get_or_insert(value);
+                        }
+                    }
+                }
+            }
             Err(value) => {
                 error.get_or_insert(value);
             }
@@ -239,12 +328,11 @@ pub(super) async fn resume<L: Memory>(
     if cancellation.is_cancelled() {
         return Err(Error::new("CANCELLED", "memory writeback cancelled"));
     }
-    ticket.job = None;
     Ok(())
 }
 
 #[allow(clippy::too_many_arguments)]
-async fn write<L: Memory>(
+async fn prepare<L: Memory>(
     task: &mut Task,
     user_id: i64,
     from: i64,
@@ -253,7 +341,7 @@ async fn write<L: Memory>(
     store: &L,
     next_id: fn() -> i64,
     cancellation: &Cancellation,
-) -> Result<(), Error> {
+) -> Result<bool, Error> {
     let current = cancellable(
         store.get(
             user_id,
@@ -288,7 +376,7 @@ async fn write<L: Memory>(
             .as_ref()
             .is_some_and(|item| Some(item.version) == version && matches(item, &prepared.request))
         {
-            return Ok(());
+            return Ok(true);
         }
     }
     if task
@@ -347,6 +435,14 @@ async fn write<L: Memory>(
             },
         });
     }
+    Ok(false)
+}
+
+async fn write_prepared<L: Memory>(
+    task: &Task,
+    store: &L,
+    cancellation: &Cancellation,
+) -> Result<(), Error> {
     let prepared = task.prepared.as_ref().unwrap();
     let version = match &prepared.previous {
         Some(previous) => previous.version.checked_add(1),

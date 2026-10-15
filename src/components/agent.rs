@@ -129,9 +129,9 @@ pub type Error = crate::Error;
 
 /// Public business input shared by ChatAgent and ReActAgent.
 ///
-/// Runtime metadata is kept separate from the user payload. It is copied to
-/// the internal user message metadata, while payload values become ordered
-/// model content parts.
+/// Runtime metadata is kept separate from the user payload. Execution source
+/// identities stay in Input/Runtime, not internal Message metadata. Other
+/// input metadata is retained while payload becomes ordered model content.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, JsonSchema)]
 pub struct Input {
     #[serde(default)]

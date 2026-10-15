@@ -16,3 +16,6 @@ pub(crate) mod checkpoint;
 pub(crate) mod embedded;
 pub(crate) mod hooks;
 pub(crate) mod memory;
+pub(crate) mod observation;
+pub(crate) mod subagent;
+pub(crate) mod tool_steps;

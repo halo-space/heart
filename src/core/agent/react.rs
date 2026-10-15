@@ -28,11 +28,14 @@ use crate::harness::access::Access;
 use crate::harness::checkpoint::{Backend, invalid as invalid_checkpoint};
 use crate::harness::hooks::{Hooks, cancellable};
 use crate::harness::memory::{History, Run};
+use crate::harness::subagent::{Failure as SubAgentFailure, Progress as SubAgentProgress};
 use crate::runtime::agent::graph::Graph;
+use crate::runtime::agent::node::Step;
 use crate::runtime::agent::{GraphState, State as AgentState};
 use crate::runtime::cancellation::Cancellation;
 
 mod execution;
+mod tools;
 use execution::TaskProgress;
 
 type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + 'static>>;
@@ -321,6 +324,14 @@ where
                 ));
             }
             if let Some(result) = crate::harness::checkpoint::terminal(snapshot)? {
+                let mut result = result;
+                if let Ok(event) = &mut result {
+                    crate::harness::observation::associate(
+                        event,
+                        input.metadata.get("chat_id").and_then(Value::as_i64),
+                        None,
+                    );
+                }
                 return Ok(Box::pin(futures_util::stream::iter([result])));
             }
         }
@@ -391,7 +402,7 @@ where
             // Messages, Plan or a serialized Graph. Plan execution is enabled
             // only when the caller supplied an ID function; a planning
             // confirmation or ordinary model/Tool call never allocates one.
-            id_fn: self.id_fn,
+            id_fn: crate::harness::embedded::id_fn().or(self.id_fn),
             checkpoint,
             checkpoint_id,
             plan_execution: false,
@@ -409,10 +420,16 @@ where
             resume_input: None,
             pending_calls: VecDeque::new(),
             active_tools: FuturesUnordered::new(),
+            tool_progress: VecDeque::new(),
             child_events: VecDeque::new(),
+            child_relay: crate::harness::subagent::Relay::default(),
             pending_subagents: BTreeMap::new(),
             tool_results: BTreeMap::new(),
             evaluations: BTreeMap::new(),
+            steps: Vec::new(),
+            child_nodes: BTreeMap::new(),
+            child_nodes_dirty: false,
+            root: crate::harness::subagent::Root::default(),
             partial: Message::new(Role::Assistant),
             done: false,
             run,
@@ -433,7 +450,15 @@ where
                 }
             }
         }
-        Ok(Box::pin(unfold(state, next_react_event::<M>)))
+        let chat_id = state.query.metadata.get("chat_id").and_then(Value::as_i64);
+        Ok(Box::pin(unfold(state, next_react_event::<M>).map(
+            move |mut result| {
+                if let Ok(event) = &mut result {
+                    crate::harness::observation::associate(event, chat_id, None);
+                }
+                result
+            },
+        )))
     }
 }
 
@@ -472,13 +497,20 @@ struct ReActState<M: Chat> {
     resume_input: Option<Input>,
     pending_calls: VecDeque<(usize, Call)>,
     active_tools: FuturesUnordered<Pin<Box<dyn Future<Output = ToolProgress> + 'static>>>,
+    tool_progress: VecDeque<ToolProgress>,
     child_events: VecDeque<Result<Event, Error>>,
+    child_relay: crate::harness::subagent::Relay,
     /// Child calls which have been handed off but have not yet committed a
-    /// Function message into the parent context.  This is checkpoint data,
-    /// not a second public execution identity.
+    /// Function message into the parent context. This queue is derived from
+    /// canonical Steps and child nodes, never serialized as another scene.
     pending_subagents: BTreeMap<String, PendingSubAgent>,
     tool_results: BTreeMap<usize, Message>,
     evaluations: BTreeMap<String, ToolEvaluation>,
+    steps: Vec<Step>,
+    // Planned tasks publish these only into their owning Attempt.nodes.
+    child_nodes: BTreeMap<String, crate::runtime::agent::node::State>,
+    child_nodes_dirty: bool,
+    root: crate::harness::subagent::Root,
     partial: Message,
     done: bool,
     hooks: Hooks,
@@ -492,7 +524,7 @@ struct ReActState<M: Chat> {
 }
 
 enum PermissionFailure {
-    Policy(Error),
+    Policy(Error, Box<Call>),
     Hook(Error),
     Tool(Error),
 }
@@ -505,6 +537,7 @@ enum Planning {
 }
 
 enum ToolProgress {
+    Observation(Box<crate::harness::subagent::Observation>),
     Called(
         usize,
         Call,
@@ -520,24 +553,10 @@ enum ToolProgress {
     ),
 }
 
-#[derive(Debug)]
-struct SubAgentProgress {
-    events: Vec<Result<Event, Error>>,
-    message: Message,
-}
-
-#[derive(Debug)]
-struct SubAgentFailure {
-    error: Error,
-    scene: Option<Value>,
-}
-
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 struct PendingSubAgent {
     index: usize,
     call: Call,
-    #[serde(default)]
-    scene: Option<Value>,
 }
 
 // Private per-call dependencies, not a new component Context or Runtime state.
@@ -554,36 +573,20 @@ async fn check_tool_permission(
     state: &ToolExecution,
     call: &Call,
 ) -> Result<(), PermissionFailure> {
-    let mut metadata = state.metadata.clone();
-    metadata.insert(
-        "call".into(),
-        serde_json::to_value(call).map_err(|_| {
-            PermissionFailure::Hook(Error::new(
-                "INVALID_ARGUMENTS",
-                "cannot encode permission call",
-            ))
-        })?,
-    );
-    let request = crate::permission::Request {
-        action: "call".into(),
-        resource: call.name.clone(),
-        metadata,
-    };
-    let request = state
-        .hooks
-        .before_permission(request, &state.cancellation)
-        .await
-        .map_err(PermissionFailure::Hook)?;
-    state
-        .access
-        .check(request.clone(), &state.cancellation)
-        .await
-        .map_err(PermissionFailure::Policy)?;
-    state
-        .hooks
-        .after_permission(request, &state.cancellation)
-        .await
-        .map_err(PermissionFailure::Hook)
+    crate::harness::access::check_tool(
+        &state.access,
+        &state.hooks,
+        state.metadata.clone(),
+        call,
+        &state.cancellation,
+    )
+    .await
+    .map_err(|failure| match failure {
+        crate::harness::access::Failure::Policy(error) => {
+            PermissionFailure::Policy(error, Box::new(call.clone()))
+        }
+        crate::harness::access::Failure::Hook(error) => PermissionFailure::Hook(error),
+    })
 }
 
 async fn call_with_permission(
@@ -632,14 +635,7 @@ fn decode_subagent_input(
             "agent_spawn input must be agent::Input",
         )
     })?;
-    for key in ["chat_id", "session_id", "user_id", "agent_id"] {
-        if let Some(value) = parent.get(key) {
-            input
-                .metadata
-                .entry(key.to_owned())
-                .or_insert_with(|| value.clone());
-        }
-    }
+    crate::harness::subagent::inherit_identity(&mut input, parent)?;
     let depth = parent.get("depth").and_then(Value::as_u64).unwrap_or(1);
     if depth >= 2 {
         return Err(Error::new("INVALID_ARGUMENTS", "SubAgent depth limit is 2"));
@@ -656,65 +652,29 @@ async fn execute_subagent(
     parent: Map<String, Value>,
     restore: Option<Value>,
     cancellation: Cancellation,
+    id_fn: Option<fn() -> i64>,
+    observer: Option<crate::harness::subagent::Observer>,
 ) -> Result<SubAgentProgress, Box<SubAgentFailure>> {
-    let (name, input) = decode_subagent_input(&call, &parent)
-        .map_err(|error| Box::new(SubAgentFailure { error, scene: None }))?;
+    let (name, input) = decode_subagent_input(&call, &parent).map_err(SubAgentFailure::new)?;
     let subagent = subagents
         .iter()
         .find(|subagent| subagent.has_name(&name))
         .ok_or_else(|| {
-            Box::new(SubAgentFailure {
-                error: Error::new("NOT_FOUND", "agent_spawn target is not registered"),
-                scene: None,
-            })
+            SubAgentFailure::new(Error::new(
+                "NOT_FOUND",
+                "agent_spawn target is not registered",
+            ))
         })?;
-    // A child must never consume or overwrite the enclosing Agent's scene,
-    // including when that Agent is itself embedded in a Workflow. Scope both
-    // initialization and every subsequent stream poll, not just `run`.
-    let scope = crate::harness::embedded::Scope::new(restore);
-    let mut stream =
-        match crate::harness::embedded::run(scope.clone(), subagent.run(input, cancellation)).await
-        {
-            Ok(stream) => stream,
-            Err(error) => {
-                return Err(Box::new(SubAgentFailure {
-                    error,
-                    scene: scope.latest(),
-                }));
-            }
-        };
-    let mut events = Vec::new();
-    let mut final_message = None;
-    while let Some(item) = crate::harness::embedded::run(scope.clone(), stream.next()).await {
-        match item {
-            Ok(event) => {
-                if let Event::Complete { message, .. } = &event {
-                    final_message = Some(message.clone());
-                }
-                events.push(Ok(event));
-            }
-            Err(error) => {
-                return Err(Box::new(SubAgentFailure {
-                    error,
-                    scene: scope.latest(),
-                }));
-            }
-        }
-    }
-    let mut message = final_message.ok_or_else(|| {
-        Box::new(SubAgentFailure {
-            error: Error::new("INVALID_RESPONSE", "SubAgent stream ended without Complete"),
-            scene: scope.latest(),
-        })
-    })?;
-    message.role = Role::Function;
-    message
-        .metadata
-        .insert("call_id".into(), Value::String(call.call_id.clone()));
-    message
-        .metadata
-        .insert("name".into(), Value::String(call.name.clone()));
-    Ok(SubAgentProgress { events, message })
+    crate::harness::subagent::run(
+        subagent,
+        input,
+        &call,
+        restore,
+        cancellation,
+        id_fn,
+        observer,
+    )
+    .await
 }
 
 fn subagent_error_message(call: &Call, error: &Error) -> Message {
@@ -740,7 +700,8 @@ fn subagent_error_message(call: &Call, error: &Error) -> Message {
 async fn next_react_event<M: Chat + 'static>(
     state: ReActState<M>,
 ) -> Option<(Result<Event, Error>, ReActState<M>)> {
-    let (result, mut state) = next_react_event_inner(state).await?;
+    let (result, state) = next_react_event_inner(Box::new(state)).await?;
+    let mut state = *state;
     if result.is_err() && state.model_pending && !state.model_settled {
         state.run.settle(state.partial.usage.clone());
     }
@@ -753,6 +714,7 @@ async fn next_react_event<M: Chat + 'static>(
         // Drop all pending futures even if the consumer retains the terminal
         // stream. Local resources are released; external effects are not undone.
         state.active_tools.clear();
+        state.tool_progress.clear();
         state.active_tasks.clear();
         state.pending_calls.clear();
         state.pending_plans.clear();
@@ -808,13 +770,19 @@ fn closeout_state<M: Chat>(
         r#type: "agent".into(),
         status: status.into(),
         usage: state.run.usage(),
+        execution: state
+            .root
+            .snapshot(status, state.run.usage(), result.as_ref().err().cloned()),
         graph: graph_state,
         nodes,
         history,
         messages: state.messages.clone(),
+        steps: state.steps.clone(),
         error: result.as_ref().err().cloned(),
         final_message: match result {
-            Ok(Event::Complete { message, .. }) => Some(message.clone()),
+            Ok(Event::Complete { message, .. }) => {
+                Some(crate::harness::observation::original_message(message))
+            }
             _ => None,
         },
         metadata: state.metadata.clone().into_iter().collect(),
@@ -859,16 +827,24 @@ fn checkpoint_snapshot<M: Chat>(state: &ReActState<M>, result: &Result<Event, Er
         r#type: "agent".into(),
         status: result_status(result).into(),
         usage: state.run.usage(),
+        execution: state.root.snapshot(
+            result_status(result),
+            state.run.usage(),
+            result.as_ref().err().cloned(),
+        ),
         graph,
         nodes,
         history,
         messages: state.messages.clone(),
+        steps: state.steps.clone(),
         error: result.as_ref().err().cloned(),
         final_message: match result {
-            Ok(Event::Complete { message, .. }) => Some(message.clone()),
+            Ok(Event::Complete { message, .. }) => {
+                Some(crate::harness::observation::original_message(message))
+            }
             _ => None,
         },
-        metadata: BTreeMap::new(),
+        metadata: state.query.metadata.clone().into_iter().collect(),
     })
     .unwrap_or_else(|_| json!({}));
     snapshot["query"] = serde_json::to_value(&state.query).unwrap_or(Value::Null);
@@ -876,8 +852,6 @@ fn checkpoint_snapshot<M: Chat>(state: &ReActState<M>, result: &Result<Event, Er
     snapshot["iteration"] = json!(state.iteration.load(Ordering::Relaxed));
     snapshot["plan_execution"] = json!(state.plan_execution);
     snapshot["plan_finalizing"] = json!(state.plan_finalizing);
-    snapshot["pending_subagents"] =
-        serde_json::to_value(&state.pending_subagents).unwrap_or(Value::Null);
     snapshot["tool_results"] = serde_json::to_value(&state.tool_results).unwrap_or(Value::Null);
     crate::harness::checkpoint::record_result(&mut snapshot, result);
     snapshot
@@ -927,23 +901,29 @@ fn restore_state<M: Chat>(state: &mut ReActState<M>, snapshot: Value) -> Result<
     state.iteration = Arc::new(AtomicUsize::new(field(&snapshot, "iteration")?));
     state.plan_execution = field(&snapshot, "plan_execution")?;
     state.plan_finalizing = field(&snapshot, "plan_finalizing")?;
-    state.pending_subagents = snapshot
-        .get("pending_subagents")
+    state.root = crate::harness::subagent::Root::restore(&snapshot)?;
+    state.tool_results = field(&snapshot, "tool_results")?;
+    state.steps = snapshot
+        .get("steps")
         .cloned()
         .map(serde_json::from_value)
         .transpose()
-        .map_err(|_| invalid_checkpoint("invalid Agent checkpoint pending subagents"))?
+        .map_err(|_| invalid_checkpoint("invalid Agent checkpoint steps"))?
         .unwrap_or_default();
-    state.tool_results = field(&snapshot, "tool_results")?;
+    tools::restore(state)?;
     // A parent waiting on a child is resumed by replaying only the registered
     // child hand-off.  The parent model is not called again for that Call,
     // and a committed tool result always wins over a stale pending entry.
-    let mut pending = state
-        .pending_subagents
-        .values()
-        .filter(|pending| !state.tool_results.contains_key(&pending.index))
-        .map(|pending| (pending.index, pending.call.clone()))
-        .collect::<Vec<_>>();
+    let mut pending = state.root.resume_calls(&state.steps, &mut state.messages)?;
+    for (index, call) in &pending {
+        state.pending_subagents.insert(
+            call.call_id.clone(),
+            PendingSubAgent {
+                index: *index,
+                call: call.clone(),
+            },
+        );
+    }
     pending.sort_by_key(|(index, _)| *index);
     state.pending_calls.extend(pending);
     state.run.settle(field(&snapshot, "usage")?);
@@ -1045,11 +1025,22 @@ fn is_waiting_snapshot(snapshot: &Value) -> bool {
 }
 
 fn is_external_wait_snapshot(snapshot: &Value) -> bool {
-    let waiting_child = snapshot
-        .get("pending_subagents")
-        .and_then(Value::as_object)
-        .is_some_and(|children| !children.is_empty());
+    let waiting_child =
+        crate::harness::subagent::Root::restore(snapshot).is_ok_and(|root| root.pending());
+    let waiting_tool = snapshot
+        .get("steps")
+        .and_then(Value::as_array)
+        .is_some_and(|steps| {
+            steps.iter().any(|step| {
+                step.get("kind").and_then(Value::as_str) == Some("tool")
+                    && matches!(
+                        step.get("stage").and_then(Value::as_str),
+                        Some("call" | "eval" | "complete")
+                    )
+            })
+        });
     !waiting_child
+        && !waiting_tool
         && (snapshot.get("status").and_then(Value::as_str) == Some("waiting")
             || snapshot
                 .get("nodes")
@@ -1062,15 +1053,7 @@ fn is_external_wait_snapshot(snapshot: &Value) -> bool {
 }
 
 fn checkpoint_identity_matches(snapshot: &Value, metadata: &Map<String, Value>) -> bool {
-    ["tenant_id", "user_id", "agent_id", "session_id", "chat_id"]
-        .into_iter()
-        .all(|key| {
-            snapshot
-                .get("metadata")
-                .and_then(Value::as_object)
-                .and_then(|saved| saved.get(key))
-                .is_none_or(|saved| metadata.get(key) == Some(saved))
-        })
+    crate::harness::checkpoint::identity_matches(snapshot, metadata)
 }
 
 fn running_snapshot<M: Chat>(state: &ReActState<M>) -> Value {
@@ -1090,12 +1073,18 @@ fn waiting_snapshot<M: Chat>(state: &ReActState<M>) -> Value {
         }),
     );
     snapshot["status"] = Value::String("waiting".into());
+    if let Some(execution) = state.root.snapshot("waiting", state.run.usage(), None) {
+        snapshot["execution"] =
+            serde_json::to_value(execution).expect("serializable root execution");
+    }
     snapshot
 }
 
 async fn next_react_event_inner<M: Chat + 'static>(
-    mut state: ReActState<M>,
-) -> Option<(Result<Event, Error>, ReActState<M>)> {
+    // A planned parent may poll a delegated ReAct's own planned tasks. Heap
+    // ownership avoids moving full run state through each nested poll frame.
+    mut state: Box<ReActState<M>>,
+) -> Option<(Result<Event, Error>, Box<ReActState<M>>)> {
     loop {
         if state.done {
             return None;
@@ -1147,14 +1136,48 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 continue;
             }
             if call.name == "agent_spawn" && !state.subagents.is_empty() {
-                state.pending_subagents.insert(
-                    call.call_id.clone(),
-                    PendingSubAgent {
+                let cached = if state.is_plan_task {
+                    crate::harness::subagent::message(&state.child_nodes, &state.steps, &call)
+                } else {
+                    state.root.message(&state.steps, &call)
+                };
+                if let Some(message) = cached {
+                    state.pending_subagents.remove(&call.call_id);
+                    state.tool_results.insert(index, message.clone());
+                    return Some((
+                        Ok(Event::Complete {
+                            message,
+                            usage: None,
+                            finish_reason: Some("agent".into()),
+                        }),
+                        state,
+                    ));
+                }
+                let prepared = if state.is_plan_task {
+                    crate::harness::subagent::prepare(
+                        &mut state.child_nodes,
+                        &mut state.steps,
+                        &call,
+                        state.id_fn,
+                    )
+                } else {
+                    state.root.prepare(&mut state.steps, &call, state.id_fn)
+                };
+                let restore = match prepared {
+                    Ok(restore) => restore,
+                    Err(error) => {
+                        state.done = true;
+                        return Some((Err(error), state));
+                    }
+                };
+                state.child_nodes_dirty |= state.is_plan_task;
+                state
+                    .pending_subagents
+                    .entry(call.call_id.clone())
+                    .or_insert_with(|| PendingSubAgent {
                         index,
                         call: call.clone(),
-                        scene: None,
-                    },
-                );
+                    });
                 // Persist the hand-off before the child starts.  If the
                 // process disappears after this point, restoration can
                 // resubmit this exact child Call without replaying the parent
@@ -1164,12 +1187,25 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     return Some((Err(error), state));
                 }
                 let slots = state.tool_slots.clone();
+                let source = if state.is_plan_task {
+                    crate::harness::subagent::source(&state.child_nodes, &state.steps, &call)
+                } else {
+                    state.root.source(&state.steps, &call)
+                };
+                let source = match source {
+                    Ok(source) => source,
+                    Err(error) => {
+                        state.done = true;
+                        return Some((Err(error), state));
+                    }
+                };
+                let observer = state.child_relay.observer(
+                    state.metadata.get("chat_id").and_then(Value::as_i64),
+                    source,
+                );
                 let subagents = state.subagents.clone();
                 let parent = state.metadata.clone();
-                let restore = state
-                    .pending_subagents
-                    .get(&call.call_id)
-                    .and_then(|pending| pending.scene.clone());
+                let id_fn = state.id_fn;
                 let cancellation = state.cancellation.clone();
                 state.active_tools.push(Box::pin(async move {
                     let permit = match cancellable(
@@ -1188,17 +1224,32 @@ async fn next_react_event_inner<M: Chat + 'static>(
                             return ToolProgress::SubAgent(
                                 index,
                                 call,
-                                Box::new(Err(Box::new(SubAgentFailure { error, scene: None }))),
+                                Box::new(Err(SubAgentFailure::new(error))),
                                 None,
                             );
                         }
                     };
-                    let result =
-                        execute_subagent(subagents, call.clone(), parent, restore, cancellation)
-                            .await;
+                    let result = execute_subagent(
+                        subagents,
+                        call.clone(),
+                        parent,
+                        restore,
+                        cancellation,
+                        id_fn,
+                        Some(observer),
+                    )
+                    .await;
                     ToolProgress::SubAgent(index, call, Box::new(result), Some(permit))
                 }));
                 continue;
+            }
+            match tools::continue_step(&mut state, index, &call) {
+                Ok(true) => continue,
+                Ok(false) => {}
+                Err(error) => {
+                    state.done = true;
+                    return Some((Err(error), state));
+                }
             }
             let execution = ToolExecution {
                 toolkit: state.toolkit.clone(),
@@ -1243,13 +1294,27 @@ async fn next_react_event_inner<M: Chat + 'static>(
             }));
         }
 
-        if !state.active_tools.is_empty() {
+        if !state.active_tools.is_empty() || !state.tool_progress.is_empty() {
             let progress = poll_fn(|context| {
                 state.cancellation.register(context.waker());
                 if state.cancellation.is_cancelled() {
                     return Poll::Ready(None);
                 }
-                state.active_tools.poll_next_unpin(context)
+                if state.tool_progress.is_empty()
+                    && let Poll::Ready(Some(progress)) = state.active_tools.poll_next_unpin(context)
+                {
+                    state.tool_progress.push_back(progress);
+                }
+                // Successful observations already produced by a sibling must
+                // be delivered/applied before a waiting/error closes the run.
+                if let Poll::Ready(observation) = state.child_relay.poll_event(context) {
+                    return Poll::Ready(Some(ToolProgress::Observation(Box::new(observation))));
+                }
+                if let Some(progress) = state.tool_progress.pop_front() {
+                    Poll::Ready(Some(progress))
+                } else {
+                    Poll::Pending
+                }
             })
             .await;
             if state.cancellation.is_cancelled() {
@@ -1257,12 +1322,28 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 return Some((Ok(cancelled_event(&mut state)), state));
             }
             match progress.expect("nonempty Tool futures remain until polled") {
+                ToolProgress::Observation(observation) => {
+                    state.child_nodes_dirty |= state.is_plan_task && observation.has_facts();
+                    let result = if state.is_plan_task {
+                        crate::harness::subagent::observe(&mut state.child_nodes, &observation)
+                    } else {
+                        state.root.observe(&observation)
+                    };
+                    if let Err(error) = result {
+                        state.done = true;
+                        return Some((Err(error), state));
+                    }
+                    state.run.settle_child(observation.usage);
+                    return Some((Ok(observation.event), state));
+                }
                 ToolProgress::Evaluated(call_id, Ok(evaluation)) => {
+                    tools::evaluated(&mut state.steps, &call_id, &evaluation);
                     // Business feedback is not a technical model repair error.
                     state.evaluations.insert(call_id, evaluation);
                     continue;
                 }
-                ToolProgress::Evaluated(_, Err(error)) => {
+                ToolProgress::Evaluated(call_id, Err(error)) => {
+                    tools::stopped(&mut state.steps, &call_id, &error);
                     // Default zero retries: never repeat a successful call to
                     // recover its eval. The emitted result remains unchanged.
                     state.done = true;
@@ -1271,6 +1352,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 ToolProgress::Called(index, call, result, permit) => {
                     let message = match *result {
                         Ok((effective_call, business)) => {
+                            tools::called(&mut state.steps, &effective_call, &business);
                             let toolkit = state.toolkit.clone();
                             let cancellation = state.cancellation.clone();
                             let evaluation_message = business.clone();
@@ -1285,10 +1367,33 @@ async fn next_react_event_inner<M: Chat + 'static>(
                             }));
                             tool_success_message(&call, business)
                         }
-                        Err(PermissionFailure::Policy(error) | PermissionFailure::Tool(error)) => {
-                            tool_error_message(&call, error)
+                        Err(PermissionFailure::Policy(error, effective)) => {
+                            if let Some(step) =
+                                crate::harness::tool_steps::current(&mut state.steps, &call.call_id)
+                            {
+                                step.call = Some(*effective);
+                            }
+                            tools::stopped(&mut state.steps, &call.call_id, &error);
+                            if error.code == "WAITING" {
+                                state.done = true;
+                                return Some((Err(error), state));
+                            }
+                            let message = tool_error_message(&call, error);
+                            tools::failed_message(&mut state.steps, &call.call_id, &message);
+                            message
+                        }
+                        Err(PermissionFailure::Tool(error)) => {
+                            tools::stopped(&mut state.steps, &call.call_id, &error);
+                            if error.code == "WAITING" {
+                                state.done = true;
+                                return Some((Err(error), state));
+                            }
+                            let message = tool_error_message(&call, error);
+                            tools::failed_message(&mut state.steps, &call.call_id, &message);
+                            message
                         }
                         Err(PermissionFailure::Hook(error)) => {
+                            tools::stopped(&mut state.steps, &call.call_id, &error);
                             state.done = true;
                             return Some((Err(error), state));
                         }
@@ -1305,12 +1410,36 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 }
                 ToolProgress::SubAgent(index, call, result, permit) => {
                     drop(permit);
+                    let message = match &*result {
+                        Ok(progress) => Some(progress.message.clone()),
+                        Err(failure) if failure.error.code == "WAITING" => None,
+                        Err(failure) => Some(subagent_error_message(&call, &failure.error)),
+                    };
+                    let completed = if state.is_plan_task {
+                        state.child_nodes_dirty = true;
+                        crate::harness::subagent::complete(
+                            &mut state.child_nodes,
+                            &mut state.steps,
+                            &call,
+                            &result,
+                            message,
+                        )
+                    } else {
+                        state
+                            .root
+                            .complete(&mut state.steps, &call, &result, message)
+                    };
+                    if let Err(error) = completed {
+                        state.done = true;
+                        return Some((Err(error), state));
+                    }
+                    state.run.settle_child(match &*result {
+                        Ok(progress) => progress.usage.clone(),
+                        Err(failure) => failure.usage.clone(),
+                    });
                     if let Err(failure) = &*result
                         && failure.error.code == "WAITING"
                     {
-                        if let Some(pending) = state.pending_subagents.get_mut(&call.call_id) {
-                            pending.scene = failure.scene.clone();
-                        }
                         if let Err(error) = save_checkpoint(&state, waiting_snapshot(&state)).await
                         {
                             state.done = true;
@@ -1321,10 +1450,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     }
                     state.pending_subagents.remove(&call.call_id);
                     let message = match *result {
-                        Ok(progress) => {
-                            state.child_events.extend(progress.events);
-                            progress.message
-                        }
+                        Ok(progress) => progress.message,
                         Err(failure) => subagent_error_message(&call, &failure.error),
                     };
                     state.tool_results.insert(index, message.clone());
@@ -1367,6 +1493,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     state.messages.0.extend(feedback.0);
                 }
             }
+            tools::committed(&mut state.steps);
         }
 
         if let Some(provider) = state.provider.as_mut() {
@@ -1401,7 +1528,8 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         state,
                     ));
                 }
-                Ok(Event::Delta { message }) => {
+                Ok(Event::Delta { mut message }) => {
+                    crate::harness::observation::clear_source(&mut message);
                     collect_delta(&mut state.partial, &message);
                     return Some((Ok(Event::Delta { message }), state));
                 }
@@ -1411,6 +1539,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     finish_reason,
                 }) => {
                     state.provider = None;
+                    crate::harness::observation::clear_source(&mut message);
                     let usage = usage.or_else(|| message.usage.clone());
                     state.run.settle(usage.clone());
                     state.model_settled = true;
@@ -1578,6 +1707,10 @@ async fn next_react_event_inner<M: Chat + 'static>(
                             state.done = true;
                         }
                     } else {
+                        if let Err(error) = tools::selected(&mut state.steps, &calls) {
+                            state.done = true;
+                            return Some((Err(error), state));
+                        }
                         state.pending_calls = calls.into_iter().enumerate().collect();
                     }
                     state.model_pending = false;
@@ -1693,6 +1826,9 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 }
                 tools
             };
+            if state.is_plan_task && !state.subagents.is_empty() {
+                tools.push(state.subagents[0].definition());
+            }
             if state.plan_finalizing {
                 tools.clear();
             }
@@ -1742,6 +1878,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
 }
 
 fn cancelled_event<M: Chat>(state: &mut ReActState<M>) -> Event {
+    crate::harness::tool_steps::cancel_pending(&mut state.steps);
     if !state.model_pending {
         // The prior Complete was already settled. Cancellation while executing
         // a Tool/eval/hook must not bill that completed model call a second time.
@@ -1893,6 +2030,10 @@ impl ErrorDetails for Error {
 
 #[cfg(test)]
 mod tests {
+    fn test_id() -> i64 {
+        static NEXT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(700000);
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    }
     use super::*;
     use crate::components::agent::Agent as AgentContract;
     use crate::components::tool::{Tool, ToolDefinition};
@@ -2358,13 +2499,9 @@ mod tests {
                 assert_eq!(closed.status, chat::Status::Completed);
                 assert_eq!(closed.created_time, open.created_time);
                 assert!(closed.completed_time.is_some());
-                // Chat currently only projects its Chat; ReAct additionally
-                // projects the complete Agent State at its final closeout.
-                if react {
-                    let trace: trace::Trace =
-                        memory.trace.read(902, &Cancellation::new()).await.unwrap();
-                    assert_eq!(trace.state["status"], "succeeded");
-                }
+                let trace: trace::Trace =
+                    memory.trace.read(902, &Cancellation::new()).await.unwrap();
+                assert_eq!(trace.state["status"], "succeeded");
             }
         });
     }
@@ -2526,19 +2663,18 @@ mod tests {
             let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
             let mut snapshot = checkpoint_fixture(None);
             snapshot["status"] = json!("waiting");
-            snapshot["pending_subagents"] = json!({
-                "spawn_1": {
-                    "index": 0,
-                    "call": {
-                        "call_id": "spawn_1",
-                        "name": "agent_spawn",
-                        "arguments": {
-                            "name": "researcher",
-                            "input": {"payload": []}
-                        }
-                    }
-                }
-            });
+            snapshot = crate::harness::subagent::waiting_fixture(
+                snapshot,
+                Call {
+                    call_id: "spawn_1".into(),
+                    name: "agent_spawn".into(),
+                    arguments: serde_json::from_value(
+                        json!({"name":"researcher", "input":{"payload":[]}}),
+                    )
+                    .unwrap(),
+                },
+                test_id,
+            );
             checkpoint
                 .save(902, snapshot, &Cancellation::new())
                 .await
@@ -2559,6 +2695,7 @@ mod tests {
                 .subagents(vec![
                     crate::agent::SubAgent::new("researcher", child).unwrap(),
                 ])
+                .with_id_fn(test_id)
                 .checkpoint(checkpoint.clone())
                 .build()
                 .unwrap();
@@ -2877,6 +3014,7 @@ mod tests {
             .subagents(vec![
                 crate::agent::SubAgent::new("researcher", child).unwrap(),
             ])
+            .with_id_fn(test_id)
             .build()
             .unwrap();
         let stream = block_on(parent.run(Input::default(), Cancellation::new())).unwrap();
@@ -2955,6 +3093,8 @@ mod tests {
                     Map::new(),
                     None,
                     Cancellation::new(),
+                    None,
+                    None,
                 ),
             )
             .await;
@@ -2987,6 +3127,8 @@ mod tests {
                 Map::new(),
                 None,
                 Cancellation::new(),
+                None,
+                None,
             )
             .await
             .expect_err("child should wait before approval");
@@ -2999,6 +3141,8 @@ mod tests {
                 Map::new(),
                 failure.scene,
                 Cancellation::new(),
+                None,
+                None,
             )
             .await
             .expect("saved child scene should resume");

@@ -91,12 +91,33 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                 let mut final_assistant = None;
                 while let Some(event) = stream.next().await {
                     match event {
-                        Ok(Event::Delta { .. }) => {}
+                        Ok(Event::Delta { message }) => {
+                            super::events::emit(Event::Delta { message }).await;
+                        }
                         Ok(Event::Complete {
-                            message,
+                            mut message,
                             usage: call_usage,
                             finish_reason,
                         }) => {
+                            let call_usage = call_usage.or_else(|| {
+                                if message.role == Role::Assistant {
+                                    message.usage.clone()
+                                } else {
+                                    None
+                                }
+                            });
+                            if call_usage.is_some() {
+                                message.usage = call_usage.clone();
+                            }
+                            let notification = Event::Complete {
+                                message: super::events::project_message(&message),
+                                usage: call_usage.clone(),
+                                finish_reason: finish_reason.clone(),
+                            };
+                            // The incoming Agent stream is already an observation
+                            // projection. Keep its source on the forwarded copy,
+                            // never in the Workflow's original message history.
+                            crate::harness::observation::clear_source(&mut message);
                             let cancelled = finish_reason.as_deref() == Some("cancelled");
                             let kind = match message.role {
                                 Role::Assistant => "model",
@@ -131,6 +152,7 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                                 final_assistant = Some(message.clone());
                             }
                             messages.push(message);
+                            super::events::emit(notification).await;
                             if cancelled {
                                 return AgentRun {
                                     result: Err(Error::new("CANCELLED", "agent run cancelled")),
@@ -169,6 +191,18 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
             })
             .await;
             run.scene = scope.latest();
+            // A continuation only observes new calls; the captured scene owns
+            // cumulative consumption for this same Agent execution. Do not
+            // replace that total with the resumed segment's event usage.
+            if let Some(value) = run.scene.as_ref().and_then(|scene| scene.get("usage")) {
+                match serde_json::from_value(value.clone()) {
+                    Ok(usage) => run.usage = usage,
+                    Err(_) => {
+                        run.result =
+                            Err(Error::new("INVALID_STATE", "Agent scene has invalid usage"));
+                    }
+                }
+            }
             run
         })
     }
@@ -586,12 +620,15 @@ impl State {
         for state in self.nodes.values_mut() {
             for execution in state.executions.values_mut() {
                 let mut execution_usage = None;
+                // Inherited child successes can appear in multiple outer
+                // Attempt scenes. They are one settled call, not new usage.
+                let mut child_calls = BTreeSet::new();
                 for attempt in &mut execution.attempts {
                     // A Graph Node's Attempt is a query projection of the
                     // child's calls, not an extra model call of its own.
                     if let Some(child) = &mut attempt.graph {
                         child.recompute_usage();
-                        attempt.usage = child.usage.clone();
+                        attempt.usage = child.unseen_call_usage(&mut child_calls);
                     }
                     execution_usage = sum_usage(execution_usage, attempt.usage.clone());
                 }
@@ -600,6 +637,25 @@ impl State {
             }
         }
         self.usage = usage;
+    }
+
+    fn unseen_call_usage(&self, seen: &mut BTreeSet<(i64, u32)>) -> Option<Usage> {
+        let mut usage = None;
+        for node in self.nodes.values() {
+            for execution in node.executions.values() {
+                for attempt in &execution.attempts {
+                    let settled = if let Some(child) = &attempt.graph {
+                        child.unseen_call_usage(seen)
+                    } else if seen.insert((execution.exec_id, attempt.idx)) {
+                        attempt.usage.clone()
+                    } else {
+                        None
+                    };
+                    usage = sum_usage(usage, settled);
+                }
+            }
+        }
+        usage
     }
 
     pub fn node(&self, node_id: &str) -> Result<&crate::runtime::workflow::node::State, Error> {

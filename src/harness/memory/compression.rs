@@ -17,7 +17,7 @@ use crate::{
 };
 
 use super::super::hooks::Hooks;
-use super::extraction;
+use super::{extraction, progress};
 
 type Key = (usize, i64);
 static ACTIVE: OnceLock<Mutex<HashSet<Key>>> = OnceLock::new();
@@ -77,7 +77,7 @@ pub(super) fn start<S, C, T, L>(
     let Ok(size) = component.size() else {
         return;
     };
-    let pending = extraction.jobs.contains(snapshot.id);
+    let pending = snapshot.metadata.contains_key(progress::KEY);
     let compress = endpoints.is_some() && total >= size;
     if !pending && !compress {
         return;
@@ -101,98 +101,101 @@ pub(super) fn start<S, C, T, L>(
                     // Independent of cancellation of the foreground Chat. Backend
                     // timeouts remain the backend's responsibility.
                     let cancellation = Cancellation::new();
-                    // Resume the failed stage first, without recompressing its
-                    // already committed Session snapshot. No idle retry loop.
-                    if let Some(extractor) = &config.extraction {
-                        if extraction.jobs.expected(snapshot.id).is_some() {
-                            let current = config.session.read(snapshot.id, &cancellation).await?;
-                            if !extraction.jobs.confirm(snapshot.id, &current) {
-                                extraction.jobs.discard(snapshot.id);
-                            }
-                        }
-                        extraction::resume(
-                            extraction.jobs.clone(),
-                            snapshot.id,
-                            extractor,
-                            config.long.as_ref(),
-                            config.id_fn.ok_or_else(|| {
-                                Error::new(
-                                    "INVALID_ARGUMENTS",
-                                    "automatic extraction requires an ID function",
-                                )
-                            })?,
-                            &cancellation,
-                        )
-                        .await?;
-                    }
-                    if !compress {
-                        return Ok(());
-                    }
-                    let (from, to) = endpoints.unwrap();
                     let current = config.session.read(snapshot.id, &cancellation).await?;
                     if current != snapshot {
                         // Another writer already advanced the snapshot. Only a
                         // subsequent request may start work from the latest state.
                         return Ok(());
                     }
-                    let job = if config.extraction.is_some() {
-                        Some(extraction::Job::new(
-                            snapshot.user_id,
-                            extraction.agent_id,
+                    let mut journal = progress::Journal::new(config.session.clone(), current);
+                    let state = match progress::read(&journal.current)? {
+                        Some(state) => state,
+                        None if compress => {
+                            let (from, to) = endpoints.unwrap();
+                            let job = if config.extraction.is_some() {
+                                Some(extraction::Job::new(
+                                    snapshot.user_id,
+                                    extraction.agent_id,
+                                    from,
+                                    to,
+                                    extraction.input,
+                                )?)
+                            } else {
+                                None
+                            };
+                            let input = hooks
+                                .before_compress(Messages::new(input), &cancellation)
+                                .await?;
+                            let output = component.compress(input, &cancellation).await?;
+                            let usage = output
+                                .as_slice()
+                                .iter()
+                                .filter_map(|m| m.usage.clone())
+                                .reduce(|a, b| {
+                                    crate::model::token::merge(Some(a), Some(b)).unwrap()
+                                });
+                            let output = hooks.after_compress(output, &cancellation).await?;
+                            let state = progress::State::Summary {
+                                base: Box::new(progress::Base::new(&snapshot)),
+                                summary: summary(&output)?,
+                                usage: usage.map(Box::new),
+                                from,
+                                to,
+                                extraction: job,
+                            };
+                            // Save the successfully prepared result before the
+                            // summary commit. A lost response resumes this scene.
+                            journal.save(Some(&state), &cancellation).await?;
+                            state
+                        }
+                        None => return Ok(()),
+                    };
+                    let job = match state {
+                        progress::State::Summary {
+                            base,
+                            summary,
+                            usage,
                             from,
                             to,
-                            extraction.input,
-                        )?)
-                    } else {
-                        None
-                    };
-                    let input = hooks
-                        .before_compress(Messages::new(input), &cancellation)
-                        .await?;
-                    let output = component.compress(input, &cancellation).await?;
-                    let usage = output
-                        .as_slice()
-                        .iter()
-                        .filter_map(|m| m.usage.clone())
-                        .reduce(|a, b| crate::model::token::merge(Some(a), Some(b)).unwrap());
-                    let output = hooks.after_compress(output, &cancellation).await?;
-                    let summary = summary(&output)?;
-                    let mut updated = snapshot;
-                    updated.summary = Some(summary);
-                    // Replace the current invocation's Usage, never add old summary
-                    // usage or the Chat ledger to this new summary's accounting.
-                    updated.usage = usage;
-                    let from = updated
-                        .metadata
-                        .get("from")
-                        .and_then(serde_json::Value::as_i64)
-                        .unwrap_or(from);
-                    updated.metadata.insert("from".into(), from.into());
-                    updated.metadata.insert("to".into(), to.into());
-                    // Submitted updated_time is the original CAS marker. CONFLICT
-                    // never causes a stale result to overwrite a fresh snapshot.
-                    let session_id = updated.id;
-                    if let Some(job) = job {
-                        // Retain the original pairs before the commit call. A
-                        // lost acknowledgement is reconciled on a later request,
-                        // without repeating a successfully committed summary.
-                        extraction
-                            .jobs
-                            .insert(session_id, job.awaiting_commit(updated.clone()));
-                    }
-                    let committed = config.session.update(updated, &cancellation).await?;
-                    if let Some(extractor) = &config.extraction {
-                        if !extraction.jobs.confirm(session_id, &committed) {
-                            // Do not discard retained input based on a malformed
-                            // acknowledgement; reconcile by reading next time.
-                            return Err(Error::new(
-                                "INVALID_RESPONSE",
-                                "Session update did not acknowledge the expected summary",
-                            ));
+                            extraction,
+                        } => {
+                            if !base.matches(&journal.current) {
+                                // A different summary has superseded this
+                                // snapshot; preserve it and drop stale work only.
+                                journal.save(None, &cancellation).await?;
+                                return Ok(());
+                            }
+                            let mut updated = journal.current.clone();
+                            updated.summary = Some(summary);
+                            updated.usage = usage.map(|value| *value); // Replace, never accumulate.
+                            let from = updated
+                                .metadata
+                                .get("from")
+                                .and_then(serde_json::Value::as_i64)
+                                .unwrap_or(from);
+                            updated.metadata.insert("from".into(), from.into());
+                            updated.metadata.insert("to".into(), to.into());
+                            let next = extraction
+                                .as_ref()
+                                .map(|job| progress::State::Extraction { job: job.clone() });
+                            // Summary, coverage, Usage and extraction handoff
+                            // are committed by the same existing conditional CRUD.
+                            progress::encode(&mut updated, next.as_ref())?;
+                            journal.update(updated, &cancellation).await?;
+                            extraction
                         }
-                        extraction::resume(
-                            extraction.jobs,
-                            session_id,
+                        progress::State::Extraction { job } => Some(job),
+                    };
+                    if let Some(mut job) = job {
+                        let extractor = config.extraction.as_ref().ok_or_else(|| {
+                            Error::new(
+                                "INVALID_ARGUMENTS",
+                                "pending Memory extraction requires its configured component",
+                            )
+                        })?;
+                        extraction::resume_job(
+                            &mut job,
+                            &mut journal,
                             extractor,
                             config.long.as_ref(),
                             config.id_fn.ok_or_else(|| {
@@ -204,6 +207,7 @@ pub(super) fn start<S, C, T, L>(
                             &cancellation,
                         )
                         .await?;
+                        journal.save(None, &cancellation).await?;
                     }
                     Ok::<_, Error>(())
                 })
@@ -213,7 +217,7 @@ pub(super) fn start<S, C, T, L>(
                 // Do not log private history, model output or backend credentials.
                 Ok(Err(_)) => {
                     eprintln!(
-                        "heart: background memory processing failed; completed stages retained"
+                        "heart: background memory processing failed; continue from saved progress on a later request"
                     )
                 }
                 Err(_) => {

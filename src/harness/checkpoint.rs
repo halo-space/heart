@@ -1,7 +1,7 @@
 //! Private Agent checkpoint I/O. Component instances never enter snapshots.
 use std::{future::Future, pin::Pin, sync::Arc};
 
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::{Cancellation, Error, event::Event};
 
@@ -71,6 +71,30 @@ pub(crate) fn invalid(message: &str) -> Error {
     Error::new("INVALID_STATE", message)
 }
 
+/// Check ownership from the canonical state and its saved original input.
+/// Root metadata can be empty; the original query still owns the run and must
+/// never be bypassed when continuation changes payload.
+pub(crate) fn identity_matches(state: &Value, metadata: &Map<String, Value>) -> bool {
+    let owners = [
+        state.get("metadata"),
+        state.get("query").and_then(|query| query.get("metadata")),
+    ];
+    ["tenant_id", "user_id", "agent_id", "session_id", "chat_id"]
+        .into_iter()
+        .all(|key| {
+            owners.iter().all(|owner| {
+                owner
+                    .and_then(Value::as_object)
+                    .and_then(|saved| saved.get(key))
+                    .is_none_or(|value| metadata.get(key) == Some(value))
+            })
+        })
+        && state
+            .get("chat_id")
+            .filter(|value| !value.is_null())
+            .is_none_or(|value| metadata.get("chat_id") == Some(value))
+}
+
 /// A terminal checkpoint is already settled: return its recorded result,
 /// without invoking a model, Tool, hooks, Memory writeback or an evaluator.
 pub(crate) fn terminal(state: &Value) -> Result<Option<Result<Event, Error>>, Error> {
@@ -105,7 +129,9 @@ pub(crate) fn record_result(state: &mut Value, result: &Result<Event, Error>) {
             usage,
             finish_reason,
         }) => {
-            state["final_message"] = serde_json::to_value(message).expect("Message serialization");
+            state["final_message"] =
+                serde_json::to_value(crate::harness::observation::original_message(message))
+                    .expect("Message serialization");
             state["final_usage"] = serde_json::to_value(usage).expect("Usage serialization");
             state["finish_reason"] =
                 serde_json::to_value(finish_reason).expect("finish reason serialization");

@@ -24,6 +24,8 @@ pub struct Session {
     pub usage: Option<Usage>,
     pub status: Status,
     /// Summary coverage markers (`from`/`to`) and application extensions.
+    /// Harness reserves `memory` for unfinished background processing. Preserve
+    /// it on unrelated updates; it is not Runtime/Checkpoint state.
     pub metadata: Map<String, Value>,
     pub created_time: i64,
     pub updated_time: i64,

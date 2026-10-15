@@ -3,6 +3,34 @@ use crate::{Message, core::memory::InMemory, model::content::part::Part};
 use serde_json::json;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+#[allow(clippy::too_many_arguments)]
+async fn write<L: Memory>(
+    task: &mut Task,
+    user_id: i64,
+    from: i64,
+    to: i64,
+    component: &memory::extraction::Configured,
+    store: &L,
+    next_id: fn() -> i64,
+    cancellation: &Cancellation,
+) -> Result<(), Error> {
+    if !prepare(
+        task,
+        user_id,
+        from,
+        to,
+        component,
+        store,
+        next_id,
+        cancellation,
+    )
+    .await?
+    {
+        write_prepared(task, store, cancellation).await?;
+    }
+    Ok(())
+}
+
 #[derive(Clone, Default)]
 struct Extractor {
     calls: Arc<AtomicUsize>,

@@ -35,6 +35,10 @@ pub struct State {
     pub r#type: String,
     pub status: String,
     pub usage: Option<Usage>,
+    /// Root Agent execution, created when it first delegates a child. Root
+    /// messages/steps remain above the Attempt instead of being duplicated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution: Option<node::Execution>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<GraphState>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -43,6 +47,10 @@ pub struct State {
     pub history: Vec<graph::History>,
     #[serde(default)]
     pub messages: Messages,
+    /// Internal steps of a graphless/root Agent. Planned task steps belong
+    /// exclusively to their node's current Attempt instead.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub steps: Vec<node::Step>,
     pub error: Option<Error>,
     pub final_message: Option<Message>,
     #[serde(default)]

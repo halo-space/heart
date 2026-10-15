@@ -8,7 +8,8 @@ use serde_json::Value;
 #[derive(Clone)]
 pub(crate) struct Scope {
     restore: Arc<Mutex<Option<Value>>>,
-    latest: Arc<Mutex<Option<Value>>>,
+    latest: Arc<Mutex<Option<Arc<Value>>>>,
+    id_fn: Option<fn() -> i64>,
 }
 
 impl Scope {
@@ -16,7 +17,13 @@ impl Scope {
         Self {
             restore: Arc::new(Mutex::new(restore)),
             latest: Arc::new(Mutex::new(None)),
+            id_fn: id_fn(),
         }
+    }
+
+    pub(crate) fn with_id_fn(mut self, id_fn: Option<fn() -> i64>) -> Self {
+        self.id_fn = self.id_fn.or(id_fn);
+        self
     }
 
     pub(crate) fn take_restore(&self) -> Option<Value> {
@@ -25,11 +32,15 @@ impl Scope {
 
     pub(crate) fn capture(&self, state: Value) {
         if let Ok(mut latest) = self.latest.lock() {
-            *latest = Some(state);
+            *latest = Some(Arc::new(state));
         }
     }
 
     pub(crate) fn latest(&self) -> Option<Value> {
+        self.latest_shared().map(|state| (*state).clone())
+    }
+
+    pub(crate) fn latest_shared(&self) -> Option<Arc<Value>> {
         self.latest.lock().ok()?.clone()
     }
 }
@@ -47,6 +58,11 @@ where
 
 pub(crate) fn restore() -> Option<Value> {
     CURRENT.try_with(Scope::take_restore).ok().flatten()
+}
+
+/// Run configuration inherited by children, never a serialized generator.
+pub(crate) fn id_fn() -> Option<fn() -> i64> {
+    CURRENT.try_with(|scope| scope.id_fn).ok().flatten()
 }
 
 /// An embedded run has an enclosing owner, even on its first call when there

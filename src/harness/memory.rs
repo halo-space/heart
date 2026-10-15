@@ -24,6 +24,7 @@ use crate::runtime::agent::usage::Ledger;
 
 mod compression;
 mod extraction;
+mod progress;
 
 type LoadFuture = Pin<Box<dyn Future<Output = Result<Vec<Message>, Error>> + 'static>>;
 type CreateFuture = Pin<Box<dyn Future<Output = Result<chat::Chat, Error>> + 'static>>;
@@ -42,7 +43,7 @@ trait Entry: Send + Sync {
     fn save(&self, value: chat::Chat, state: Option<Value>) -> SaveFuture;
 }
 
-struct Typed<S, C, T, L>(Arc<memory::Config<S, C, T, L>>, Arc<extraction::Jobs>);
+struct Typed<S, C, T, L>(Arc<memory::Config<S, C, T, L>>);
 
 impl<S, C, T, L> Entry for Typed<S, C, T, L>
 where
@@ -62,8 +63,7 @@ where
         cancellation: Cancellation,
     ) -> LoadFuture {
         let config = self.0.clone();
-        let jobs = self.1.clone();
-        Box::pin(async move { load(config, jobs, metadata, hooks, &cancellation).await })
+        Box::pin(async move { load(config, metadata, hooks, &cancellation).await })
     }
 
     fn create(&self, input: Input, owner: short::Type, cancellation: Cancellation) -> CreateFuture {
@@ -211,10 +211,7 @@ impl History {
         T: trace::Store + 'static,
         L: Memory + 'static,
     {
-        self.0 = Some(Arc::new(Typed(
-            Arc::new(config),
-            Arc::new(extraction::Jobs::default()),
-        )));
+        self.0 = Some(Arc::new(Typed(Arc::new(config))));
     }
 
     pub(crate) fn validate(&self) -> Result<(), Error> {
@@ -291,6 +288,10 @@ impl Run {
         self.usage.settle(usage);
     }
 
+    pub(crate) fn settle_child(&self, usage: Option<crate::model::token::Usage>) {
+        self.usage.settle_child(usage);
+    }
+
     pub(crate) fn refine_last(&self, usage: Option<crate::model::token::Usage>) {
         self.usage.refine_last(usage);
     }
@@ -312,13 +313,6 @@ impl Run {
             entry.save(record, None).await?;
         }
         Ok(())
-    }
-
-    pub(crate) async fn close(
-        &self,
-        result: Result<crate::event::Event, Error>,
-    ) -> Result<crate::event::Event, Error> {
-        self.close_with_state(result, None, None).await
     }
 
     pub(crate) async fn close_with_state(
@@ -349,7 +343,7 @@ impl Run {
                 } else {
                     chat::Status::Completed
                 },
-                Some(message.clone()),
+                Some(crate::harness::observation::original_message(message)),
             ),
             Err(error) if error.code == "WAITING" => (chat::Status::Running, None),
             Err(error) => (
@@ -460,7 +454,6 @@ impl Identity {
 
 async fn load<S, C, T, L>(
     config: Arc<memory::Config<S, C, T, L>>,
-    jobs: Arc<extraction::Jobs>,
     metadata: Map<String, Value>,
     hooks: Hooks,
     cancellation: &Cancellation,
@@ -514,11 +507,15 @@ where
     }
     let mut compression_input = messages.clone();
     let mut extraction_input = Vec::new();
-    // The summary's own generation Usage is display/audit data only.  It is
-    // not part of the next compression window: adding it here would charge
-    // the same historical input again after the summary has replaced it.
-    // The threshold is solely the Usage of completed Chats after `from/to`.
-    let mut total: u64 = 0;
+    // The trigger uses the current summary's recorded Usage plus uncovered
+    // completed Chat Usage. Covered Chats and replaced summaries are not
+    // counted again; this is the agreed threshold policy, not tokenization
+    // of the next model request or an estimate of the summary's text length.
+    let mut total = if session.summary.is_some() {
+        compression::tokens(session.usage.as_ref())
+    } else {
+        0
+    };
     let mut endpoints = None;
     let mut blocked = false;
     for value in chats.into_iter().skip(after) {
@@ -604,7 +601,6 @@ where
             total,
             hooks,
             extraction::Work {
-                jobs,
                 agent_id: identity.agent_id,
                 input: Messages::new(extraction_input),
             },
@@ -654,5 +650,6 @@ fn context(label: &str, content: &str, metadata: Map<String, Value>) -> Message 
         ),
     });
     message.metadata = metadata;
+    crate::harness::observation::clear_source(&mut message);
     message
 }

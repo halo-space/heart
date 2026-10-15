@@ -5,6 +5,22 @@ use crate::runtime::cancellation::Cancellation;
 
 pub type Error = crate::Error;
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Behavior {
+    Allow,
+    Deny,
+    Ask,
+}
+
+/// A completed policy decision, not a business Message or a check failure.
+/// Rule chaining is internal to the policy; no unresolved passthrough escapes.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct Decision {
+    pub behavior: Behavior,
+    pub reason: Option<String>,
+}
+
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Request {
     pub action: String,
@@ -20,5 +36,5 @@ pub trait Permission: Send + Sync {
         &self,
         request: &Request,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<Decision, Error>> + Send;
 }

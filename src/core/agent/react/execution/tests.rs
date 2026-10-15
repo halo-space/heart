@@ -14,6 +14,7 @@ struct Probe {
     evaluations: BTreeMap<(String, String), usize>,
     final_evaluations: usize,
     eval_error: bool,
+    eval_wait: bool,
 }
 
 struct Model(Arc<Mutex<Probe>>);
@@ -157,6 +158,10 @@ impl Tool for CheckedTool {
             .entry((call.name.clone(), target.clone()))
             .or_default() += 1;
         if call.name == "lookup" && target == "a" {
+            if probe.eval_wait {
+                probe.eval_wait = false;
+                return Err(Error::new("WAITING", "business evaluation needs approval"));
+            }
             if probe.eval_error {
                 return Err(Error::new("TIMEOUT", "eval service unavailable"));
             }
@@ -186,6 +191,118 @@ fn has_feedback(messages: &Messages) -> bool {
         .0
         .iter()
         .any(|message| message.values.contains_key("business_feedback"))
+}
+
+#[test]
+fn planned_eval_wait_resumes_the_same_attempt_and_keeps_feedback_local() {
+    block_on(async {
+        let probe = Arc::new(Mutex::new(Probe {
+            eval_wait: true,
+            ..Default::default()
+        }));
+        let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+        let agent = crate::agent::react()
+            .model(Model(probe.clone()))
+            .toolkit(
+                Toolkit::new()
+                    .tool(CheckedTool::new("lookup", probe.clone()))
+                    .tool(CheckedTool::new("clock", probe.clone())),
+            )
+            .with_id_fn(next_id)
+            .with_max_concurrency(2)
+            .checkpoint(checkpoint.clone())
+            .build()
+            .unwrap();
+        let input = Input {
+            metadata: part_data(json!({"chat_id":602})),
+            payload: vec![],
+        };
+        let events = agent
+            .run(input.clone(), Cancellation::new())
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+        assert!(matches!(events.last(), Some(Err(error)) if error.code == "WAITING"));
+        let before = checkpoint.load(602, &Cancellation::new()).await.unwrap();
+        let attempt = &before["nodes"]["a"]["execution"]["attempts"][0];
+        assert_eq!(attempt["steps"][0]["stage"], "eval");
+        assert_eq!(before["nodes"]["b"]["status"], "succeeded");
+        let b = before["nodes"]["b"].clone();
+        drop(agent);
+        let restored = crate::agent::react()
+            .model(Model(probe.clone()))
+            .toolkit(
+                Toolkit::new()
+                    .tool(CheckedTool::new("lookup", probe.clone()))
+                    .tool(CheckedTool::new("clock", probe.clone())),
+            )
+            .with_id_fn(next_id)
+            .with_max_concurrency(2)
+            .checkpoint(checkpoint.clone())
+            .build()
+            .unwrap();
+        let events = restored
+            .run(input, Cancellation::new())
+            .await
+            .unwrap()
+            .collect::<Vec<_>>()
+            .await;
+        assert!(events.iter().all(Result::is_ok), "{events:?}");
+        let after = checkpoint.load(602, &Cancellation::new()).await.unwrap();
+        assert_eq!(
+            after["nodes"]["b"], b,
+            "completed sibling remains unchanged"
+        );
+        assert_eq!(
+            after["nodes"]["a"]["execution"]["exec_id"],
+            before["nodes"]["a"]["execution"]["exec_id"]
+        );
+        assert_eq!(
+            after["nodes"]["a"]["execution"]["attempts"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            after["nodes"]["a"]["execution"]["attempts"][0]["created_time"],
+            attempt["created_time"]
+        );
+        let actual: Messages =
+            serde_json::from_value(after["nodes"]["a"]["messages"].clone()).unwrap();
+        assert!(!has_feedback(&actual));
+        assert!(
+            actual
+                .0
+                .iter()
+                .all(|m| m.role != Role::System && m.role != Role::User)
+        );
+        let context: Messages = serde_json::from_value(
+            after["nodes"]["a"]["execution"]["attempts"][0]["messages"].clone(),
+        )
+        .unwrap();
+        assert!(has_feedback(&context));
+        let probe = probe.lock().unwrap();
+        assert!(probe.calls.values().all(|count| *count == 1));
+        assert_eq!(probe.evaluations[&("lookup".into(), "a".into())], 2);
+        assert_eq!(probe.evaluations[&("lookup".into(), "b".into())], 1);
+        let request = &probe
+            .requests
+            .iter()
+            .find(|(node, req)| node.as_deref() == Some("a") && has_feedback(&req.messages))
+            .unwrap()
+            .1;
+        assert_eq!(
+            request
+                .messages
+                .0
+                .iter()
+                .filter(|m| m.metadata.get("call_id") == Some(&json!("lookup")))
+                .count(),
+            1
+        );
+    });
 }
 
 #[test]

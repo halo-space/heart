@@ -387,8 +387,9 @@ impl session::Store for LostAckSession {
         value: session::Session,
         c: &Cancellation,
     ) -> Result<session::Session, Error> {
+        let changes_summary = self.inner.read(value.id, c).await?.summary != value.summary;
         let mut value = self.inner.update(value, c).await?;
-        if self.fail.swap(false, Ordering::SeqCst) {
+        if changes_summary && self.fail.swap(false, Ordering::SeqCst) {
             if self.malformed {
                 value.user_id += 1000;
                 return Ok(value);
@@ -560,9 +561,9 @@ async fn background_does_not_block_switch_foreground_or_duplicate_a_session() {
 
 #[tokio::test]
 async fn rolling_summary_threshold_and_usage_are_replaced_not_accumulated() {
-    // Only the post-summary Chat is counted.  The old summary's generation
-    // Usage must not be added to this threshold a second time.
-    let compressor = Compressor::new(Some(10));
+    // Current summary Usage (10) plus the uncovered Chat Usage (10) reaches
+    // 20. The covered Chat Usage (40) must not be counted again.
+    let compressor = Compressor::new(Some(20));
     let config = config().await.with_compression(compressor.clone());
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(40))).await;
     seed(
@@ -589,6 +590,7 @@ async fn rolling_summary_threshold_and_usage_are_replaced_not_accumulated() {
         .unwrap();
     run(config.clone(), Model::default(), 301, 101).await;
     idle(&config, 101).await;
+    assert_eq!(compressor.calls.load(Ordering::SeqCst), 1);
     let stored = stored(&config).await;
     assert_eq!(stored.metadata["from"], 201);
     assert_eq!(stored.metadata["to"], 202);
@@ -599,6 +601,31 @@ async fn rolling_summary_threshold_and_usage_are_replaced_not_accumulated() {
     assert!(input.contains("question 202"));
     assert!(!input.contains("question 201"));
     assert!(!input.contains("current 301"));
+}
+
+#[tokio::test]
+async fn covered_chat_usage_is_not_added_to_the_current_summary_threshold() {
+    let compressor = Compressor::new(Some(21));
+    let config = config().await.with_compression(compressor.clone());
+    seed(&config, 201, 101, chat::Status::Completed, Some(usage(40))).await;
+    seed(&config, 202, 101, chat::Status::Completed, Some(usage(10))).await;
+    let mut old = stored(&config).await;
+    old.summary = Some("old summary".into());
+    old.usage = Some(usage(10));
+    old.metadata
+        .extend([("from".into(), 201.into()), ("to".into(), 201.into())]);
+    let old = config
+        .session
+        .update(old, &Cancellation::new())
+        .await
+        .unwrap();
+
+    run(config.clone(), Model::default(), 301, 101).await;
+    idle(&config, 101).await;
+
+    // 10 + 10 < 21, even though the already-covered Chat used another 40.
+    assert_eq!(compressor.calls.load(Ordering::SeqCst), 0);
+    assert_eq!(stored(&config).await, old);
 }
 
 #[tokio::test]
@@ -983,7 +1010,6 @@ async fn newer_snapshot_is_skipped_before_compressor_io() {
         10,
         Hooks::default(),
         extraction::Work {
-            jobs: Arc::new(extraction::Jobs::default()),
             agent_id: 11,
             input: Messages::default(),
         },

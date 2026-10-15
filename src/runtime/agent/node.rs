@@ -3,8 +3,9 @@ use serde_json::Map;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::Error;
-use crate::components::message::Messages;
+use crate::components::message::{Message, Messages};
 use crate::components::model::token::{InputDetails, OutputDetails, Usage};
+use crate::components::tool::{Call, Evaluation};
 
 /// Runtime state of one logical Agent Plan node.
 ///
@@ -37,6 +38,12 @@ pub struct Attempt {
     /// evaluation feedback. They need not equal the node's downstream output.
     #[serde(default)]
     pub messages: Messages,
+    /// Dynamic child nodes of this Attempt; not members of the static Plan.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub nodes: std::collections::BTreeMap<String, State>,
+    /// Complete Agent scene for a child execution's current Attempt.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent: Option<serde_json::Value>,
     pub error: Option<Error>,
 }
 
@@ -59,6 +66,18 @@ pub struct Step {
     #[serde(default)]
     pub attempts: Vec<StepAttempt>,
     pub error: Option<Error>,
+    /// Current Tool lifecycle stage, independent of execution status.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// Actual arguments after before; retained unchanged while evaluating.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<Call>,
+    /// Completed call/after result, not an event observation copy.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<Message>,
+    /// Completed business evaluation, including a rejection's feedback.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub eval: Option<Evaluation>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
@@ -121,6 +140,8 @@ impl State {
                 finish_reason: None,
                 steps: Vec::new(),
                 messages: Messages::default(),
+                nodes: Default::default(),
+                agent: None,
                 error: None,
             }],
             messages: Messages::default(),
@@ -152,6 +173,8 @@ impl State {
             finish_reason: None,
             steps: Vec::new(),
             messages: Messages::default(),
+            nodes: Default::default(),
+            agent: None,
             error: None,
         });
         execution.error = None;

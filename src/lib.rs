@@ -3,6 +3,8 @@
 //! This crate starts from the frozen public contracts. Runtime scheduling is
 //! intentionally added after these contracts compile and are covered by tests.
 
+extern crate self as halo_agents;
+
 pub mod agent;
 mod components;
 pub mod core;
@@ -40,4 +42,48 @@ pub use components::skill;
 pub use components::tool;
 pub use components::workspace;
 pub use core::provider;
+/// Optional declaration macro for the existing Node contract.
+/// Ordinary functions work without the attribute; this only checks their
+/// contract at the definition site. Components may use `call = method` or
+/// `signal = method` on an inherent impl, without a wrapping Node object.
+///
+/// ```
+/// use halo_agents::{Cancellation, Error, node, runtime::workflow::WorkflowBuilder};
+/// use schemars::JsonSchema;
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Deserialize, JsonSchema)]
+/// struct Input { value: i64 }
+/// #[derive(Serialize, JsonSchema)]
+/// struct Output { value: i64 }
+///
+/// #[node]
+/// async fn calculate(input: Input, _: Cancellation) -> Result<Output, Error> {
+///     Ok(Output { value: input.value + 1 })
+/// }
+///
+/// let mut builder = WorkflowBuilder::new("example");
+/// builder.add_node("calculate", calculate)?;
+/// # Ok::<(), halo_agents::runtime::workflow::GraphError>(())
+/// ```
+///
+/// ```compile_fail
+/// use halo_agents::{Cancellation, Error, node};
+/// #[node]
+/// fn synchronous(_: i64, _: Cancellation) -> Result<i64, Error> { Ok(1) }
+/// ```
+pub use heart_node_macros::node;
 pub use runtime::cancellation::Cancellation;
+
+// Compile the attribute in the defining library too, not only downstream
+// examples. This is a test-only assertion, with no node or runtime created.
+#[cfg(test)]
+const _: () = {
+    #[crate::node]
+    async fn macro_internal_contract(
+        input: crate::Messages,
+        _: crate::Cancellation,
+    ) -> Result<crate::Messages, crate::Error> {
+        Ok(input)
+    }
+};

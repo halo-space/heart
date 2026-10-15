@@ -9,6 +9,7 @@ struct Task<M: Chat> {
     exec_id: i64,
     state: ReActState<M>,
     messages: Messages,
+    previous_usage: Option<crate::model::token::Usage>,
 }
 
 pub(super) struct TaskProgress<M: Chat> {
@@ -98,7 +99,8 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 .state(node_id)?
                 .execution
                 .as_ref()
-                .map(|execution| execution.messages.clone())
+                .and_then(|execution| execution.attempts.last())
+                .map(|attempt| attempt.messages.clone())
                 .unwrap_or_default()
         } else {
             Messages::default()
@@ -127,6 +129,12 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
         };
         if resumed
             && state.external_resume_nodes.remove(&node_id)
+            && !graph
+                .state(&node_id)?
+                .execution
+                .as_ref()
+                .and_then(|execution| execution.attempts.last())
+                .is_some_and(|attempt| tools::pending(&attempt.steps))
             && let Some(input) = state.resume_input.clone()
         {
             messages.push(crate::components::agent::chat::user_message(input));
@@ -134,10 +142,53 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
         let mut metadata = state.metadata.clone();
         metadata.insert("node_id".into(), json!(node_id));
         metadata.insert("exec_id".into(), json!(exec_id));
-        let task = Task {
+        let previous_usage = if resumed {
+            graph
+                .state(&node_id)?
+                .execution
+                .as_ref()
+                .and_then(|execution| execution.attempts.last())
+                .and_then(|attempt| attempt.usage.clone())
+        } else {
+            None
+        };
+        let steps = if resumed {
+            graph
+                .state(&node_id)?
+                .execution
+                .as_ref()
+                .and_then(|execution| execution.attempts.last())
+                .map(|attempt| attempt.steps.clone())
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        let child_nodes = if resumed {
+            graph
+                .state(&node_id)?
+                .execution
+                .as_ref()
+                .and_then(|execution| execution.attempts.last())
+                .map(|attempt| attempt.nodes.clone())
+                .unwrap_or_default()
+        } else {
+            BTreeMap::new()
+        };
+        let output = if resumed {
+            graph
+                .state(&node_id)?
+                .execution
+                .as_ref()
+                .map(|execution| execution.messages.clone())
+                .unwrap_or_default()
+        } else {
+            Messages::default()
+        };
+        let mut task = Task {
             node_id,
             exec_id,
-            messages: existing,
+            messages: output,
+            previous_usage,
             state: ReActState {
                 model: state.model.clone(),
                 toolkit: state.toolkit.clone(),
@@ -153,7 +204,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 graph: None,
                 resume_nodes: BTreeSet::new(),
                 external_resume_nodes: BTreeSet::new(),
-                id_fn: None,
+                id_fn: state.id_fn,
                 checkpoint: None,
                 checkpoint_id: None,
                 plan_execution: false,
@@ -171,10 +222,16 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 resume_input: None,
                 pending_calls: VecDeque::new(),
                 active_tools: FuturesUnordered::new(),
+                tool_progress: VecDeque::new(),
                 child_events: VecDeque::new(),
+                child_relay: crate::harness::subagent::Relay::default(),
                 pending_subagents: BTreeMap::new(),
                 tool_results: BTreeMap::new(),
                 evaluations: BTreeMap::new(),
+                steps,
+                child_nodes,
+                child_nodes_dirty: false,
+                root: crate::harness::subagent::Root::default(),
                 partial: Message::new(Role::Assistant),
                 done: false,
                 hooks: state.hooks.clone(),
@@ -187,6 +244,9 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 input_tokens: 0,
             },
         };
+        if resumed {
+            tools::restore(&mut task.state)?;
+        }
         state.active_tasks.push(Box::pin(advance(task)));
     }
     Ok(())
@@ -200,55 +260,85 @@ pub(super) fn commit<M: Chat + 'static>(
         mut task,
         mut result,
     } = progress;
-    if let Ok(event) = &mut result {
-        let message = match event {
-            Event::Delta { message } | Event::Complete { message, .. } => message,
-        };
-        message
-            .metadata
-            .insert("node_id".into(), json!(task.node_id));
-        message
-            .metadata
-            .insert("exec_id".into(), json!(task.exec_id));
-        if matches!(event, Event::Complete { .. }) {
-            let Event::Complete { message, .. } = event else {
-                unreachable!()
-            };
-            task.messages.push(message.clone());
+    // A forwarded child Complete is observation, not this task's output or
+    // model input. Only the separately committed delegation result belongs here.
+    let child_observation = match &result {
+        Ok(Event::Delta { message } | Event::Complete { message, .. }) => {
+            match (
+                message.metadata.get("node_id").and_then(Value::as_str),
+                message.metadata.get("exec_id").and_then(Value::as_i64),
+            ) {
+                (Some(node_id), Some(exec_id)) => {
+                    node_id != task.node_id || exec_id != task.exec_id
+                }
+                _ => false,
+            }
         }
+        _ => false,
+    };
+    if !child_observation && let Ok(Event::Complete { message, .. }) = &result {
+        let mut original = message.clone();
+        crate::harness::observation::clear_source(&mut original);
+        task.messages.push(original);
     }
     if !task.state.done {
         let mut committed = task.state.messages.clone();
-        if matches!(
-            &result,
-            Ok(Event::Complete {
-                finish_reason: Some(reason),
-                ..
-            }) if reason == "tool"
-        ) && let Ok(Event::Complete { message, .. }) = &result
+        if !child_observation
+            && matches!(
+                &result,
+                Ok(Event::Complete {
+                    finish_reason: Some(reason),
+                    ..
+                }) if reason == "tool"
+            )
+            && let Ok(Event::Complete { message, .. }) = &result
         {
-            committed.push(message.clone());
+            let mut original = message.clone();
+            crate::harness::observation::clear_source(&mut original);
+            committed.push(original);
         }
         let graph = state.graph.as_mut().expect("executing plan graph");
         let node = graph.state_mut(&task.node_id)?;
-        node.messages = Some(committed.clone());
+        node.messages = Some(task.messages.clone());
         if let Some(execution) = node.execution.as_mut() {
-            execution.messages = committed.clone();
+            execution.messages = task.messages.clone();
         }
-        node.current_attempt_mut()?.messages = committed;
+        let attempt = node.current_attempt_mut()?;
+        attempt.messages = committed;
+        attempt.steps = task.state.steps.clone();
+        if task.state.child_nodes_dirty {
+            attempt.nodes = task.state.child_nodes.clone();
+            task.state.child_nodes_dirty = false;
+        }
+        if let Ok(event) = &mut result {
+            crate::harness::observation::associate(
+                event,
+                state.query.metadata.get("chat_id").and_then(Value::as_i64),
+                Some((&task.node_id, task.exec_id)),
+            );
+        }
         state.active_tasks.push(Box::pin(advance(task)));
         return Ok((result.ok(), false));
     }
-    let usage = task.state.run.usage();
+    let new_usage = task.state.run.usage();
     // Settle each task's actual model calls once, including failure/cancel.
     // Individual forwarded Events retain their per-call Usage unchanged.
-    state.run.settle(usage.clone());
+    state.run.settle(new_usage.clone());
+    let usage = crate::model::token::merge(task.previous_usage, new_usage);
     let graph = state.graph.as_mut().expect("executing plan graph");
     let mut context = task.state.messages.clone();
     // An eval error may stop the task before the normal ordered drain. Keep
     // successful call facts already emitted in that incomplete batch too.
     context.0.extend(task.state.tool_results.values().cloned());
     let committed = match &result {
+        Err(error) if error.code == "WAITING" => {
+            graph.wait(&task.node_id)?;
+            graph
+                .state_mut(&task.node_id)?
+                .set_attempt_result(Status::Waiting, usage, None)?;
+            state.task_error.get_or_insert_with(|| error.clone());
+            Ok((None, true)) // Finish independent siblings before returning waiting.
+        }
         Err(error) => {
             graph.fail_with_usage(&task.node_id, Some(error.clone()), usage)?;
             state.task_error.get_or_insert_with(|| error.clone());
@@ -265,6 +355,7 @@ pub(super) fn commit<M: Chat + 'static>(
                 .state_mut(&task.node_id)?
                 .set_attempt_result(Status::Cancelled, usage, None)?;
             state.partial = message.clone();
+            crate::harness::observation::clear_source(&mut state.partial);
             // Other in-flight tasks get a chance to emit and settle their own
             // partial cancellation result. The last one closes the outer run.
             state.done = state.active_tasks.is_empty();
@@ -289,11 +380,19 @@ pub(super) fn commit<M: Chat + 'static>(
     // Attempt messages retain the actual invocation context, including Tool
     // evaluation feedback used by this task. Node/execution messages remain
     // the result stream exposed to dependent tasks, not internal feedback.
-    graph
-        .state_mut(&task.node_id)?
-        .current_attempt_mut()?
-        .messages = context;
-    committed
+    let attempt = graph.state_mut(&task.node_id)?.current_attempt_mut()?;
+    attempt.messages = context;
+    attempt.steps = task.state.steps;
+    attempt.nodes = task.state.child_nodes;
+    let mut committed = committed?;
+    if let Some(event) = &mut committed.0 {
+        crate::harness::observation::associate(
+            event,
+            state.query.metadata.get("chat_id").and_then(Value::as_i64),
+            Some((&task.node_id, task.exec_id)),
+        );
+    }
+    Ok(committed)
 }
 
 pub(super) fn finalize<M: Chat>(state: &mut ReActState<M>) -> Result<(), Error> {

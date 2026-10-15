@@ -22,6 +22,12 @@ src/
 
 项目使用 Rust 2024 Edition，最低目标版本为 Rust 1.98。
 
+Agent 和 Workflow 的 `run(...)` 均返回统一的 `Event::Delta/Complete` 流。调用方持续消费流来驱动运行；Workflow 中的嵌套子图共用这一条输出流。完整业务结果保留在 Runtime 状态中，事件副本不包含供下游使用的 `values`。
+
+普通异步函数可直接交给 Workflow 的 `add_node`，不需要包装类。可选的 `#[node]` 在定义位置校验契约；已有组件可通过 `#[node(call = method)]` 或 `#[node(signal = method)]` 生成同一 Node 契约的调用胶水，原生方法仍可独立使用。
+
+Memory 后台压缩与长期提取的处理现场保存在 Session metadata；使用持久化 Session 后端时，重启后可由下次请求继续未完成阶段，复用已保存结果和写入 ID。默认内存后端不具备落盘能力；这份后台现场不属于 Runtime Checkpoint。
+
 ## 构建与测试
 
 ```bash
