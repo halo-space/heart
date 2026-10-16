@@ -17,6 +17,7 @@ pub enum Signal<O> {
 }
 
 pub trait Node<I, O, E>: Send + Sync + 'static {
+    /// Execute this node as part of one run's cancellation scope.
     fn call(
         &self,
         input: I,

@@ -230,6 +230,7 @@ impl Runtime {
         checkpoint.save(id, state, cancellation).await
     }
     /// Submit to the actual live approval Step. Outputs stay on the original run stream.
+    /// This value scopes the reply submission; it does not cancel other Workflow or Agent runs.
     pub async fn reply(
         &self,
         response: Messages,
@@ -256,6 +257,11 @@ impl Runtime {
             Err(error) => Err(error),
         }
     }
+    /// Start one Workflow run with its own cancellation scope.
+    ///
+    /// Create a fresh [`crate::Cancellation`] for each independent run. Clones
+    /// may be shared with work spawned by this run, but should not be reused
+    /// across independent Agent, Workflow, or Harness executions.
     pub async fn run(
         &self,
         initial_messages: Messages,

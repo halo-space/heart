@@ -39,6 +39,10 @@ pub trait Agent: Send + Sync {
     /// Fix outward delivery for this invocation: true delivers Delta and
     /// Complete, false delivers Complete only. Errors and per-call Complete
     /// results are retained in both modes; the stream type never changes.
+    ///
+    /// `cancellation` is this invocation's cancellation scope. Create a fresh
+    /// value for each independent run; clones are for work belonging to this
+    /// run and share its cancellation state.
     fn run(
         &self,
         input: Input,
@@ -47,6 +51,7 @@ pub trait Agent: Send + Sync {
     ) -> impl Future<Output = Result<Self::Stream, Error>>;
 
     /// Submit feedback to a live question. Business events stay on run's stream.
+    /// The cancellation value scopes this reply submission, not other runs.
     fn reply(
         &self,
         input: Input,
