@@ -1,6 +1,6 @@
 //! Tool lifecycle facts. Futures/permits are transient; saved Steps own the
 //! effective Call, completed business result and completed eval feedback.
-use crate::harness::checkpoint::invalid as invalid_checkpoint;
+use crate::runtime::agent::checkpoint::invalid as invalid_checkpoint;
 use crate::{
     Error, Message, Messages,
     message::Role,
@@ -57,7 +57,7 @@ pub(crate) fn selected(steps: &mut Vec<Step>, calls: &[Call]) -> Result<(), Erro
 pub(crate) fn called(steps: &mut [Step], call: &Call, message: &Message) {
     if let Some(step) = current(steps, &call.call_id) {
         step.call = Some(call.clone());
-        step.message = Some(crate::harness::observation::original_message(message));
+        step.message = Some(crate::runtime::observation::original_message(message));
         step.stage = Some("eval".into());
         step.status = "running".into();
         step.error = None;
@@ -69,7 +69,7 @@ pub(crate) fn evaluated(steps: &mut [Step], id: &str, evaluation: &ToolEvaluatio
         step.eval = Some(evaluation.clone());
         if let Some(feedback) = step.eval.as_mut().and_then(|eval| eval.feedback.as_mut()) {
             for message in &mut feedback.0 {
-                crate::harness::observation::clear_source(message);
+                crate::runtime::observation::clear_source(message);
             }
         }
         step.stage = Some("complete".into());
@@ -92,7 +92,7 @@ pub(crate) fn stopped(steps: &mut [Step], id: &str, error: &Error) {
 
 pub(crate) fn failed_message(steps: &mut [Step], id: &str, message: &Message) {
     if let Some(step) = current(steps, id) {
-        step.message = Some(crate::harness::observation::original_message(message));
+        step.message = Some(crate::runtime::observation::original_message(message));
         step.stage = Some("complete".into());
     }
 }

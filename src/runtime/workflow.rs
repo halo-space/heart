@@ -21,7 +21,7 @@ use crate::Error;
 use crate::agent::{Input as AgentInput, Payload as AgentPayload};
 use crate::components::message::{Messages, Role};
 use crate::components::node::Signal;
-use crate::harness::memory::{History, Run};
+use crate::core::memory::history::{History, Run};
 use crate::runtime::workflow::node::ExecutionRef;
 
 pub use graph::{
@@ -49,7 +49,14 @@ pub struct Runtime {
     chat_id: i64,
     workflow: CompiledWorkflow,
     engine: Mutex<Option<Engine>>,
-    replies: crate::harness::reply::Hub,
+    replies: crate::runtime::agent::reply::Hub,
+}
+
+#[derive(Clone)]
+struct RecoveryReply {
+    response: Messages,
+    input: AgentInput,
+    path: Vec<graph::ReplyExecution>,
 }
 
 /// Moves the one execution into its original stream and returns it on drop.
@@ -234,8 +241,20 @@ impl Runtime {
                 "one live approval submission must identify one question Message",
             ));
         }
-        self.replies
-            .submit(messages_to_agent_input(&response), &cancellation)
+        let input = messages_to_agent_input(&response);
+        match self.replies.submit(input.clone(), &cancellation) {
+            Ok(()) => Ok(()),
+            Err(error) if error.code == "NOT_FOUND" => {
+                let Ok(mut engine) = self.engine.try_lock() else {
+                    return Err(error);
+                };
+                let Some(engine) = engine.as_mut() else {
+                    return Err(error);
+                };
+                engine.reply_saved(response, input, &cancellation)
+            }
+            Err(error) => Err(error),
+        }
     }
     pub async fn run(
         &self,
@@ -284,6 +303,12 @@ struct Engine {
     // Derived from the parent's earlier Attempt.graph, not separate truth.
     // It supplies inherited scenes when a failed nested Graph Node is retried.
     retry_source: Option<Box<graph::State>>,
+    // Derived from the saved Agent Step and carried only until the existing
+    // execution consumes it. This is transient routing, not saved Runtime state.
+    recovery_reply: Option<RecoveryReply>,
+    // Saved replies are accepted only by a Runtime explicitly reconstructed
+    // from Checkpoint, never by an abandoned live Runtime.
+    accepts_saved_replies: bool,
 }
 
 impl Engine {
@@ -345,6 +370,8 @@ impl Engine {
                 graph::Status::Running
             };
         }
+        let chat_id = self.state.chat_id;
+        self.state.bind_agent_chat_id(chat_id)?;
         if question.is_some() {
             if let Some(checkpoint) = &self.checkpoint {
                 checkpoint(
@@ -406,6 +433,8 @@ impl Engine {
             history_run: None,
             history_closed: false,
             retry_source: None,
+            recovery_reply: None,
+            accepts_saved_replies: false,
         })
     }
 
@@ -437,6 +466,8 @@ impl Engine {
             history_run: None,
             history_closed: false,
             retry_source: None,
+            recovery_reply: None,
+            accepts_saved_replies: true,
         };
         if runtime.state.mark_waiting() {
             runtime.state.status = graph::Status::Running;
@@ -491,6 +522,96 @@ impl Engine {
     /// `exec_id`.
     pub fn resume(&mut self, node_id: &str, response: Messages) -> Result<(), Error> {
         self.state.resume(node_id, response)
+    }
+
+    fn reply_saved(
+        &mut self,
+        response: Messages,
+        input: AgentInput,
+        cancellation: &crate::Cancellation,
+    ) -> Result<(), Error> {
+        if !self.accepts_saved_replies {
+            return Err(Error::new(
+                "NOT_FOUND",
+                "no restored Workflow Checkpoint is receiving this reply",
+            ));
+        }
+        if cancellation.is_cancelled() {
+            return Err(Error::new("CANCELLED", "reply submission cancelled"));
+        }
+        if input.metadata.get("chat_id").and_then(Value::as_i64) != Some(self.state.chat_id) {
+            return Err(Error::new(
+                "CONFLICT",
+                "reply belongs to a different Workflow run",
+            ));
+        }
+        if let Some(initial) = &self.state.initial {
+            let saved = messages_to_agent_input(initial).metadata;
+            for key in ["tenant_id", "user_id", "agent_id", "session_id"] {
+                if saved.contains_key(key) && input.metadata.get(key) != saved.get(key) {
+                    return Err(Error::new(
+                        "CONFLICT",
+                        "reply belongs to a different Workflow identity",
+                    ));
+                }
+            }
+        }
+        if let Some(previous) = &self.recovery_reply {
+            return if previous.response == response {
+                Ok(())
+            } else {
+                Err(Error::new(
+                    "CONFLICT",
+                    "this question already received a different reply",
+                ))
+            };
+        }
+        let reply_id = input
+            .metadata
+            .get("reply_id")
+            .and_then(Value::as_i64)
+            .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "reply requires reply_id"))?;
+        let mut paths = self.state.reply_paths(reply_id)?;
+        if paths.len() != 1 {
+            return Err(Error::new(
+                if paths.is_empty() {
+                    "NOT_FOUND"
+                } else {
+                    "CONFLICT"
+                },
+                if paths.is_empty() {
+                    "reply does not identify a saved waiting question"
+                } else {
+                    "saved question identity is ambiguous"
+                },
+            ));
+        }
+        let path = paths.pop().expect("one validated reply path");
+        let scene = agent_scene_for_reply_path(&self.state, &path)?;
+        let Some(_) = crate::runtime::agent::reply::prepare_restore(scene, &input)? else {
+            return Err(Error::new(
+                "NOT_FOUND",
+                "reply does not identify a saved waiting question",
+            ));
+        };
+
+        // Fully recorded Workflow waits already have their response slot in
+        // the current State. Earlier waiting snapshots are routed transiently
+        // to the existing active Attempt below.
+        if self
+            .state
+            .waits
+            .get(&path[0].node_id)
+            .is_some_and(|wait| wait.exec_id == path[0].exec_id)
+        {
+            return self.state.resume(&path[0].node_id, response);
+        }
+        self.recovery_reply = Some(RecoveryReply {
+            response,
+            input,
+            path,
+        });
+        Ok(())
     }
 
     pub fn advance_step(&mut self) -> bool {
@@ -697,19 +818,25 @@ impl Engine {
             }
             if let Some((node_id, exec_id, _wait_id, response)) = self.state.resolved_wait() {
                 let target = self.target_for(&node_id, exec_id)?;
-                let input = if matches!(&target, Target::Agent(..)) {
-                    let execution = &self.state.nodes[&node_id].executions[&exec_id];
-                    let mut input = self.agent_input_for(&node_id, &execution.from)?;
-                    let reply = messages_to_agent_input(&response);
-                    input.payload = reply.payload;
-                    // Reply metadata may supply extra context, but conflicting
-                    // ownership still reaches the Agent's canonical check.
-                    input.metadata.extend(reply.metadata);
-                    serde_json::to_value(input)
-                } else {
-                    serde_json::to_value(response)
-                }
-                .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))?;
+                let input = match &target {
+                    Target::Agent(..) => {
+                        let execution = &self.state.nodes[&node_id].executions[&exec_id];
+                        let mut input = self.agent_input_for(&node_id, &execution.from)?;
+                        let reply = messages_to_agent_input(&response);
+                        input.payload = reply.payload;
+                        // Reply metadata may supply extra context, but conflicting
+                        // ownership still reaches the Agent's canonical check.
+                        input.metadata.extend(reply.metadata);
+                        serde_json::to_value(input)
+                            .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))?
+                    }
+                    Target::Graph { .. } => self.input_for(
+                        &node_id,
+                        &self.state.nodes[&node_id].executions[&exec_id].from,
+                    )?,
+                    Target::Node(_) => serde_json::to_value(response)
+                        .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))?,
+                };
                 let retry = self.definition().nodes[&node_id].retry.clone();
                 let start_idx = self.state.nodes[&node_id].executions[&exec_id]
                     .attempts
@@ -729,6 +856,7 @@ impl Engine {
                         self.state.chat_id,
                         start_idx,
                         committed_tool_messages(&self.state.nodes[&node_id].executions[&exec_id]),
+                        None,
                     ),
                 )
                 .await;
@@ -836,7 +964,8 @@ impl Engine {
                     let cancellation = task_cancellation.clone();
                     let next_exec_id = Arc::clone(&task_next_exec_id);
                     let relay = relay.clone();
-                    let slot = crate::harness::reply::Slot::waiting(slots.clone(), changed.clone());
+                    let slot =
+                        crate::runtime::agent::reply::Slot::waiting(slots.clone(), changed.clone());
                     let run = interaction.as_ref().map(|run| run.branch(slot.clone()));
                     active.push((node_id.clone(), exec_id, run.clone(), slot.clone()));
                     async move {
@@ -877,6 +1006,7 @@ impl Engine {
                                         chat_id,
                                         0,
                                         Messages::default(),
+                                        None,
                                     ),
                                 ),
                             ),
@@ -1265,7 +1395,39 @@ impl Engine {
         next_exec_id: &Arc<dyn Fn() -> i64 + Send + Sync>,
         cancellation: &crate::Cancellation,
     ) -> Result<bool, Error> {
-        let Some((node_id, exec_id)) = self.state.waiting_execution() else {
+        let recovery_reply = self.recovery_reply.take();
+        let target = if let Some(reply) = &recovery_reply {
+            let current = reply
+                .path
+                .first()
+                .ok_or_else(|| Error::new("INVALID_STATE", "saved reply path is empty"))?;
+            let execution = self
+                .state
+                .nodes
+                .get(&current.node_id)
+                .and_then(|node| node.executions.get(&current.exec_id))
+                .filter(|execution| {
+                    execution.idx == self.state.step
+                        && execution.waits.is_empty()
+                        && matches!(
+                            execution.status,
+                            node::ExecutionStatus::Running | node::ExecutionStatus::Waiting
+                        )
+                })
+                .filter(|execution| {
+                    execution
+                        .attempts
+                        .last()
+                        .is_some_and(|attempt| attempt.idx == current.idx)
+                })
+                .ok_or_else(|| Error::new("INVALID_STATE", "saved reply target is not active"))?;
+            let _ = execution;
+            Some((current.node_id.clone(), current.exec_id))
+        } else {
+            self.state.waiting_execution()
+        };
+        let Some((node_id, exec_id)) = target else {
+            self.recovery_reply = recovery_reply;
             return Ok(false);
         };
         let execution = self.state.nodes[&node_id].executions[&exec_id].clone();
@@ -1280,7 +1442,33 @@ impl Engine {
             .ok_or_else(|| Error::new("INVALID_STATE", "waiting execution has no attempt"))?;
         let retry = self.definition().nodes[&node_id].retry.clone();
         let target = self.target_for(&node_id, exec_id)?;
-        let input = self.input_for(&node_id, &execution.from)?;
+        let mut input = self.input_for(&node_id, &execution.from)?;
+        let mut nested_reply = None;
+        if let Some(mut reply) = recovery_reply {
+            let target = reply.path.remove(0);
+            if target.node_id != node_id || target.exec_id != exec_id {
+                return Err(Error::new("INVALID_STATE", "saved reply target changed"));
+            }
+            match self.target_for(&node_id, exec_id)? {
+                Target::Agent(_, _) if reply.path.is_empty() => {
+                    let mut agent_input: AgentInput = serde_json::from_value(input)
+                        .map_err(|error| Error::new("INVALID_STATE", error.to_string()))?;
+                    agent_input.payload = reply.input.payload;
+                    agent_input.metadata.extend(reply.input.metadata);
+                    input = serde_json::to_value(agent_input)
+                        .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))?;
+                }
+                Target::Graph { .. } if !reply.path.is_empty() => {
+                    nested_reply = Some(reply);
+                }
+                _ => {
+                    return Err(Error::new(
+                        "INVALID_STATE",
+                        "saved reply path does not match its Workflow Node",
+                    ));
+                }
+            }
+        }
         let invocation = events::with_source(
             self.state.chat_id,
             &node_id,
@@ -1298,6 +1486,7 @@ impl Engine {
                 // process recovery as a user-visible retry.
                 previous_idx,
                 committed_tool_messages(&execution),
+                nested_reply,
             ),
         )
         .await;
@@ -1359,7 +1548,7 @@ impl Engine {
                 usage: None,
                 finish_reason: None,
             };
-            crate::harness::observation::associate(
+            crate::runtime::observation::associate(
                 &mut event,
                 Some(self.state.chat_id),
                 Some((node_id, exec_id)),
@@ -1538,6 +1727,40 @@ fn attempt_waiting(attempt: &node::Attempt) -> bool {
                     .any(|execution| execution.attempts.last().is_some_and(attempt_waiting))
         })
 }
+
+fn agent_scene_for_reply_path<'a>(
+    state: &'a graph::State,
+    path: &[graph::ReplyExecution],
+) -> Result<&'a Value, Error> {
+    let Some((first, rest)) = path.split_first() else {
+        return Err(Error::new("INVALID_STATE", "saved reply path is empty"));
+    };
+    let execution = state
+        .nodes
+        .get(&first.node_id)
+        .and_then(|node| node.executions.get(&first.exec_id))
+        .filter(|execution| execution.idx == state.step)
+        .ok_or_else(|| Error::new("INVALID_STATE", "saved reply execution is stale"))?;
+    let attempt = execution
+        .attempts
+        .last()
+        .filter(|attempt| attempt.idx == first.idx)
+        .ok_or_else(|| Error::new("INVALID_STATE", "saved reply Attempt is stale"))?;
+    if rest.is_empty() {
+        return attempt
+            .agent
+            .as_ref()
+            .ok_or_else(|| Error::new("INVALID_STATE", "saved reply has no Agent scene"));
+    }
+    agent_scene_for_reply_path(
+        attempt
+            .graph
+            .as_deref()
+            .ok_or_else(|| Error::new("INVALID_STATE", "saved reply Graph scene is missing"))?,
+        rest,
+    )
+}
+
 fn attempt_question(attempt: &node::Attempt, id: i64) -> Result<bool, Error> {
     if let Some(scene) = &attempt.agent
         && scene["waits"]
@@ -1625,7 +1848,7 @@ fn terminal_observations(state: &graph::State) -> Vec<crate::event::Event> {
                         usage: message.usage.clone(),
                         finish_reason: None,
                     };
-                    crate::harness::observation::associate(
+                    crate::runtime::observation::associate(
                         &mut event,
                         Some(state.chat_id),
                         Some((node_id, execution.exec_id)),
@@ -1656,7 +1879,7 @@ fn cancelled_observations(state: &graph::State) -> Vec<crate::event::Event> {
                             usage: call.usage.clone(),
                             finish_reason: call.finish_reason.clone(),
                         };
-                        crate::harness::observation::associate(
+                        crate::runtime::observation::associate(
                             &mut event,
                             Some(state.chat_id),
                             Some((node_id, execution.exec_id)),
@@ -1682,6 +1905,7 @@ fn invoke_with_retry(
     chat_id: i64,
     attempt_start: u32,
     committed: Messages,
+    recovery_reply: Option<RecoveryReply>,
 ) -> Pin<Box<dyn Future<Output = Invocation> + 'static>> {
     Box::pin(async move {
         let mut attempts = Vec::new();
@@ -1698,6 +1922,7 @@ fn invoke_with_retry(
             _ => None,
         };
         let retry_policy = retry.clone();
+        let mut recovery_reply = recovery_reply;
         // A resumed wait continues the same Attempt. Its existing idx consumes
         // the original execution's retry budget; recovery never resets it.
         for offset in 0..=retry.max_retries.saturating_sub(attempt_start) {
@@ -1779,6 +2004,24 @@ fn invoke_with_retry(
                     agent_input
                         .metadata
                         .insert("chat_id".into(), Value::from(chat_id));
+                    if let Some(reply) = recovery_reply.take() {
+                        if !reply.path.is_empty() {
+                            let error = Error::new(
+                                "INVALID_STATE",
+                                "saved reply was not routed through its nested Graph",
+                            );
+                            attempt.status = node::AttemptStatus::Failed;
+                            attempt.error = Some(error.clone());
+                            attempts.push(attempt);
+                            return Invocation {
+                                attempts,
+                                outcome: Outcome::Failed(error),
+                                graph: None,
+                            };
+                        }
+                        agent_input.payload = reply.input.payload;
+                        agent_input.metadata.extend(reply.input.metadata);
+                    }
                     let run = events::with_attempt(
                         idx,
                         executor.call(agent_input, cancellation.clone(), restore.clone()),
@@ -1821,6 +2064,7 @@ fn invoke_with_retry(
                     }
                 }
                 Target::Graph { workflow, .. } => {
+                    let nested_reply = recovery_reply.take();
                     match events::with_attempt(
                         idx,
                         run_subgraph(
@@ -1829,8 +2073,11 @@ fn invoke_with_retry(
                             cancellation.clone(),
                             Arc::clone(&next_exec_id),
                             chat_id,
-                            graph_retry_state.clone(),
-                            graph_retry_history.clone(),
+                            SubgraphScenes {
+                                snapshot: graph_retry_state.clone(),
+                                history: graph_retry_history.clone(),
+                                reply: nested_reply,
+                            },
                         ),
                     )
                     .await
@@ -2102,16 +2349,26 @@ type SubgraphFuture = std::pin::Pin<
     Box<dyn std::future::Future<Output = Result<(Value, graph::State), SubgraphFailure>> + 'static>,
 >;
 
+struct SubgraphScenes {
+    snapshot: Option<Box<graph::State>>,
+    history: Option<Box<graph::State>>,
+    reply: Option<RecoveryReply>,
+}
+
 fn run_subgraph(
     workflow: Arc<CompiledWorkflow>,
     input: Value,
     cancellation: crate::Cancellation,
     next_exec_id: Arc<dyn Fn() -> i64 + Send + Sync>,
     chat_id: i64,
-    snapshot: Option<Box<graph::State>>,
-    history: Option<Box<graph::State>>,
+    scenes: SubgraphScenes,
 ) -> SubgraphFuture {
     Box::pin(async move {
+        let SubgraphScenes {
+            snapshot,
+            history,
+            reply,
+        } = scenes;
         let messages: Messages =
             serde_json::from_value(input).map_err(|error| SubgraphFailure {
                 error: Error::new("INVALID_ARGUMENTS", error.to_string()),
@@ -2148,6 +2405,7 @@ fn run_subgraph(
                 .map_err(|error| SubgraphFailure { error, state: None })?,
         };
         runtime.retry_source = history;
+        runtime.recovery_reply = reply;
         let run_input = runtime.state.initial.clone().unwrap_or(messages);
         let output = runtime
             .execute(run_input, next_exec_id, cancellation)
@@ -2334,8 +2592,8 @@ mod tests {
             _stream: bool,
             _cancellation: Cancellation,
         ) -> Result<Self::Stream, Error> {
-            if crate::harness::embedded::restore().is_none() {
-                crate::harness::embedded::capture(serde_json::json!({
+            if crate::runtime::agent::scope::restore().is_none() {
+                crate::runtime::agent::scope::capture(serde_json::json!({
                     "type": "agent",
                     "status": "waiting",
                     "wait_id": "approval"
@@ -2376,7 +2634,7 @@ mod tests {
             _stream: bool,
             _cancellation: Cancellation,
         ) -> Result<Self::Stream, Error> {
-            let value = if crate::harness::embedded::restore().is_some() {
+            let value = if crate::runtime::agent::scope::restore().is_some() {
                 "restored_scene"
             } else {
                 "fresh"
@@ -3924,6 +4182,7 @@ mod tests {
             90,
             1,
             Messages::default(),
+            None,
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(invocation.attempts.len(), 1);
@@ -3971,6 +4230,7 @@ mod tests {
             19,
             0,
             Messages::new([committed]),
+            None,
         ));
 
         assert!(matches!(invocation.outcome, Outcome::Complete(_)));

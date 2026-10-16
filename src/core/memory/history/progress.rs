@@ -1,4 +1,4 @@
-//! Private background Memory scene in Session metadata, not Runtime Checkpoint.
+//! Private background Memory scene in Session metadata, not Agent Checkpoint.
 //! Only a successful conditional write advances a durable stage. No async Drop,
 //! lease, polling loop, independent task store or second in-process truth.
 use std::sync::Arc;

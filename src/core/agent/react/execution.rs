@@ -10,12 +10,12 @@ struct Task<M: Chat> {
     state: ReActState<M>,
     messages: Messages,
     previous_usage: Option<crate::model::token::Usage>,
-    slot: crate::harness::reply::Slot,
+    slot: crate::runtime::agent::reply::Slot,
 }
 
 pub(super) struct Active {
     run: Run,
-    slot: crate::harness::reply::Slot,
+    slot: crate::runtime::agent::reply::Slot,
 }
 impl Active {
     pub(super) fn slot_held(&self) -> bool {
@@ -167,7 +167,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 .is_some_and(|attempt| tools::pending(&attempt.steps))
             && let Some(input) = state.resume_input.clone()
         {
-            messages.push(crate::components::agent::chat::user_message(input));
+            messages.push(crate::core::agent::input::user_message(input));
         }
         let mut metadata = state.metadata.clone();
         metadata.insert("node_id".into(), json!(node_id));
@@ -214,8 +214,10 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
         } else {
             Messages::default()
         };
-        let slot =
-            crate::harness::reply::Slot::new(state.task_slots.clone(), state.task_ready.clone())?;
+        let slot = crate::runtime::agent::reply::Slot::new(
+            state.task_slots.clone(),
+            state.task_ready.clone(),
+        )?;
         let interaction = state
             .interaction
             .as_ref()
@@ -242,7 +244,9 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
             previous_usage,
             slot: slot.clone(),
             state: ReActState {
-                _interaction_owner: interaction.as_ref().map(crate::harness::reply::Run::owner),
+                _interaction_owner: interaction
+                    .as_ref()
+                    .map(crate::runtime::agent::reply::Run::owner),
                 interaction,
                 waits,
                 stream: state.stream,
@@ -283,14 +287,14 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 active_tools: FuturesUnordered::new(),
                 tool_progress: VecDeque::new(),
                 child_events: VecDeque::new(),
-                child_relay: crate::harness::subagent::Relay::default(),
+                child_relay: crate::core::agent::subagent::Relay::default(),
                 pending_subagents: BTreeMap::new(),
                 tool_results: BTreeMap::new(),
                 evaluations: BTreeMap::new(),
                 steps,
                 child_nodes,
                 child_nodes_dirty: false,
-                root: crate::harness::subagent::Root::default(),
+                root: crate::core::agent::subagent::Root::default(),
                 partial: Message::new(Role::Assistant),
                 done: false,
                 hooks: state.hooks.clone(),
@@ -411,7 +415,7 @@ pub(super) fn commit<M: Chat + 'static>(
         && let Ok(Event::Complete { message, .. }) = &result
     {
         let mut original = message.clone();
-        crate::harness::observation::clear_source(&mut original);
+        crate::runtime::observation::clear_source(&mut original);
         task.messages.push(original);
     }
     if !task.state.done {
@@ -427,7 +431,7 @@ pub(super) fn commit<M: Chat + 'static>(
             && let Ok(Event::Complete { message, .. }) = &result
         {
             let mut original = message.clone();
-            crate::harness::observation::clear_source(&mut original);
+            crate::runtime::observation::clear_source(&mut original);
             committed.push(original);
         }
         let graph = state.graph.as_mut().expect("executing plan graph");
@@ -460,7 +464,7 @@ pub(super) fn commit<M: Chat + 'static>(
             None,
         )?;
         if let Ok(event) = &mut result {
-            crate::harness::observation::associate(
+            crate::runtime::observation::associate(
                 event,
                 state.query.metadata.get("chat_id").and_then(Value::as_i64),
                 Some((&task.node_id, task.exec_id)),
@@ -511,7 +515,7 @@ pub(super) fn commit<M: Chat + 'static>(
                 .state_mut(&task.node_id)?
                 .set_attempt_result(Status::Cancelled, usage, None)?;
             state.partial = message.clone();
-            crate::harness::observation::clear_source(&mut state.partial);
+            crate::runtime::observation::clear_source(&mut state.partial);
             // Other in-flight tasks get a chance to emit and settle their own
             // partial cancellation result. The last one closes the outer run.
             state.done = state.active_tasks.is_empty();
@@ -542,7 +546,7 @@ pub(super) fn commit<M: Chat + 'static>(
     attempt.nodes = task.state.child_nodes;
     let mut committed = committed?;
     if let Some(event) = &mut committed.0 {
-        crate::harness::observation::associate(
+        crate::runtime::observation::associate(
             event,
             state.query.metadata.get("chat_id").and_then(Value::as_i64),
             Some((&task.node_id, task.exec_id)),
@@ -573,7 +577,7 @@ pub(super) fn cancel_active<M: Chat>(state: &mut ReActState<M>) {
             .as_mut()
             .and_then(|execution| execution.attempts.last_mut())
         {
-            crate::harness::tool_steps::cancel_pending(&mut attempt.steps);
+            crate::runtime::agent::tool_steps::cancel_pending(&mut attempt.steps);
         }
         node.status = Status::Cancelled;
         // Active graph nodes have a current Attempt by construction.

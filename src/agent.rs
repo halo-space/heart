@@ -1,10 +1,15 @@
 //! Public Agent entry points, independent of implementation directories.
 //!
-//! The shared contract and default Chat live in components; ReAct is a core
-//! implementation of that same contract. Runtime owns per-run execution state.
+//! The shared contract lives in components; Chat and ReAct implementations
+//! live in core and use the same Agent contract. Runtime owns per-run state.
 
-pub use crate::components::agent::{Agent, Error, Input, Payload, SubAgent, chat, toolkit};
-pub use crate::core::agent::react;
+pub use crate::components::agent::{Agent, Error, Input, Payload, SubAgent, toolkit};
+pub use crate::core::agent::{chat, react};
+
+/// Construct the default Chat Agent implementation.
+pub fn chat() -> chat::Builder {
+    chat::builder()
+}
 
 /// Construct the ReAct implementation through the shared Agent namespace.
 pub fn react() -> react::Builder {

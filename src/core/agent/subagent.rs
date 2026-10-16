@@ -62,7 +62,7 @@ pub(crate) struct Observer {
     relay: Relay,
     chat_id: Option<i64>,
     source: (String, i64),
-    interaction: Option<super::reply::Run>,
+    interaction: Option<crate::runtime::agent::reply::Run>,
 }
 
 pub(crate) struct Observation {
@@ -99,7 +99,10 @@ impl Observation {
 }
 
 impl Observer {
-    pub(crate) fn with_interaction(mut self, interaction: Option<super::reply::Run>) -> Self {
+    pub(crate) fn with_interaction(
+        mut self,
+        interaction: Option<crate::runtime::agent::reply::Run>,
+    ) -> Self {
         self.interaction = interaction;
         self
     }
@@ -110,7 +113,7 @@ impl Observer {
         usage: Option<Usage>,
         message: Option<Message>,
     ) {
-        super::observation::associate(
+        crate::runtime::observation::associate(
             &mut event,
             self.chat_id,
             Some((&self.source.0, self.source.1)),
@@ -909,7 +912,7 @@ fn usage_since(current: Option<Usage>, previous: Option<Usage>) -> Result<Option
 
 fn failure(
     error: Error,
-    scope: &super::embedded::Scope,
+    scope: &crate::runtime::agent::scope::Scope,
     previous: Option<&Value>,
     observed: Option<Usage>,
 ) -> Box<Failure> {
@@ -937,22 +940,23 @@ pub(crate) async fn run(
     id_fn: Option<fn() -> i64>,
     observer: Option<Observer>,
 ) -> Result<Progress, Box<Failure>> {
-    let scope = super::embedded::Scope::new(previous.clone())
+    let scope = crate::runtime::agent::scope::Scope::new(previous.clone())
         .with_id_fn(id_fn)
         .with_interaction(
             observer
                 .as_ref()
                 .and_then(|observer| observer.interaction.clone()),
         );
-    let mut stream = super::embedded::run(scope.clone(), subagent.run(input, cancellation))
-        .await
-        .map_err(|error| failure(error, &scope, previous.as_ref(), None))?;
+    let mut stream =
+        crate::runtime::agent::scope::run(scope.clone(), subagent.run(input, cancellation))
+            .await
+            .map_err(|error| failure(error, &scope, previous.as_ref(), None))?;
     let mut final_message = None;
     let mut observed = None;
     let mut cancelled = false;
     let mut published = None;
     let mut published_scene: Option<Arc<Value>> = None;
-    while let Some(item) = super::embedded::run(scope.clone(), stream.next()).await {
+    while let Some(item) = crate::runtime::agent::scope::run(scope.clone(), stream.next()).await {
         match item {
             Ok(event) => {
                 cancelled |= matches!(&event, Event::Complete { finish_reason: Some(reason), .. } if reason == "cancelled");
@@ -1036,7 +1040,7 @@ pub(crate) async fn run(
 
 fn result_message(mut message: Message, call: &Call) -> Message {
     message.role = Role::Function;
-    super::observation::clear_source(&mut message);
+    crate::runtime::observation::clear_source(&mut message);
     message
         .metadata
         .insert("call_id".into(), Value::String(call.call_id.clone()));

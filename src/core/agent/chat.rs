@@ -20,13 +20,16 @@ use crate::components::message::{Message, Messages, Role};
 use crate::components::model::chat::{Chat, Request};
 use crate::components::model::content::part::{Part, object as part_data};
 use crate::components::tool::Call;
-use crate::harness::access::Access;
-use crate::harness::checkpoint::Backend;
-use crate::harness::hooks::{Hooks, cancellable};
-use crate::harness::memory::{History, Run};
-use crate::harness::subagent::{Failure as SubAgentFailure, Progress as SubAgentProgress, Root};
-use crate::harness::tool_steps;
+use crate::core::agent::access::Access;
+use crate::core::agent::hooks::{Hooks, cancellable};
+use crate::core::agent::input::user_message;
+use crate::core::agent::subagent::{
+    Failure as SubAgentFailure, Progress as SubAgentProgress, Root,
+};
+use crate::core::memory::history::{History, Run};
+use crate::runtime::agent::checkpoint::Backend;
 use crate::runtime::agent::node::Step;
+use crate::runtime::agent::tool_steps;
 use crate::runtime::cancellation::Cancellation;
 
 pub struct Builder<M = ()> {
@@ -184,7 +187,7 @@ where
 }
 
 pub struct Agent<M> {
-    replies: crate::harness::reply::Hub,
+    replies: crate::runtime::agent::reply::Hub,
     model: Arc<M>,
     system_prompt: Option<String>,
     toolkit: Option<Toolkit>,
@@ -224,8 +227,8 @@ type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> +
 type CheckpointSave = Backend;
 
 struct ToolBatchConfig {
-    interaction: Option<crate::harness::reply::Run>,
-    relay: Option<crate::harness::subagent::Relay>,
+    interaction: Option<crate::runtime::agent::reply::Run>,
+    relay: Option<crate::core::agent::subagent::Relay>,
     steps: Arc<Mutex<Vec<Step>>>,
     toolkit: Arc<Toolkit>,
     subagents: Vec<SubAgent>,
@@ -246,12 +249,12 @@ struct ToolExecution {
     metadata: Map<String, Value>,
     cancellation: Cancellation,
     steps: Arc<Mutex<Vec<Step>>>,
-    interaction: Option<crate::harness::reply::Run>,
+    interaction: Option<crate::runtime::agent::reply::Run>,
     id_fn: Option<fn() -> i64>,
 }
 
 struct EventsConfig<S> {
-    interaction: Option<crate::harness::reply::Run>,
+    interaction: Option<crate::runtime::agent::reply::Run>,
     steps: Vec<Step>,
     provider_factory: ProviderFactory<S>,
     toolkit: Option<Toolkit>,
@@ -284,8 +287,8 @@ struct ToolBatchFailure {
 /// The concrete stream returned by this Chat Agent. Its items remain the
 /// shared Event contract; this type only owns cancellation and partial state.
 pub struct Events<S> {
-    _interaction_owner: Option<crate::harness::reply::Owner>,
-    interaction: Option<crate::harness::reply::Run>,
+    _interaction_owner: Option<crate::runtime::agent::reply::Owner>,
+    interaction: Option<crate::runtime::agent::reply::Run>,
     waits: Vec<crate::runtime::agent::wait::Wait>,
     questions: VecDeque<Event>,
     stream: bool,
@@ -313,7 +316,7 @@ pub struct Events<S> {
     pending_tools: Option<ToolBatchFuture>,
     pending_provider: Option<ProviderFuture<S>>,
     tool_results: VecDeque<Message>,
-    child_events: crate::harness::subagent::Relay,
+    child_events: crate::core::agent::subagent::Relay,
     pending_subagents: std::collections::BTreeMap<String, PendingSubAgent>,
     pending_checkpoint: Option<CheckpointFuture>,
     pending: Option<CompletionFuture>,
@@ -370,7 +373,7 @@ impl<S> Events<S> {
             pending_tools: None,
             pending_provider: None,
             tool_results: VecDeque::new(),
-            child_events: crate::harness::subagent::Relay::default(),
+            child_events: crate::core::agent::subagent::Relay::default(),
             pending_subagents: std::collections::BTreeMap::new(),
             pending_checkpoint: None,
             pending: None,
@@ -384,7 +387,7 @@ impl<S> Events<S> {
         self._interaction_owner = config
             .interaction
             .as_ref()
-            .map(crate::harness::reply::Run::owner);
+            .map(crate::runtime::agent::reply::Run::owner);
         self.interaction = config.interaction;
         self.steps = Arc::new(Mutex::new(config.steps));
         self.provider_factory = Some(config.provider_factory);
@@ -472,11 +475,12 @@ impl<S> Events<S> {
             &result,
             &self.root,
             &self.steps.lock().expect("Tool steps lock poisoned"),
+            self.stream,
         );
         state["waits"] = serde_json::to_value(&self.waits).expect("waits serialization");
         self.closing = true;
         self.pending = Some(Box::pin(async move {
-            if crate::harness::embedded::capture(state.clone()) {
+            if crate::runtime::agent::scope::capture(state.clone()) {
                 // The outer Workflow owns the embedded Agent checkpoint.
             } else if let (Some(checkpoint), Some(id)) = (checkpoint, checkpoint_id) {
                 checkpoint
@@ -507,7 +511,7 @@ where
                 if matches!(event, Event::Complete { .. }) && !this.closing {
                     this.capture_live();
                 }
-                crate::harness::observation::associate(
+                crate::runtime::observation::associate(
                     event,
                     this.metadata.get("chat_id").and_then(Value::as_i64),
                     None,
@@ -520,7 +524,7 @@ where
 
 impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
     fn capture_live(&self) {
-        if !crate::harness::embedded::active() {
+        if !crate::runtime::agent::scope::active() {
             return;
         }
         let steps = self.steps.lock().expect("Tool steps lock poisoned");
@@ -534,6 +538,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                 }),
                 &self.root,
                 &steps,
+                self.stream,
             )
         } else {
             waiting_checkpoint_state(
@@ -542,10 +547,11 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                 self.input.as_ref(),
                 &self.root,
                 &steps,
+                self.stream,
             )
         };
         snapshot["waits"] = serde_json::to_value(&self.waits).expect("waits serialization");
-        crate::harness::embedded::capture(snapshot);
+        crate::runtime::agent::scope::capture(snapshot);
     }
     // Finish state/history mutations before decorating the outgoing copy.
     fn poll_event(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Event, Error>>> {
@@ -599,7 +605,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                     if let Some(run) = this.interaction.clone()
                         && let Poll::Ready(change) = run.poll_change(cx)
                     {
-                        let applied = crate::harness::reply::apply(
+                        let applied = crate::runtime::agent::reply::apply(
                             change,
                             &mut this.steps.lock().expect("Tool steps lock poisoned"),
                             &mut this.waits,
@@ -613,6 +619,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                     this.input.as_ref(),
                                     &this.root,
                                     &this.steps.lock().expect("Tool steps lock poisoned"),
+                                    this.stream,
                                 );
                                 snapshot["waits"] =
                                     serde_json::to_value(&this.waits).expect("waits serialization");
@@ -670,6 +677,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                     this.input.as_ref(),
                                     &this.root,
                                     &this.steps.lock().expect("Tool steps lock poisoned"),
+                                    this.stream,
                                 );
                                 snapshot["waits"] =
                                     serde_json::to_value(&this.waits).expect("waits serialization");
@@ -702,6 +710,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                             }),
                             &this.root,
                             &this.steps.lock().expect("Tool steps lock poisoned"),
+                            this.stream,
                         ),
                     ));
                     return Pin::new(this).poll_next(cx);
@@ -838,6 +847,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                             this.input.as_ref(),
                                             &this.root,
                                             &this.steps.lock().expect("Tool steps lock poisoned"),
+                                            this.stream,
                                         ),
                                     ));
                                 }
@@ -893,7 +903,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
         };
         match provider.as_mut().poll_next(cx) {
             Poll::Ready(Some(Ok(Event::Delta { mut message }))) => {
-                crate::harness::observation::clear_source(&mut message);
+                crate::runtime::observation::clear_source(&mut message);
                 collect_delta(&mut this.partial, &message);
                 Poll::Ready(Some(Ok(Event::Delta { message })))
             }
@@ -902,7 +912,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                 usage,
                 finish_reason,
             }))) => {
-                crate::harness::observation::clear_source(&mut message);
+                crate::runtime::observation::clear_source(&mut message);
                 let usage = usage.or_else(|| message.usage.clone());
                 message.usage = usage.clone();
                 this.run.settle(usage.clone());
@@ -982,18 +992,18 @@ where
     async fn run(
         &self,
         input: Input,
-        stream: bool,
+        mut stream: bool,
         cancellation: Cancellation,
     ) -> Result<Self::Stream, Error> {
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "agent run cancelled"));
         }
-        let embedded_snapshot = crate::harness::embedded::restore();
-        let embedded = crate::harness::embedded::active();
+        let embedded_snapshot = crate::runtime::agent::scope::restore();
+        let embedded = crate::runtime::agent::scope::active();
         if !embedded {
             self.replies.ensure_idle(&input.metadata)?;
         }
-        let id_fn = crate::harness::embedded::id_fn().or(self.id_fn);
+        let id_fn = crate::runtime::agent::scope::id_fn().or(self.id_fn);
         let checkpoint = self.checkpoint.clone().filter(|_| !embedded);
         let history = if embedded {
             History::default()
@@ -1020,7 +1030,7 @@ where
                     "checkpoint belongs to a different Agent identity",
                 ));
             }
-            if crate::harness::embedded::interaction().is_some_and(|run| run.is_restoring()) {
+            if crate::runtime::agent::scope::interaction().is_some_and(|run| run.is_restoring()) {
                 crate::runtime::agent::wait::validate(&snapshot)?;
                 embedded_waits = snapshot
                     .get("waits")
@@ -1030,16 +1040,17 @@ where
                     .map_err(|_| Error::new("INVALID_STATE", "invalid embedded waiting locators"))?
                     .unwrap_or_default();
             } else {
-                crate::harness::checkpoint::check_waits(&snapshot)?;
+                crate::runtime::agent::checkpoint::check_waits(&snapshot)?;
             }
             restored_waiting = is_waiting_snapshot(&snapshot);
-            if let Some(result) = crate::harness::checkpoint::terminal(&snapshot)? {
+            if let Some(result) = crate::runtime::agent::checkpoint::terminal(&snapshot)? {
                 let mut events = Events::empty(cancellation, self.hooks.clone());
                 events.metadata = input.metadata.clone();
                 events.closing = true;
                 events.pending = Some(Box::pin(async move { result }));
                 return Ok(events);
             }
+            stream = crate::runtime::agent::checkpoint::stream_mode(&snapshot)?;
             restored_messages = Some(checkpoint_messages(&snapshot)?);
             restored_usage = serde_json::from_value(snapshot["usage"].clone()).ok();
             restored_pending_subagents = checkpoint_pending_subagents(&snapshot)?;
@@ -1056,26 +1067,27 @@ where
                     "checkpoint belongs to a different Agent identity",
                 ));
             }
-            restored_approvals = crate::harness::reply::prepare_restore(&snapshot, &input)?;
+            restored_approvals = crate::runtime::agent::reply::prepare_restore(&snapshot, &input)?;
             restored_waiting = is_waiting_snapshot(&snapshot);
             if !restored_waiting
                 && snapshot
                     .get("query")
                     .is_some_and(|query| serde_json::to_value(&input).ok().as_ref() != Some(query))
-                && !crate::harness::reply::saved_duplicate(&snapshot, &input)?
+                && !crate::runtime::agent::reply::saved_duplicate(&snapshot, &input)?
             {
                 return Err(Error::new(
                     "CONFLICT",
                     "checkpoint belongs to a different Agent input",
                 ));
             }
-            if let Some(result) = crate::harness::checkpoint::terminal(&snapshot)? {
+            if let Some(result) = crate::runtime::agent::checkpoint::terminal(&snapshot)? {
                 let mut events = Events::empty(cancellation, self.hooks.clone());
                 events.closing = true;
                 events.metadata = input.metadata.clone();
                 events.pending = Some(Box::pin(async move { result }));
                 return Ok(events);
             }
+            stream = crate::runtime::agent::checkpoint::stream_mode(&snapshot)?;
             restored_messages = Some(checkpoint_messages(&snapshot)?);
             restored_usage = serde_json::from_value(snapshot["usage"].clone()).ok();
             restored_pending_subagents = checkpoint_pending_subagents(&snapshot)?;
@@ -1091,7 +1103,7 @@ where
         };
         let original = input.clone();
         let interaction = if embedded {
-            crate::harness::embedded::interaction()
+            crate::runtime::agent::scope::interaction()
         } else {
             Some(self.replies.start(original.metadata.clone())?)
         };
@@ -1400,7 +1412,9 @@ async fn execute_tool_batch(
                         root.source(&steps.lock().expect("Tool steps lock poisoned"), &call);
                     match source {
                         Ok(source) => {
-                            let child = interaction.as_ref().map(crate::harness::reply::Run::child);
+                            let child = interaction
+                                .as_ref()
+                                .map(crate::runtime::agent::reply::Run::child);
                             if let (Some(parent), Some(child)) = (&interaction, &child) {
                                 parent.restore_consumer(&source, child);
                             }
@@ -1534,7 +1548,7 @@ async fn execute_subagent(
     restore: Option<Value>,
     cancellation: Cancellation,
     id_fn: Option<fn() -> i64>,
-    observer: Option<crate::harness::subagent::Observer>,
+    observer: Option<crate::core::agent::subagent::Observer>,
 ) -> Result<SubAgentProgress, Box<SubAgentFailure>> {
     let name = call
         .arguments
@@ -1559,7 +1573,7 @@ async fn execute_subagent(
             "agent_spawn input must be agent::Input",
         ))
     })?;
-    crate::harness::subagent::inherit_identity(&mut input, &parent)
+    crate::core::agent::subagent::inherit_identity(&mut input, &parent)
         .map_err(SubAgentFailure::new)?;
     let depth = parent.get("depth").and_then(Value::as_u64).unwrap_or(1);
     if depth >= 2 {
@@ -1580,7 +1594,7 @@ async fn execute_subagent(
                 "agent_spawn target is not registered",
             ))
         })?;
-    crate::harness::subagent::run(
+    crate::core::agent::subagent::run(
         subagent,
         input,
         &call,
@@ -1619,6 +1633,7 @@ fn checkpoint_state(
     result: &Result<Event, Error>,
     root: &Root,
     steps: &[Step],
+    stream: bool,
 ) -> Value {
     let status = match result {
         Ok(Event::Complete {
@@ -1635,6 +1650,7 @@ fn checkpoint_state(
         "chat_id": input.and_then(|input| input.metadata.get("chat_id")).and_then(Value::as_i64),
         "type": "agent",
         "status": status,
+        "stream": stream,
         "messages": messages,
         "usage": usage,
         "query": input,
@@ -1643,7 +1659,7 @@ fn checkpoint_state(
         "steps": steps,
         "waits": [],
     });
-    crate::harness::checkpoint::record_result(&mut state, result);
+    crate::runtime::agent::checkpoint::record_result(&mut state, result);
     state
 }
 
@@ -1653,6 +1669,7 @@ fn waiting_checkpoint_state(
     input: Option<&Input>,
     root: &Root,
     steps: &[Step],
+    stream: bool,
 ) -> Value {
     let mut state = checkpoint_state(
         messages,
@@ -1663,6 +1680,7 @@ fn waiting_checkpoint_state(
         }),
         root,
         steps,
+        stream,
     );
     state["status"] = Value::String("waiting".into());
     state["execution"] = serde_json::to_value(root.snapshot("waiting", usage, None))
@@ -1676,7 +1694,7 @@ fn checkpoint_future(
     state: Value,
 ) -> CheckpointFuture {
     Box::pin(async move {
-        if crate::harness::embedded::capture(state.clone()) {
+        if crate::runtime::agent::scope::capture(state.clone()) {
             Ok(())
         } else if let (Some(checkpoint), Some(id)) = (checkpoint, checkpoint_id) {
             checkpoint.save(id, state, Cancellation::new()).await
@@ -1731,7 +1749,7 @@ fn is_waiting_snapshot(snapshot: &Value) -> bool {
 }
 
 fn checkpoint_identity_matches(snapshot: &Value, metadata: &Map<String, Value>) -> bool {
-    crate::harness::checkpoint::identity_matches(snapshot, metadata)
+    crate::runtime::agent::checkpoint::identity_matches(snapshot, metadata)
 }
 
 async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Message>, Error> {
@@ -1761,7 +1779,8 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
         return step_messages(&call, &saved);
     }
     let approval =
-        crate::harness::reply::consume_restore(interaction.as_ref(), &saved, &cancellation).await;
+        crate::runtime::agent::reply::consume_restore(interaction.as_ref(), &saved, &cancellation)
+            .await;
     let resumed = if saved.stage.as_deref() == Some("eval") {
         Some((
             saved
@@ -1782,7 +1801,7 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
     } else if access.is_configured() {
         async {
             toolkit.validate(&call)?;
-            crate::harness::reply::check(
+            crate::core::agent::access::check_tool(
                 &access,
                 &hooks,
                 metadata.clone(),
@@ -1794,8 +1813,8 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
             )
             .await
             .map_err(|failure| match failure {
-                crate::harness::access::Failure::Policy(error) => error,
-                crate::harness::access::Failure::Hook(error) => {
+                crate::core::agent::access::Failure::Policy(error) => error,
+                crate::core::agent::access::Failure::Hook(error) => {
                     permission_hook_failed = true;
                     error
                 }
@@ -1808,7 +1827,7 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
                 step.call = Some(effective.clone());
             }
             if effective.arguments != call.arguments {
-                crate::harness::reply::check(
+                crate::core::agent::access::check_tool(
                     &access,
                     &hooks,
                     metadata.clone(),
@@ -1820,8 +1839,8 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
                 )
                 .await
                 .map_err(|failure| match failure {
-                    crate::harness::access::Failure::Policy(error) => error,
-                    crate::harness::access::Failure::Hook(error) => {
+                    crate::core::agent::access::Failure::Policy(error) => error,
+                    crate::core::agent::access::Failure::Hook(error) => {
                         permission_hook_failed = true;
                         error
                     }
@@ -1936,7 +1955,7 @@ fn decode_call(part: &Part) -> Result<Call, Error> {
 }
 
 fn tool_success_message(call: &Call, mut message: Message) -> Message {
-    crate::harness::observation::clear_source(&mut message);
+    crate::runtime::observation::clear_source(&mut message);
     message
         .metadata
         .insert("call_id".into(), Value::String(call.call_id.clone()));
@@ -2065,35 +2084,6 @@ fn part_bytes(part: &Part) -> usize {
 
 fn estimate_tokens(bytes: usize) -> u64 {
     u64::try_from(bytes.saturating_add(3) / 4).unwrap_or(u64::MAX)
-}
-
-pub(crate) fn user_message(input: Input) -> Message {
-    let content = input
-        .payload
-        .into_iter()
-        .map(|payload| {
-            let mut data = match payload.data {
-                serde_json::Value::Object(object) => object,
-                value => Map::from_iter([(String::from("value"), value)]),
-            };
-            if let Some(mime_type) = payload.mime_type {
-                data.insert("mime_type".into(), serde_json::Value::String(mime_type));
-            }
-            Part {
-                r#type: payload.r#type,
-                data,
-            }
-        })
-        .collect();
-    let mut message = Message {
-        role: Role::User,
-        content,
-        values: Map::new(),
-        metadata: input.metadata,
-        usage: None,
-    };
-    crate::harness::observation::clear_source(&mut message);
-    message
 }
 
 #[cfg(test)]
@@ -2249,8 +2239,8 @@ mod tests {
             _stream: bool,
             _cancellation: Cancellation,
         ) -> Result<Self::Stream, Error> {
-            if crate::harness::embedded::restore().is_none() {
-                assert!(crate::harness::embedded::capture(json!({
+            if crate::runtime::agent::scope::restore().is_none() {
+                assert!(crate::runtime::agent::scope::capture(json!({
                     "owner": "chat-child"
                 })));
                 return Err(Error::new("WAITING", "child is waiting for approval"));
@@ -2670,11 +2660,12 @@ mod tests {
             checkpoint
                 .save(
                     991,
-                    crate::harness::subagent::waiting_fixture(
+                    crate::core::agent::subagent::waiting_fixture(
                         json!({
                             "type": "agent",
                             "chat_id": 991,
                             "status": "waiting",
+                            "stream": true,
                             "messages": [],
                             "usage": null,
                             "query": {"metadata": {"chat_id": 991}, "payload": []},

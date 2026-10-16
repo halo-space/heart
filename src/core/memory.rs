@@ -11,6 +11,7 @@ use crate::components::memory::{
 use crate::runtime::cancellation::Cancellation;
 
 pub mod extraction;
+pub(crate) mod history;
 pub mod short;
 
 #[derive(Clone)]

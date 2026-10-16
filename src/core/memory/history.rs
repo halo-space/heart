@@ -1,4 +1,4 @@
-//! Harness history initialization and Chat closure over Memory components.
+//! Shared Agent/Workflow history lifecycle over the Memory component contracts.
 use std::{
     future::Future,
     pin::Pin,
@@ -18,9 +18,10 @@ use crate::{
     model::content::part::Part,
 };
 
-use super::hooks::{Hooks, cancellable};
 use crate::agent::{Input, Payload};
+use crate::core::agent::hooks::Hooks;
 use crate::runtime::agent::usage::Ledger;
+use crate::runtime::cancellation::cancellable;
 
 mod compression;
 mod extraction;
@@ -266,7 +267,7 @@ impl History {
     }
 }
 
-/// Harness persistence closure for one Chat. Model accounting is maintained
+/// Persistence closure for one Agent or Workflow Chat. Model accounting is maintained
 /// by runtime::agent; this type owns only the configured writeback operation.
 #[derive(Clone, Default)]
 pub(crate) struct Run {
@@ -343,7 +344,7 @@ impl Run {
                 } else {
                     chat::Status::Completed
                 },
-                Some(crate::harness::observation::original_message(message)),
+                Some(crate::runtime::observation::original_message(message)),
             ),
             Err(error) if error.code == "WAITING" => (chat::Status::Running, None),
             Err(error) => (
@@ -535,7 +536,7 @@ where
                 "Chat final message must have assistant role",
             ));
         }
-        let user = crate::components::agent::chat::user_message(Input {
+        let user = crate::core::agent::input::user_message(Input {
             metadata: input.metadata,
             payload: input
                 .payload
@@ -650,6 +651,6 @@ fn context(label: &str, content: &str, metadata: Map<String, Value>) -> Message 
         ),
     });
     message.metadata = metadata;
-    crate::harness::observation::clear_source(&mut message);
+    crate::runtime::observation::clear_source(&mut message);
     message
 }

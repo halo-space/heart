@@ -4,6 +4,7 @@ use super::*;
 
 pub(crate) struct Restore {
     waits: Vec<wait::Wait>,
+    reply_order: Vec<i64>,
     questions: BTreeMap<String, Question>,
     history: BTreeMap<i64, Option<Value>>,
     tasks: BTreeMap<wait::Node, Consumer>,
@@ -104,7 +105,7 @@ fn same_feedback(steps: &[Step], input: &Input) -> Result<bool, Error> {
         ));
     }
     if record.feedback.as_slice()[0].content
-        != crate::components::agent::chat::user_message(input.clone()).content
+        != crate::core::agent::input::user_message(input.clone()).content
     {
         return Err(Error::new(
             "CONFLICT",
@@ -167,7 +168,9 @@ pub(crate) fn prepare(scene: &Value, input: &Input) -> Result<Option<Restore>, E
     }
     let mut questions = BTreeMap::new();
     let mut tasks = BTreeMap::<wait::Node, Consumer>::new();
-    let mut targeted = same_feedback(&all_steps, input)?;
+    let duplicate = same_feedback(&all_steps, input)?;
+    let mut targeted = duplicate;
+    let mut reply_order = Vec::new();
     for position in &waits {
         let step: Step = serde_json::from_value(
             wait::scene_step(scene, &position.nodes, &position.step)?.clone(),
@@ -207,6 +210,7 @@ pub(crate) fn prepare(scene: &Value, input: &Input) -> Result<Option<Restore>, E
                 "saved approval question identity is invalid",
             ));
         }
+        reply_order.push(reply_id);
         let selected = reply_id == id;
         targeted |= selected;
         let mut owned_questions = &mut questions;
@@ -244,9 +248,16 @@ pub(crate) fn prepare(scene: &Value, input: &Input) -> Result<Option<Restore>, E
             "reply does not identify a saved waiting question",
         ));
     }
+    if !duplicate && reply_order.first().is_some_and(|first| id != *first) {
+        return Err(Error::new(
+            "CONFLICT",
+            "replies must be submitted in the waiting question order",
+        ));
+    }
     approved(input)?;
     Ok(Some(Restore {
         waits,
+        reply_order,
         questions,
         history,
         tasks,
@@ -271,6 +282,8 @@ impl Run {
                 },
             );
         }
+        *self.0.order.lock().expect("question order lock poisoned") =
+            restore.reply_order.into_iter().collect();
         *self
             .0
             .restored
@@ -352,7 +365,7 @@ impl Run {
                 question: Box::new(question.message),
                 ack,
             });
-            crate::harness::hooks::cancellable(
+            crate::runtime::cancellation::cancellable(
                 async {
                     presented
                         .await
@@ -361,7 +374,7 @@ impl Run {
                 cancellation,
             )
             .await?;
-            crate::harness::hooks::cancellable(
+            crate::runtime::cancellation::cancellable(
                 async {
                     receiver
                         .await
@@ -379,7 +392,7 @@ impl Run {
             input,
             ack,
         });
-        crate::harness::hooks::cancellable(
+        crate::runtime::cancellation::cancellable(
             async {
                 consumed
                     .await

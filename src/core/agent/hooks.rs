@@ -1,5 +1,5 @@
-//! Harness dispatch of configured component lifecycle hooks.
-use std::{future::Future, pin::Pin, sync::Arc, task::Poll};
+//! Core Agent dispatch of configured component lifecycle hooks.
+use std::{future::Future, pin::Pin, sync::Arc};
 
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -249,17 +249,5 @@ pub(crate) async fn cancellable<T>(
     future: impl Future<Output = Result<T, Error>>,
     cancellation: &Cancellation,
 ) -> Result<T, Error> {
-    let mut future = std::pin::pin!(future);
-    std::future::poll_fn(|cx| {
-        cancellation.register(cx.waker());
-        if cancellation.is_cancelled() {
-            return Poll::Ready(Err(Error::new("CANCELLED", "Agent stage cancelled")));
-        }
-        let result = future.as_mut().poll(cx);
-        if cancellation.is_cancelled() {
-            return Poll::Ready(Err(Error::new("CANCELLED", "Agent stage cancelled")));
-        }
-        result
-    })
-    .await
+    crate::runtime::cancellation::cancellable(future, cancellation).await
 }

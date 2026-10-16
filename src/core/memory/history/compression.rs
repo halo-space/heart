@@ -1,4 +1,4 @@
-//! Harness compression workflow over a fixed, request-triggered history snapshot.
+//! Agent memory compression over a fixed, request-triggered history snapshot.
 //! The configured compression component performs the transformation; this
 //! module checks the trigger, manages the job and conditionally writes Session.
 use std::{
@@ -16,8 +16,8 @@ use crate::{
     model::token::Usage,
 };
 
-use super::super::hooks::Hooks;
 use super::{extraction, progress};
+use crate::core::agent::hooks::Hooks;
 
 type Key = (usize, i64);
 static ACTIVE: OnceLock<Mutex<HashSet<Key>>> = OnceLock::new();

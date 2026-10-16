@@ -70,10 +70,34 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
     ) -> AgentFuture {
         let agent = Arc::clone(&self.agent);
         Box::pin(async move {
-            let scope = crate::harness::embedded::Scope::new(restore)
-                .with_interaction(super::events::interaction().map(|run| run.child()));
+            let interaction = super::events::interaction().map(|run| run.child());
+            if let Some(scene) = restore.as_ref()
+                && input.metadata.contains_key("reply_id")
+            {
+                let restored = match crate::runtime::agent::reply::prepare_restore(scene, &input) {
+                    Ok(Some(restored)) => Some(restored),
+                    Ok(None) => None,
+                    Err(error) => {
+                        return AgentRun {
+                            result: Err(error),
+                            messages: Messages::default(),
+                            steps: Vec::new(),
+                            usage: None,
+                            scene: None,
+                        };
+                    }
+                };
+                if let Some(restored) = restored {
+                    interaction
+                        .as_ref()
+                        .expect("embedded Agent reply interaction")
+                        .restore_approvals(restored);
+                }
+            }
+            let scope =
+                crate::runtime::agent::scope::Scope::new(restore).with_interaction(interaction);
             let observed = scope.clone();
-            let mut run = crate::harness::embedded::run(scope.clone(), async move {
+            let mut run = crate::runtime::agent::scope::run(scope.clone(), async move {
                 let mut messages = Messages::default();
                 let mut steps = Vec::new();
                 let mut usage = None;
@@ -184,7 +208,7 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                             // The incoming Agent stream is already an observation
                             // projection. Keep its source on the forwarded copy,
                             // never in the Workflow's original message history.
-                            crate::harness::observation::clear_source(&mut message);
+                            crate::runtime::observation::clear_source(&mut message);
                             let cancelled = finish_reason.as_deref() == Some("cancelled");
                             let kind = match message.role {
                                 Role::Assistant => "model",
@@ -289,7 +313,7 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
 }
 
 fn agent_attempt(
-    scope: &crate::harness::embedded::Scope,
+    scope: &crate::runtime::agent::scope::Scope,
     steps: &[Step],
     messages: &Messages,
     usage: Option<Usage>,
@@ -633,6 +657,13 @@ pub struct State {
     pub nodes: BTreeMap<String, crate::runtime::workflow::node::State>,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct ReplyExecution {
+    pub(crate) node_id: String,
+    pub(crate) exec_id: i64,
+    pub(crate) idx: u32,
+}
+
 impl State {
     pub fn new(chat_id: i64, definition: &Definition) -> Self {
         let nodes = definition
@@ -683,6 +714,37 @@ impl State {
         Ok(())
     }
 
+    /// Embedded Agent scenes share the Workflow's top-level run identity.
+    /// Normalize that existing identity before publishing or checkpointing
+    /// progress, including scenes nested in child Graph attempts.
+    pub(crate) fn bind_agent_chat_id(&mut self, chat_id: i64) -> Result<(), Error> {
+        for node in self.nodes.values_mut() {
+            for execution in node.executions.values_mut() {
+                for attempt in &mut execution.attempts {
+                    if let Some(scene) = attempt.agent.as_mut()
+                        && let Some(scene) = scene.as_object_mut()
+                    {
+                        if scene
+                            .get("chat_id")
+                            .and_then(Value::as_i64)
+                            .is_some_and(|saved| saved != chat_id)
+                        {
+                            return Err(Error::new(
+                                "CONFLICT",
+                                "embedded Agent Checkpoint has a different chat_id",
+                            ));
+                        }
+                        scene.insert("chat_id".into(), chat_id.into());
+                    }
+                    if let Some(child) = attempt.graph.as_deref_mut() {
+                        child.bind_agent_chat_id(chat_id)?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Marks in-flight executions from a persisted snapshot as waiting.
     /// The logical execution remains active so Runtime can reuse its exec_id;
     /// only a later call may continue the same execution. Explicit external
@@ -726,6 +788,50 @@ impl State {
                 .then_some((node_id.clone(), *exec_id))
             })
         })
+    }
+
+    /// Locate a saved approval only through active Workflow executions and
+    /// their actual embedded Agent/Graph scenes.
+    pub(crate) fn reply_paths(&self, reply_id: i64) -> Result<Vec<Vec<ReplyExecution>>, Error> {
+        let mut paths = Vec::new();
+        for (node_id, node) in &self.nodes {
+            for execution in node.executions.values().filter(|execution| {
+                execution.idx == self.step
+                    && matches!(
+                        execution.status,
+                        crate::runtime::workflow::node::ExecutionStatus::Running
+                            | crate::runtime::workflow::node::ExecutionStatus::Waiting
+                    )
+            }) {
+                let Some(attempt) = execution.attempts.last() else {
+                    continue;
+                };
+                if !matches!(
+                    attempt.status,
+                    crate::runtime::workflow::node::AttemptStatus::Running
+                        | crate::runtime::workflow::node::AttemptStatus::Waiting
+                ) {
+                    continue;
+                }
+                let current = ReplyExecution {
+                    node_id: node_id.clone(),
+                    exec_id: execution.exec_id,
+                    idx: attempt.idx,
+                };
+                if let Some(scene) = &attempt.agent
+                    && crate::runtime::agent::wait::question(scene, reply_id)?
+                {
+                    paths.push(vec![current.clone()]);
+                }
+                if let Some(child) = &attempt.graph {
+                    for mut path in child.reply_paths(reply_id)? {
+                        path.insert(0, current.clone());
+                        paths.push(path);
+                    }
+                }
+            }
+        }
+        Ok(paths)
     }
 
     /// Rebuilds the graph-level usage from committed node Attempt details.
@@ -867,13 +973,54 @@ impl State {
             && let Some(child) = attempt.graph.as_mut()
         {
             let child_waits = child.waits.keys().cloned().collect::<Vec<_>>();
-            if child_waits.len() > 1 {
+            let reply_id = response
+                .as_slice()
+                .iter()
+                .rev()
+                .find(|message| message.role == crate::components::message::Role::User)
+                .and_then(|message| message.metadata.get("reply_id"))
+                .and_then(serde_json::Value::as_i64);
+            let child_node_id = if let Some(reply_id) = reply_id {
+                let mut matching = Vec::new();
+                for child_node_id in &child_waits {
+                    let Some(wait) = child.waits.get(child_node_id) else {
+                        continue;
+                    };
+                    let Some(attempt) = child
+                        .nodes
+                        .get(child_node_id)
+                        .and_then(|node| node.executions.get(&wait.exec_id))
+                        .and_then(|execution| execution.attempts.last())
+                    else {
+                        continue;
+                    };
+                    if super::attempt_question(attempt, reply_id)? {
+                        matching.push(child_node_id.clone());
+                    }
+                }
+                if matching.len() > 1 {
+                    return Err(Error::new(
+                        "CONFLICT",
+                        "reply identifies multiple nested Workflow waits",
+                    ));
+                }
+                matching.pop().ok_or_else(|| {
+                    Error::new(
+                        "NOT_FOUND",
+                        "reply does not identify a nested Workflow wait",
+                    )
+                })?
+            } else if child_waits.len() == 1 {
+                child_waits[0].clone()
+            } else if child_waits.is_empty() {
+                String::new()
+            } else {
                 return Err(Error::new(
                     "CONFLICT",
                     "nested workflow has multiple active waits",
                 ));
-            }
-            if let Some(child_node_id) = child_waits.into_iter().next() {
+            };
+            if !child_node_id.is_empty() {
                 child.resume(&child_node_id, response.clone())?;
             }
         }

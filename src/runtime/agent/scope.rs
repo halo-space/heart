@@ -1,4 +1,4 @@
-//! Private scene ownership for Workflow-embedded Agents and nested SubAgents.
+//! Private execution scope for Agent runs owned by another runtime or Agent.
 
 use std::future::Future;
 use std::sync::{Arc, Mutex};
@@ -10,7 +10,7 @@ pub(crate) struct Scope {
     restore: Arc<Mutex<Option<Value>>>,
     latest: Arc<Mutex<Option<Arc<Value>>>>,
     id_fn: Option<fn() -> i64>,
-    interaction: Option<super::reply::Run>,
+    interaction: Option<crate::runtime::agent::reply::Run>,
 }
 
 impl Scope {
@@ -27,7 +27,10 @@ impl Scope {
         self.id_fn = self.id_fn.or(id_fn);
         self
     }
-    pub(crate) fn with_interaction(mut self, interaction: Option<super::reply::Run>) -> Self {
+    pub(crate) fn with_interaction(
+        mut self,
+        interaction: Option<crate::runtime::agent::reply::Run>,
+    ) -> Self {
         self.interaction = interaction;
         self
     }
@@ -71,7 +74,7 @@ pub(crate) fn id_fn() -> Option<fn() -> i64> {
     CURRENT.try_with(|scope| scope.id_fn).ok().flatten()
 }
 
-pub(crate) fn interaction() -> Option<super::reply::Run> {
+pub(crate) fn interaction() -> Option<crate::runtime::agent::reply::Run> {
     CURRENT
         .try_with(|scope| scope.interaction.clone())
         .ok()

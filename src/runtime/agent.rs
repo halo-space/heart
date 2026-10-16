@@ -3,10 +3,15 @@
 //! Chat/ReAct definitions, builders and the public run contract live in
 //! [`crate::agent`]. This module does not define an Agent kind or require
 //! applications to construct a separate Runtime to call an Agent.
-//! Component lifecycle integration is performed by [`crate::harness`].
+//! Agent-specific integrations are owned by this Runtime or by the Agent
+//! implementation that composes the relevant Core components.
 
+pub(crate) mod checkpoint;
 pub mod graph;
 pub mod node;
+pub(crate) mod reply;
+pub(crate) mod scope;
+pub(crate) mod tool_steps;
 pub(crate) mod usage;
 pub mod wait;
 
@@ -35,6 +40,8 @@ pub struct State {
     #[serde(rename = "type")]
     pub r#type: String,
     pub status: String,
+    /// Outward delivery mode fixed for this run and restored from Checkpoint.
+    pub stream: bool,
     pub usage: Option<Usage>,
     /// Root Agent execution, created when it first delegates a child. Root
     /// messages/steps remain above the Attempt instead of being duplicated.

@@ -71,6 +71,15 @@ pub(crate) fn invalid(message: &str) -> Error {
     Error::new("INVALID_STATE", message)
 }
 
+/// Delivery mode is a run fact, not a choice that can change when a waiting
+/// invocation is restored. Missing or malformed saved mode is not guessed.
+pub(crate) fn stream_mode(state: &Value) -> Result<bool, Error> {
+    state
+        .get("stream")
+        .and_then(Value::as_bool)
+        .ok_or_else(|| invalid("Agent checkpoint has no valid stream mode"))
+}
+
 /// Validate native waiting positions before any Model/Tool/Memory work. Until
 /// the targeted consumer is connected, an explicit human wait must not fall
 /// through to generic continuation or silently lose its ordered index.
@@ -143,7 +152,7 @@ pub(crate) fn record_result(state: &mut Value, result: &Result<Event, Error>) {
             finish_reason,
         }) => {
             state["final_message"] =
-                serde_json::to_value(crate::harness::observation::original_message(message))
+                serde_json::to_value(crate::runtime::observation::original_message(message))
                     .expect("Message serialization");
             state["final_usage"] = serde_json::to_value(usage).expect("Usage serialization");
             state["finish_reason"] =

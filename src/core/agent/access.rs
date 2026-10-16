@@ -1,4 +1,4 @@
-//! Harness integration of an explicitly configured Permission component.
+//! Concrete permission-policy integration used by the Core Agent implementations.
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use crate::{
@@ -56,7 +56,7 @@ pub(crate) enum Failure {
 
 /// Interpret a completed decision in the Agent's existing lifecycle. This
 /// does not create a Message, consume a reply or grant/copy authorization.
-pub(crate) async fn check_tool(
+pub(crate) async fn check_permission(
     access: &Access,
     hooks: &super::hooks::Hooks,
     mut metadata: serde_json::Map<String, serde_json::Value>,
@@ -104,5 +104,35 @@ pub(crate) async fn check_tool(
                 .reason
                 .unwrap_or_else(|| "operation requires user confirmation".into()),
         ))),
+    }
+}
+
+/// Apply permission policy to an actual tool call and, when configured, route
+/// an Ask decision through the Agent's existing reply interaction.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn check_tool(
+    access: &Access,
+    hooks: &super::hooks::Hooks,
+    metadata: serde_json::Map<String, serde_json::Value>,
+    call: &crate::tool::Call,
+    cancellation: &Cancellation,
+    interaction: Option<&crate::runtime::agent::reply::Run>,
+    id_fn: Option<fn() -> i64>,
+    approval: Option<&crate::tool::Call>,
+) -> Result<(), Failure> {
+    match check_permission(access, hooks, metadata, call, cancellation).await {
+        Err(Failure::Policy(error)) if error.code == "WAITING" => {
+            if approval == Some(call) {
+                return Ok(());
+            }
+            if let (Some(run), Some(id_fn)) = (interaction, id_fn) {
+                run.ask(call, &error.message, id_fn, cancellation)
+                    .await
+                    .map_err(Failure::Policy)
+            } else {
+                Err(Failure::Policy(error))
+            }
+        }
+        result => result,
     }
 }

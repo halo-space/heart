@@ -70,19 +70,19 @@ impl Output {
 tokio::task_local! {
     static CURRENT: Output;
     static SOURCE: (i64, String, i64);
-    static INTERACTION: crate::harness::reply::Run;
+    static INTERACTION: crate::runtime::agent::reply::Run;
     static RELAY:Relay;
     static ATTEMPT:u32;
 }
 
 pub(super) async fn with_interaction<F: Future>(
-    interaction: crate::harness::reply::Run,
+    interaction: crate::runtime::agent::reply::Run,
     future: F,
 ) -> F::Output {
     INTERACTION.scope(interaction, future).await
 }
 pub(super) async fn with_optional_interaction<F: Future>(
-    interaction: Option<crate::harness::reply::Run>,
+    interaction: Option<crate::runtime::agent::reply::Run>,
     future: F,
 ) -> F::Output {
     match interaction {
@@ -90,7 +90,7 @@ pub(super) async fn with_optional_interaction<F: Future>(
         None => future.await,
     }
 }
-pub(super) fn interaction() -> Option<crate::harness::reply::Run> {
+pub(super) fn interaction() -> Option<crate::runtime::agent::reply::Run> {
     INTERACTION.try_with(Clone::clone).ok()
 }
 pub(super) async fn with_relay<F: Future>(relay: Relay, future: F) -> F::Output {
@@ -121,7 +121,7 @@ pub(super) async fn progress(
         let chat_id = SOURCE
             .try_with(|source| source.0)
             .expect("current Workflow source");
-        crate::harness::observation::associate(event, Some(chat_id), Some((&node_id, exec_id)));
+        crate::runtime::observation::associate(event, Some(chat_id), Some((&node_id, exec_id)));
     }
     let (ack, received) = tokio::sync::oneshot::channel();
     relay
@@ -160,7 +160,7 @@ pub(crate) async fn emit(mut event: Event) {
         return;
     };
     let _ = SOURCE.try_with(|(chat_id, node_id, exec_id)| {
-        crate::harness::observation::associate(
+        crate::runtime::observation::associate(
             &mut event,
             Some(*chat_id),
             Some((node_id, *exec_id)),

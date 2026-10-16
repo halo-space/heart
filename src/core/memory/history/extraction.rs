@@ -1,6 +1,6 @@
 //! Stage-preserving long Memory processing. Production progress is saved in
 //! Session metadata before external writes and after acknowledged completion.
-use crate::harness::hooks::cancellable;
+use crate::runtime::cancellation::cancellable;
 use crate::{
     Cancellation, Error, Messages,
     memory::{self, Item, Memory, Request},

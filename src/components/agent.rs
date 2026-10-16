@@ -1,4 +1,4 @@
-//! Shared Agent contract, input and default Chat implementation.
+//! Shared Agent contract and input types.
 //!
 //! Runtime-owned execution graphs and node state live under `runtime::agent`.
 
@@ -14,7 +14,6 @@ use serde_json::{Map, Value};
 use crate::components::event::Event;
 use crate::runtime::cancellation::Cancellation;
 
-pub mod chat;
 pub mod toolkit;
 
 type ErasedStream = Pin<Box<dyn Stream<Item = Result<Event, Error>> + 'static>>;
@@ -118,12 +117,6 @@ impl std::fmt::Debug for SubAgent {
             .field("description", &self.description)
             .finish_non_exhaustive()
     }
-}
-
-/// Builder-shaped entry points keep application code concise while the
-/// implementation remains split by Agent kind.
-pub fn chat() -> chat::Builder {
-    chat::builder()
 }
 
 pub type Error = crate::Error;

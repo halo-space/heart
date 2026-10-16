@@ -37,7 +37,7 @@ impl<C: Chat> evaluation::Evaluator for Evaluator<C> {
     ) -> Result<Evaluation, Error> {
         super::operation::check(cancellation)?;
         let messages = Messages::new([
-            crate::components::agent::chat::user_message(input.clone()),
+            crate::core::agent::input::user_message(input.clone()),
             super::structured::text(
                 Role::User,
                 serde_json::json!({"result": result}).to_string(),

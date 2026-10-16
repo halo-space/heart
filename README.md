@@ -9,12 +9,12 @@ Heart 是一个使用 Rust 构建的 Agent 与 Workflow 执行框架，目标是
 ```text
 src/
 ├── components/   公共组件契约，例如 Model、Tool、Memory、Message、Event
-├── core/         组件的具体实现，例如 Provider、ReAct Agent、本地存储和文档处理
-├── harness/      组合组件实现，组织 Hook、权限、记忆与压缩等运行流程
-└── runtime/      Agent 与 Workflow 的运行状态、图结构和执行控制
+├── core/         Core 能力及其实现，包括可复用组件实现和基础 Agent 实现
+├── runtime/      并列且独立的 Agent 与 Workflow 运行状态、图结构和执行控制
+└── harness/      DeepAgents 式的高阶 Agent 组装能力，不是 Agent/Workflow 的通用中间层
 ```
 
-组件层定义可复用的接口和数据结构，`core` 提供具体实现。`harness` 使用配置好的组件实例组织运行流程，`runtime` 管理执行图、节点状态、执行记录、Usage 和恢复现场。应用通过现有 Agent 构造入口配置组件，并调用 `agent.run(...)`；这些内部职责分工由框架完成。
+`components` 只定义契约边界；Agent 与 Workflow 是两类独立能力，各自使用自己的 Runtime，并共同复用 `core` 中适用的能力。基础 Agent 实现与 DeepAgents 式高阶 Harness 都组合 Core 能力。Harness 不承接所有 Agent 和 Workflow 共用的生命周期逻辑；共享代码按真实语义归属到相应 Runtime、组件契约或 Core 实现。源码正在按此目标对齐；目前 `harness` 仅保留目标命名空间，高阶 Harness 组装能力尚未实现。
 
 ## 当前状态
 

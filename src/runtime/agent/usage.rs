@@ -1,5 +1,5 @@
-//! Settled model-call accounting for one Agent run. Harness uses the total
-//! when writing the Chat projection; storage operations stay outside Runtime.
+//! Settled model-call accounting for one Agent run. The history lifecycle uses
+//! the total when writing the Chat projection; persistence stays outside Runtime.
 use std::sync::{Arc, Mutex};
 
 use crate::model::token::{self, Usage};

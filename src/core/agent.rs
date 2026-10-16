@@ -1,6 +1,11 @@
-//! Alternative implementations of the shared Agent component contract.
+//! Concrete Agent implementations built from shared Core capabilities.
 //!
-//! The default Chat implementation lives in components. ReAct and future
-//! strategies implement the same contract; they do not define new Runtimes.
+//! Chat and ReAct implement the same Agent component contract; they do not
+//! define separate Runtime kinds.
 
+pub(crate) mod access;
+pub mod chat;
+pub(crate) mod hooks;
+pub(crate) mod input;
 pub mod react;
+pub(crate) mod subagent;

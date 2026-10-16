@@ -45,6 +45,9 @@ impl Drop for Owner {
 struct Inner {
     metadata: Map<String, Value>,
     questions: Arc<Mutex<BTreeMap<i64, Question>>>,
+    /// Active question order is the business-assembled FIFO, shared by the
+    /// root and all nested consumers. IDs identify questions; they do not sort it.
+    order: Arc<Mutex<VecDeque<i64>>>,
     /// The root owns submission identity; each task polls its own handoff.
     parent: Option<Run>,
     slot: Option<Slot>,
@@ -125,7 +128,7 @@ impl Slot {
         }
     }
     pub(crate) async fn acquire(&self, cancellation: &Cancellation) -> Result<(), Error> {
-        super::hooks::cancellable(
+        crate::runtime::cancellation::cancellable(
             async {
                 let _entering = self.0.entering.lock().await;
                 if !self.held() {
@@ -197,6 +200,7 @@ impl Hub {
         let run = Run(Arc::new(Inner {
             metadata,
             questions: Default::default(),
+            order: Default::default(),
             parent: None,
             slot: None,
             enclosing: Vec::new(),
@@ -253,7 +257,7 @@ impl Hub {
         if run.closed.load(Ordering::Acquire) {
             return Err(Error::new("NOT_FOUND", "Agent run has ended"));
         }
-        let question = questions.get_mut(&id).filter(|q| q.active).ok_or_else(|| {
+        let question = questions.get(&id).filter(|q| q.active).ok_or_else(|| {
             Error::new("NOT_FOUND", "reply does not identify a presented question")
         })?;
         // This handoff entry is installed by the actual approval consumer;
@@ -269,7 +273,19 @@ impl Hub {
                 ))
             };
         }
+        let order = run.order.lock().expect("question order lock poisoned");
+        let Some(head) = order.front() else {
+            return Err(Error::new("NOT_FOUND", "reply is not in the waiting order"));
+        };
+        if *head != id {
+            return Err(Error::new(
+                "CONFLICT",
+                "reply must target the first waiting question",
+            ));
+        }
+        drop(order);
         approved(&input)?;
+        let question = questions.get_mut(&id).expect("validated active question");
         let sender = question
             .sender
             .take()
@@ -322,7 +338,7 @@ fn approved(input: &Input) -> Result<bool, Error> {
 fn feedback_signature(input: &Input) -> Value {
     // Feedback is saved as Messages, not the transport Input envelope. Use
     // that same projection live and after recovery (including MIME layout).
-    serde_json::to_value(crate::components::agent::chat::user_message(input.clone()).content)
+    serde_json::to_value(crate::core::agent::input::user_message(input.clone()).content)
         .expect("feedback serialization")
 }
 
@@ -343,6 +359,7 @@ impl Run {
         let run = Self(Arc::new(Inner {
             metadata: self.0.metadata.clone(),
             questions: self.0.questions.clone(),
+            order: self.0.order.clone(),
             parent: Some(self.clone()),
             slot,
             enclosing,
@@ -517,7 +534,7 @@ impl Run {
             question: Box::new(question),
             ack,
         });
-        super::hooks::cancellable(
+        crate::runtime::cancellation::cancellable(
             async {
                 presented
                     .await
@@ -526,7 +543,7 @@ impl Run {
             cancellation,
         )
         .await?;
-        let input = super::hooks::cancellable(
+        let input = crate::runtime::cancellation::cancellable(
             async {
                 receiver
                     .await
@@ -543,7 +560,7 @@ impl Run {
             input,
             ack,
         });
-        super::hooks::cancellable(
+        crate::runtime::cancellation::cancellable(
             async {
                 consumed
                     .await
@@ -575,9 +592,10 @@ pub(crate) fn apply(
             ack,
         } => {
             let result = (|| {
-                let step = super::tool_steps::current(steps, &call.call_id).ok_or_else(|| {
-                    Error::new("INVALID_STATE", "approval has no current Tool Step")
-                })?;
+                let step = crate::runtime::agent::tool_steps::current(steps, &call.call_id)
+                    .ok_or_else(|| {
+                        Error::new("INVALID_STATE", "approval has no current Tool Step")
+                    })?;
                 if let Some(record) = step.waits.get(&id)
                     && (record.kind != "approval"
                         || record.status != "waiting"
@@ -604,14 +622,19 @@ pub(crate) fn apply(
                 if !waits.contains(&position) {
                     waits.push(position);
                 }
-                owner
-                    .0
-                    .questions
-                    .lock()
-                    .expect("live question lock poisoned")
-                    .get_mut(&id)
-                    .expect("registered question")
-                    .active = true;
+                {
+                    let mut questions = owner
+                        .0
+                        .questions
+                        .lock()
+                        .expect("live question lock poisoned");
+                    let question = questions.get_mut(&id).expect("registered question");
+                    question.active = true;
+                    let mut order = owner.0.order.lock().expect("question order lock poisoned");
+                    if !order.contains(&id) {
+                        order.push_back(id);
+                    }
+                }
                 Ok(Some(Event::Complete {
                     message: *question,
                     usage: None,
@@ -628,7 +651,7 @@ pub(crate) fn apply(
             ack,
         } => {
             let result = (|| {
-                let step = super::tool_steps::current(steps, &call.call_id)
+                let step = crate::runtime::agent::tool_steps::current(steps, &call.call_id)
                     .filter(|step| step.call.as_ref() == Some(&call))
                     .ok_or_else(|| {
                         Error::new("INVALID_STATE", "approved operation is no longer current")
@@ -640,46 +663,35 @@ pub(crate) fn apply(
                     .ok_or_else(|| {
                         Error::new("INVALID_STATE", "approval question is no longer waiting")
                     })?;
+                if owner
+                    .0
+                    .order
+                    .lock()
+                    .expect("question order lock poisoned")
+                    .front()
+                    != Some(&id)
+                {
+                    return Err(Error::new(
+                        "CONFLICT",
+                        "waiting questions must be consumed in order",
+                    ));
+                }
                 record
                     .feedback
-                    .push(crate::components::agent::chat::user_message(input));
+                    .push(crate::core::agent::input::user_message(input));
                 record.status = "resolved".into();
                 step.status = "running".into();
                 waits.retain(|position| !position.nodes.is_empty() || position.step != step.id);
+                owner
+                    .0
+                    .order
+                    .lock()
+                    .expect("question order lock poisoned")
+                    .pop_front();
                 Ok(None)
             })();
             let _ = ack.send(result.as_ref().map(|_| ()).map_err(Clone::clone));
             result
         }
-    }
-}
-
-// Keep private dependencies explicit; do not introduce a public Tool/Runtime
-// Context just to carry one execution-local restored-operation grant.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn check(
-    access: &super::access::Access,
-    hooks: &super::hooks::Hooks,
-    metadata: Map<String, Value>,
-    call: &Call,
-    cancellation: &Cancellation,
-    interaction: Option<&Run>,
-    id_fn: Option<fn() -> i64>,
-    approval: Option<&Call>,
-) -> Result<(), super::access::Failure> {
-    match super::access::check_tool(access, hooks, metadata, call, cancellation).await {
-        Err(super::access::Failure::Policy(error)) if error.code == "WAITING" => {
-            if approval == Some(call) {
-                return Ok(());
-            }
-            if let (Some(run), Some(id_fn)) = (interaction, id_fn) {
-                run.ask(call, &error.message, id_fn, cancellation)
-                    .await
-                    .map_err(super::access::Failure::Policy)
-            } else {
-                Err(super::access::Failure::Policy(error))
-            }
-        }
-        result => result,
     }
 }
