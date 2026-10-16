@@ -3,8 +3,9 @@
 //! The shared contract lives in components; Chat and ReAct implementations
 //! live in core and use the same Agent contract. Runtime owns per-run state.
 
-pub use crate::components::agent::{Agent, Error, Input, Payload, SubAgent, toolkit};
-pub use crate::core::agent::{chat, react};
+pub use crate::components::agent::{Agent, Error, Input, Payload};
+pub use crate::core::agent::subagent::SubAgent;
+pub use crate::core::agent::{chat, react, toolkit};
 
 /// Construct the default Chat Agent implementation.
 pub fn chat() -> chat::Builder {

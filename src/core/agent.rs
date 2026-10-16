@@ -8,4 +8,5 @@ pub mod chat;
 pub(crate) mod hooks;
 pub(crate) mod input;
 pub mod react;
-pub(crate) mod subagent;
+pub mod subagent;
+pub mod toolkit;
