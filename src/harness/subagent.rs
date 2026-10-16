@@ -44,11 +44,15 @@ impl Relay {
         }
     }
 
-    pub(crate) fn observer(&self, chat_id: Option<i64>, source: (String, i64)) -> Observer {
+    pub(crate) fn observer(
+        &self,
+        chat_id: Option<i64>,
+        source: crate::runtime::agent::wait::Node,
+    ) -> Observer {
         Observer {
             relay: self.clone(),
             chat_id,
-            source,
+            source: (source.node_id, source.exec_id),
             interaction: None,
         }
     }
@@ -239,7 +243,11 @@ impl Root {
         message(&execution.as_ref()?.attempts.last()?.nodes, steps, call)
     }
 
-    pub(crate) fn source(&self, steps: &[Step], call: &Call) -> Result<(String, i64), Error> {
+    pub(crate) fn source(
+        &self,
+        steps: &[Step],
+        call: &Call,
+    ) -> Result<crate::runtime::agent::wait::Node, Error> {
         let execution = self.0.lock().expect("root execution lock poisoned");
         let nodes = &execution
             .as_ref()
@@ -684,7 +692,7 @@ pub(crate) fn source(
     nodes: &BTreeMap<String, State>,
     steps: &[Step],
     call: &Call,
-) -> Result<(String, i64), Error> {
+) -> Result<crate::runtime::agent::wait::Node, Error> {
     let step = steps
         .iter()
         .rev()
@@ -700,7 +708,15 @@ pub(crate) fn source(
         .get(id)
         .and_then(|node| node.execution.as_ref())
         .ok_or_else(|| Error::new("INVALID_STATE", "child has no execution"))?;
-    Ok((id.clone(), execution.exec_id))
+    let attempt = execution
+        .attempts
+        .last()
+        .ok_or_else(|| Error::new("INVALID_STATE", "child has no current Attempt"))?;
+    Ok(crate::runtime::agent::wait::Node {
+        node_id: id.clone(),
+        exec_id: execution.exec_id,
+        idx: attempt.idx,
+    })
 }
 
 /// Publish only the child's actual captured scene and new consumption facts.

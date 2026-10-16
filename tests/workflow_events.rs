@@ -660,7 +660,7 @@ fn cancellation_forwards_the_agents_partial_complete_and_settled_usage() {
         assert_eq!(runtime.state().status, graph::Status::Cancelled);
         assert!(runtime.state().usage.as_ref().unwrap().total.unwrap() > 0);
         let saved = runtime.snapshot().unwrap();
-        let mut restored = Runtime::from_snapshot(1007, compiled, saved.clone()).unwrap();
+        let restored = Runtime::from_snapshot(1007, compiled, saved.clone()).unwrap();
         {
             let mut events = restored
                 .run(
@@ -716,7 +716,7 @@ fn terminal_run_observes_cached_results_without_calls_or_new_ids() {
             .next()
             .unwrap()
             .exec_id;
-        let mut restored = Runtime::from_snapshot(1008, workflow, snapshot.clone()).unwrap();
+        let restored = Runtime::from_snapshot(1008, workflow, snapshot.clone()).unwrap();
         {
             let observed = restored
                 .run(

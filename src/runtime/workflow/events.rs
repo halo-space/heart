@@ -8,6 +8,7 @@ use std::{
 };
 
 use futures_core::Stream;
+use futures_util::task::AtomicWaker;
 
 use crate::{Error, Message, Messages, event::Event};
 
@@ -25,6 +26,34 @@ pub(crate) fn project_message(message: &Message) -> Message {
 #[derive(Clone, Default)]
 pub(super) struct Output(Arc<Mutex<VecDeque<Result<Event, Error>>>>);
 
+/// Backpressured native facts from an active invocation to its graph owner.
+/// Notifications are transient; only the existing Attempt is persisted.
+#[derive(Clone, Default)]
+pub(super) struct Relay(Arc<RelayInner>);
+#[derive(Default)]
+struct RelayInner {
+    pending: Mutex<VecDeque<Progress>>,
+    consumer: AtomicWaker,
+}
+pub(super) struct Progress {
+    pub node_id: String,
+    pub exec_id: i64,
+    pub attempt: super::node::Attempt,
+    pub event: Option<Event>,
+    pub ack: tokio::sync::oneshot::Sender<Result<(), Error>>,
+}
+impl Relay {
+    pub(super) fn poll(&self, cx: &mut std::task::Context<'_>) -> Poll<Progress> {
+        self.0.consumer.register(cx.waker());
+        self.0
+            .pending
+            .lock()
+            .expect("Workflow progress lock poisoned")
+            .pop_front()
+            .map_or(Poll::Pending, Poll::Ready)
+    }
+}
+
 impl Output {
     fn push(&self, event: Result<Event, Error>) {
         // Observation transport failure must not turn into execution failure.
@@ -41,6 +70,76 @@ impl Output {
 tokio::task_local! {
     static CURRENT: Output;
     static SOURCE: (i64, String, i64);
+    static INTERACTION: crate::harness::reply::Run;
+    static RELAY:Relay;
+    static ATTEMPT:u32;
+}
+
+pub(super) async fn with_interaction<F: Future>(
+    interaction: crate::harness::reply::Run,
+    future: F,
+) -> F::Output {
+    INTERACTION.scope(interaction, future).await
+}
+pub(super) async fn with_optional_interaction<F: Future>(
+    interaction: Option<crate::harness::reply::Run>,
+    future: F,
+) -> F::Output {
+    match interaction {
+        Some(interaction) => with_interaction(interaction, future).await,
+        None => future.await,
+    }
+}
+pub(super) fn interaction() -> Option<crate::harness::reply::Run> {
+    INTERACTION.try_with(Clone::clone).ok()
+}
+pub(super) async fn with_relay<F: Future>(relay: Relay, future: F) -> F::Output {
+    RELAY.scope(relay, future).await
+}
+pub(super) async fn with_attempt<F: Future>(idx: u32, future: F) -> F::Output {
+    ATTEMPT.scope(idx, future).await
+}
+pub(super) fn attempt_index() -> u32 {
+    ATTEMPT.try_with(|idx| *idx).unwrap_or(0)
+}
+pub(super) fn has_parent() -> bool {
+    RELAY.try_with(|_| ()).is_ok() && SOURCE.try_with(|_| ()).is_ok()
+}
+pub(super) async fn progress(
+    attempt: super::node::Attempt,
+    mut event: Option<Event>,
+) -> Result<(), Error> {
+    let (Ok(relay), Ok((_, node_id, exec_id))) =
+        (RELAY.try_with(Clone::clone), SOURCE.try_with(Clone::clone))
+    else {
+        if let Some(event) = event {
+            emit(event).await;
+        }
+        return Ok(());
+    };
+    if let Some(event) = &mut event {
+        let chat_id = SOURCE
+            .try_with(|source| source.0)
+            .expect("current Workflow source");
+        crate::harness::observation::associate(event, Some(chat_id), Some((&node_id, exec_id)));
+    }
+    let (ack, received) = tokio::sync::oneshot::channel();
+    relay
+        .0
+        .pending
+        .lock()
+        .expect("Workflow progress lock poisoned")
+        .push_back(Progress {
+            node_id,
+            exec_id,
+            attempt,
+            event,
+            ack,
+        });
+    relay.0.consumer.wake();
+    received
+        .await
+        .map_err(|_| Error::new("CANCELLED", "Workflow execution owner ended"))?
 }
 
 pub(super) async fn with_source<F: Future>(
@@ -52,11 +151,6 @@ pub(super) async fn with_source<F: Future>(
     SOURCE
         .scope((chat_id, node_id.to_owned(), exec_id), future)
         .await
-}
-
-pub(super) async fn emit_at(chat_id: i64, node_id: &str, exec_id: i64, mut event: Event) {
-    crate::harness::observation::associate(&mut event, Some(chat_id), Some((node_id, exec_id)));
-    emit(event).await;
 }
 
 /// Publish an existing fact and yield to the owning stream's caller. Nested

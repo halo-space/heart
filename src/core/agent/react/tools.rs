@@ -40,7 +40,12 @@ pub(super) fn continue_step<M: Chat + 'static>(
     let step = current(&mut state.steps, &call.call_id).expect("selected Tool step");
     match step.stage.as_deref() {
         Some("call") => {
-            step.status = "running".into();
+            step.status = if step.waits.values().any(|wait| wait.status == "waiting") {
+                "waiting"
+            } else {
+                "running"
+            }
+            .into();
             step.error = None;
             Ok(false)
         }

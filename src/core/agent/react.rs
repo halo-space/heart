@@ -298,6 +298,8 @@ where
             return Err(Error::new("CANCELLED", "react agent run cancelled"));
         }
         let embedded = crate::harness::embedded::active();
+        let embedded_restoring = embedded
+            && crate::harness::embedded::interaction().is_some_and(|run| run.is_restoring());
         if !embedded {
             self.replies.ensure_idle(&input.metadata)?;
         }
@@ -320,6 +322,7 @@ where
         };
         let restoring_waiting = restored.as_ref().is_some_and(is_waiting_snapshot);
         let external_wait = restored.as_ref().is_some_and(is_external_wait_snapshot);
+        let mut restored_approvals = None;
         if let Some(snapshot) = &restored {
             if !checkpoint_identity_matches(snapshot, &input.metadata) {
                 return Err(Error::new(
@@ -331,13 +334,22 @@ where
                 && snapshot
                     .get("query")
                     .is_some_and(|query| serde_json::to_value(&input).ok().as_ref() != Some(query))
+                && !crate::harness::reply::saved_duplicate(snapshot, &input)?
             {
                 return Err(Error::new(
                     "CONFLICT",
                     "checkpoint belongs to a different Agent input",
                 ));
             }
-            crate::harness::checkpoint::check_waits(snapshot)?;
+            if embedded {
+                if embedded_restoring {
+                    crate::runtime::agent::wait::validate(snapshot)?;
+                } else {
+                    crate::harness::checkpoint::check_waits(snapshot)?;
+                }
+            } else {
+                restored_approvals = crate::harness::reply::prepare_restore(snapshot, &input)?;
+            }
             if let Some(result) = crate::harness::checkpoint::terminal(snapshot)? {
                 let mut result = result;
                 if let Ok(event) = &mut result {
@@ -356,6 +368,13 @@ where
         } else {
             Some(self.replies.start(original.metadata.clone())?)
         };
+        let targeted_restore = restored_approvals.is_some() || embedded_restoring;
+        if let Some(restore) = restored_approvals {
+            interaction
+                .as_ref()
+                .expect("root restore interaction")
+                .restore_approvals(restore);
+        }
         let input = if restored.is_some() {
             input
         } else {
@@ -466,7 +485,7 @@ where
         };
         if let Some(snapshot) = restored {
             restore_state(&mut state, snapshot)?;
-            if external_wait {
+            if external_wait && !targeted_restore {
                 // Until the saved question-to-Step association is available,
                 // reject ambiguous feedback rather than append it to every
                 // waiting task. Match fill_ready's possible input consumers;
@@ -639,6 +658,7 @@ struct ToolExecution {
 async fn check_tool_permission(
     state: &ToolExecution,
     call: &Call,
+    approval: Option<&Call>,
 ) -> Result<(), PermissionFailure> {
     crate::harness::reply::check(
         &state.access,
@@ -648,6 +668,7 @@ async fn check_tool_permission(
         &state.cancellation,
         state.interaction.as_ref(),
         state.id_fn,
+        approval,
     )
     .await
     .map_err(|failure| match failure {
@@ -658,13 +679,24 @@ async fn check_tool_permission(
     })
 }
 
-async fn prepare_tool(state: &ToolExecution, call: &Call) -> Result<Call, PermissionFailure> {
+async fn prepare_tool(
+    state: &ToolExecution,
+    call: &Call,
+    saved: &Step,
+) -> Result<Call, PermissionFailure> {
+    let approval = crate::harness::reply::consume_restore(
+        state.interaction.as_ref(),
+        saved,
+        &state.cancellation,
+    )
+    .await
+    .map_err(|error| PermissionFailure::Policy(error, Box::new(call.clone())))?;
     state
         .toolkit
         .validate(call)
         .map_err(PermissionFailure::Tool)?;
     if state.access.is_configured() {
-        check_tool_permission(state, call).await?;
+        check_tool_permission(state, call, approval.as_ref()).await?;
     }
     let effective = state
         .toolkit
@@ -672,7 +704,7 @@ async fn prepare_tool(state: &ToolExecution, call: &Call) -> Result<Call, Permis
         .await
         .map_err(PermissionFailure::Tool)?;
     if state.access.is_configured() && effective.arguments != call.arguments {
-        check_tool_permission(state, &effective).await?;
+        check_tool_permission(state, &effective, approval.as_ref()).await?;
     }
     Ok(effective)
 }
@@ -799,6 +831,17 @@ async fn next_react_event<M: Chat + 'static>(
     } else {
         result
     };
+    if !state.done
+        && !state.is_plan_task
+        && matches!(&result, Ok(Event::Complete { .. }))
+        && crate::harness::embedded::active()
+    {
+        crate::harness::embedded::capture(if state.waits.is_empty() {
+            running_snapshot(&state)
+        } else {
+            waiting_snapshot(&state)
+        });
+    }
     Some((result, state))
 }
 
@@ -986,6 +1029,13 @@ fn restore_state<M: Chat>(state: &mut ReActState<M>, snapshot: Value) -> Result<
         .transpose()
         .map_err(|_| invalid_checkpoint("invalid Agent checkpoint steps"))?
         .unwrap_or_default();
+    state.waits = snapshot
+        .get("waits")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| invalid_checkpoint("invalid saved waiting locators"))?
+        .unwrap_or_default();
     tools::restore(state)?;
     // A parent waiting on a child is resumed by replaying only the registered
     // child hand-off.  The parent model is not called again for that Call,
@@ -1034,6 +1084,7 @@ fn restore_state<M: Chat>(state: &mut ReActState<M>, snapshot: Value) -> Result<
             Some("waiting" | "paused")
         ) && external_nodes.is_empty()
             && state.pending_subagents.is_empty()
+            && state.waits.is_empty()
         {
             return Err(invalid_checkpoint(
                 "waiting Agent checkpoint has no waiting node",
@@ -1280,7 +1331,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 };
                 let observer = state.child_relay.observer(
                     state.metadata.get("chat_id").and_then(Value::as_i64),
-                    source,
+                    source.clone(),
                 );
                 let admission =
                     crate::harness::reply::Slot::waiting(slots, state.task_ready.clone());
@@ -1288,6 +1339,9 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     .interaction
                     .as_ref()
                     .map(|run| run.branch(admission.clone()));
+                if let (Some(parent), Some(child)) = (&state.interaction, &interaction) {
+                    parent.restore_consumer(&source, child);
+                }
                 let observer = observer.with_interaction(interaction.clone());
                 let subagents = state.subagents.clone();
                 let parent = state.metadata.clone();
@@ -1338,10 +1392,13 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 metadata: state.metadata.clone(),
                 cancellation: state.cancellation.clone(),
             };
+            let saved = crate::harness::tool_steps::current(&mut state.steps, &call.call_id)
+                .expect("selected Tool Step")
+                .clone();
             let slots = state.tool_slots.clone();
             state.active_tools.push(Box::pin(async move {
                 // Human permission waits must not retain Tool execution slots.
-                let effective = match prepare_tool(&execution, &call).await {
+                let effective = match prepare_tool(&execution, &call, &saved).await {
                     Ok(effective) => effective,
                     Err(error) => {
                         return ToolProgress::Called(index, call, Box::new(Err(error)), None);
@@ -1906,10 +1963,11 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         Poll::Ready(progress) => Poll::Ready(progress),
                         Poll::Pending
                             if state.task_slots.available_permits() > 0
-                                && state
-                                    .graph
-                                    .as_ref()
-                                    .is_some_and(|graph| !graph.ready_nodes().is_empty()) =>
+                                && (!state.resume_nodes.is_empty()
+                                    || state
+                                        .graph
+                                        .as_ref()
+                                        .is_some_and(|graph| !graph.ready_nodes().is_empty())) =>
                         {
                             Poll::Ready(None)
                         }

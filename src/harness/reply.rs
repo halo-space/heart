@@ -23,6 +23,11 @@ use std::{
 };
 use tokio::sync::oneshot;
 
+mod restore;
+pub(crate) use restore::consume as consume_restore;
+pub(crate) use restore::duplicate as saved_duplicate;
+pub(crate) use restore::prepare as prepare_restore;
+
 #[derive(Default)]
 pub(crate) struct Hub(Mutex<BTreeMap<i64, Weak<Inner>>>);
 
@@ -51,6 +56,9 @@ struct Inner {
     changes: Mutex<VecDeque<Change>>,
     consumer: AtomicWaker,
     closed: AtomicBool,
+    restored: Mutex<BTreeMap<String, restore::Question>>,
+    restored_tasks: Mutex<BTreeMap<wait::Node, restore::Consumer>>,
+    restoring: AtomicBool,
 }
 
 struct Question {
@@ -197,6 +205,9 @@ impl Hub {
             changes: Default::default(),
             consumer: AtomicWaker::new(),
             closed: AtomicBool::new(false),
+            restored: Default::default(),
+            restored_tasks: Default::default(),
+            restoring: AtomicBool::new(false),
         }));
         if let Some(id) = id {
             runs.insert(id, Arc::downgrade(&run.0));
@@ -247,7 +258,7 @@ impl Hub {
         })?;
         // This handoff entry is installed by the actual approval consumer;
         // it does not classify arbitrary user inputs as permission decisions.
-        let payload = serde_json::to_value(&input.payload).expect("Input serialization");
+        let payload = feedback_signature(&input);
         if let Some(previous) = &question.submitted {
             return if previous == &payload {
                 Ok(())
@@ -308,6 +319,13 @@ fn approved(input: &Input) -> Result<bool, Error> {
     Ok(decision)
 }
 
+fn feedback_signature(input: &Input) -> Value {
+    // Feedback is saved as Messages, not the transport Input envelope. Use
+    // that same projection live and after recovery (including MIME layout).
+    serde_json::to_value(crate::components::agent::chat::user_message(input.clone()).content)
+        .expect("feedback serialization")
+}
+
 impl Run {
     /// Same run/question directory, separate actual execution consumer. Not
     /// another public run, lifecycle, snapshot or output channel.
@@ -333,6 +351,9 @@ impl Run {
             changes: Default::default(),
             consumer: AtomicWaker::new(),
             closed: AtomicBool::new(false),
+            restored: Default::default(),
+            restored_tasks: Default::default(),
+            restoring: AtomicBool::new(false),
         }));
         self.0
             .children
@@ -557,7 +578,12 @@ pub(crate) fn apply(
                 let step = super::tool_steps::current(steps, &call.call_id).ok_or_else(|| {
                     Error::new("INVALID_STATE", "approval has no current Tool Step")
                 })?;
-                if step.waits.contains_key(&id) {
+                if let Some(record) = step.waits.get(&id)
+                    && (record.kind != "approval"
+                        || record.status != "waiting"
+                        || record.question != *question
+                        || step.call.as_ref() != Some(&call))
+                {
                     return Err(Error::new(
                         "CONFLICT",
                         "question identity already exists in Step",
@@ -565,15 +591,12 @@ pub(crate) fn apply(
                 }
                 step.call = Some(call);
                 step.status = "waiting".into();
-                step.waits.insert(
-                    id,
-                    Wait {
-                        kind: "approval".into(),
-                        status: "waiting".into(),
-                        question: (*question).clone(),
-                        feedback: Default::default(),
-                    },
-                );
+                step.waits.entry(id).or_insert_with(|| Wait {
+                    kind: "approval".into(),
+                    status: "waiting".into(),
+                    question: (*question).clone(),
+                    feedback: Default::default(),
+                });
                 let position = wait::Wait {
                     nodes: Vec::new(),
                     step: step.id.clone(),
@@ -631,6 +654,9 @@ pub(crate) fn apply(
     }
 }
 
+// Keep private dependencies explicit; do not introduce a public Tool/Runtime
+// Context just to carry one execution-local restored-operation grant.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn check(
     access: &super::access::Access,
     hooks: &super::hooks::Hooks,
@@ -639,9 +665,13 @@ pub(crate) async fn check(
     cancellation: &Cancellation,
     interaction: Option<&Run>,
     id_fn: Option<fn() -> i64>,
+    approval: Option<&Call>,
 ) -> Result<(), super::access::Failure> {
     match super::access::check_tool(access, hooks, metadata, call, cancellation).await {
         Err(super::access::Failure::Policy(error)) if error.code == "WAITING" => {
+            if approval == Some(call) {
+                return Ok(());
+            }
             if let (Some(run), Some(id_fn)) = (interaction, id_fn) {
                 run.ask(call, &error.message, id_fn, cancellation)
                     .await

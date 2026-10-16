@@ -84,7 +84,11 @@ fn check_scene(scene: &Value) -> Result<(), Error> {
     Ok(())
 }
 
-fn scene_step<'a>(scene: &'a Value, nodes: &[Node], id: &str) -> Result<&'a Value, Error> {
+pub(crate) fn scene_step<'a>(
+    scene: &'a Value,
+    nodes: &[Node],
+    id: &str,
+) -> Result<&'a Value, Error> {
     check_scene(scene)?;
     match nodes.split_first() {
         None => step(scene, id),

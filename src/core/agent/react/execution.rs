@@ -53,12 +53,23 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
         node.current_attempt_mut()?.status = status;
     }
     let capacity = state.task_slots.available_permits();
-    let resumed = state
-        .resume_nodes
-        .iter()
-        .take(capacity)
-        .cloned()
-        .collect::<Vec<_>>();
+    // Recreate waiting consumers in saved arrival order, not node-name order.
+    // Other interrupted work follows without duplicating any execution.
+    let mut ordered = Vec::new();
+    for wait in &state.waits {
+        if let Some(node) = wait.nodes.first()
+            && state.resume_nodes.contains(&node.node_id)
+            && !ordered.contains(&node.node_id)
+        {
+            ordered.push(node.node_id.clone());
+        }
+    }
+    for node_id in &state.resume_nodes {
+        if !ordered.contains(node_id) {
+            ordered.push(node_id.clone());
+        }
+    }
+    let resumed = ordered.into_iter().take(capacity).collect::<Vec<_>>();
     let ready = graph
         .ready_nodes()
         .into_iter()
@@ -209,6 +220,21 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
             .interaction
             .as_ref()
             .map(|run| run.branch(slot.clone()));
+        let waits = if resumed {
+            match (&state.interaction, &interaction) {
+                (Some(parent), Some(task)) => parent.restore_consumer(
+                    &crate::runtime::agent::wait::Node {
+                        node_id: node_id.clone(),
+                        exec_id,
+                        idx: graph.state_mut(&node_id)?.current_attempt_mut()?.idx,
+                    },
+                    task,
+                ),
+                _ => Vec::new(),
+            }
+        } else {
+            Vec::new()
+        };
         let mut task = Task {
             node_id,
             exec_id,
@@ -218,7 +244,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
             state: ReActState {
                 _interaction_owner: interaction.as_ref().map(crate::harness::reply::Run::owner),
                 interaction,
-                waits: Vec::new(),
+                waits,
                 stream: state.stream,
                 model: state.model.clone(),
                 toolkit: state.toolkit.clone(),

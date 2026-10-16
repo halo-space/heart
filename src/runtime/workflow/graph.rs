@@ -70,7 +70,9 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
     ) -> AgentFuture {
         let agent = Arc::clone(&self.agent);
         Box::pin(async move {
-            let scope = crate::harness::embedded::Scope::new(restore);
+            let scope = crate::harness::embedded::Scope::new(restore)
+                .with_interaction(super::events::interaction().map(|run| run.child()));
+            let observed = scope.clone();
             let mut run = crate::harness::embedded::run(scope.clone(), async move {
                 let mut messages = Messages::default();
                 let mut steps = Vec::new();
@@ -92,7 +94,23 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                 while let Some(event) = stream.next().await {
                     match event {
                         Ok(Event::Delta { message }) => {
-                            super::events::emit(Event::Delta { message }).await;
+                            if let Err(error) = super::events::progress(
+                                super::node::Attempt {
+                                    idx: super::events::attempt_index(),
+                                    ..Default::default()
+                                },
+                                Some(Event::Delta { message }),
+                            )
+                            .await
+                            {
+                                return AgentRun {
+                                    result: Err(error),
+                                    messages,
+                                    steps,
+                                    usage,
+                                    scene: None,
+                                };
+                            }
                         }
                         Ok(Event::Complete {
                             mut message,
@@ -114,6 +132,55 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                                 usage: call_usage.clone(),
                                 finish_reason: finish_reason.clone(),
                             };
+                            if message.metadata.contains_key("reply_id") {
+                                let attempt =
+                                    agent_attempt(&observed, &steps, &messages, usage.clone());
+                                let valid = message
+                                    .metadata
+                                    .get("reply_id")
+                                    .and_then(Value::as_i64)
+                                    .zip(attempt.agent.as_ref())
+                                    .is_some_and(|(id, scene)| {
+                                        crate::runtime::agent::wait::question(scene, id)
+                                            .unwrap_or(false)
+                                    });
+                                if !valid {
+                                    return AgentRun {
+                                        result: Err(Error::new(
+                                            "INVALID_STATE",
+                                            "embedded question has no actual waiting Step",
+                                        )),
+                                        messages,
+                                        steps,
+                                        usage,
+                                        scene: None,
+                                    };
+                                }
+                                if !super::events::has_parent() {
+                                    return AgentRun {
+                                        result: Err(Error::new(
+                                            "WAITING",
+                                            "embedded approval requires its owning Workflow continuation",
+                                        )),
+                                        messages,
+                                        steps,
+                                        usage,
+                                        scene: None,
+                                    };
+                                }
+                                if let Err(error) =
+                                    super::events::progress(attempt, Some(notification)).await
+                                {
+                                    return AgentRun {
+                                        result: Err(error),
+                                        messages,
+                                        steps,
+                                        usage,
+                                        scene: None,
+                                    };
+                                }
+                                continue;
+                            }
                             // The incoming Agent stream is already an observation
                             // projection. Keep its source on the forwarded copy,
                             // never in the Workflow's original message history.
@@ -152,7 +219,20 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                                 final_assistant = Some(message.clone());
                             }
                             messages.push(message);
-                            super::events::emit(notification).await;
+                            if let Err(error) = super::events::progress(
+                                agent_attempt(&observed, &steps, &messages, usage.clone()),
+                                Some(notification),
+                            )
+                            .await
+                            {
+                                return AgentRun {
+                                    result: Err(error),
+                                    messages,
+                                    steps,
+                                    usage,
+                                    scene: None,
+                                };
+                            }
                             if cancelled {
                                 return AgentRun {
                                     result: Err(Error::new("CANCELLED", "agent run cancelled")),
@@ -205,6 +285,37 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
             }
             run
         })
+    }
+}
+
+fn agent_attempt(
+    scope: &crate::harness::embedded::Scope,
+    steps: &[Step],
+    messages: &Messages,
+    usage: Option<Usage>,
+) -> super::node::Attempt {
+    let scene = scope.latest();
+    let usage = scene
+        .as_ref()
+        .and_then(|scene| scene.get("usage"))
+        .and_then(|usage| serde_json::from_value(usage.clone()).ok())
+        .unwrap_or(usage);
+    super::node::Attempt {
+        idx: super::events::attempt_index(),
+        status: if scene
+            .as_ref()
+            .and_then(|scene| scene["waits"].as_array())
+            .is_some_and(|waits| !waits.is_empty())
+        {
+            AttemptStatus::Waiting
+        } else {
+            AttemptStatus::Running
+        },
+        steps: steps.to_vec(),
+        messages: messages.clone(),
+        usage,
+        agent: scene,
+        ..Default::default()
     }
 }
 
@@ -603,7 +714,11 @@ impl State {
         self.nodes.iter().find_map(|(node_id, node)| {
             node.executions.iter().find_map(|(exec_id, execution)| {
                 (execution.idx == self.step
-                    && execution.status == crate::runtime::workflow::node::ExecutionStatus::Running
+                    && matches!(
+                        execution.status,
+                        crate::runtime::workflow::node::ExecutionStatus::Running
+                            | crate::runtime::workflow::node::ExecutionStatus::Waiting
+                    )
                     && execution.waits.is_empty()
                     && execution.attempts.last().is_some_and(|attempt| {
                         attempt.status == crate::runtime::workflow::node::AttemptStatus::Waiting

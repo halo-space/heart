@@ -504,6 +504,9 @@ where
                 continue;
             }
             if let Poll::Ready(Some(Ok(event))) = &mut result {
+                if matches!(event, Event::Complete { .. }) && !this.closing {
+                    this.capture_live();
+                }
                 crate::harness::observation::associate(
                     event,
                     this.metadata.get("chat_id").and_then(Value::as_i64),
@@ -516,6 +519,34 @@ where
 }
 
 impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
+    fn capture_live(&self) {
+        if !crate::harness::embedded::active() {
+            return;
+        }
+        let steps = self.steps.lock().expect("Tool steps lock poisoned");
+        let mut snapshot = if self.waits.is_empty() {
+            checkpoint_state(
+                &self.messages,
+                self.run.usage(),
+                self.input.as_ref(),
+                &Ok(Event::Delta {
+                    message: self.partial.clone(),
+                }),
+                &self.root,
+                &steps,
+            )
+        } else {
+            waiting_checkpoint_state(
+                &self.messages,
+                self.run.usage(),
+                self.input.as_ref(),
+                &self.root,
+                &steps,
+            )
+        };
+        snapshot["waits"] = serde_json::to_value(&self.waits).expect("waits serialization");
+        crate::harness::embedded::capture(snapshot);
+    }
     // Finish state/history mutations before decorating the outgoing copy.
     fn poll_event(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Event, Error>>> {
         let this = self;
@@ -592,7 +623,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                     snapshot,
                                 ));
                             }
-                            Ok(None) => {}
+                            Ok(None) => this.capture_live(),
                             Err(error) => this.close(Err(error)),
                         }
                         return Pin::new(this).poll_next(cx);
@@ -980,6 +1011,8 @@ where
         let mut restored_steps: Vec<Step> = Vec::new();
         let mut restored_pending_subagents = std::collections::BTreeMap::new();
         let mut restored_root = Root::default();
+        let mut restored_approvals = None;
+        let mut embedded_waits = Vec::new();
         if let Some(snapshot) = embedded_snapshot {
             if !checkpoint_identity_matches(&snapshot, &input.metadata) {
                 return Err(Error::new(
@@ -987,7 +1020,18 @@ where
                     "checkpoint belongs to a different Agent identity",
                 ));
             }
-            crate::harness::checkpoint::check_waits(&snapshot)?;
+            if crate::harness::embedded::interaction().is_some_and(|run| run.is_restoring()) {
+                crate::runtime::agent::wait::validate(&snapshot)?;
+                embedded_waits = snapshot
+                    .get("waits")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|_| Error::new("INVALID_STATE", "invalid embedded waiting locators"))?
+                    .unwrap_or_default();
+            } else {
+                crate::harness::checkpoint::check_waits(&snapshot)?;
+            }
             restored_waiting = is_waiting_snapshot(&snapshot);
             if let Some(result) = crate::harness::checkpoint::terminal(&snapshot)? {
                 let mut events = Events::empty(cancellation, self.hooks.clone());
@@ -1012,12 +1056,13 @@ where
                     "checkpoint belongs to a different Agent identity",
                 ));
             }
-            crate::harness::checkpoint::check_waits(&snapshot)?;
+            restored_approvals = crate::harness::reply::prepare_restore(&snapshot, &input)?;
             restored_waiting = is_waiting_snapshot(&snapshot);
             if !restored_waiting
                 && snapshot
                     .get("query")
                     .is_some_and(|query| serde_json::to_value(&input).ok().as_ref() != Some(query))
+                && !crate::harness::reply::saved_duplicate(&snapshot, &input)?
             {
                 return Err(Error::new(
                     "CONFLICT",
@@ -1050,6 +1095,14 @@ where
         } else {
             Some(self.replies.start(original.metadata.clone())?)
         };
+        let restored_waits = restored_approvals
+            .map(|restore| {
+                interaction
+                    .as_ref()
+                    .expect("root restore interaction")
+                    .restore_approvals(restore)
+            })
+            .unwrap_or(embedded_waits);
         let restoring = restored_messages.is_some();
         let input = if restoring {
             input
@@ -1190,6 +1243,7 @@ where
                 id_fn,
             });
             events.stream = stream;
+            events.waits = restored_waits.clone();
             if !restored_pending_subagents.is_empty() || !restored_calls.is_empty() {
                 let calls = restored_pending_subagents
                     .values()
@@ -1345,13 +1399,20 @@ async fn execute_tool_batch(
                     let source =
                         root.source(&steps.lock().expect("Tool steps lock poisoned"), &call);
                     match source {
-                        Ok(source) => Some(
-                            relay
-                                .observer(metadata.get("chat_id").and_then(Value::as_i64), source)
-                                .with_interaction(
-                                    interaction.as_ref().map(crate::harness::reply::Run::child),
-                                ),
-                        ),
+                        Ok(source) => {
+                            let child = interaction.as_ref().map(crate::harness::reply::Run::child);
+                            if let (Some(parent), Some(child)) = (&interaction, &child) {
+                                parent.restore_consumer(&source, child);
+                            }
+                            Some(
+                                relay
+                                    .observer(
+                                        metadata.get("chat_id").and_then(Value::as_i64),
+                                        source,
+                                    )
+                                    .with_interaction(child),
+                            )
+                        }
                         Err(error) => {
                             return (
                                 index,
@@ -1699,6 +1760,8 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
     if saved.stage.as_deref() == Some("complete") {
         return step_messages(&call, &saved);
     }
+    let approval =
+        crate::harness::reply::consume_restore(interaction.as_ref(), &saved, &cancellation).await;
     let resumed = if saved.stage.as_deref() == Some("eval") {
         Some((
             saved
@@ -1712,7 +1775,9 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
         None
     };
     let mut permission_hook_failed = false;
-    let result = if let Some(result) = resumed {
+    let result = if let Err(error) = &approval {
+        Err(error.clone())
+    } else if let Some(result) = resumed {
         Ok(result)
     } else if access.is_configured() {
         async {
@@ -1725,6 +1790,7 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
                 &cancellation,
                 interaction.as_ref(),
                 id_fn,
+                approval.as_ref().ok().and_then(Option::as_ref),
             )
             .await
             .map_err(|failure| match failure {
@@ -1750,6 +1816,7 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
                     &cancellation,
                     interaction.as_ref(),
                     id_fn,
+                    approval.as_ref().ok().and_then(Option::as_ref),
                 )
                 .await
                 .map_err(|failure| match failure {

@@ -254,7 +254,7 @@ fn embedded_react_keeps_plan_node_sources_instead_of_overwriting_them_with_the_w
         builder.add_agent_node("worker", agent).unwrap();
         builder.add_edge(START, "worker").unwrap();
         builder.add_edge("worker", END).unwrap();
-        let mut runtime = Runtime::new(8102, builder.compile().unwrap()).unwrap();
+        let runtime = Runtime::new(8102, builder.compile().unwrap()).unwrap();
         let events = {
             let events = runtime
                 .run(

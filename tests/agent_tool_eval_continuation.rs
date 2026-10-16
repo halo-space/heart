@@ -1760,7 +1760,7 @@ async fn nested_builtin_agents_resume_model_wait_from_the_parent_checkpoint() {
         assert_eq!(requests.lock().unwrap().len(), 1);
         let saved = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
         assert_eq!(saved, restored.snapshot().unwrap());
-        let mut terminal = Runtime::from_snapshot(1001, compiled, saved.clone()).unwrap();
+        let terminal = Runtime::from_snapshot(1001, compiled, saved.clone()).unwrap();
         assert!(
             terminal
                 .run(
@@ -1804,7 +1804,7 @@ async fn embedded_reply_identity_conflict_keeps_previous_scene_and_consumption()
             data: json!({"value":"weather?"}).as_object().unwrap().clone(),
         });
         let initial = halo_agents::Messages::new([user]);
-        let mut runtime = Runtime::new(1001, compiled.clone()).unwrap();
+        let runtime = Runtime::new(1001, compiled.clone()).unwrap();
         let events = runtime
             .run(initial.clone(), Arc::new(|| 9001), Cancellation::new())
             .await
@@ -1957,7 +1957,8 @@ async fn embedded_chat_and_react_resume_eval_in_the_original_workflow_attempt() 
             .await;
         assert!(events.iter().all(Result::is_ok), "{react}: {events:?}");
         assert_eq!(restored.state().status, Status::Succeeded);
-        let execution = &restored.state().nodes["agent"].executions[&9001];
+        let state = restored.state();
+        let execution = &state.nodes["agent"].executions[&9001];
         assert_eq!(execution.attempts.len(), 1);
         assert_eq!(execution.attempts[0].created_time, created_time);
         assert_eq!(execution.attempts[0].idx, 0);
@@ -1983,7 +1984,7 @@ async fn embedded_chat_and_react_resume_eval_in_the_original_workflow_attempt() 
             .map(|step| &step.id)
             .collect::<std::collections::BTreeSet<_>>();
         assert_eq!(step_ids.len(), execution.attempts[0].steps.len());
-        assert_eq!(restored.state().usage.as_ref().unwrap().total, Some(8));
+        assert_eq!(state.usage.as_ref().unwrap().total, Some(8));
         {
             let counts = counts.lock().unwrap();
             assert_eq!(
@@ -2014,7 +2015,7 @@ async fn embedded_chat_and_react_resume_eval_in_the_original_workflow_attempt() 
         );
         let saved = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
         assert_eq!(saved, restored.snapshot().unwrap());
-        let mut terminal = Runtime::from_snapshot(1001, compiled, saved.clone()).unwrap();
+        let terminal = Runtime::from_snapshot(1001, compiled, saved.clone()).unwrap();
         let events = terminal
             .run(
                 initial,
@@ -2902,7 +2903,7 @@ async fn subagent_worker() {
         assert_eq!(requests.lock().unwrap().len(), 1);
         let saved = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
         assert_eq!(saved, runtime.snapshot().unwrap());
-        let mut terminal = Runtime::from_snapshot(1001, compiled, saved.clone()).unwrap();
+        let terminal = Runtime::from_snapshot(1001, compiled, saved.clone()).unwrap();
         assert!(
             terminal
                 .run(
@@ -3035,19 +3036,20 @@ async fn embedded_eval_worker() {
     } else {
         assert!(events.iter().all(Result::is_ok), "{events:?}");
         assert_eq!(runtime.state().status, Status::Succeeded);
-        let execution = agent_execution(runtime.state());
+        let state = runtime.state();
+        let execution = agent_execution(state);
         assert_eq!(execution.exec_id, 9001 + depth as i64);
         assert_eq!(execution.attempts.len(), 1);
         assert_eq!(execution.attempts[0].created_time, Some(1234));
         assert_eq!(execution.usage.as_ref().unwrap().total, Some(8));
-        assert_eq!(runtime.state().usage.as_ref().unwrap().total, Some(8));
+        assert_eq!(state.usage.as_ref().unwrap().total, Some(8));
         let scene = execution.attempts[0].agent.as_ref().unwrap();
         assert_eq!(scene["steps"][0]["stage"], "committed");
         assert_eq!(scene["query"]["payload"][0]["data"]["value"], "weather?");
         assert_eq!(scene["query"]["metadata"]["chat_id"], 1001);
         let saved = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
         assert_eq!(saved, runtime.snapshot().unwrap());
-        let mut terminal = Runtime::from_snapshot(1001, compiled, saved.clone()).unwrap();
+        let terminal = Runtime::from_snapshot(1001, compiled, saved.clone()).unwrap();
         assert!(
             terminal
                 .run(

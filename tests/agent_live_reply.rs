@@ -2700,6 +2700,2701 @@ struct Store {
     loads: AtomicUsize,
     saves: AtomicUsize,
 }
+
+fn no_new_restore_id() -> i64 {
+    panic!("saved approval recovery must not allocate a new execution/question ID")
+}
+
+struct RecoveredChild {
+    model: RecoveryOnlyModel,
+    log: Arc<Log>,
+    checkpoint: Arc<Store>,
+}
+
+fn recovered_children(react: bool) -> (Vec<SubAgent>, Vec<RecoveredChild>) {
+    let mut children = Vec::new();
+    let mut probes = Vec::new();
+    for name in ["left", "right"] {
+        let model = RecoveryOnlyModel::default();
+        let log = Arc::new(Log::default());
+        let checkpoint = Arc::new(Store::default());
+        let toolkit = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+        let child = if react {
+            SubAgent::new(
+                name,
+                agent::react()
+                    .model(model.clone())
+                    .toolkit(toolkit)
+                    .permission(Ask(log.clone()))
+                    .checkpoint(checkpoint.clone())
+                    .build()
+                    .unwrap(),
+            )
+            .unwrap()
+        } else {
+            SubAgent::new(
+                name,
+                agent::chat()
+                    .model(model.clone())
+                    .toolkit(toolkit)
+                    .permission(Ask(log.clone()))
+                    .checkpoint(checkpoint.clone())
+                    .build()
+                    .unwrap(),
+            )
+            .unwrap()
+        };
+        children.push(child);
+        probes.push(RecoveredChild {
+            model,
+            log,
+            checkpoint,
+        });
+    }
+    (children, probes)
+}
+
+// Read only the native containment named by an actual saved wait. This helper
+// also reads the same Step after its question has become resolved.
+fn located_step<'a>(scene: &'a Value, locator: &Value) -> &'a Value {
+    let mut owner = scene;
+    for coordinate in locator["nodes"].as_array().unwrap() {
+        let id = coordinate["node_id"].as_str().unwrap();
+        let node = owner["nodes"]
+            .get(id)
+            .or_else(|| owner["execution"]["attempts"].as_array()?.last()?["nodes"].get(id))
+            .unwrap();
+        assert_eq!(node["execution"]["exec_id"], coordinate["exec_id"]);
+        owner = node["execution"]["attempts"]
+            .as_array()
+            .unwrap()
+            .last()
+            .unwrap();
+        assert_eq!(owner["idx"], coordinate["idx"]);
+        if !owner["agent"].is_null() {
+            owner = &owner["agent"];
+        }
+    }
+    owner["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["id"] == locator["step"])
+        .unwrap()
+}
+
+fn located_reply_id(scene: &Value, index: usize) -> i64 {
+    located_step(scene, &scene["waits"][index])["waits"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, wait)| wait["status"] == "waiting")
+        .unwrap()
+        .0
+        .parse()
+        .unwrap()
+}
+
+async fn save_child_questions<A: Agent>(
+    agent: A,
+    store: Arc<core::checkpoint::InMemory>,
+    mode: bool,
+) -> Value {
+    let mut events = Box::pin(agent.run(input(), mode, Cancellation::new()).await.unwrap());
+    question(&mut events).await;
+    question(&mut events).await;
+    store.load(1001, &Cancellation::new()).await.unwrap()
+}
+
+async fn recover_direct_children<A: Agent>(
+    agent: A,
+    store: Arc<core::checkpoint::InMemory>,
+    saved: Value,
+    model: RecoveryOnlyModel,
+    probes: Vec<RecoveredChild>,
+    mode: bool,
+    approve: bool,
+) {
+    let first = located_reply_id(&saved, 0);
+    let second = located_reply_id(&saved, 1);
+    let mut events = Box::pin(
+        agent
+            .run(answer(second, json!(approve)), mode, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(question(&mut events).await.0, first);
+    agent
+        .reply(answer(second, json!(approve)), Cancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        agent
+            .reply(answer(second, json!(!approve)), Cancellation::new())
+            .await
+            .unwrap_err()
+            .code,
+        "CONFLICT"
+    );
+    agent
+        .reply(answer(first, json!(true)), Cancellation::new())
+        .await
+        .unwrap();
+    let output = finish(&mut events).await;
+    if !mode {
+        assert!(
+            output
+                .iter()
+                .all(|event| !matches!(event, Event::Delta { .. }))
+        );
+    }
+    let final_state = store.load(1001, &Cancellation::new()).await.unwrap();
+    assert_eq!(final_state["status"], "succeeded");
+    assert_eq!(final_state["query"], saved["query"]);
+    assert_eq!(final_state["usage"]["total"], 78);
+    assert_eq!(
+        final_state["execution"]["exec_id"],
+        saved["execution"]["exec_id"]
+    );
+    assert_eq!(
+        final_state["execution"]["attempts"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        model.0.lock().unwrap().len(),
+        1,
+        "parent selection must not replay"
+    );
+    for (index, reply) in [first, second].into_iter().enumerate() {
+        let locator = &saved["waits"][index];
+        let step = located_step(&final_state, locator);
+        assert_eq!(step["waits"][reply.to_string()]["status"], "resolved");
+        assert_eq!(
+            step["waits"][reply.to_string()]["feedback"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(step["call"], located_step(&saved, locator)["call"]);
+    }
+    assert_eq!(
+        probes
+            .iter()
+            .map(|probe| probe.log.calls.lock().unwrap().len())
+            .sum::<usize>(),
+        1 + usize::from(approve)
+    );
+    for probe in &probes {
+        assert_eq!(
+            probe.model.0.lock().unwrap().len(),
+            1,
+            "child Tool selection must not replay"
+        );
+        assert_eq!(probe.checkpoint.loads.load(Ordering::SeqCst), 0);
+        assert_eq!(probe.checkpoint.saves.load(Ordering::SeqCst), 0);
+        assert!(probe.model.0.lock().unwrap().iter().all(|request| {
+            let request = serde_json::to_string(request).unwrap();
+            !request.contains("reply_id") && !request.contains("untrusted")
+        }));
+    }
+    let mut cached = Box::pin(
+        agent
+            .run(answer(second, json!(approve)), mode, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    finish(&mut cached).await;
+    assert_eq!(model.0.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn saved_direct_child_approvals_restore_actual_children_without_redelegating() {
+    for parent_react in [false, true] {
+        for child_react in [false, true] {
+            for mode in [false, true] {
+                for approve in [false, true] {
+                    let store = Arc::new(core::checkpoint::InMemory::new());
+                    let (children, _) = waiting_children(child_react);
+                    let saved = if parent_react {
+                        save_child_questions(
+                            agent::react()
+                                .model(DelegatingModel::default())
+                                .subagents(children)
+                                .checkpoint(store.clone())
+                                .with_max_concurrency(2)
+                                .with_id_fn(next_id)
+                                .build()
+                                .unwrap(),
+                            store.clone(),
+                            mode,
+                        )
+                        .await
+                    } else {
+                        save_child_questions(
+                            agent::chat()
+                                .model(DelegatingModel::default())
+                                .subagents(children)
+                                .checkpoint(store.clone())
+                                .with_max_concurrency(2)
+                                .with_id_fn(next_id)
+                                .build()
+                                .unwrap(),
+                            store.clone(),
+                            mode,
+                        )
+                        .await
+                    };
+                    let (children, probes) = recovered_children(child_react);
+                    let model = RecoveryOnlyModel::default();
+                    if parent_react {
+                        recover_direct_children(
+                            agent::react()
+                                .model(model.clone())
+                                .subagents(children)
+                                .checkpoint(store.clone())
+                                .with_max_concurrency(2)
+                                .with_id_fn(no_new_restore_id)
+                                .build()
+                                .unwrap(),
+                            store,
+                            saved,
+                            model,
+                            probes,
+                            mode,
+                            approve,
+                        )
+                        .await;
+                    } else {
+                        recover_direct_children(
+                            agent::chat()
+                                .model(model.clone())
+                                .subagents(children)
+                                .checkpoint(store.clone())
+                                .with_max_concurrency(2)
+                                .with_id_fn(no_new_restore_id)
+                                .build()
+                                .unwrap(),
+                            store,
+                            saved,
+                            model,
+                            probes,
+                            mode,
+                            approve,
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn saved_planned_child_approvals_restore_through_task_and_child_coordinates() {
+    for child_react in [false, true] {
+        for mode in [false, true] {
+            for capacity in [1, 2] {
+                for approve in [false, true] {
+                    let store = Arc::new(core::checkpoint::InMemory::new());
+                    let (children, _) = waiting_children(child_react);
+                    let saved = save_child_questions(
+                        agent::react()
+                            .model(PlannedDelegatingModel::new(PlannedModel::default()))
+                            .subagents(children)
+                            .checkpoint(store.clone())
+                            .with_max_concurrency(capacity)
+                            .with_id_fn(next_id)
+                            .build()
+                            .unwrap(),
+                        store.clone(),
+                        mode,
+                    )
+                    .await;
+                    assert_eq!(saved["usage"]["total"], 78);
+                    assert!(
+                        saved["waits"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .all(|wait| wait["nodes"].as_array().unwrap().len() == 2)
+                    );
+                    let first = located_reply_id(&saved, 0);
+                    let second = located_reply_id(&saved, 1);
+                    let (children, probes) = recovered_children(child_react);
+                    let model = RestoredPlanModel::default();
+                    let restored = agent::react()
+                        .model(model.clone())
+                        .subagents(children)
+                        .checkpoint(store.clone())
+                        .with_max_concurrency(capacity)
+                        .with_id_fn(next_id)
+                        .build()
+                        .unwrap();
+                    let mut events = Box::pin(
+                        restored
+                            .run(answer(second, json!(approve)), mode, Cancellation::new())
+                            .await
+                            .unwrap(),
+                    );
+                    assert_eq!(question(&mut events).await.0, first);
+                    // The addressed task can complete while its peer stays
+                    // waiting; neither the task nor its child's selector replays.
+                    let second_task = saved["waits"][1]["nodes"][0]["node_id"].as_str().unwrap();
+                    let completion =
+                        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                            loop {
+                                if let Event::Complete { message, .. } =
+                                    events.next().await.unwrap().unwrap()
+                                    && message.values.get("result") == Some(&json!(second_task))
+                                {
+                                    break;
+                                }
+                            }
+                        })
+                        .await;
+                    assert!(
+                        completion.is_ok(),
+                        "planned child timeout: child_react={child_react}, mode={mode}, capacity={capacity}, approve={approve}, task_requests={:?}, child_requests={:?}, calls={:?}",
+                        model
+                            .0
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .map(task_id)
+                            .collect::<Vec<_>>(),
+                        probes
+                            .iter()
+                            .map(|probe| probe.model.0.lock().unwrap().len())
+                            .collect::<Vec<_>>(),
+                        probes
+                            .iter()
+                            .map(|probe| probe.log.calls.lock().unwrap().len())
+                            .collect::<Vec<_>>()
+                    );
+                    assert!(poll!(events.next()).is_pending());
+                    assert!(
+                        model
+                            .0
+                            .lock()
+                            .unwrap()
+                            .iter()
+                            .all(|request| task_id(request) != Some("c"))
+                    );
+                    assert_eq!(
+                        probes
+                            .iter()
+                            .map(|probe| probe.log.calls.lock().unwrap().len())
+                            .sum::<usize>(),
+                        usize::from(approve)
+                    );
+                    restored
+                        .reply(answer(second, json!(approve)), Cancellation::new())
+                        .await
+                        .unwrap();
+                    assert_eq!(
+                        restored
+                            .reply(answer(second, json!(!approve)), Cancellation::new())
+                            .await
+                            .unwrap_err()
+                            .code,
+                        "CONFLICT"
+                    );
+                    restored
+                        .reply(answer(first, json!(true)), Cancellation::new())
+                        .await
+                        .unwrap();
+                    let events = finish(&mut events).await;
+                    if !mode {
+                        assert!(
+                            events
+                                .iter()
+                                .all(|event| !matches!(event, Event::Delta { .. }))
+                        );
+                    }
+                    let final_state = store.load(1001, &Cancellation::new()).await.unwrap();
+                    assert_eq!(final_state["status"], "succeeded");
+                    assert_eq!(final_state["query"], saved["query"]);
+                    assert_eq!(final_state["usage"]["total"], 156);
+                    assert_eq!(model.0.lock().unwrap().len(), 4);
+                    for (index, id) in [first, second].into_iter().enumerate() {
+                        let locator = &saved["waits"][index];
+                        let task = locator["nodes"][0]["node_id"].as_str().unwrap();
+                        let old = &saved["nodes"][task]["execution"];
+                        let new = &final_state["nodes"][task]["execution"];
+                        assert_eq!(new["exec_id"], old["exec_id"]);
+                        assert_eq!(new["attempts"].as_array().unwrap().len(), 1);
+                        assert_eq!(
+                            new["attempts"][0]["created_time"],
+                            old["attempts"][0]["created_time"]
+                        );
+                        assert_eq!(
+                            located_step(&final_state, locator)["waits"][id.to_string()]["status"],
+                            "resolved"
+                        );
+                    }
+                    for probe in probes {
+                        assert_eq!(probe.model.0.lock().unwrap().len(), 1);
+                        assert_eq!(probe.checkpoint.loads.load(Ordering::SeqCst), 0);
+                        assert_eq!(probe.checkpoint.saves.load(Ordering::SeqCst), 0);
+                    }
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn saved_child_plan_approvals_restore_all_three_native_coordinates() {
+    for mode in [false, true] {
+        let store = Arc::new(core::checkpoint::InMemory::new());
+        let left = Arc::new(Log::default());
+        let right = Arc::new(Log::default());
+        let left_child = SubAgent::new(
+            "left",
+            agent::react()
+                .model(PlannedModel::default())
+                .toolkit(Toolkit::new().tools([Lookup::new(left, false)]))
+                .permission(Ask(Default::default()))
+                .with_max_concurrency(1)
+                .build()
+                .unwrap(),
+        )
+        .unwrap();
+        let right_child = SubAgent::new(
+            "right",
+            agent::chat()
+                .model(Model {
+                    requests: Default::default(),
+                    multiple: false,
+                })
+                .toolkit(Toolkit::new().tools([Lookup::new(right, false)]))
+                .permission(Ask(Default::default()))
+                .build()
+                .unwrap(),
+        )
+        .unwrap();
+        let original = agent::react()
+            .model(PlannedDelegatingModel::new(PlannedModel::default()))
+            .subagents(vec![left_child, right_child])
+            .with_max_concurrency(1)
+            .with_id_fn(next_id)
+            .with_max_iters(40)
+            .checkpoint(store.clone())
+            .build()
+            .unwrap();
+        let mut events = Box::pin(
+            original
+                .run(input(), mode, Cancellation::new())
+                .await
+                .unwrap(),
+        );
+        for _ in 0..3 {
+            question(&mut events).await;
+        }
+        let saved = store.load(1001, &Cancellation::new()).await.unwrap();
+        drop(events);
+        drop(original);
+        let ids = (0..3)
+            .map(|index| located_reply_id(&saved, index))
+            .collect::<Vec<_>>();
+        let log = Arc::new(Log::default());
+        let inner_model = RestoredPlanModel::default();
+        let inner_store = Arc::new(Store::default());
+        let left = SubAgent::new(
+            "left",
+            agent::react()
+                .model(inner_model.clone())
+                .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                .permission(Ask(log.clone()))
+                .checkpoint(inner_store.clone())
+                .with_max_concurrency(1)
+                .build()
+                .unwrap(),
+        )
+        .unwrap();
+        let right_model = RecoveryOnlyModel::default();
+        let right = SubAgent::new(
+            "right",
+            agent::chat()
+                .model(right_model.clone())
+                .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                .permission(Ask(log.clone()))
+                .checkpoint(inner_store.clone())
+                .build()
+                .unwrap(),
+        )
+        .unwrap();
+        let model = RestoredPlanModel::default();
+        let restored = agent::react()
+            .model(model.clone())
+            .subagents(vec![left, right])
+            .with_max_concurrency(1)
+            .with_id_fn(next_id)
+            .with_max_iters(40)
+            .checkpoint(store.clone())
+            .build()
+            .unwrap();
+        let selected = *ids.last().unwrap();
+        let mut events = Box::pin(
+            restored
+                .run(answer(selected, json!(false)), mode, Cancellation::new())
+                .await
+                .unwrap(),
+        );
+        let mut pending = Vec::new();
+        for _ in 0..2 {
+            pending.push(question(&mut events).await.0);
+        }
+        assert_eq!(pending, ids[..2]);
+        for id in pending.into_iter().rev() {
+            restored
+                .reply(answer(id, json!(true)), Cancellation::new())
+                .await
+                .unwrap();
+        }
+        finish(&mut events).await;
+        let final_state = store.load(1001, &Cancellation::new()).await.unwrap();
+        assert_eq!(final_state["status"], "succeeded");
+        assert_eq!(final_state["usage"]["total"], 234);
+        assert_eq!(final_state["waits"], json!([]));
+        assert_eq!(log.calls.lock().unwrap().len(), 2);
+        assert_eq!(inner_model.0.lock().unwrap().len(), 4);
+        assert_eq!(right_model.0.lock().unwrap().len(), 1);
+        assert_eq!(model.0.lock().unwrap().len(), 4);
+        assert_eq!(inner_store.loads.load(Ordering::SeqCst), 0);
+        assert_eq!(inner_store.saves.load(Ordering::SeqCst), 0);
+        for (index, id) in ids.into_iter().enumerate() {
+            assert_eq!(
+                located_step(&final_state, &saved["waits"][index])["waits"][id.to_string()]["status"],
+                "resolved"
+            );
+        }
+    }
+}
+
+async fn saved_nested_fixture(planned: bool, child_react: bool, mode: bool) -> Value {
+    let store = Arc::new(core::checkpoint::InMemory::new());
+    let (children, _) = waiting_children(child_react);
+    if planned {
+        save_child_questions(
+            agent::react()
+                .model(PlannedDelegatingModel::new(PlannedModel::default()))
+                .subagents(children)
+                .checkpoint(store.clone())
+                .with_max_concurrency(1)
+                .with_id_fn(next_id)
+                .build()
+                .unwrap(),
+            store,
+            mode,
+        )
+        .await
+    } else {
+        save_child_questions(
+            agent::react()
+                .model(DelegatingModel::default())
+                .subagents(children)
+                .checkpoint(store.clone())
+                .with_id_fn(next_id)
+                .build()
+                .unwrap(),
+            store,
+            mode,
+        )
+        .await
+    }
+}
+
+#[tokio::test]
+async fn saved_child_approval_rejects_invalid_feedback_and_stale_inner_coordinates_before_dispatch()
+{
+    for planned in [false, true] {
+        let saved = saved_nested_fixture(planned, false, false).await;
+        let id = located_reply_id(&saved, 1);
+        let store = Arc::new(Store::default());
+        store
+            .inner
+            .save(1001, saved.clone(), &Cancellation::new())
+            .await
+            .unwrap();
+        let model = RecoveryOnlyModel::default();
+        let (children, probes) = recovered_children(false);
+        let agent = agent::react()
+            .model(model.clone())
+            .subagents(children)
+            .checkpoint(store.clone())
+            .with_id_fn(no_new_restore_id)
+            .build()
+            .unwrap();
+        let mut wrong = answer(id, json!(true));
+        wrong.metadata.insert("agent_id".into(), json!(999));
+        for (input, code) in [
+            (input(), "WAITING"),
+            (answer(id + 999, json!(true)), "NOT_FOUND"),
+            (answer(id, json!("yes")), "INVALID_ARGUMENTS"),
+            (wrong, "CONFLICT"),
+        ] {
+            assert!(
+                matches!(agent.run(input, false, Cancellation::new()).await, Err(error) if error.code == code)
+            );
+            assert_eq!(store.load(1001, &Cancellation::new()).await.unwrap(), saved);
+        }
+        let depth = saved["waits"][1]["nodes"].as_array().unwrap().len();
+        for field in ["node_id", "exec_id", "idx"] {
+            let mut corrupt = saved.clone();
+            corrupt["waits"][1]["nodes"][depth - 1][field] = if field == "node_id" {
+                json!("missing")
+            } else {
+                json!(999)
+            };
+            store
+                .inner
+                .save(1001, corrupt.clone(), &Cancellation::new())
+                .await
+                .unwrap();
+            assert!(
+                matches!(agent.run(answer(id, json!(true)), false, Cancellation::new()).await, Err(error) if error.code == "INVALID_STATE")
+            );
+            assert_eq!(
+                store.load(1001, &Cancellation::new()).await.unwrap(),
+                corrupt
+            );
+        }
+        assert_eq!(store.saves.load(Ordering::SeqCst), 0);
+        assert!(model.0.lock().unwrap().is_empty());
+        for probe in probes {
+            assert!(probe.model.0.lock().unwrap().is_empty());
+            assert!(probe.log.calls.lock().unwrap().is_empty());
+            assert_eq!(probe.log.checks.load(Ordering::SeqCst), 0);
+            assert_eq!(probe.checkpoint.loads.load(Ordering::SeqCst), 0);
+        }
+    }
+}
+
+async fn finish_addressed_child<A: Agent>(
+    agent: A,
+    saved: &Value,
+    store: Arc<core::checkpoint::InMemory>,
+) -> Value {
+    let first = located_reply_id(saved, 0);
+    let second = located_reply_id(saved, 1);
+    let path = saved["waits"][1]["nodes"].as_array().unwrap();
+    let child = path.last().unwrap()["node_id"].as_str().unwrap();
+    let mut events = Box::pin(
+        agent
+            .run(answer(second, json!(true)), false, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(question(&mut events).await.0, first);
+    tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        loop {
+            if let Event::Complete {
+                message,
+                usage: Some(_),
+                finish_reason: Some(reason),
+            } = events.next().await.unwrap().unwrap()
+                && message.metadata.get("node_id") == Some(&json!(child))
+                && reason == "stop"
+            {
+                break;
+            }
+        }
+    })
+    .await
+    .unwrap();
+    while let std::task::Poll::Ready(Some(event)) = poll!(events.next()) {
+        event.unwrap();
+    }
+    let partial = store.load(1001, &Cancellation::new()).await.unwrap();
+    assert_eq!(partial["waits"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        located_step(&partial, &saved["waits"][1])["waits"][second.to_string()]["status"],
+        "resolved"
+    );
+    partial
+}
+
+async fn finish_remaining_child<A: Agent>(
+    agent: A,
+    saved: &Value,
+    partial: &Value,
+    store: Arc<core::checkpoint::InMemory>,
+) {
+    let first = located_reply_id(saved, 0);
+    let second = located_reply_id(saved, 1);
+    assert!(
+        matches!(agent.run(answer(second, json!(false)), false, Cancellation::new()).await, Err(error) if error.code == "CONFLICT")
+    );
+    assert_eq!(
+        store.load(1001, &Cancellation::new()).await.unwrap(),
+        *partial
+    );
+    let mut events = Box::pin(
+        agent
+            .run(answer(second, json!(true)), false, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(question(&mut events).await.0, first);
+    assert!(poll!(events.next()).is_pending());
+    agent
+        .reply(answer(first, json!(false)), Cancellation::new())
+        .await
+        .unwrap();
+    finish(&mut events).await;
+    let final_state = store.load(1001, &Cancellation::new()).await.unwrap();
+    assert_eq!(final_state["status"], "succeeded");
+    assert_eq!(
+        located_step(&final_state, &saved["waits"][1]),
+        located_step(partial, &saved["waits"][1])
+    );
+    assert_eq!(final_state["query"], saved["query"]);
+    assert_eq!(
+        final_state["usage"]["total"],
+        if saved.get("graph").is_some_and(|graph| !graph.is_null()) {
+            156
+        } else {
+            78
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_second_child_recovery_reuses_successful_siblings_and_retains_duplicate_history() {
+    for planned in [false, true] {
+        let saved = saved_nested_fixture(planned, false, false).await;
+        let store = Arc::new(core::checkpoint::InMemory::new());
+        store
+            .save(1001, saved.clone(), &Cancellation::new())
+            .await
+            .unwrap();
+        let (children, original) = recovered_children(false);
+        let partial = if planned {
+            finish_addressed_child(
+                agent::react()
+                    .model(RestoredPlanModel::default())
+                    .subagents(children)
+                    .checkpoint(store.clone())
+                    .with_max_concurrency(1)
+                    .with_id_fn(next_id)
+                    .build()
+                    .unwrap(),
+                &saved,
+                store.clone(),
+            )
+            .await
+        } else {
+            finish_addressed_child(
+                agent::react()
+                    .model(RecoveryOnlyModel::default())
+                    .subagents(children)
+                    .checkpoint(store.clone())
+                    .with_id_fn(no_new_restore_id)
+                    .build()
+                    .unwrap(),
+                &saved,
+                store.clone(),
+            )
+            .await
+        };
+        assert_eq!(
+            original
+                .iter()
+                .map(|probe| probe.log.calls.lock().unwrap().len())
+                .sum::<usize>(),
+            1
+        );
+        let (children, probes) = recovered_children(false);
+        if planned {
+            finish_remaining_child(
+                agent::react()
+                    .model(RestoredPlanModel::default())
+                    .subagents(children)
+                    .checkpoint(store.clone())
+                    .with_max_concurrency(1)
+                    .with_id_fn(next_id)
+                    .build()
+                    .unwrap(),
+                &saved,
+                &partial,
+                store.clone(),
+            )
+            .await;
+        } else {
+            finish_remaining_child(
+                agent::react()
+                    .model(RecoveryOnlyModel::default())
+                    .subagents(children)
+                    .checkpoint(store.clone())
+                    .with_id_fn(no_new_restore_id)
+                    .build()
+                    .unwrap(),
+                &saved,
+                &partial,
+                store.clone(),
+            )
+            .await;
+        }
+        assert!(
+            probes
+                .iter()
+                .all(|probe| probe.log.calls.lock().unwrap().is_empty())
+        );
+        assert_eq!(
+            probes
+                .iter()
+                .map(|probe| probe.model.0.lock().unwrap().len())
+                .sum::<usize>(),
+            1,
+            "successful child must not run again"
+        );
+    }
+}
+
+#[tokio::test]
+async fn restored_child_approval_does_not_execute_when_outer_save_fails_or_is_cancelled() {
+    let saved = saved_nested_fixture(false, false, false).await;
+    let id = located_reply_id(&saved, 1);
+    let store = Arc::new(FailingStore::default());
+    store
+        .0
+        .save(1001, saved.clone(), &Cancellation::new())
+        .await
+        .unwrap();
+    let (children, probes) = recovered_children(false);
+    let model = RecoveryOnlyModel::default();
+    let agent = agent::react()
+        .model(model.clone())
+        .subagents(children)
+        .checkpoint(store.clone())
+        .with_id_fn(no_new_restore_id)
+        .build()
+        .unwrap();
+    let events = agent
+        .run(answer(id, json!(true)), false, Cancellation::new())
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Err(error) if error.message == "waiting save failed"))
+    );
+    assert!(events.iter().all(|event| !matches!(event, Ok(Event::Complete { message, .. }) if message.metadata.contains_key("reply_id"))));
+    assert!(model.0.lock().unwrap().is_empty());
+    assert!(
+        probes
+            .iter()
+            .all(|probe| probe.log.calls.lock().unwrap().is_empty()
+                && probe.model.0.lock().unwrap().is_empty())
+    );
+    assert_eq!(
+        store.load(1001, &Cancellation::new()).await.unwrap()["usage"]["total"],
+        39
+    );
+    let (release, gate) = tokio::sync::oneshot::channel();
+    let store = Arc::new(DelayedStore {
+        inner: core::checkpoint::InMemory::new(),
+        blocked: AtomicUsize::new(0),
+        gate: Mutex::new(Some(gate)),
+    });
+    store
+        .inner
+        .save(1001, saved, &Cancellation::new())
+        .await
+        .unwrap();
+    let (children, probes) = recovered_children(false);
+    let agent = agent::react()
+        .model(model)
+        .subagents(children)
+        .checkpoint(store.clone())
+        .with_id_fn(no_new_restore_id)
+        .build()
+        .unwrap();
+    let cancellation = Cancellation::new();
+    let mut events = Box::pin(
+        agent
+            .run(answer(id, json!(true)), false, cancellation.clone())
+            .await
+            .unwrap(),
+    );
+    assert!(poll!(events.next()).is_pending());
+    assert_eq!(store.blocked.load(Ordering::SeqCst), 1);
+    cancellation.cancel();
+    release.send(()).unwrap();
+    let events = finish(&mut events).await;
+    assert!(events.iter().all(|event| !matches!(event, Event::Complete { message, .. } if message.metadata.contains_key("reply_id"))));
+    assert!(
+        probes
+            .iter()
+            .all(|probe| probe.log.calls.lock().unwrap().is_empty())
+    );
+    assert_eq!(
+        agent
+            .reply(answer(id, json!(true)), Cancellation::new())
+            .await
+            .unwrap_err()
+            .code,
+        "NOT_FOUND"
+    );
+}
+
+async fn child_worker_finish<A: Agent>(
+    agent: A,
+    saved: Value,
+    store: Arc<core::checkpoint::InMemory>,
+    probes: Vec<RecoveredChild>,
+    mode: bool,
+    approve: bool,
+) {
+    let first = located_reply_id(&saved, 0);
+    let second = located_reply_id(&saved, 1);
+    let mut events = Box::pin(
+        agent
+            .run(answer(second, json!(approve)), mode, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(question(&mut events).await.0, first);
+    agent
+        .reply(answer(first, json!(true)), Cancellation::new())
+        .await
+        .unwrap();
+    let output = finish(&mut events).await;
+    if !mode {
+        assert!(
+            output
+                .iter()
+                .all(|event| !matches!(event, Event::Delta { .. }))
+        );
+    }
+    let state = store.load(1001, &Cancellation::new()).await.unwrap();
+    assert_eq!(state["status"], "succeeded");
+    assert_eq!(state["query"], saved["query"]);
+    assert_eq!(state["waits"], json!([]));
+    assert_eq!(
+        state["usage"]["total"],
+        if saved.get("graph").is_some_and(|graph| !graph.is_null()) {
+            156
+        } else {
+            78
+        }
+    );
+    for (index, id) in [first, second].into_iter().enumerate() {
+        let locator = &saved["waits"][index];
+        assert_eq!(
+            located_step(&state, locator)["call"],
+            located_step(&saved, locator)["call"]
+        );
+        assert_eq!(
+            located_step(&state, locator)["waits"][id.to_string()]["status"],
+            "resolved"
+        );
+    }
+    assert_eq!(
+        probes
+            .iter()
+            .map(|probe| probe.log.calls.lock().unwrap().len())
+            .sum::<usize>(),
+        1 + usize::from(approve)
+    );
+    for probe in probes {
+        assert_eq!(probe.model.0.lock().unwrap().len(), 1);
+        assert_eq!(probe.checkpoint.loads.load(Ordering::SeqCst), 0);
+        assert_eq!(probe.checkpoint.saves.load(Ordering::SeqCst), 0);
+        assert!(probe.model.0.lock().unwrap().iter().all(|request| {
+            let json = serde_json::to_string(request).unwrap();
+            !json.contains("reply_id") && !json.contains("untrusted")
+        }));
+    }
+}
+
+#[tokio::test]
+#[ignore = "explicitly invoked by child_approvals_recover_in_fresh_processes_from_outer_checkpoint_only"]
+async fn child_approval_recovery_worker() {
+    let path = std::env::var("HEART_CHILD_APPROVAL_FILE").unwrap();
+    let planned = std::env::var("HEART_CHILD_APPROVAL_PLANNED").unwrap() == "true";
+    let child_react = std::env::var("HEART_CHILD_APPROVAL_REACT").unwrap() == "true";
+    let mode = std::env::var("HEART_CHILD_APPROVAL_MODE").unwrap() == "true";
+    if std::env::var("HEART_CHILD_APPROVAL_PHASE").unwrap() == "save" {
+        let saved = saved_nested_fixture(planned, child_react, mode).await;
+        std::fs::write(path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        return;
+    }
+    let saved: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let approve = std::env::var("HEART_CHILD_APPROVAL_DECISION").unwrap() == "true";
+    let store = Arc::new(core::checkpoint::InMemory::new());
+    store
+        .save(1001, saved.clone(), &Cancellation::new())
+        .await
+        .unwrap();
+    let (children, probes) = recovered_children(child_react);
+    if planned {
+        let model = RestoredPlanModel::default();
+        child_worker_finish(
+            agent::react()
+                .model(model.clone())
+                .subagents(children)
+                .checkpoint(store.clone())
+                .with_max_concurrency(1)
+                .with_id_fn(restored_plan_id)
+                .build()
+                .unwrap(),
+            saved,
+            store,
+            probes,
+            mode,
+            approve,
+        )
+        .await;
+        assert_eq!(model.0.lock().unwrap().len(), 4);
+    } else {
+        let model = RecoveryOnlyModel::default();
+        child_worker_finish(
+            agent::react()
+                .model(model.clone())
+                .subagents(children)
+                .checkpoint(store.clone())
+                .with_id_fn(no_new_restore_id)
+                .build()
+                .unwrap(),
+            saved,
+            store,
+            probes,
+            mode,
+            approve,
+        )
+        .await;
+        assert_eq!(model.0.lock().unwrap().len(), 1);
+    }
+}
+
+#[test]
+fn child_approvals_recover_in_fresh_processes_from_outer_checkpoint_only() {
+    for planned in [false, true] {
+        for child_react in [false, true] {
+            for mode in [false, true] {
+                for approve in [false, true] {
+                    let path = std::env::temp_dir().join(format!(
+                        "heart-child-approval-{}-{planned}-{child_react}-{mode}-{approve}.json",
+                        std::process::id()
+                    ));
+                    for phase in ["save", "recover"] {
+                        let output = std::process::Command::new(std::env::current_exe().unwrap())
+                            .args([
+                                "--exact",
+                                "child_approval_recovery_worker",
+                                "--ignored",
+                                "--nocapture",
+                            ])
+                            .env("HEART_CHILD_APPROVAL_FILE", &path)
+                            .env("HEART_CHILD_APPROVAL_PLANNED", planned.to_string())
+                            .env("HEART_CHILD_APPROVAL_REACT", child_react.to_string())
+                            .env("HEART_CHILD_APPROVAL_MODE", mode.to_string())
+                            .env("HEART_CHILD_APPROVAL_DECISION", approve.to_string())
+                            .env("HEART_CHILD_APPROVAL_PHASE", phase)
+                            .output()
+                            .unwrap();
+                        assert!(
+                            output.status.success(),
+                            "{phase} worker failed: {}{}",
+                            String::from_utf8_lossy(&output.stdout),
+                            String::from_utf8_lossy(&output.stderr)
+                        );
+                    }
+                    std::fs::remove_file(path).unwrap();
+                }
+            }
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct RestoredPlanModel(Arc<Mutex<Vec<Request>>>);
+
+// Produce a real waiting snapshot rather than hand-writing a second recovery
+// schema. Only the returned bytes cross to each new consumer in these tests.
+async fn saved_plan_questions(mode: bool) -> Value {
+    let store = Arc::new(core::checkpoint::InMemory::new());
+    let log = Arc::new(Log::default());
+    let agent = agent::react()
+        .model(PlannedModel::default())
+        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .permission(Ask(log.clone()))
+        .checkpoint(store.clone())
+        .with_max_concurrency(1)
+        .with_id_fn(next_id)
+        .build()
+        .unwrap();
+    let mut events = Box::pin(agent.run(input(), mode, Cancellation::new()).await.unwrap());
+    question(&mut events).await;
+    question(&mut events).await;
+    let saved = store.load(1001, &Cancellation::new()).await.unwrap();
+    assert!(log.calls.lock().unwrap().is_empty());
+    saved
+}
+
+fn plan_reply_id(scene: &Value, index: usize) -> i64 {
+    let locator = &scene["waits"][index];
+    let node = locator["nodes"][0]["node_id"].as_str().unwrap();
+    let id = locator["step"].as_str().unwrap();
+    let step = scene["nodes"][node]["execution"]["attempts"][0]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["id"] == id)
+        .unwrap();
+    step["waits"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .find(|(_, record)| record["status"] == "waiting")
+        .unwrap()
+        .0
+        .parse()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn saved_planned_approval_rejects_bad_input_and_stale_native_targets_without_side_effects() {
+    let saved = saved_plan_questions(false).await;
+    let id = plan_reply_id(&saved, 1);
+    let store = Arc::new(Store::default());
+    store
+        .inner
+        .save(1001, saved.clone(), &Cancellation::new())
+        .await
+        .unwrap();
+    let log = Arc::new(Log::default());
+    let model = RestoredPlanModel::default();
+    let agent = agent::react()
+        .model(model.clone())
+        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .permission(Ask(log.clone()))
+        .checkpoint(store.clone())
+        .with_id_fn(next_id)
+        .build()
+        .unwrap();
+    let mut wrong_owner = answer(id, json!(true));
+    wrong_owner.metadata.insert("session_id".into(), json!(99));
+    for (reply, code) in [
+        (input(), "WAITING"),
+        (answer(id + 9999, json!(true)), "NOT_FOUND"),
+        (answer(id, json!("yes")), "INVALID_ARGUMENTS"),
+        (wrong_owner, "CONFLICT"),
+    ] {
+        assert!(
+            matches!(agent.run(reply, false, Cancellation::new()).await, Err(error) if error.code == code)
+        );
+        assert_eq!(store.load(1001, &Cancellation::new()).await.unwrap(), saved);
+    }
+    for field in ["exec_id", "idx", "node_id"] {
+        let mut bad = saved.clone();
+        bad["waits"][1]["nodes"][0][field] = if field == "node_id" {
+            json!("missing")
+        } else {
+            json!(99999)
+        };
+        store
+            .inner
+            .save(1001, bad.clone(), &Cancellation::new())
+            .await
+            .unwrap();
+        assert!(
+            matches!(agent.run(answer(id, json!(true)), false, Cancellation::new()).await, Err(error) if error.code == "INVALID_STATE")
+        );
+        assert_eq!(store.load(1001, &Cancellation::new()).await.unwrap(), bad);
+    }
+    assert_eq!(store.saves.load(Ordering::SeqCst), 0);
+    assert!(model.0.lock().unwrap().is_empty());
+    assert_eq!(log.checks.load(Ordering::SeqCst), 0);
+    assert_eq!(log.before.load(Ordering::SeqCst), 0);
+    assert!(log.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn saved_planned_approval_reuses_a_successful_sibling_on_a_second_recovery() {
+    for mode in [false, true] {
+        let saved = saved_plan_questions(mode).await;
+        let first = plan_reply_id(&saved, 0);
+        let second = plan_reply_id(&saved, 1);
+        let a = saved["waits"][0]["nodes"][0]["node_id"].as_str().unwrap();
+        let b = saved["waits"][1]["nodes"][0]["node_id"].as_str().unwrap();
+        let store = Arc::new(core::checkpoint::InMemory::new());
+        store
+            .save(1001, saved.clone(), &Cancellation::new())
+            .await
+            .unwrap();
+        let first_log = Arc::new(Log::default());
+        let first_model = RestoredPlanModel::default();
+        let original = agent::react()
+            .model(first_model.clone())
+            .toolkit(Toolkit::new().tools([Lookup::new(first_log.clone(), false)]))
+            .permission(Ask(first_log.clone()))
+            .checkpoint(store.clone())
+            .with_max_concurrency(1)
+            .with_id_fn(next_id)
+            .build()
+            .unwrap();
+        let mut events = Box::pin(
+            original
+                .run(answer(second, json!(true)), mode, Cancellation::new())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(question(&mut events).await.0, first);
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                if let Event::Complete { message, .. } = events.next().await.unwrap().unwrap()
+                    && message.values.get("result") == Some(&json!(b))
+                {
+                    break;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        // Commit B's terminal native facts and the remaining A wait at the
+        // existing waiting boundary before dropping the stream.
+        assert!(poll!(events.next()).is_pending());
+        let partial = store.load(1001, &Cancellation::new()).await.unwrap();
+        assert_eq!(partial["nodes"][b]["status"], "succeeded");
+        drop(events);
+        drop(original);
+        assert_eq!(first_log.calls.lock().unwrap().len(), 1);
+        let log = Arc::new(Log::default());
+        let model = RestoredPlanModel::default();
+        let restored = agent::react()
+            .model(model.clone())
+            .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+            .permission(Ask(log.clone()))
+            .checkpoint(store.clone())
+            .with_max_concurrency(1)
+            .with_id_fn(next_id)
+            .build()
+            .unwrap();
+        // A late duplicate of B cannot approve A after process-local state
+        // has been discarded; conflict must fail before any side effect.
+        assert!(
+            matches!(restored.run(answer(second, json!(false)), mode, Cancellation::new()).await, Err(error) if error.code == "CONFLICT")
+        );
+        assert_eq!(
+            store.load(1001, &Cancellation::new()).await.unwrap(),
+            partial
+        );
+        let mut events = Box::pin(
+            restored
+                .run(answer(second, json!(true)), mode, Cancellation::new())
+                .await
+                .unwrap(),
+        );
+        assert_eq!(question(&mut events).await.0, first);
+        assert!(poll!(events.next()).is_pending());
+        assert!(log.calls.lock().unwrap().is_empty());
+        assert!(model.0.lock().unwrap().is_empty());
+        restored
+            .reply(answer(first, json!(false)), Cancellation::new())
+            .await
+            .unwrap();
+        finish(&mut events).await;
+        let final_state = store.load(1001, &Cancellation::new()).await.unwrap();
+        assert_eq!(final_state["nodes"][b], partial["nodes"][b]);
+        assert_eq!(
+            final_state["nodes"][a]["execution"]["exec_id"],
+            saved["nodes"][a]["execution"]["exec_id"]
+        );
+        assert_eq!(final_state["usage"]["total"], 104);
+        assert_eq!(model.0.lock().unwrap().len(), 3);
+        assert!(log.calls.lock().unwrap().is_empty());
+    }
+}
+
+#[tokio::test]
+async fn restored_planned_questions_preserve_saved_fifo_order_instead_of_node_name_order() {
+    let mut saved = saved_plan_questions(false).await;
+    saved["waits"].as_array_mut().unwrap().reverse();
+    let first = plan_reply_id(&saved, 0);
+    let second = plan_reply_id(&saved, 1);
+    let store = Arc::new(core::checkpoint::InMemory::new());
+    store
+        .save(1001, saved.clone(), &Cancellation::new())
+        .await
+        .unwrap();
+    let log = Arc::new(Log::default());
+    let agent = agent::react()
+        .model(RestoredPlanModel::default())
+        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .permission(Ask(log.clone()))
+        .checkpoint(store.clone())
+        .with_max_concurrency(1)
+        .with_id_fn(next_id)
+        .build()
+        .unwrap();
+    // Answer the later question; the earlier saved consumer must still be
+    // presented first even when its node sorts after the answered node.
+    let mut events = Box::pin(
+        agent
+            .run(answer(second, json!(true)), false, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(question(&mut events).await.0, first);
+    let waiting = store.load(1001, &Cancellation::new()).await.unwrap();
+    assert_eq!(waiting["waits"], saved["waits"]);
+    agent
+        .reply(answer(first, json!(false)), Cancellation::new())
+        .await
+        .unwrap();
+    finish(&mut events).await;
+    assert_eq!(log.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn restored_planned_approval_save_failure_and_cancellation_do_not_authorize_tools() {
+    let saved = saved_plan_questions(false).await;
+    let id = plan_reply_id(&saved, 1);
+    let failed = Arc::new(FailingStore::default());
+    failed
+        .0
+        .save(1001, saved.clone(), &Cancellation::new())
+        .await
+        .unwrap();
+    let log = Arc::new(Log::default());
+    let model = RestoredPlanModel::default();
+    let agent = agent::react()
+        .model(model.clone())
+        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .permission(Ask(log.clone()))
+        .checkpoint(failed.clone())
+        .with_max_concurrency(1)
+        .with_id_fn(next_id)
+        .build()
+        .unwrap();
+    let events = agent
+        .run(answer(id, json!(true)), false, Cancellation::new())
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Err(error) if error.message == "waiting save failed"))
+    );
+    assert!(events.iter().all(|event| !matches!(event, Ok(Event::Complete { message, .. }) if message.metadata.contains_key("reply_id"))));
+    assert!(model.0.lock().unwrap().is_empty());
+    assert!(log.calls.lock().unwrap().is_empty());
+    let terminal = failed.load(1001, &Cancellation::new()).await.unwrap();
+    assert_eq!(terminal["waits"], json!([]));
+    assert_eq!(terminal["usage"]["total"], 52);
+    assert_eq!(
+        agent
+            .reply(answer(id, json!(true)), Cancellation::new())
+            .await
+            .unwrap_err()
+            .code,
+        "NOT_FOUND"
+    );
+
+    let (release, gate) = tokio::sync::oneshot::channel();
+    let store = Arc::new(DelayedStore {
+        inner: core::checkpoint::InMemory::new(),
+        blocked: AtomicUsize::new(0),
+        gate: Mutex::new(Some(gate)),
+    });
+    store
+        .inner
+        .save(1001, saved, &Cancellation::new())
+        .await
+        .unwrap();
+    let agent = agent::react()
+        .model(model.clone())
+        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .permission(Ask(log.clone()))
+        .checkpoint(store.clone())
+        .with_max_concurrency(1)
+        .with_id_fn(next_id)
+        .build()
+        .unwrap();
+    let cancellation = Cancellation::new();
+    let mut events = Box::pin(
+        agent
+            .run(answer(id, json!(true)), false, cancellation.clone())
+            .await
+            .unwrap(),
+    );
+    assert!(poll!(events.next()).is_pending());
+    assert_eq!(store.blocked.load(Ordering::SeqCst), 1);
+    cancellation.cancel();
+    release.send(()).unwrap();
+    let events = finish(&mut events).await;
+    assert!(events.iter().all(|event| !matches!(event, Event::Complete { message, .. } if message.metadata.contains_key("reply_id"))));
+    assert!(model.0.lock().unwrap().is_empty());
+    assert!(log.calls.lock().unwrap().is_empty());
+    assert_eq!(
+        agent
+            .reply(answer(id, json!(true)), Cancellation::new())
+            .await
+            .unwrap_err()
+            .code,
+        "NOT_FOUND"
+    );
+}
+
+fn restored_plan_id() -> i64 {
+    static NEXT: AtomicI64 = AtomicI64::new(9_000_000);
+    NEXT.fetch_add(1, Ordering::SeqCst)
+}
+
+#[tokio::test]
+#[ignore = "invoked in fresh OS processes by planned_approval_recovers_in_a_new_os_process_using_only_checkpoint_bytes"]
+async fn planned_approval_recovery_worker() {
+    let path = std::env::var("HEART_PLAN_APPROVAL_FILE").unwrap();
+    let mode = std::env::var("HEART_PLAN_APPROVAL_MODE").unwrap() == "true";
+    if std::env::var("HEART_PLAN_APPROVAL_PHASE").unwrap() == "save" {
+        let saved = saved_plan_questions(mode).await;
+        std::fs::write(path, serde_json::to_vec(&saved).unwrap()).unwrap();
+        return;
+    }
+    let saved: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
+    let approve = std::env::var("HEART_PLAN_APPROVAL_DECISION").unwrap() == "true";
+    let first = plan_reply_id(&saved, 0);
+    let second = plan_reply_id(&saved, 1);
+    let store = Arc::new(core::checkpoint::InMemory::new());
+    store
+        .save(1001, saved.clone(), &Cancellation::new())
+        .await
+        .unwrap();
+    let log = Arc::new(Log::default());
+    let model = RestoredPlanModel::default();
+    let agent = agent::react()
+        .model(model.clone())
+        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .permission(Ask(log.clone()))
+        .checkpoint(store.clone())
+        .with_max_concurrency(1)
+        .with_id_fn(restored_plan_id)
+        .build()
+        .unwrap();
+    let mut events = Box::pin(
+        agent
+            .run(answer(second, json!(approve)), mode, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(question(&mut events).await.0, first);
+    agent
+        .reply(answer(first, json!(false)), Cancellation::new())
+        .await
+        .unwrap();
+    let events = finish(&mut events).await;
+    if !mode {
+        assert!(
+            events
+                .iter()
+                .all(|event| !matches!(event, Event::Delta { .. }))
+        );
+    }
+    let final_state = store.load(1001, &Cancellation::new()).await.unwrap();
+    assert_eq!(final_state["status"], "succeeded");
+    assert_eq!(final_state["usage"]["total"], 104);
+    assert_eq!(final_state["query"], saved["query"]);
+    assert_eq!(model.0.lock().unwrap().len(), 4);
+    assert_eq!(log.calls.lock().unwrap().len(), usize::from(approve));
+    for locator in saved["waits"].as_array().unwrap() {
+        let node = locator["nodes"][0]["node_id"].as_str().unwrap();
+        let old = &saved["nodes"][node]["execution"];
+        let new = &final_state["nodes"][node]["execution"];
+        assert_eq!(new["exec_id"], old["exec_id"]);
+        assert_eq!(new["attempts"].as_array().unwrap().len(), 1);
+        assert_eq!(
+            new["attempts"][0]["created_time"],
+            old["attempts"][0]["created_time"]
+        );
+        assert_eq!(
+            new["attempts"][0]["steps"][0]["waits"]
+                .as_object()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+    assert_eq!(final_state["nodes"]["c"]["execution"]["exec_id"], 9_000_000);
+}
+
+#[test]
+fn planned_approval_recovers_in_a_new_os_process_using_only_checkpoint_bytes() {
+    for mode in [false, true] {
+        for approve in [false, true] {
+            let path = std::env::temp_dir().join(format!(
+                "heart-plan-approval-{}-{mode}-{approve}.json",
+                std::process::id()
+            ));
+            for phase in ["save", "recover"] {
+                let output = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "planned_approval_recovery_worker",
+                        "--ignored",
+                        "--nocapture",
+                    ])
+                    .env("HEART_PLAN_APPROVAL_FILE", &path)
+                    .env("HEART_PLAN_APPROVAL_MODE", mode.to_string())
+                    .env("HEART_PLAN_APPROVAL_DECISION", approve.to_string())
+                    .env("HEART_PLAN_APPROVAL_PHASE", phase)
+                    .output()
+                    .unwrap();
+                assert!(
+                    output.status.success(),
+                    "{phase} worker failed: {}{}",
+                    String::from_utf8_lossy(&output.stdout),
+                    String::from_utf8_lossy(&output.stderr)
+                );
+            }
+            std::fs::remove_file(path).unwrap();
+        }
+    }
+}
+impl Chat for RestoredPlanModel {
+    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+    async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
+        // A fresh model instance must never select the saved calls or plan
+        // again. Task a/b may reason only after their actual Tool has settled.
+        let mut message = Message::new(Role::Assistant);
+        if let Some(node) = task_id(&request) {
+            if node != "c" {
+                assert!(
+                    request.messages.as_slice().iter().any(|message| {
+                        message.role == Role::Tool || message.role == Role::Function
+                    }),
+                    "restored task {node} lost its saved Tool continuation"
+                );
+            }
+            message.values.insert("result".into(), json!(node));
+        } else {
+            assert!(
+                request
+                    .messages
+                    .as_slice()
+                    .iter()
+                    .any(|message| { message.values.contains_key("plan_complete") }),
+                "root planning/selection must not replay"
+            );
+            message.values.insert("answer".into(), json!("all done"));
+        }
+        assert!(
+            !serde_json::to_string(&request)
+                .unwrap()
+                .contains("reply_id")
+        );
+        assert!(
+            !serde_json::to_string(&request)
+                .unwrap()
+                .contains("untrusted")
+        );
+        self.0.lock().unwrap().push(request);
+        Ok(stream::iter(vec![
+            Ok(Event::Delta {
+                message: Message::new(Role::Assistant),
+            }),
+            Ok(Event::Complete {
+                message,
+                usage: Some(Usage {
+                    input: Some(10),
+                    output: Some(3),
+                    total: Some(13),
+                    ..Default::default()
+                }),
+                finish_reason: Some("stop".into()),
+            }),
+        ]))
+    }
+}
+
+#[tokio::test]
+async fn saved_planned_approvals_route_same_call_ids_to_their_actual_tasks() {
+    for mode in [false, true] {
+        for approve in [false, true] {
+            let checkpoint = Arc::new(core::checkpoint::InMemory::new());
+            let original_log = Arc::new(Log::default());
+            let original = agent::react()
+                .model(PlannedModel::default())
+                .toolkit(Toolkit::new().tools([Lookup::new(original_log.clone(), false)]))
+                .permission(Ask(original_log.clone()))
+                .checkpoint(checkpoint.clone())
+                .with_max_concurrency(1)
+                .with_id_fn(next_id)
+                .build()
+                .unwrap();
+            let mut events = Box::pin(
+                original
+                    .run(input(), mode, Cancellation::new())
+                    .await
+                    .unwrap(),
+            );
+            let (first, first_message) = question(&mut events).await;
+            let (second, second_message) = question(&mut events).await;
+            let a = first_message.metadata["node_id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let b = second_message.metadata["node_id"]
+                .as_str()
+                .unwrap()
+                .to_owned();
+            let saved = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
+            drop(events);
+            drop(original);
+            assert!(original_log.calls.lock().unwrap().is_empty());
+
+            let log = Arc::new(Log::default());
+            let model = RestoredPlanModel::default();
+            let restored = agent::react()
+                .model(model.clone())
+                .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                .permission(Ask(log.clone()))
+                .checkpoint(checkpoint.clone())
+                .with_max_concurrency(1)
+                .with_id_fn(next_id)
+                .build()
+                .unwrap();
+            let mut events = Box::pin(
+                restored
+                    .run(answer(second, json!(approve)), mode, Cancellation::new())
+                    .await
+                    .unwrap(),
+            );
+            let (again, _) = question(&mut events).await;
+            assert_eq!(
+                again, first,
+                "re-present saved question, never allocate a new one"
+            );
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                loop {
+                    let event = events.next().await.unwrap().unwrap();
+                    if !mode {
+                        assert!(!matches!(event, Event::Delta { .. }));
+                    }
+                    if let Event::Complete { message, .. } = event
+                        && message.metadata["node_id"] == b
+                        && message.values.get("result") == Some(&json!(b))
+                    {
+                        break;
+                    }
+                }
+            })
+            .await
+            .unwrap();
+            assert!(poll!(events.next()).is_pending());
+            assert_eq!(log.calls.lock().unwrap().len(), usize::from(approve));
+            if approve {
+                assert_eq!(log.calls.lock().unwrap()[0].arguments["city"], b);
+            }
+            assert!(
+                model
+                    .0
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .all(|request| task_id(request) != Some("c"))
+            );
+            let partial = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
+            assert_eq!(partial["waits"].as_array().unwrap().len(), 1);
+            assert_eq!(partial["waits"][0], saved["waits"][0]);
+            assert_eq!(partial["nodes"][&b]["status"], "succeeded");
+            restored
+                .reply(answer(second, json!(approve)), Cancellation::new())
+                .await
+                .unwrap();
+            assert_eq!(
+                restored
+                    .reply(answer(second, json!(!approve)), Cancellation::new())
+                    .await
+                    .unwrap_err()
+                    .code,
+                "CONFLICT"
+            );
+            restored
+                .reply(answer(first, json!(true)), Cancellation::new())
+                .await
+                .unwrap();
+            let tail = finish(&mut events).await;
+            if !mode {
+                assert!(
+                    tail.iter()
+                        .all(|event| !matches!(event, Event::Delta { .. }))
+                );
+            }
+            let final_state = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
+            assert_eq!(final_state["status"], "succeeded");
+            assert_eq!(final_state["waits"], json!([]));
+            assert_eq!(final_state["query"], saved["query"]);
+            assert_eq!(final_state["usage"]["total"], 104);
+            for (node, id) in [(&a, first), (&b, second)] {
+                let old = &saved["nodes"][node]["execution"];
+                let new = &final_state["nodes"][node]["execution"];
+                assert_eq!(new["exec_id"], old["exec_id"]);
+                assert_eq!(new["created_time"], old["created_time"]);
+                assert_eq!(new["attempts"].as_array().unwrap().len(), 1);
+                assert_eq!(
+                    new["attempts"][0]["steps"][0]["waits"][id.to_string()]["status"],
+                    "resolved"
+                );
+            }
+            assert_eq!(log.calls.lock().unwrap().len(), 1 + usize::from(approve));
+            assert_eq!(model.0.lock().unwrap().len(), 4);
+            // Saved task history, not just root history, also protects a
+            // repeated terminal run from replaying the plan/tools.
+            let mut terminal = Box::pin(
+                restored
+                    .run(answer(second, json!(approve)), mode, Cancellation::new())
+                    .await
+                    .unwrap(),
+            );
+            finish(&mut terminal).await;
+            assert_eq!(model.0.lock().unwrap().len(), 4);
+        }
+    }
+}
+
+static HISTORICAL_REPLY_ID: AtomicI64 = AtomicI64::new(0);
+fn reused_historical_reply_id() -> i64 {
+    HISTORICAL_REPLY_ID.load(Ordering::SeqCst)
+}
+
+#[derive(Clone, Default)]
+struct SequentialModel(Arc<Mutex<Vec<Request>>>);
+impl Chat for SequentialModel {
+    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+    async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
+        let mut requests = self.0.lock().unwrap();
+        let index = requests.len();
+        requests.push(request);
+        let mut message = Message::new(Role::Assistant);
+        if index < 2 {
+            message.content.push(Part {
+                r#type: "tool_call".into(),
+                data: json!({
+                    "call_id":format!("sequential_{index}"), "name":"lookup",
+                    "arguments":{"city": if index == 0 { "London" } else { "Beijing" }}
+                })
+                .as_object()
+                .unwrap()
+                .clone(),
+            });
+        }
+        Ok(stream::iter(vec![Ok(Event::Complete {
+            message,
+            usage: None,
+            finish_reason: Some("stop".into()),
+        })]))
+    }
+}
+
+async fn preserve_old_question_ids<A: Agent>(
+    create: impl Fn(bool) -> A,
+    store: Arc<Store>,
+    log: Arc<Log>,
+) {
+    let original = create(false);
+    let mut events = Box::pin(
+        original
+            .run(input(), true, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    let (old, _) = question(&mut events).await;
+    original
+        .reply(answer(old, json!(true)), Cancellation::new())
+        .await
+        .unwrap();
+    let (pending, _) = question(&mut events).await;
+    assert_ne!(old, pending);
+    assert_eq!(log.calls.lock().unwrap().len(), 1);
+    drop(events);
+    drop(original);
+    HISTORICAL_REPLY_ID.store(old, Ordering::SeqCst);
+    let restored = create(true);
+    let mut events = Box::pin(
+        restored
+            .run(answer(pending, json!(true)), true, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    let output = finish(&mut events).await;
+    assert!(output.iter().all(|event| !matches!(event, Event::Complete { message, .. } if message.metadata.contains_key("reply_id"))));
+    assert_eq!(
+        log.calls.lock().unwrap().len(),
+        1,
+        "the changed operation cannot execute under an old reply ID"
+    );
+    let final_state = store.load(1001, &Cancellation::new()).await.unwrap();
+    assert_eq!(
+        final_state["steps"][0]["waits"][old.to_string()]["status"],
+        "resolved"
+    );
+    assert_eq!(
+        final_state["steps"][1]["waits"][pending.to_string()]["status"],
+        "resolved"
+    );
+    assert_eq!(final_state["steps"][1]["error"]["code"], "CONFLICT");
+}
+
+#[tokio::test]
+async fn recovery_reserves_historical_question_ids_without_reusing_their_approval() {
+    for react in [false, true] {
+        let log = Arc::new(Log::default());
+        let model = SequentialModel::default();
+        let store = Arc::new(Store::default());
+        if react {
+            preserve_old_question_ids(
+                |restored| {
+                    agent::react()
+                        .model(model.clone())
+                        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), restored)]))
+                        .permission(Ask(log.clone()))
+                        .checkpoint(store.clone())
+                        .with_id_fn(if restored {
+                            reused_historical_reply_id
+                        } else {
+                            next_id
+                        })
+                        .build()
+                        .unwrap()
+                },
+                store.clone(),
+                log.clone(),
+            )
+            .await;
+        } else {
+            preserve_old_question_ids(
+                |restored| {
+                    agent::chat()
+                        .model(model.clone())
+                        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), restored)]))
+                        .permission(Ask(log.clone()))
+                        .checkpoint(store.clone())
+                        .with_id_fn(if restored {
+                            reused_historical_reply_id
+                        } else {
+                            next_id
+                        })
+                        .build()
+                        .unwrap()
+                },
+                store.clone(),
+                log.clone(),
+            )
+            .await;
+        }
+    }
+}
+
+async fn recover_late_duplicate<A: Agent>(
+    create: impl Fn(bool) -> A,
+    store: Arc<Store>,
+    log: Arc<Log>,
+    model: SequentialModel,
+) {
+    let original = create(false);
+    let mut events = Box::pin(
+        original
+            .run(input(), true, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    let (old, _) = question(&mut events).await;
+    original
+        .reply(answer(old, json!(true)), Cancellation::new())
+        .await
+        .unwrap();
+    let (pending, _) = question(&mut events).await;
+    drop(events);
+    drop(original);
+    let restored = create(true);
+    let mut events = Box::pin(
+        restored
+            .run(answer(old, json!(true)), true, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    let (again, _) = question(&mut events).await;
+    assert_eq!(again, pending);
+    assert_eq!(
+        log.calls.lock().unwrap().len(),
+        1,
+        "late duplicate never reruns the completed operation"
+    );
+    restored
+        .reply(answer(old, json!(true)), Cancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        restored
+            .reply(answer(old, json!(false)), Cancellation::new())
+            .await
+            .unwrap_err()
+            .code,
+        "CONFLICT"
+    );
+    restored
+        .reply(answer(pending, json!(true)), Cancellation::new())
+        .await
+        .unwrap();
+    finish(&mut events).await;
+    drop(events);
+    drop(restored);
+    assert_eq!(log.calls.lock().unwrap().len(), 2);
+    assert_eq!(model.0.lock().unwrap().len(), 3);
+    let terminal = store.load(1001, &Cancellation::new()).await.unwrap();
+    let writes = store.saves.load(Ordering::SeqCst);
+    let terminal_agent = create(true);
+    let mut replay = Box::pin(
+        terminal_agent
+            .run(answer(old, json!(true)), true, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    let replay = finish(&mut replay).await;
+    assert_eq!(replay.len(), 1);
+    assert_eq!(log.calls.lock().unwrap().len(), 2);
+    assert_eq!(model.0.lock().unwrap().len(), 3);
+    assert_eq!(store.saves.load(Ordering::SeqCst), writes);
+    let error = match terminal_agent
+        .run(answer(old, json!(false)), true, Cancellation::new())
+        .await
+    {
+        Err(error) => error,
+        Ok(_) => panic!("conflicting duplicate accepted"),
+    };
+    assert_eq!(error.code, "CONFLICT");
+    assert_eq!(
+        store.load(1001, &Cancellation::new()).await.unwrap(),
+        terminal
+    );
+}
+
+#[tokio::test]
+async fn late_saved_replies_are_idempotent_without_approving_the_next_question_or_reexecuting_terminal_runs()
+ {
+    for react in [false, true] {
+        let log = Arc::new(Log::default());
+        let model = SequentialModel::default();
+        let store = Arc::new(Store::default());
+        if react {
+            recover_late_duplicate(
+                |restored| {
+                    agent::react()
+                        .model(model.clone())
+                        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                        .permission(Ask(log.clone()))
+                        .checkpoint(store.clone())
+                        .with_id_fn(if restored { no_new_restore_id } else { next_id })
+                        .build()
+                        .unwrap()
+                },
+                store.clone(),
+                log.clone(),
+                model.clone(),
+            )
+            .await;
+        } else {
+            recover_late_duplicate(
+                |restored| {
+                    agent::chat()
+                        .model(model.clone())
+                        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                        .permission(Ask(log.clone()))
+                        .checkpoint(store.clone())
+                        .with_id_fn(if restored { no_new_restore_id } else { next_id })
+                        .build()
+                        .unwrap()
+                },
+                store.clone(),
+                log.clone(),
+                model.clone(),
+            )
+            .await;
+        }
+    }
+}
+
+async fn recover_two_root_approvals<A: Agent>(
+    create: impl Fn(bool) -> A,
+    store: Arc<Store>,
+    model: Model,
+    log: Arc<Log>,
+    mode: bool,
+) {
+    let original = create(false);
+    let mut events = Box::pin(
+        original
+            .run(input(), mode, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    let (a, _) = question(&mut events).await;
+    let (b, _) = question(&mut events).await;
+    assert_ne!(a, b);
+    drop(events);
+    drop(original);
+    let saved = store.load(1001, &Cancellation::new()).await.unwrap();
+    let restored = create(true);
+    let mut events = Box::pin(
+        restored
+            .run(answer(b, json!(true)), mode, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    let (again, _) = question(&mut events).await;
+    assert_eq!(again, a, "unanswered question retains its saved ID");
+    loop {
+        match poll!(events.next()) {
+            std::task::Poll::Ready(Some(event)) => {
+                event.unwrap();
+            }
+            std::task::Poll::Pending => break,
+            _ => panic!("the other saved approval must remain pending"),
+        }
+    }
+    assert_eq!(model.requests.lock().unwrap().len(), 1);
+    assert_eq!(log.calls.lock().unwrap().len(), 1);
+    assert_eq!(log.calls.lock().unwrap()[0].call_id, "c2");
+    restored
+        .reply(answer(b, json!(true)), Cancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        restored
+            .reply(answer(b, json!(false)), Cancellation::new())
+            .await
+            .unwrap_err()
+            .code,
+        "CONFLICT"
+    );
+    restored
+        .reply(answer(a, json!(false)), Cancellation::new())
+        .await
+        .unwrap();
+    finish(&mut events).await;
+    assert_eq!(log.calls.lock().unwrap().len(), 1);
+    assert_eq!(model.requests.lock().unwrap().len(), 2);
+    let final_state = store.load(1001, &Cancellation::new()).await.unwrap();
+    assert_eq!(final_state["usage"]["total"], 26);
+    assert_eq!(final_state["query"], saved["query"]);
+    assert_eq!(final_state["waits"], json!([]));
+    for (step, id) in [(0, a), (1, b)] {
+        assert_eq!(final_state["steps"][step]["id"], saved["steps"][step]["id"]);
+        assert_eq!(
+            final_state["steps"][step]["waits"][id.to_string()]["status"],
+            "resolved"
+        );
+        assert_eq!(
+            final_state["steps"][step]["waits"][id.to_string()]["feedback"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+}
+
+#[tokio::test]
+async fn saved_root_approvals_resume_only_the_addressed_call_and_keep_other_consumers_live() {
+    for react in [false, true] {
+        for mode in [false, true] {
+            let log = Arc::new(Log::default());
+            let model = Model {
+                requests: Default::default(),
+                multiple: true,
+            };
+            let store = Arc::new(Store::default());
+            if react {
+                recover_two_root_approvals(
+                    |restored| {
+                        agent::react()
+                            .model(model.clone())
+                            .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                            .permission(Ask(log.clone()))
+                            .checkpoint(store.clone())
+                            .with_id_fn(if restored { no_new_restore_id } else { next_id })
+                            .build()
+                            .unwrap()
+                    },
+                    store.clone(),
+                    model.clone(),
+                    log.clone(),
+                    mode,
+                )
+                .await;
+            } else {
+                recover_two_root_approvals(
+                    |restored| {
+                        agent::chat()
+                            .model(model.clone())
+                            .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                            .permission(Ask(log.clone()))
+                            .checkpoint(store.clone())
+                            .with_id_fn(if restored { no_new_restore_id } else { next_id })
+                            .build()
+                            .unwrap()
+                    },
+                    store.clone(),
+                    model.clone(),
+                    log.clone(),
+                    mode,
+                )
+                .await;
+            }
+        }
+    }
+}
+
+async fn reject_invalid_saved_approval<A: Agent>(
+    create: impl Fn(bool) -> A,
+    store: Arc<Store>,
+    model: Model,
+    log: Arc<Log>,
+) {
+    let original = create(false);
+    let mut events = Box::pin(
+        original
+            .run(input(), true, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    let (id, _) = question(&mut events).await;
+    drop(events);
+    drop(original);
+    let before = store.load(1001, &Cancellation::new()).await.unwrap();
+    let writes = store.saves.load(Ordering::SeqCst);
+    let restored = create(true);
+    let mut wrong_owner = answer(id, json!(true));
+    wrong_owner
+        .metadata
+        .insert("session_id".into(), json!(9999));
+    for (reply, expected) in [
+        (answer(id + 10_000, json!(true)), "NOT_FOUND"),
+        (answer(id, json!("yes")), "INVALID_ARGUMENTS"),
+        (wrong_owner, "CONFLICT"),
+        (input(), "WAITING"),
+    ] {
+        let error = match restored.run(reply, true, Cancellation::new()).await {
+            Err(error) => error,
+            Ok(_) => panic!("invalid saved feedback accepted"),
+        };
+        assert_eq!(error.code, expected);
+        assert_eq!(
+            store.load(1001, &Cancellation::new()).await.unwrap(),
+            before
+        );
+        assert_eq!(store.saves.load(Ordering::SeqCst), writes);
+        assert_eq!(model.requests.lock().unwrap().len(), 1);
+        assert_eq!(log.before.load(Ordering::SeqCst), 0);
+        assert!(log.calls.lock().unwrap().is_empty());
+    }
+    let mut output = Box::pin(
+        restored
+            .run(answer(id, json!(true)), true, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    finish(&mut output).await;
+    assert_eq!(log.calls.lock().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn invalid_saved_approval_preserves_checkpoint_and_never_invokes_model_hooks_or_tools() {
+    for react in [false, true] {
+        let log = Arc::new(Log::default());
+        let model = Model {
+            requests: Default::default(),
+            multiple: false,
+        };
+        let store = Arc::new(Store::default());
+        if react {
+            reject_invalid_saved_approval(
+                |restored| {
+                    agent::react()
+                        .model(model.clone())
+                        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                        .permission(Ask(log.clone()))
+                        .checkpoint(store.clone())
+                        .with_id_fn(if restored { no_new_restore_id } else { next_id })
+                        .build()
+                        .unwrap()
+                },
+                store.clone(),
+                model.clone(),
+                log.clone(),
+            )
+            .await;
+        } else {
+            reject_invalid_saved_approval(
+                |restored| {
+                    agent::chat()
+                        .model(model.clone())
+                        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                        .permission(Ask(log.clone()))
+                        .checkpoint(store.clone())
+                        .with_id_fn(if restored { no_new_restore_id } else { next_id })
+                        .build()
+                        .unwrap()
+                },
+                store.clone(),
+                model.clone(),
+                log.clone(),
+            )
+            .await;
+        }
+    }
+}
+
+async fn changed_recovered_call<A: Agent>(
+    create: impl Fn(bool) -> A,
+    store: Arc<Store>,
+    log: Arc<Log>,
+) {
+    let original = create(false);
+    let mut events = Box::pin(
+        original
+            .run(input(), true, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    let (old, _) = question(&mut events).await;
+    drop(events);
+    drop(original);
+    let restored = create(true);
+    let mut events = Box::pin(
+        restored
+            .run(answer(old, json!(true)), true, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    let (new, message) = question(&mut events).await;
+    assert_ne!(new, old);
+    assert!(serde_json::to_string(&message).unwrap().contains("Paris"));
+    assert!(log.calls.lock().unwrap().is_empty());
+    let state = store.load(1001, &Cancellation::new()).await.unwrap();
+    assert_eq!(state["steps"][0]["call"]["arguments"]["city"], "Paris");
+    assert_eq!(
+        state["steps"][0]["waits"][old.to_string()]["status"],
+        "resolved"
+    );
+    assert_eq!(
+        state["steps"][0]["waits"][new.to_string()]["status"],
+        "waiting"
+    );
+    restored
+        .reply(answer(old, json!(true)), Cancellation::new())
+        .await
+        .unwrap();
+    assert!(log.calls.lock().unwrap().is_empty());
+    restored
+        .reply(answer(new, json!(false)), Cancellation::new())
+        .await
+        .unwrap();
+    finish(&mut events).await;
+    assert!(log.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn a_changed_operation_after_recovery_cannot_reuse_the_old_approval() {
+    for react in [false, true] {
+        let log = Arc::new(Log::default());
+        let model = Model {
+            requests: Default::default(),
+            multiple: false,
+        };
+        let store = Arc::new(Store::default());
+        if react {
+            changed_recovered_call(
+                |restored| {
+                    agent::react()
+                        .model(model.clone())
+                        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), restored)]))
+                        .permission(Ask(log.clone()))
+                        .checkpoint(store.clone())
+                        .with_id_fn(next_id)
+                        .build()
+                        .unwrap()
+                },
+                store.clone(),
+                log.clone(),
+            )
+            .await;
+        } else {
+            changed_recovered_call(
+                |restored| {
+                    agent::chat()
+                        .model(model.clone())
+                        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), restored)]))
+                        .permission(Ask(log.clone()))
+                        .checkpoint(store.clone())
+                        .with_id_fn(next_id)
+                        .build()
+                        .unwrap()
+                },
+                store.clone(),
+                log.clone(),
+            )
+            .await;
+        }
+    }
+}
+
+#[derive(Clone, Default)]
+struct RecoveryOnlyModel(Arc<Mutex<Vec<Request>>>);
+impl Chat for RecoveryOnlyModel {
+    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+    async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
+        self.0.lock().unwrap().push(request);
+        let mut message = Message::new(Role::Assistant);
+        message.content.push(Part {
+            r#type: "text".into(),
+            data: json!({"value":"restored result"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        });
+        Ok(stream::iter(
+            [Ok(Event::Complete {
+                message,
+                usage: Some(Usage {
+                    input: Some(10),
+                    output: Some(3),
+                    total: Some(13),
+                    ..Default::default()
+                }),
+                finish_reason: Some("stop".into()),
+            })]
+            .into_iter()
+            .collect::<Vec<_>>(),
+        ))
+    }
+}
+
+async fn write_root_wait<A: Agent>(
+    agent: A,
+    store: Arc<Store>,
+    path: &std::path::Path,
+    mode: bool,
+) {
+    let mut events = Box::pin(agent.run(input(), mode, Cancellation::new()).await.unwrap());
+    question(&mut events).await;
+    let saved = store.load(1001, &Cancellation::new()).await.unwrap();
+    std::fs::write(path, serde_json::to_vec(&saved).unwrap()).unwrap();
+}
+
+async fn finish_root_worker<A: Agent>(
+    agent: A,
+    store: Arc<Store>,
+    model: RecoveryOnlyModel,
+    log: Arc<Log>,
+    mode: bool,
+    allow: bool,
+) {
+    let saved = store.load(1001, &Cancellation::new()).await.unwrap();
+    let id: i64 = saved["steps"][0]["waits"]
+        .as_object()
+        .unwrap()
+        .keys()
+        .next()
+        .unwrap()
+        .parse()
+        .unwrap();
+    let mut events = Box::pin(
+        agent
+            .run(answer(id, json!(allow)), mode, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    finish(&mut events).await;
+    assert_eq!(log.calls.lock().unwrap().len(), usize::from(allow));
+    assert_eq!(
+        model.0.lock().unwrap().len(),
+        1,
+        "only the post-tool model call runs in the new process"
+    );
+    let final_state = store.load(1001, &Cancellation::new()).await.unwrap();
+    assert_eq!(final_state["status"], "succeeded");
+    assert_eq!(final_state["usage"]["total"], 26);
+    assert_eq!(final_state["query"], saved["query"]);
+    assert_eq!(final_state["steps"][0]["id"], saved["steps"][0]["id"]);
+    assert_eq!(
+        final_state["steps"][0]["waits"][id.to_string()]["status"],
+        "resolved"
+    );
+    let context = serde_json::to_string(&model.0.lock().unwrap()[0].messages).unwrap();
+    assert!(!context.contains("untrusted"));
+    assert!(!context.contains("reply_id"));
+}
+
+#[tokio::test]
+#[ignore = "invoked by root_approval_recovers_in_a_new_os_process_using_only_checkpoint_bytes"]
+async fn root_approval_recovery_worker() {
+    let path = std::path::PathBuf::from(std::env::var_os("HEART_ROOT_APPROVAL_FILE").unwrap());
+    let react = std::env::var("HEART_ROOT_APPROVAL_KIND").unwrap() == "react";
+    let mode = std::env::var("HEART_ROOT_APPROVAL_MODE").unwrap() == "true";
+    let allow = std::env::var("HEART_ROOT_APPROVAL_ALLOW").unwrap() == "true";
+    let restoring = std::env::var("HEART_ROOT_APPROVAL_PHASE").unwrap() == "restore";
+    let store = Arc::new(Store::default());
+    let log = Arc::new(Log::default());
+    if restoring {
+        let saved: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        store.save(1001, saved, &Cancellation::new()).await.unwrap();
+        let model = RecoveryOnlyModel::default();
+        if react {
+            finish_root_worker(
+                agent::react()
+                    .model(model.clone())
+                    .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                    .permission(Ask(log.clone()))
+                    .checkpoint(store.clone())
+                    .with_id_fn(no_new_restore_id)
+                    .build()
+                    .unwrap(),
+                store.clone(),
+                model,
+                log,
+                mode,
+                allow,
+            )
+            .await;
+        } else {
+            finish_root_worker(
+                agent::chat()
+                    .model(model.clone())
+                    .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                    .permission(Ask(log.clone()))
+                    .checkpoint(store.clone())
+                    .with_id_fn(no_new_restore_id)
+                    .build()
+                    .unwrap(),
+                store.clone(),
+                model,
+                log,
+                mode,
+                allow,
+            )
+            .await;
+        }
+    } else {
+        let model = Model {
+            requests: Default::default(),
+            multiple: false,
+        };
+        if react {
+            write_root_wait(
+                agent::react()
+                    .model(model)
+                    .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                    .permission(Ask(log))
+                    .checkpoint(store.clone())
+                    .with_id_fn(next_id)
+                    .build()
+                    .unwrap(),
+                store,
+                &path,
+                mode,
+            )
+            .await;
+        } else {
+            write_root_wait(
+                agent::chat()
+                    .model(model)
+                    .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                    .permission(Ask(log))
+                    .checkpoint(store.clone())
+                    .with_id_fn(next_id)
+                    .build()
+                    .unwrap(),
+                store,
+                &path,
+                mode,
+            )
+            .await;
+        }
+    }
+}
+
+#[test]
+fn root_approval_recovers_in_a_new_os_process_using_only_checkpoint_bytes() {
+    let path = std::env::temp_dir().join(format!(
+        "heart-root-approval-{}-{}.json",
+        std::process::id(),
+        next_id()
+    ));
+    for kind in ["chat", "react"] {
+        for mode in ["false", "true"] {
+            for allow in ["false", "true"] {
+                for phase in ["save", "restore"] {
+                    let output = std::process::Command::new(std::env::current_exe().unwrap())
+                        .args([
+                            "--exact",
+                            "root_approval_recovery_worker",
+                            "--ignored",
+                            "--nocapture",
+                        ])
+                        .env("HEART_ROOT_APPROVAL_FILE", &path)
+                        .env("HEART_ROOT_APPROVAL_KIND", kind)
+                        .env("HEART_ROOT_APPROVAL_MODE", mode)
+                        .env("HEART_ROOT_APPROVAL_ALLOW", allow)
+                        .env("HEART_ROOT_APPROVAL_PHASE", phase)
+                        .output()
+                        .unwrap();
+                    assert!(
+                        output.status.success(),
+                        "{kind}/{mode}/{allow}/{phase}: {} {}",
+                        String::from_utf8_lossy(&output.stdout),
+                        String::from_utf8_lossy(&output.stderr)
+                    );
+                }
+            }
+        }
+    }
+    std::fs::remove_file(&path).unwrap();
+}
+
+async fn recover_root_approval<A: Agent>(
+    create: impl Fn(bool) -> A,
+    store: Arc<Store>,
+    model: Model,
+    log: Arc<Log>,
+    mode: bool,
+    allow: bool,
+) {
+    let original = create(false);
+    let mut events = Box::pin(
+        original
+            .run(input(), mode, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    let (id, _) = question(&mut events).await;
+    let saved = store.load(1001, &Cancellation::new()).await.unwrap();
+    assert!(log.calls.lock().unwrap().is_empty());
+    drop(events);
+    drop(original);
+    let restored = create(true);
+    let mut output = Box::pin(
+        restored
+            .run(answer(id, json!(allow)), mode, Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    let output = finish(&mut output).await;
+    assert_eq!(
+        model.requests.lock().unwrap().len(),
+        2,
+        "the selecting model call is not replayed"
+    );
+    assert_eq!(log.calls.lock().unwrap().len(), usize::from(allow));
+    if allow {
+        assert_eq!(log.calls.lock().unwrap()[0].arguments["city"], "Beijing");
+    }
+    for event in &output {
+        assert!(!matches!(event, Event::Delta { .. }) || mode);
+        if let Event::Complete { message, .. } = event {
+            assert!(
+                !message.metadata.contains_key("reply_id"),
+                "consuming an answer does not re-present the question"
+            );
+        }
+    }
+    let final_state = store.load(1001, &Cancellation::new()).await.unwrap();
+    assert_eq!(final_state["status"], "succeeded");
+    assert_eq!(final_state["usage"]["total"], 26);
+    assert_eq!(final_state["query"], saved["query"]);
+    assert_eq!(
+        final_state["execution"]["exec_id"],
+        saved["execution"]["exec_id"]
+    );
+    assert_eq!(
+        final_state["execution"].is_null(),
+        saved["execution"].is_null()
+    );
+    assert_eq!(final_state["steps"][0]["id"], saved["steps"][0]["id"]);
+    assert_eq!(
+        final_state["steps"][0]["call_id"],
+        saved["steps"][0]["call_id"]
+    );
+    assert_eq!(final_state["waits"], json!([]));
+    assert_eq!(
+        final_state["steps"][0]["waits"][id.to_string()]["status"],
+        "resolved"
+    );
+    let feedback = &final_state["steps"][0]["waits"][id.to_string()]["feedback"];
+    assert_eq!(feedback.as_array().unwrap().len(), 1);
+    let requests = model.requests.lock().unwrap();
+    let context = serde_json::to_value(&requests.last().unwrap().messages)
+        .unwrap()
+        .to_string();
+    assert!(!context.contains("untrusted"));
+    assert!(!context.contains("reply_id"));
+}
+
+#[tokio::test]
+async fn saved_root_approval_resumes_on_a_fresh_agent_without_replaying_the_selecting_model() {
+    for react in [false, true] {
+        for mode in [false, true] {
+            for allow in [false, true] {
+                let log = Arc::new(Log::default());
+                let model = Model {
+                    requests: Default::default(),
+                    multiple: false,
+                };
+                let store = Arc::new(Store::default());
+                if react {
+                    recover_root_approval(
+                        |restored| {
+                            agent::react()
+                                .model(model.clone())
+                                .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                                .permission(Ask(log.clone()))
+                                .checkpoint(store.clone())
+                                .with_id_fn(if restored { no_new_restore_id } else { next_id })
+                                .build()
+                                .unwrap()
+                        },
+                        store.clone(),
+                        model.clone(),
+                        log.clone(),
+                        mode,
+                        allow,
+                    )
+                    .await;
+                } else {
+                    recover_root_approval(
+                        |restored| {
+                            agent::chat()
+                                .model(model.clone())
+                                .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                                .permission(Ask(log.clone()))
+                                .checkpoint(store.clone())
+                                .with_id_fn(if restored { no_new_restore_id } else { next_id })
+                                .build()
+                                .unwrap()
+                        },
+                        store.clone(),
+                        model.clone(),
+                        log.clone(),
+                        mode,
+                        allow,
+                    )
+                    .await;
+                }
+            }
+        }
+    }
+}
 impl Checkpoint for Store {
     async fn load(&self, id: i64, cancellation: &Cancellation) -> Result<Value, Error> {
         self.loads.fetch_add(1, Ordering::SeqCst);

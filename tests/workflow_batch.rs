@@ -165,7 +165,8 @@ fn ordinary_batch_node_retries_only_failed_items_and_submits_once() {
             Arc::new(move || ids_for_run.fetch_add(1, Ordering::SeqCst)),
             Cancellation::new(),
         ));
-        let executions = &runtime.state().nodes["batch"].executions;
+        let state = runtime.state();
+        let executions = &state.nodes["batch"].executions;
         assert_eq!(executions.len(), 1);
         let execution = &executions[&1001];
         assert_eq!(
@@ -199,7 +200,7 @@ fn ordinary_batch_node_retries_only_failed_items_and_submits_once() {
             assert_eq!(result.unwrap_err().code, "TIMEOUT");
             assert_eq!(downstream.load(Ordering::SeqCst), 0);
             assert!(execution.messages.is_empty());
-            assert!(runtime.state().nodes["summary"].executions.is_empty());
+            assert!(state.nodes["summary"].executions.is_empty());
             assert_eq!(execution.status, node::ExecutionStatus::Failed);
         } else {
             assert_eq!(
