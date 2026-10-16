@@ -39,7 +39,7 @@ async fn check_runs<A: Agent>(agent: &A, requests: &Mutex<Vec<Request>>) {
                 mime_type: None,
             }],
         };
-        let events = agent.run(input, Cancellation::new()).await.unwrap();
+        let events = agent.run(input, true, Cancellation::new()).await.unwrap();
         futures_util::pin_mut!(events);
         let Some(Ok(Event::Complete { message, .. })) = events.next().await else {
             panic!("Agent must forward the shared Complete event");

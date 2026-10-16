@@ -142,7 +142,7 @@ impl<M> Builder<M> {
         self
     }
 
-    /// Application-owned execution identity function, independent of Memory.
+    /// Application-owned execution/question identity function, independent of Memory.
     /// Construction does not invoke it; embedded children inherit their owner.
     pub fn with_id_fn(mut self, id_fn: fn() -> i64) -> Self {
         self.id_fn = Some(id_fn);
@@ -167,6 +167,7 @@ where
         self.history.validate()?;
         validate_subagents(&self.subagents)?;
         Ok(Agent {
+            replies: Default::default(),
             model: Arc::new(model),
             system_prompt: self.system_prompt,
             toolkit: self.toolkit,
@@ -183,6 +184,7 @@ where
 }
 
 pub struct Agent<M> {
+    replies: crate::harness::reply::Hub,
     model: Arc<M>,
     system_prompt: Option<String>,
     toolkit: Option<Toolkit>,
@@ -222,6 +224,7 @@ type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> +
 type CheckpointSave = Backend;
 
 struct ToolBatchConfig {
+    interaction: Option<crate::harness::reply::Run>,
     relay: Option<crate::harness::subagent::Relay>,
     steps: Arc<Mutex<Vec<Step>>>,
     toolkit: Arc<Toolkit>,
@@ -235,7 +238,20 @@ struct ToolBatchConfig {
     id_fn: Option<fn() -> i64>,
 }
 
+// Private per-call dependencies; not a public Tool context or saved state.
+struct ToolExecution {
+    toolkit: Arc<Toolkit>,
+    access: Access,
+    hooks: Hooks,
+    metadata: Map<String, Value>,
+    cancellation: Cancellation,
+    steps: Arc<Mutex<Vec<Step>>>,
+    interaction: Option<crate::harness::reply::Run>,
+    id_fn: Option<fn() -> i64>,
+}
+
 struct EventsConfig<S> {
+    interaction: Option<crate::harness::reply::Run>,
     steps: Vec<Step>,
     provider_factory: ProviderFactory<S>,
     toolkit: Option<Toolkit>,
@@ -266,8 +282,13 @@ struct ToolBatchFailure {
 }
 
 /// The concrete stream returned by this Chat Agent. Its items remain the
-/// shared model Event; this type only owns cancellation and partial state.
+/// shared Event contract; this type only owns cancellation and partial state.
 pub struct Events<S> {
+    _interaction_owner: Option<crate::harness::reply::Owner>,
+    interaction: Option<crate::harness::reply::Run>,
+    waits: Vec<crate::runtime::agent::wait::Wait>,
+    questions: VecDeque<Event>,
+    stream: bool,
     steps: Arc<Mutex<Vec<Step>>>,
     root: Root,
     provider: Option<Pin<Box<S>>>,
@@ -320,6 +341,11 @@ impl<S> Events<S> {
 
     fn empty(cancellation: Cancellation, hooks: Hooks) -> Self {
         Self {
+            _interaction_owner: None,
+            interaction: None,
+            waits: Vec::new(),
+            questions: VecDeque::new(),
+            stream: true,
             steps: Default::default(),
             root: Root::default(),
             provider: None,
@@ -355,6 +381,11 @@ impl<S> Events<S> {
     }
 
     fn configure_tools(mut self, config: EventsConfig<S>) -> Self {
+        self._interaction_owner = config
+            .interaction
+            .as_ref()
+            .map(crate::harness::reply::Run::owner);
+        self.interaction = config.interaction;
         self.steps = Arc::new(Mutex::new(config.steps));
         self.provider_factory = Some(config.provider_factory);
         self.toolkit = config.toolkit.map(Arc::new);
@@ -410,14 +441,19 @@ impl<S> Events<S> {
     }
 
     fn close(&mut self, result: Result<Event, Error>) {
+        if let Some(run) = &self.interaction {
+            run.close();
+        }
         // Stop opaque in-flight work before capturing the final consistent
         // scene; do not let a pending Provider future block closeout polling.
         self.pending_provider = None;
         self.pending_tools = None;
+        self.questions.clear();
         self.provider = None;
         if matches!(&result, Ok(Event::Complete { finish_reason:Some(reason), .. }) if reason=="cancelled")
-            || matches!(&result, Err(error) if error.code=="CANCELLED")
+            || matches!(&result, Err(error) if error.code!="WAITING")
         {
+            self.waits.clear();
             tool_steps::cancel_pending(&mut self.steps.lock().expect("Tool steps lock poisoned"));
         }
         if result.is_err() && !self.settled {
@@ -429,7 +465,7 @@ impl<S> Events<S> {
         let run = self.run.clone();
         let checkpoint = self.checkpoint.clone();
         let checkpoint_id = self.checkpoint_id;
-        let state = checkpoint_state(
+        let mut state = checkpoint_state(
             &self.messages,
             self.run.usage(),
             self.input.as_ref(),
@@ -437,6 +473,7 @@ impl<S> Events<S> {
             &self.root,
             &self.steps.lock().expect("Tool steps lock poisoned"),
         );
+        state["waits"] = serde_json::to_value(&self.waits).expect("waits serialization");
         self.closing = true;
         self.pending = Some(Box::pin(async move {
             if crate::harness::embedded::capture(state.clone()) {
@@ -455,25 +492,30 @@ impl<S> Events<S> {
 
 impl<S> Stream for Events<S>
 where
-    S: Stream<Item = Result<Event, Error>>,
+    S: Stream<Item = Result<Event, Error>> + 'static,
 {
     type Item = Result<Event, Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
-        let mut result = this.poll_event(cx);
-        if let Poll::Ready(Some(Ok(event))) = &mut result {
-            crate::harness::observation::associate(
-                event,
-                this.metadata.get("chat_id").and_then(Value::as_i64),
-                None,
-            );
+        loop {
+            let mut result = this.poll_event(cx);
+            if !this.stream && matches!(result, Poll::Ready(Some(Ok(Event::Delta { .. })))) {
+                continue;
+            }
+            if let Poll::Ready(Some(Ok(event))) = &mut result {
+                crate::harness::observation::associate(
+                    event,
+                    this.metadata.get("chat_id").and_then(Value::as_i64),
+                    None,
+                );
+            }
+            return result;
         }
-        result
     }
 }
 
-impl<S: Stream<Item = Result<Event, Error>>> Events<S> {
+impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
     // Finish state/history mutations before decorating the outgoing copy.
     fn poll_event(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Event, Error>>> {
         let this = self;
@@ -501,6 +543,9 @@ impl<S: Stream<Item = Result<Event, Error>>> Events<S> {
                 }
             }
         }
+        if let Some(question) = this.questions.pop_front() {
+            return Poll::Ready(Some(Ok(question)));
+        }
         if let Some(provider) = this.pending_provider.as_mut() {
             match provider.as_mut().poll(cx) {
                 Poll::Pending => return Poll::Pending,
@@ -520,14 +565,91 @@ impl<S: Stream<Item = Result<Event, Error>>> Events<S> {
         if let Some(tools) = this.pending_tools.as_mut() {
             match tools.as_mut().poll(cx) {
                 Poll::Pending => {
+                    if let Some(run) = this.interaction.clone()
+                        && let Poll::Ready(change) = run.poll_change(cx)
+                    {
+                        let applied = crate::harness::reply::apply(
+                            change,
+                            &mut this.steps.lock().expect("Tool steps lock poisoned"),
+                            &mut this.waits,
+                            &run,
+                        );
+                        match applied {
+                            Ok(Some(question)) => {
+                                let mut snapshot = waiting_checkpoint_state(
+                                    &this.messages,
+                                    this.run.usage(),
+                                    this.input.as_ref(),
+                                    &this.root,
+                                    &this.steps.lock().expect("Tool steps lock poisoned"),
+                                );
+                                snapshot["waits"] =
+                                    serde_json::to_value(&this.waits).expect("waits serialization");
+                                this.questions.push_back(question);
+                                this.pending_checkpoint = Some(checkpoint_future(
+                                    this.checkpoint.clone(),
+                                    this.checkpoint_id,
+                                    snapshot,
+                                ));
+                            }
+                            Ok(None) => {}
+                            Err(error) => this.close(Err(error)),
+                        }
+                        return Pin::new(this).poll_next(cx);
+                    }
                     return match this.child_events.poll_event(cx) {
-                        Poll::Pending => Poll::Pending,
+                        Poll::Pending => {
+                            if !this.waits.is_empty()
+                                && let Some(run) = &this.interaction
+                                && !this
+                                    .steps
+                                    .lock()
+                                    .expect("Tool steps lock poisoned")
+                                    .iter()
+                                    .any(|step| {
+                                        step.status == "running"
+                                            && !(step.kind == "agent" && run.children_blocked())
+                                    })
+                            {
+                                run.suspend();
+                            }
+                            Poll::Pending
+                        }
                         Poll::Ready(observation) => {
-                            if let Err(error) = this.root.observe(&observation) {
+                            let question = match observation.question() {
+                                Ok(question) => question,
+                                Err(error) => {
+                                    this.close(Err(error));
+                                    return Pin::new(this).poll_next(cx);
+                                }
+                            };
+                            if let Err(error) = this
+                                .root
+                                .observe(&observation)
+                                .and_then(|_| this.root.sync_waits(&mut this.waits, &observation))
+                            {
                                 this.close(Err(error));
                                 return Pin::new(this).poll_next(cx);
                             }
                             this.run.settle_child(observation.usage);
+                            if question {
+                                let mut snapshot = waiting_checkpoint_state(
+                                    &this.messages,
+                                    this.run.usage(),
+                                    this.input.as_ref(),
+                                    &this.root,
+                                    &this.steps.lock().expect("Tool steps lock poisoned"),
+                                );
+                                snapshot["waits"] =
+                                    serde_json::to_value(&this.waits).expect("waits serialization");
+                                this.questions.push_back(observation.event);
+                                this.pending_checkpoint = Some(checkpoint_future(
+                                    this.checkpoint.clone(),
+                                    this.checkpoint_id,
+                                    snapshot,
+                                ));
+                                return Pin::new(this).poll_next(cx);
+                            }
                             Poll::Ready(Some(Ok(observation.event)))
                         }
                     };
@@ -578,11 +700,18 @@ impl<S: Stream<Item = Result<Event, Error>>> Events<S> {
                 this.settled = false;
                 this.input_tokens = 0;
                 this.pending_input_tokens.store(0, Ordering::Relaxed);
-                this.pending_provider = Some(factory(
+                let provider = factory(
                     messages,
-                    cancellation,
+                    cancellation.clone(),
                     this.pending_input_tokens.clone(),
-                ));
+                );
+                let interaction = this.interaction.clone();
+                this.pending_provider = Some(Box::pin(async move {
+                    if let Some(run) = interaction {
+                        run.continue_execution(&cancellation).await?;
+                    }
+                    provider.await
+                }));
                 // The tool result is observable before the next model call.
             }
             return Poll::Ready(Some(Ok(event)));
@@ -692,6 +821,7 @@ impl<S: Stream<Item = Result<Event, Error>>> Events<S> {
                                 let max_concurrency = this.max_concurrency;
                                 this.pending_tools = Some(Box::pin(execute_tool_batch(
                                     ToolBatchConfig {
+                                        interaction: this.interaction.clone(),
                                         relay: Some(this.child_events.clone()),
                                         steps: this.steps.clone(),
                                         toolkit,
@@ -814,12 +944,24 @@ where
 {
     type Stream = Events<M::Stream>;
 
-    async fn run(&self, input: Input, cancellation: Cancellation) -> Result<Self::Stream, Error> {
+    async fn reply(&self, input: Input, cancellation: Cancellation) -> Result<(), Error> {
+        self.replies.submit(input, &cancellation)
+    }
+
+    async fn run(
+        &self,
+        input: Input,
+        stream: bool,
+        cancellation: Cancellation,
+    ) -> Result<Self::Stream, Error> {
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "agent run cancelled"));
         }
         let embedded_snapshot = crate::harness::embedded::restore();
         let embedded = crate::harness::embedded::active();
+        if !embedded {
+            self.replies.ensure_idle(&input.metadata)?;
+        }
         let id_fn = crate::harness::embedded::id_fn().or(self.id_fn);
         let checkpoint = self.checkpoint.clone().filter(|_| !embedded);
         let history = if embedded {
@@ -845,6 +987,7 @@ where
                     "checkpoint belongs to a different Agent identity",
                 ));
             }
+            crate::harness::checkpoint::check_waits(&snapshot)?;
             restored_waiting = is_waiting_snapshot(&snapshot);
             if let Some(result) = crate::harness::checkpoint::terminal(&snapshot)? {
                 let mut events = Events::empty(cancellation, self.hooks.clone());
@@ -869,6 +1012,7 @@ where
                     "checkpoint belongs to a different Agent identity",
                 ));
             }
+            crate::harness::checkpoint::check_waits(&snapshot)?;
             restored_waiting = is_waiting_snapshot(&snapshot);
             if !restored_waiting
                 && snapshot
@@ -901,6 +1045,11 @@ where
             Vec::new()
         };
         let original = input.clone();
+        let interaction = if embedded {
+            crate::harness::embedded::interaction()
+        } else {
+            Some(self.replies.start(original.metadata.clone())?)
+        };
         let restoring = restored_messages.is_some();
         let input = if restoring {
             input
@@ -983,7 +1132,7 @@ where
                 if restored_pending_subagents.is_empty() && restored_calls.is_empty() {
                     let request = Request {
                         messages: messages.clone(),
-                        stream: true,
+                        stream,
                         tools: tool_definitions.clone(),
                         ..Request::default()
                     };
@@ -1004,7 +1153,7 @@ where
                     Box::pin(async move {
                         let request = Request {
                             messages,
-                            stream: true,
+                            stream,
                             tools,
                             ..Request::default()
                         };
@@ -1023,6 +1172,7 @@ where
                 None => Events::empty(cancellation.clone(), self.hooks.clone()),
             }
             .configure_tools(EventsConfig {
+                interaction: interaction.clone(),
                 steps: restored_steps.clone(),
                 provider_factory: factory,
                 toolkit,
@@ -1039,6 +1189,7 @@ where
                 root: restored_root.clone(),
                 id_fn,
             });
+            events.stream = stream;
             if !restored_pending_subagents.is_empty() || !restored_calls.is_empty() {
                 let calls = restored_pending_subagents
                     .values()
@@ -1055,6 +1206,7 @@ where
                 events.provider = None;
                 events.pending_tools = Some(Box::pin(execute_tool_batch(
                     ToolBatchConfig {
+                        interaction: events.interaction.clone(),
                         relay: Some(events.child_events.clone()),
                         steps: events.steps.clone(),
                         toolkit,
@@ -1086,6 +1238,7 @@ where
                     return Err(error);
                 }
                 let mut events = Events::<M::Stream>::empty(cancellation, self.hooks.clone());
+                events.stream = stream;
                 events.checkpoint = checkpoint;
                 events.checkpoint_id = checkpoint_id;
                 events.input = Some(restored_query.unwrap_or(original));
@@ -1133,6 +1286,7 @@ async fn execute_tool_batch(
     calls: Vec<Call>,
 ) -> Result<ToolBatch, Box<ToolBatchFailure>> {
     let ToolBatchConfig {
+        interaction,
         relay,
         steps,
         toolkit,
@@ -1148,6 +1302,7 @@ async fn execute_tool_batch(
     let tasks = calls.into_iter().enumerate().map(|(index, call)| {
         let toolkit = Arc::clone(&toolkit);
         let steps = steps.clone();
+        let interaction = interaction.clone();
         let subagents = subagents.clone();
         let access = access.clone();
         let hooks = hooks.clone();
@@ -1157,6 +1312,15 @@ async fn execute_tool_batch(
         let relay = relay.clone();
         async move {
             let result = if call.name == "agent_spawn" && !subagents.is_empty() {
+                if let Some(run) = &interaction
+                    && let Err(error) = run.continue_execution(&cancellation).await
+                {
+                    return (
+                        index,
+                        call,
+                        Err(Box::new(ToolBatchFailure { error, usage: None })),
+                    );
+                }
                 if let Some(message) =
                     root.message(&steps.lock().expect("Tool steps lock poisoned"), &call)
                 {
@@ -1182,7 +1346,11 @@ async fn execute_tool_batch(
                         root.source(&steps.lock().expect("Tool steps lock poisoned"), &call);
                     match source {
                         Ok(source) => Some(
-                            relay.observer(metadata.get("chat_id").and_then(Value::as_i64), source),
+                            relay
+                                .observer(metadata.get("chat_id").and_then(Value::as_i64), source)
+                                .with_interaction(
+                                    interaction.as_ref().map(crate::harness::reply::Run::child),
+                                ),
                         ),
                         Err(error) => {
                             return (
@@ -1248,13 +1416,17 @@ async fn execute_tool_batch(
                 }
             } else {
                 execute_tool(
-                    toolkit,
-                    access,
-                    hooks,
-                    metadata,
+                    ToolExecution {
+                        toolkit,
+                        access,
+                        hooks,
+                        metadata,
+                        cancellation,
+                        steps,
+                        interaction,
+                        id_fn,
+                    },
                     call.clone(),
-                    cancellation,
-                    steps,
                 )
                 .await
                 .map(|messages| (messages, None))
@@ -1408,6 +1580,7 @@ fn checkpoint_state(
         "metadata": input.map(|input| input.metadata.clone()),
         "execution": root.snapshot(status, usage.clone(), result.as_ref().err().cloned()),
         "steps": steps,
+        "waits": [],
     });
     crate::harness::checkpoint::record_result(&mut state, result);
     state
@@ -1500,15 +1673,17 @@ fn checkpoint_identity_matches(snapshot: &Value, metadata: &Map<String, Value>) 
     crate::harness::checkpoint::identity_matches(snapshot, metadata)
 }
 
-async fn execute_tool(
-    toolkit: Arc<Toolkit>,
-    access: Access,
-    hooks: Hooks,
-    metadata: Map<String, Value>,
-    call: Call,
-    cancellation: Cancellation,
-    steps: Arc<Mutex<Vec<Step>>>,
-) -> Result<Vec<Message>, Error> {
+async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Message>, Error> {
+    let ToolExecution {
+        toolkit,
+        access,
+        hooks,
+        metadata,
+        cancellation,
+        steps,
+        interaction,
+        id_fn,
+    } = execution;
     if cancellation.is_cancelled() {
         return Err(Error::new("CANCELLED", "tool call cancelled"));
     }
@@ -1542,12 +1717,14 @@ async fn execute_tool(
     } else if access.is_configured() {
         async {
             toolkit.validate(&call)?;
-            crate::harness::access::check_tool(
+            crate::harness::reply::check(
                 &access,
                 &hooks,
                 metadata.clone(),
                 &call,
                 &cancellation,
+                interaction.as_ref(),
+                id_fn,
             )
             .await
             .map_err(|failure| match failure {
@@ -1565,12 +1742,14 @@ async fn execute_tool(
                 step.call = Some(effective.clone());
             }
             if effective.arguments != call.arguments {
-                crate::harness::access::check_tool(
+                crate::harness::reply::check(
                     &access,
                     &hooks,
                     metadata.clone(),
                     &effective,
                     &cancellation,
+                    interaction.as_ref(),
+                    id_fn,
                 )
                 .await
                 .map_err(|failure| match failure {
@@ -1581,11 +1760,20 @@ async fn execute_tool(
                     }
                 })?;
             }
+            if let Some(run) = &interaction {
+                run.continue_execution(&cancellation).await?;
+            }
             toolkit.call_prepared(effective, &cancellation).await
         }
         .await
     } else {
-        toolkit.call(call.clone(), &cancellation).await
+        async {
+            if let Some(run) = &interaction {
+                run.continue_execution(&cancellation).await?;
+            }
+            toolkit.call(call.clone(), &cancellation).await
+        }
+        .await
     };
     let (effective_call, business) = match result {
         Ok(result) => result,
@@ -1681,6 +1869,7 @@ fn decode_call(part: &Part) -> Result<Call, Error> {
 }
 
 fn tool_success_message(call: &Call, mut message: Message) -> Message {
+    crate::harness::observation::clear_source(&mut message);
     message
         .metadata
         .insert("call_id".into(), Value::String(call.call_id.clone()));
@@ -1975,11 +2164,22 @@ mod tests {
     }
 
     impl AgentContract for WaitingSubAgent {
+        async fn reply(
+            &self,
+            _: crate::agent::Input,
+            _: crate::Cancellation,
+        ) -> Result<(), crate::Error> {
+            Err(crate::Error::new(
+                "NOT_FOUND",
+                "fixture has no live feedback consumer",
+            ))
+        }
         type Stream = futures_util::stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
 
         async fn run(
             &self,
             _input: Input,
+            _stream: bool,
             _cancellation: Cancellation,
         ) -> Result<Self::Stream, Error> {
             if crate::harness::embedded::restore().is_none() {
@@ -2002,11 +2202,22 @@ mod tests {
     }
 
     impl AgentContract for CountingSubAgent {
+        async fn reply(
+            &self,
+            _: crate::agent::Input,
+            _: crate::Cancellation,
+        ) -> Result<(), crate::Error> {
+            Err(crate::Error::new(
+                "NOT_FOUND",
+                "fixture has no live feedback consumer",
+            ))
+        }
         type Stream = futures_util::stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
 
         async fn run(
             &self,
             _input: Input,
+            _stream: bool,
             _cancellation: Cancellation,
         ) -> Result<Self::Stream, Error> {
             self.calls.fetch_add(1, Ordering::SeqCst);
@@ -2130,8 +2341,8 @@ mod tests {
             })
             .build()
             .expect("agent build");
-        let mut stream =
-            block_on(agent.run(Input::default(), Cancellation::new())).expect("provider stream");
+        let mut stream = block_on(agent.run(Input::default(), true, Cancellation::new()))
+            .expect("provider stream");
         assert!(matches!(
             next_now(&mut stream),
             Some(Ok(Event::Delta { .. }))
@@ -2152,7 +2363,7 @@ mod tests {
             })
             .build()
             .expect("agent build");
-        let error = block_on(agent.run(Input::default(), Cancellation::new())).unwrap_err();
+        let error = block_on(agent.run(Input::default(), true, Cancellation::new())).unwrap_err();
         assert_eq!(error.code, "PROVIDER");
         assert_eq!(error.details.as_deref(), Some("retryable"));
     }
@@ -2213,7 +2424,7 @@ mod tests {
             .expect("agent build");
         let cancellation = Cancellation::new();
         cancellation.cancel();
-        let error = block_on(agent.run(Input::default(), cancellation)).unwrap_err();
+        let error = block_on(agent.run(Input::default(), true, cancellation)).unwrap_err();
         assert_eq!(error.code, "CANCELLED");
         assert!(!called.load(Ordering::Acquire));
     }
@@ -2231,8 +2442,8 @@ mod tests {
             .build()
             .expect("agent build");
         let cancellation = Cancellation::new();
-        let mut stream =
-            block_on(agent.run(Input::default(), cancellation.clone())).expect("provider stream");
+        let mut stream = block_on(agent.run(Input::default(), true, cancellation.clone()))
+            .expect("provider stream");
         assert!(matches!(
             next_now(&mut stream),
             Some(Ok(Event::Delta { .. }))
@@ -2267,8 +2478,8 @@ mod tests {
             })
             .build()
             .expect("agent build");
-        let mut stream =
-            block_on(agent.run(Input::default(), Cancellation::new())).expect("provider stream");
+        let mut stream = block_on(agent.run(Input::default(), true, Cancellation::new()))
+            .expect("provider stream");
         assert!(matches!(
             next_now(&mut stream),
             Some(Ok(Event::Delta { .. }))
@@ -2304,8 +2515,8 @@ mod tests {
             .build()
             .expect("agent build");
         let cancellation = Cancellation::new();
-        let mut stream =
-            block_on(agent.run(Input::default(), cancellation.clone())).expect("provider stream");
+        let mut stream = block_on(agent.run(Input::default(), true, cancellation.clone()))
+            .expect("provider stream");
         let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
         let waker: Waker = flag.clone().into();
         let mut context = Context::from_waker(&waker);
@@ -2336,7 +2547,7 @@ mod tests {
             .build()
             .expect("agent build");
         let mut stream =
-            block_on(agent.run(Input::default(), Cancellation::new())).expect("agent stream");
+            block_on(agent.run(Input::default(), true, Cancellation::new())).expect("agent stream");
         let events = block_on(async {
             let mut events = Vec::new();
             while let Some(event) = stream.next().await {
@@ -2438,7 +2649,7 @@ mod tests {
                 payload: Vec::new(),
             };
             let events = parent
-                .run(input, Cancellation::new())
+                .run(input, true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -2530,6 +2741,7 @@ mod tests {
             ];
             let first = execute_tool_batch(
                 ToolBatchConfig {
+                    interaction: None,
                     relay: None,
                     toolkit: Arc::new(Toolkit::new()),
                     steps: steps.clone(),
@@ -2550,6 +2762,7 @@ mod tests {
             assert!(root.message(&steps.lock().unwrap(), &calls[0]).is_some());
             let resumed = execute_tool_batch(
                 ToolBatchConfig {
+                    interaction: None,
                     relay: None,
                     toolkit: Arc::new(Toolkit::new()),
                     steps,
@@ -2584,7 +2797,7 @@ mod tests {
             .build()
             .expect("agent build");
         let mut stream =
-            block_on(agent.run(Input::default(), Cancellation::new())).expect("agent stream");
+            block_on(agent.run(Input::default(), true, Cancellation::new())).expect("agent stream");
         let events = block_on(async {
             let mut events = Vec::new();
             while let Some(event) = stream.next().await {

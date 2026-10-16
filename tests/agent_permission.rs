@@ -282,7 +282,7 @@ async fn collect<A: Agent>(
     chat_id: i64,
     cancellation: Cancellation,
 ) -> Vec<Result<Event, Error>> {
-    match agent.run(input(chat_id), cancellation).await {
+    match agent.run(input(chat_id), true, cancellation).await {
         Ok(events) => events.collect().await,
         Err(error) => vec![Err(error)],
     }
@@ -1112,7 +1112,7 @@ async fn check_ask<A: Agent>(
             mime_type: None,
         }];
         let again = agent
-            .run(reply, Cancellation::new())
+            .run(reply, true, Cancellation::new())
             .await
             .unwrap()
             .collect::<Vec<_>>()

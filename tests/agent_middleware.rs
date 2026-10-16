@@ -200,7 +200,7 @@ fn input() -> Input {
 }
 
 async fn collect<A: Agent>(agent: &A, cancellation: Cancellation) -> Vec<Result<Event, Error>> {
-    match agent.run(input(), cancellation).await {
+    match agent.run(input(), true, cancellation).await {
         Ok(events) => events.collect().await,
         Err(error) => vec![Err(error)],
     }

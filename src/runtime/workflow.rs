@@ -1873,11 +1873,22 @@ mod tests {
     struct WaitingAgent;
 
     impl Agent for WaitingAgent {
+        async fn reply(
+            &self,
+            _: crate::agent::Input,
+            _: crate::Cancellation,
+        ) -> Result<(), crate::Error> {
+            Err(crate::Error::new(
+                "NOT_FOUND",
+                "fixture has no live feedback consumer",
+            ))
+        }
         type Stream = stream::Iter<std::vec::IntoIter<Result<crate::event::Event, Error>>>;
 
         async fn run(
             &self,
             _input: AgentInput,
+            _stream: bool,
             _cancellation: Cancellation,
         ) -> Result<Self::Stream, Error> {
             if crate::harness::embedded::restore().is_none() {
@@ -1904,11 +1915,22 @@ mod tests {
     }
 
     impl Agent for RestoringAgent {
+        async fn reply(
+            &self,
+            _: crate::agent::Input,
+            _: crate::Cancellation,
+        ) -> Result<(), crate::Error> {
+            Err(crate::Error::new(
+                "NOT_FOUND",
+                "fixture has no live feedback consumer",
+            ))
+        }
         type Stream = stream::Iter<std::vec::IntoIter<Result<crate::event::Event, Error>>>;
 
         async fn run(
             &self,
             _input: AgentInput,
+            _stream: bool,
             _cancellation: Cancellation,
         ) -> Result<Self::Stream, Error> {
             let value = if crate::harness::embedded::restore().is_some() {
@@ -1937,11 +1959,22 @@ mod tests {
     }
 
     impl Agent for MeteredAgent {
+        async fn reply(
+            &self,
+            _: crate::agent::Input,
+            _: crate::Cancellation,
+        ) -> Result<(), crate::Error> {
+            Err(crate::Error::new(
+                "NOT_FOUND",
+                "fixture has no live feedback consumer",
+            ))
+        }
         type Stream = stream::Iter<std::vec::IntoIter<Result<crate::event::Event, Error>>>;
 
         async fn run(
             &self,
             _input: AgentInput,
+            _stream: bool,
             _cancellation: Cancellation,
         ) -> Result<Self::Stream, Error> {
             let call = self.calls.fetch_add(1, Ordering::SeqCst);
@@ -2137,11 +2170,22 @@ mod tests {
     }
 
     impl Agent for FakeAgent {
+        async fn reply(
+            &self,
+            _: crate::agent::Input,
+            _: crate::Cancellation,
+        ) -> Result<(), crate::Error> {
+            Err(crate::Error::new(
+                "NOT_FOUND",
+                "fixture has no live feedback consumer",
+            ))
+        }
         type Stream = stream::Iter<std::vec::IntoIter<Result<crate::event::Event, Error>>>;
 
         async fn run(
             &self,
             input: AgentInput,
+            _stream: bool,
             _cancellation: Cancellation,
         ) -> Result<Self::Stream, Error> {
             assert_eq!(input.payload.len(), 1);

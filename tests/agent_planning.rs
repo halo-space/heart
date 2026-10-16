@@ -234,7 +234,7 @@ fn rejected_final_replans_directly_and_reexecutes_even_the_same_logical_node() {
             .build()
             .unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -314,7 +314,7 @@ fn graph_rejection_without_feedback_still_replans_instead_of_succeeding() {
             .build()
             .unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -352,7 +352,7 @@ fn invalid_or_failed_replan_never_falls_back_to_rejected_plan() {
                 .build()
                 .unwrap();
             let events: Vec<_> = agent
-                .run(input(), Cancellation::new())
+                .run(input(), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect()
@@ -392,7 +392,7 @@ fn evaluation_replan_shares_max_iters_and_cannot_reset_the_budget() {
             .build()
             .unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -425,7 +425,10 @@ fn cancellation_wakes_evaluation_replan_without_acknowledging_it() {
             .build()
             .unwrap();
         let cancellation = Cancellation::new();
-        let mut events = agent.run(input(), cancellation.clone()).await.unwrap();
+        let mut events = agent
+            .run(input(), true, cancellation.clone())
+            .await
+            .unwrap();
         for _ in 0..5 {
             events.next().await.unwrap().unwrap();
         }
@@ -458,7 +461,7 @@ fn planning_only_rejection_corrects_the_answer_without_reexecuting_a_graph() {
             .build()
             .unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -499,7 +502,7 @@ fn replan_cannot_reuse_an_execution_id_from_the_previous_plan() {
             .build()
             .unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -527,7 +530,7 @@ fn built_in_plan_is_advertised_but_never_guessed_from_query_text() {
         let requests = model.requests.clone();
         let agent = agent::react().model(model).build().unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -574,7 +577,7 @@ fn trigger_streams_planner_events_and_returns_validated_plan_without_running_too
             .build()
             .unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -628,7 +631,7 @@ fn configured_id_source_executes_plan_nodes_before_final_synthesis() {
             .build()
             .unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -674,7 +677,7 @@ fn configured_id_source_runs_ready_plan_frontier_concurrently() {
             .build()
             .unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -722,7 +725,7 @@ fn repeated_trigger_passes_current_plan_without_inferring_capabilities_or_changi
             .build()
             .unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -755,7 +758,7 @@ fn invalid_trigger_arguments_are_direct_context_without_starting_planner() {
         let requests = model.requests.clone();
         let agent = agent::react().model(model).build().unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -791,7 +794,7 @@ fn invalid_complete_plan_is_terminal_and_never_acknowledged_as_a_plan() {
                 .build()
                 .unwrap();
             let events: Vec<_> = agent
-                .run(input(), Cancellation::new())
+                .run(input(), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect()
@@ -814,7 +817,7 @@ fn planner_transport_failure_is_preserved_without_retry_or_tool_error_wrapping()
         ]);
         let agent = agent::react().model(model).build().unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -833,7 +836,10 @@ fn cancellation_wakes_pending_planner_and_counts_active_input_only_once() {
         let dropped = model.dropped.clone();
         let agent = agent::react().model(model).build().unwrap();
         let cancellation = Cancellation::new();
-        let mut events = agent.run(input(), cancellation.clone()).await.unwrap();
+        let mut events = agent
+            .run(input(), true, cancellation.clone())
+            .await
+            .unwrap();
         events.next().await.unwrap().unwrap();
         dropped.store(false, std::sync::atomic::Ordering::SeqCst);
         let mut next = Box::pin(events.next());
@@ -873,7 +879,7 @@ fn planner_model_calls_share_the_existing_max_iters_budget() {
             .build()
             .unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -907,7 +913,7 @@ fn mixed_batch_finishes_business_calls_before_starting_planner() {
             .with_max_concurrency(1)
             .build()
             .unwrap();
-        let mut events = agent.run(input(), Cancellation::new()).await.unwrap();
+        let mut events = agent.run(input(), true, Cancellation::new()).await.unwrap();
         events.next().await.unwrap().unwrap();
         assert!(
             matches!(events.next().await.unwrap().unwrap(),Event::Complete {message,..} if message.values["weather"]=="sunny")
@@ -937,7 +943,7 @@ fn cancelled_planner_complete_does_not_acknowledge_or_commit_its_plan() {
             .build()
             .unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -970,7 +976,7 @@ fn missing_planner_complete_cannot_be_reconstructed_from_delta() {
             .build()
             .unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -1047,7 +1053,7 @@ fn planner_usage_is_in_chat_total_but_control_ack_has_no_double_charge() {
                 .unwrap(),
             );
             let events: Vec<_> = agent
-                .run(query, Cancellation::new())
+                .run(query, true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect()
@@ -1146,7 +1152,7 @@ fn configured_plan_closure_persists_final_graph_and_agent_state_trace() {
             .unwrap(),
         );
         let events: Vec<_> = agent
-            .run(query, Cancellation::new())
+            .run(query, true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -1178,7 +1184,7 @@ fn checkpoint_backend_saves_an_ordinary_react_runtime_without_graph() {
             .build()
             .unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -1263,7 +1269,7 @@ fn plan_failure_and_cancellation_persist_once_only_at_terminal_closeout() {
                 )
                 .unwrap(),
             );
-            let mut events = agent.run(query, Cancellation::new()).await.unwrap();
+            let mut events = agent.run(query, true, Cancellation::new()).await.unwrap();
             // Trigger, real planner Complete and acknowledgement are visible,
             // but neither Chat.graph nor a per-event Trace is written yet.
             for _ in 0..3 {

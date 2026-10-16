@@ -69,8 +69,18 @@ struct ReadyAgent {
     calls: Arc<AtomicUsize>,
 }
 impl Agent for ReadyAgent {
+    async fn reply(
+        &self,
+        _: halo_agents::agent::Input,
+        _: halo_agents::Cancellation,
+    ) -> Result<(), halo_agents::Error> {
+        Err(halo_agents::Error::new(
+            "NOT_FOUND",
+            "fixture has no live feedback consumer",
+        ))
+    }
     type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-    async fn run(&self, _: Input, _: Cancellation) -> Result<Self::Stream, Error> {
+    async fn run(&self, _: Input, _stream: bool, _: Cancellation) -> Result<Self::Stream, Error> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(stream::iter(self.events.clone()))
     }
@@ -362,8 +372,18 @@ impl Stream for Gated {
 
 struct GatedAgent(Mutex<Option<oneshot::Receiver<()>>>);
 impl Agent for GatedAgent {
+    async fn reply(
+        &self,
+        _: halo_agents::agent::Input,
+        _: halo_agents::Cancellation,
+    ) -> Result<(), halo_agents::Error> {
+        Err(halo_agents::Error::new(
+            "NOT_FOUND",
+            "fixture has no live feedback consumer",
+        ))
+    }
     type Stream = Gated;
-    async fn run(&self, _: Input, _: Cancellation) -> Result<Self::Stream, Error> {
+    async fn run(&self, _: Input, _stream: bool, _: Cancellation) -> Result<Self::Stream, Error> {
         Ok(Gated {
             first: Some(Event::Delta {
                 message: text(Role::Assistant, "live delta"),
@@ -735,8 +755,18 @@ impl Stream for LocalEvents {
 }
 struct LocalAgent;
 impl Agent for LocalAgent {
+    async fn reply(
+        &self,
+        _: halo_agents::agent::Input,
+        _: halo_agents::Cancellation,
+    ) -> Result<(), halo_agents::Error> {
+        Err(halo_agents::Error::new(
+            "NOT_FOUND",
+            "fixture has no live feedback consumer",
+        ))
+    }
     type Stream = LocalEvents;
-    async fn run(&self, _: Input, _: Cancellation) -> Result<Self::Stream, Error> {
+    async fn run(&self, _: Input, _stream: bool, _: Cancellation) -> Result<Self::Stream, Error> {
         Ok(LocalEvents {
             events: vec![Ok(complete("local", 21, 4))].into_iter(),
             marker: std::rc::Rc::new(()),

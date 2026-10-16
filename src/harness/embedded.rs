@@ -10,6 +10,7 @@ pub(crate) struct Scope {
     restore: Arc<Mutex<Option<Value>>>,
     latest: Arc<Mutex<Option<Arc<Value>>>>,
     id_fn: Option<fn() -> i64>,
+    interaction: Option<super::reply::Run>,
 }
 
 impl Scope {
@@ -18,11 +19,16 @@ impl Scope {
             restore: Arc::new(Mutex::new(restore)),
             latest: Arc::new(Mutex::new(None)),
             id_fn: id_fn(),
+            interaction: None,
         }
     }
 
     pub(crate) fn with_id_fn(mut self, id_fn: Option<fn() -> i64>) -> Self {
         self.id_fn = self.id_fn.or(id_fn);
+        self
+    }
+    pub(crate) fn with_interaction(mut self, interaction: Option<super::reply::Run>) -> Self {
+        self.interaction = interaction;
         self
     }
 
@@ -63,6 +69,13 @@ pub(crate) fn restore() -> Option<Value> {
 /// Run configuration inherited by children, never a serialized generator.
 pub(crate) fn id_fn() -> Option<fn() -> i64> {
     CURRENT.try_with(|scope| scope.id_fn).ok().flatten()
+}
+
+pub(crate) fn interaction() -> Option<super::reply::Run> {
+    CURRENT
+        .try_with(|scope| scope.interaction.clone())
+        .ok()
+        .flatten()
 }
 
 /// An embedded run has an enclosing owner, even on its first call when there

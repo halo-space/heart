@@ -8,6 +8,7 @@
 pub mod graph;
 pub mod node;
 pub(crate) mod usage;
+pub mod wait;
 
 use std::collections::BTreeMap;
 
@@ -51,6 +52,9 @@ pub struct State {
     /// exclusively to their node's current Attempt instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub steps: Vec<node::Step>,
+    /// Ordered unresolved human-feedback positions; questions remain in Steps.
+    #[serde(default)]
+    pub waits: Vec<wait::Wait>,
     pub error: Option<Error>,
     pub final_message: Option<Message>,
     #[serde(default)]

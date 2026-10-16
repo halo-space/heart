@@ -26,10 +26,11 @@ pub(crate) fn stream_request(
     query: &Input,
     current_plan: Option<&Plan>,
     feedback: Option<&Messages>,
+    stream: bool,
 ) -> Result<Request, Error> {
     let mut request = super::structured::prepare(
         Request {
-            stream: true,
+            stream,
             ..Request::default()
         },
         INSTRUCTION,

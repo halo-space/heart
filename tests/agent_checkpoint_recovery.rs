@@ -122,7 +122,7 @@ async fn chat_cancelled_during_provider_preparation_saves_a_replayable_complete(
         .build()
         .unwrap();
     let events = first
-        .run(original.clone(), cancellation)
+        .run(original.clone(), true, cancellation)
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -153,7 +153,7 @@ async fn chat_cancelled_during_provider_preparation_saves_a_replayable_complete(
         .build()
         .unwrap();
     let replay = restored
-        .run(original, Cancellation::new())
+        .run(original, true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -178,7 +178,7 @@ async fn chat_waiting_before_provider_stream_saves_scene_and_resumes_original_ru
         .build()
         .unwrap();
     let events = first
-        .run(original.clone(), Cancellation::new())
+        .run(original.clone(), true, Cancellation::new())
         .await
         .expect("preparation waiting must close through the Agent event stream")
         .collect::<Vec<_>>()
@@ -198,7 +198,7 @@ async fn chat_waiting_before_provider_stream_saves_scene_and_resumes_original_ru
         .build()
         .unwrap();
     let events = restored
-        .run(input("approved"), Cancellation::new())
+        .run(input("approved"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -223,7 +223,7 @@ async fn chat_provider_preparation_failure_saves_terminal_scene_before_returning
         .build()
         .unwrap();
     let error = first
-        .run(original.clone(), Cancellation::new())
+        .run(original.clone(), true, Cancellation::new())
         .await
         .unwrap_err();
     assert_eq!(error.code, "NETWORK");
@@ -240,7 +240,7 @@ async fn chat_provider_preparation_failure_saves_terminal_scene_before_returning
         .build()
         .unwrap();
     let events = restored
-        .run(original, Cancellation::new())
+        .run(original, true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -268,7 +268,7 @@ async fn chat_repeated_preparation_wait_preserves_saved_usage_without_double_set
         .build()
         .unwrap();
     let events = first
-        .run(original.clone(), Cancellation::new())
+        .run(original.clone(), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -288,7 +288,7 @@ async fn chat_repeated_preparation_wait_preserves_saved_usage_without_double_set
         .build()
         .unwrap();
     let events = second
-        .run(input("approved"), Cancellation::new())
+        .run(input("approved"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -305,7 +305,7 @@ async fn chat_repeated_preparation_wait_preserves_saved_usage_without_double_set
         .build()
         .unwrap();
     let events = third
-        .run(input("approved now"), Cancellation::new())
+        .run(input("approved now"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -327,7 +327,7 @@ async fn chat_continuation_preserves_original_query_and_terminal_idempotence() {
         .build()
         .unwrap();
     let events = first
-        .run(original.clone(), Cancellation::new())
+        .run(original.clone(), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -342,7 +342,7 @@ async fn chat_continuation_preserves_original_query_and_terminal_idempotence() {
         .build()
         .unwrap();
     let events = restored
-        .run(input("approved"), Cancellation::new())
+        .run(input("approved"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -364,7 +364,7 @@ async fn chat_continuation_preserves_original_query_and_terminal_idempotence() {
             .any(|m| m.content.iter().any(|p| p.data["value"] == "approved"))
     );
     let events = restored
-        .run(original, Cancellation::new())
+        .run(original, true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -386,7 +386,7 @@ async fn react_waiting_restore_rejects_changed_run_ownership_before_model_or_wri
         .build()
         .unwrap();
     let events = first
-        .run(input("original"), Cancellation::new())
+        .run(input("original"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -403,7 +403,7 @@ async fn react_waiting_restore_rejects_changed_run_ownership_before_model_or_wri
     for field in ["tenant_id", "user_id", "agent_id", "session_id"] {
         let mut changed = input("approval");
         changed.metadata.insert(field.into(), json!(99));
-        let error = match restored.run(changed, Cancellation::new()).await {
+        let error = match restored.run(changed, true, Cancellation::new()).await {
             Ok(_) => panic!("changed {field} was accepted"),
             Err(error) => error,
         };
@@ -469,7 +469,7 @@ async fn chat_waiting_reuses_memory_chat_and_final_trace_is_an_independent_scene
         .build()
         .unwrap();
     let events = first
-        .run(original.clone(), Cancellation::new())
+        .run(original.clone(), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -497,7 +497,7 @@ async fn chat_waiting_reuses_memory_chat_and_final_trace_is_an_independent_scene
         .build()
         .unwrap();
     let events = restored
-        .run(input("approved"), Cancellation::new())
+        .run(input("approved"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -527,7 +527,7 @@ async fn chat_waiting_reuses_memory_chat_and_final_trace_is_an_independent_scene
         .await
         .unwrap();
     let events = restored
-        .run(original, Cancellation::new())
+        .run(original, true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -566,7 +566,7 @@ async fn real_planned_waiting_keeps_execution_attempt_and_settles_only_new_usage
         .build()
         .unwrap();
     let events = first
-        .run(input("original"), Cancellation::new())
+        .run(input("original"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -594,7 +594,7 @@ async fn real_planned_waiting_keeps_execution_attempt_and_settles_only_new_usage
         .build()
         .unwrap();
     let events = restored
-        .run(input("approved"), Cancellation::new())
+        .run(input("approved"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -612,7 +612,7 @@ async fn real_planned_waiting_keeps_execution_attempt_and_settles_only_new_usage
     assert_eq!(completed["query"], saved["query"]);
     assert_eq!(model.requests.lock().unwrap().len(), 2);
     let terminal = restored
-        .run(input("original"), Cancellation::new())
+        .run(input("original"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()

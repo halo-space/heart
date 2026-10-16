@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Map;
+use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::Error;
@@ -47,6 +48,20 @@ pub struct Attempt {
     pub error: Option<Error>,
 }
 
+/// One question owned by an actual Agent Step, keyed by its i64 reply_id.
+/// Resolving this wait does not mark the Step or its node successful.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct Wait {
+    /// Purpose of the feedback, such as approval, user input or external data.
+    pub kind: String,
+    /// waiting or resolved; resolved does not imply successful node execution.
+    pub status: String,
+    /// The actual question, not the Tool's successful business result.
+    pub question: Message,
+    /// Contributions retained for this question; not automatic model context.
+    pub feedback: Messages,
+}
+
 /// One logical internal Agent operation belonging to an Attempt.
 ///
 /// The runtime owns the shape and persistence of a step. Concrete Agent
@@ -78,6 +93,10 @@ pub struct Step {
     /// Completed business evaluation, including a rejection's feedback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eval: Option<Evaluation>,
+    /// Actual questions and accumulated feedback. Historical resolved records
+    /// remain here; this is not the top-level ordered waiting locator list.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub waits: BTreeMap<i64, Wait>,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]

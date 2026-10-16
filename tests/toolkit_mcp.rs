@@ -257,7 +257,7 @@ fn chat_advertises_mcp_without_executing_it_and_refreshes_each_run() {
     block_on(async {
         for _ in 0..2 {
             let events = agent
-                .run(Input::default(), Cancellation::new())
+                .run(Input::default(), true, Cancellation::new())
                 .await
                 .unwrap();
             futures_util::pin_mut!(events);
@@ -287,7 +287,7 @@ fn react_discovers_once_and_preserves_mcp_success_or_direct_error_context() {
             .unwrap();
         let events = block_on(async {
             let events = agent
-                .run(Input::default(), Cancellation::new())
+                .run(Input::default(), true, Cancellation::new())
                 .await
                 .unwrap();
             events.collect::<Vec<_>>().await
@@ -318,7 +318,7 @@ fn discovery_failure_invalid_schema_or_cancellation_prevents_model_work() {
             .toolkit(Toolkit::new().mcps(vec![server]))
             .build()
             .unwrap();
-        let result = block_on(agent.run(Input::default(), Cancellation::new()));
+        let result = block_on(agent.run(Input::default(), true, Cancellation::new()));
         if code == "CANCELLED" {
             // Agent cancellation closes the constructed run with Complete;
             // the standalone Toolkit API still returns its direct error.

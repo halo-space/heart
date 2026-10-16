@@ -377,7 +377,7 @@ fn chat_initializes_ordered_history_before_current_input() {
         .model(model.clone())
         .build()
         .unwrap();
-    let output = block_on(agent.run(input(), Cancellation::new())).unwrap();
+    let output = block_on(agent.run(input(), true, Cancellation::new())).unwrap();
     block_on(output.collect::<Vec<_>>());
     assert_eq!(
         values(&model, 0),
@@ -407,7 +407,7 @@ fn react_uses_the_same_initialization_contract() {
         .model(model.clone())
         .build()
         .unwrap();
-    let events = block_on(agent.run(input(), Cancellation::new())).unwrap();
+    let events = block_on(agent.run(input(), true, Cancellation::new())).unwrap();
     assert!(
         block_on(events.collect::<Vec<_>>())
             .iter()
@@ -433,7 +433,7 @@ fn summary_coverage_resolves_history_order_not_numeric_id_ranges() {
         .memory(config(s, &state))
         .build()
         .unwrap();
-    block_on(agent.run(input(), Cancellation::new())).unwrap();
+    block_on(agent.run(input(), true, Cancellation::new())).unwrap();
     assert_eq!(
         values(&model, 0),
         [
@@ -465,7 +465,7 @@ fn recall_scopes_are_exact_and_only_affect_long_memory() {
         .memory(config(session(), &state).with_scopes(["user", "agent"]))
         .build()
         .unwrap();
-    block_on(agent.run(input(), Cancellation::new())).unwrap();
+    block_on(agent.run(input(), true, Cancellation::new())).unwrap();
     assert_eq!(
         values(&model, 0),
         [
@@ -508,7 +508,7 @@ fn no_configuration_keeps_agent_independent_of_memory_identity() {
     let agent = agent::chat().model(model.clone()).build().unwrap();
     let mut question = input();
     question.metadata.clear();
-    block_on(agent.run(question, Cancellation::new())).unwrap();
+    block_on(agent.run(question, true, Cancellation::new())).unwrap();
     assert_eq!(values(&model, 0), ["camping?"]);
 }
 
@@ -547,7 +547,7 @@ fn configured_memory_requires_exact_i64_business_metadata_before_io() {
             let mut question = input();
             question.metadata.insert(field.into(), invalid);
             assert_eq!(
-                block_on(agent.run(question, Cancellation::new()))
+                block_on(agent.run(question, true, Cancellation::new()))
                     .err()
                     .unwrap()
                     .code,
@@ -577,7 +577,7 @@ fn mismatched_session_identity_stops_before_history_and_model() {
             .build()
             .unwrap();
         assert_eq!(
-            block_on(agent.run(input(), Cancellation::new()))
+            block_on(agent.run(input(), true, Cancellation::new()))
                 .err()
                 .unwrap()
                 .code,
@@ -612,7 +612,7 @@ fn incorrect_backend_chat_filtering_is_not_trusted() {
             .build()
             .unwrap();
         assert_eq!(
-            block_on(agent.run(input(), Cancellation::new()))
+            block_on(agent.run(input(), true, Cancellation::new()))
                 .err()
                 .unwrap()
                 .code,
@@ -635,7 +635,7 @@ fn backend_errors_are_direct_without_retries_or_prompt_injection() {
             .memory(config(session(), &state).with_scopes(["user"]))
             .build()
             .unwrap();
-        let error = block_on(agent.run(input(), Cancellation::new()))
+        let error = block_on(agent.run(input(), true, Cancellation::new()))
             .err()
             .unwrap();
         assert_eq!(error.code, "BACKEND");
@@ -682,7 +682,7 @@ fn running_failed_stopped_incomplete_and_current_chats_are_not_replayed() {
         .memory(config(session(), &state))
         .build()
         .unwrap();
-    block_on(agent.run(input(), Cancellation::new())).unwrap();
+    block_on(agent.run(input(), true, Cancellation::new())).unwrap();
     assert_eq!(values(&model, 0), ["good", "answer", "camping?"]);
 }
 
@@ -710,7 +710,7 @@ fn original_media_and_complete_assistant_fields_are_preserved() {
         .memory(config(session(), &state))
         .build()
         .unwrap();
-    block_on(agent.run(input(), Cancellation::new())).unwrap();
+    block_on(agent.run(input(), true, Cancellation::new())).unwrap();
     let requests = model.requests.lock().unwrap();
     let messages = requests[0].messages.as_slice();
     assert_eq!(
@@ -752,7 +752,7 @@ fn malformed_or_unresolved_summary_coverage_is_not_silently_replayed() {
             .build()
             .unwrap();
         assert_eq!(
-            block_on(agent.run(input(), Cancellation::new()))
+            block_on(agent.run(input(), true, Cancellation::new()))
                 .err()
                 .unwrap()
                 .code,
@@ -767,7 +767,7 @@ fn malformed_or_unresolved_summary_coverage_is_not_silently_replayed() {
         .memory(config(s, &state))
         .build()
         .unwrap();
-    assert!(block_on(agent.run(input(), Cancellation::new())).is_err());
+    assert!(block_on(agent.run(input(), true, Cancellation::new())).is_err());
 }
 
 #[test]
@@ -790,7 +790,7 @@ fn wrong_long_scope_or_type_never_reaches_the_model() {
         .build()
         .unwrap();
     assert_eq!(
-        block_on(agent.run(input(), Cancellation::new()))
+        block_on(agent.run(input(), true, Cancellation::new()))
             .err()
             .unwrap()
             .code,
@@ -819,14 +819,14 @@ fn config_clone_shares_stores_and_each_run_reads_a_fresh_snapshot() {
         .model(model.clone())
         .build()
         .unwrap();
-    let output = block_on(agent.run(input(), Cancellation::new())).unwrap();
+    let output = block_on(agent.run(input(), true, Cancellation::new())).unwrap();
     block_on(output.collect::<Vec<_>>());
     state
         .chats
         .lock()
         .unwrap()
         .push(history(202, 2, "new", "b"));
-    block_on(agent.run(input(), Cancellation::new())).unwrap();
+    block_on(agent.run(input(), true, Cancellation::new())).unwrap();
     assert_eq!(values(&model, 0), ["first", "a", "camping?"]);
     assert_eq!(values(&model, 1), ["first", "a", "new", "b", "camping?"]);
     assert_eq!(
@@ -880,7 +880,7 @@ fn react_model_iterations_reuse_one_initial_memory_snapshot() {
         .toolkit(toolkit)
         .build()
         .unwrap();
-    let output = block_on(agent.run(input(), Cancellation::new())).unwrap();
+    let output = block_on(agent.run(input(), true, Cancellation::new())).unwrap();
     let events = block_on(output.collect::<Vec<_>>());
     assert_eq!(events.len(), 3);
     assert!(events.iter().all(Result::is_ok));
@@ -937,7 +937,7 @@ fn later_memory_configuration_replaces_earlier_components() {
         .memory(config(session(), &last))
         .build()
         .unwrap();
-    block_on(agent.run(input(), Cancellation::new())).unwrap();
+    block_on(agent.run(input(), true, Cancellation::new())).unwrap();
     assert!(first.calls.lock().unwrap().is_empty());
     assert_eq!(values(&model, 0), ["last configured", "answer", "camping?"]);
 }
@@ -963,7 +963,7 @@ async fn pending_memory_reads_are_cancellable_at_every_stage() {
         };
         let (result, _) = tokio::time::timeout(
             Duration::from_secs(1),
-            futures_util::future::join(agent.run(input(), cancellation), cancel),
+            futures_util::future::join(agent.run(input(), true, cancellation), cancel),
         )
         .await
         .unwrap();
@@ -986,7 +986,7 @@ fn synchronous_backend_cancellation_stops_later_reads_and_model() {
             .build()
             .unwrap();
         assert_eq!(
-            block_on(agent.run(input(), Cancellation::new()))
+            block_on(agent.run(input(), true, Cancellation::new()))
                 .err()
                 .unwrap()
                 .code,
@@ -1021,7 +1021,7 @@ fn in_memory_backends_remain_directly_usable_through_the_config() {
         .memory(configured.clone().with_scopes(["agent"]))
         .build()
         .unwrap();
-    block_on(agent.run(input(), Cancellation::new())).unwrap();
+    block_on(agent.run(input(), true, Cancellation::new())).unwrap();
     assert_eq!(values(&model, 0), ["camping?"]);
     assert!(
         block_on(

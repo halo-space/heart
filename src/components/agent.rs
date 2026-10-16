@@ -33,7 +33,8 @@ where
     fn run(&self, input: Input, cancellation: Cancellation) -> RunFuture {
         let agent = Arc::clone(&self.0);
         Box::pin(async move {
-            let stream = agent.run(input, cancellation).await?;
+            // Parent run owns outward mode filtering for delegated events.
+            let stream = agent.run(input, true, cancellation).await?;
             Ok(Box::pin(stream) as ErasedStream)
         })
     }
@@ -151,9 +152,20 @@ pub struct Payload {
 pub trait Agent: Send + Sync {
     type Stream: Stream<Item = Result<Event, Error>> + 'static;
 
+    /// Fix outward delivery for this invocation: true delivers Delta and
+    /// Complete, false delivers Complete only. Errors and per-call Complete
+    /// results are retained in both modes; the stream type never changes.
     fn run(
         &self,
         input: Input,
+        stream: bool,
         cancellation: Cancellation,
     ) -> impl Future<Output = Result<Self::Stream, Error>>;
+
+    /// Submit feedback to a live question. Business events stay on run's stream.
+    fn reply(
+        &self,
+        input: Input,
+        cancellation: Cancellation,
+    ) -> impl Future<Output = Result<(), Error>>;
 }

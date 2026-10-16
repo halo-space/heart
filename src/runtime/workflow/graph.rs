@@ -75,7 +75,7 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                 let mut messages = Messages::default();
                 let mut steps = Vec::new();
                 let mut usage = None;
-                let stream = match agent.run(input, cancellation.clone()).await {
+                let stream = match agent.run(input, true, cancellation.clone()).await {
                     Ok(stream) => stream,
                     Err(error) => {
                         return AgentRun {

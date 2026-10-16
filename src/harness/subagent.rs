@@ -49,6 +49,7 @@ impl Relay {
             relay: self.clone(),
             chat_id,
             source,
+            interaction: None,
         }
     }
 }
@@ -57,6 +58,7 @@ pub(crate) struct Observer {
     relay: Relay,
     chat_id: Option<i64>,
     source: (String, i64),
+    interaction: Option<super::reply::Run>,
 }
 
 pub(crate) struct Observation {
@@ -71,9 +73,32 @@ impl Observation {
     pub(crate) fn has_facts(&self) -> bool {
         self.scene.is_some() || self.usage.is_some() || self.message.is_some()
     }
+    pub(crate) fn question(&self) -> Result<bool, Error> {
+        let Event::Complete { message, .. } = &self.event else {
+            return Ok(false);
+        };
+        let Some(id) = message.metadata.get("reply_id").and_then(Value::as_i64) else {
+            return Ok(false);
+        };
+        let scene = self
+            .scene
+            .as_deref()
+            .ok_or_else(|| Error::new("INVALID_STATE", "child question has no saved scene"))?;
+        if !crate::runtime::agent::wait::question(scene, id)? {
+            return Err(Error::new(
+                "INVALID_STATE",
+                "child question has no actual waiting Step",
+            ));
+        }
+        Ok(true)
+    }
 }
 
 impl Observer {
+    pub(crate) fn with_interaction(mut self, interaction: Option<super::reply::Run>) -> Self {
+        self.interaction = interaction;
+        self
+    }
     async fn emit(
         &self,
         mut event: Event,
@@ -234,6 +259,20 @@ impl Root {
         observe(nodes, observation)
     }
 
+    pub(crate) fn sync_waits(
+        &self,
+        waits: &mut Vec<crate::runtime::agent::wait::Wait>,
+        observation: &Observation,
+    ) -> Result<(), Error> {
+        let execution = self.0.lock().expect("root execution lock poisoned");
+        let nodes = &execution
+            .as_ref()
+            .and_then(|execution| execution.attempts.last())
+            .ok_or_else(|| Error::new("INVALID_STATE", "waiting child has no root Attempt"))?
+            .nodes;
+        sync_waits(nodes, waits, observation)
+    }
+
     pub(crate) fn snapshot(
         &self,
         status: &str,
@@ -274,6 +313,47 @@ impl Root {
         execution.error = error;
         Some(execution.clone())
     }
+}
+
+pub(crate) fn sync_waits(
+    nodes: &BTreeMap<String, State>,
+    waits: &mut Vec<crate::runtime::agent::wait::Wait>,
+    observation: &Observation,
+) -> Result<(), Error> {
+    let Some(scene) = &observation.scene else {
+        return Ok(());
+    };
+    let child = nodes
+        .get(&observation.source.0)
+        .and_then(|node| node.execution.as_ref())
+        .filter(|execution| execution.exec_id == observation.source.1)
+        .ok_or_else(|| Error::new("INVALID_STATE", "waiting child has no actual execution"))?;
+    let attempt = child
+        .attempts
+        .last()
+        .ok_or_else(|| Error::new("INVALID_STATE", "waiting child has no current Attempt"))?;
+    let coordinate = crate::runtime::agent::wait::Node {
+        node_id: observation.source.0.clone(),
+        exec_id: child.exec_id,
+        idx: attempt.idx,
+    };
+    let mut desired: Vec<crate::runtime::agent::wait::Wait> = scene
+        .get("waits")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| Error::new("INVALID_STATE", "invalid child waiting locators"))?
+        .unwrap_or_default();
+    for wait in &mut desired {
+        wait.nodes.insert(0, coordinate.clone());
+    }
+    waits.retain(|wait| wait.nodes.first() != Some(&coordinate) || desired.contains(wait));
+    for wait in desired {
+        if !waits.contains(&wait) {
+            waits.push(wait);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -841,7 +921,13 @@ pub(crate) async fn run(
     id_fn: Option<fn() -> i64>,
     observer: Option<Observer>,
 ) -> Result<Progress, Box<Failure>> {
-    let scope = super::embedded::Scope::new(previous.clone()).with_id_fn(id_fn);
+    let scope = super::embedded::Scope::new(previous.clone())
+        .with_id_fn(id_fn)
+        .with_interaction(
+            observer
+                .as_ref()
+                .and_then(|observer| observer.interaction.clone()),
+        );
     let mut stream = super::embedded::run(scope.clone(), subagent.run(input, cancellation))
         .await
         .map_err(|error| failure(error, &scope, previous.as_ref(), None))?;

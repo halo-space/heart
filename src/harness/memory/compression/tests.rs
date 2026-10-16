@@ -217,7 +217,7 @@ async fn run(config: Config, model: Model, id: i64, session_id: i64) {
     let agent = agent::chat().model(model).memory(config).build().unwrap();
     let events = tokio::time::timeout(
         Duration::from_secs(3),
-        agent.run(input(id, session_id), Cancellation::new()),
+        agent.run(input(id, session_id), true, Cancellation::new()),
     )
     .await
     .unwrap()
@@ -321,7 +321,7 @@ async fn long_extraction_retry_uses_same_agent_without_recompressing_successful_
         .unwrap();
     for id in [202, 203] {
         let events = agent
-            .run(input(id, 101), Cancellation::new())
+            .run(input(id, 101), true, Cancellation::new())
             .await
             .unwrap()
             .collect::<Vec<_>>()
@@ -427,7 +427,7 @@ async fn committed_summary_with_lost_ack_retains_extraction_without_recompressio
             .unwrap();
         for id in [202, 203] {
             let events = agent
-                .run(input(id, 101), Cancellation::new())
+                .run(input(id, 101), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -767,7 +767,7 @@ async fn foreground_cancel_and_stream_drop_do_not_cancel_background() {
         .build()
         .unwrap();
     let events = agent
-        .run(input(301, 101), cancellation.clone())
+        .run(input(301, 101), true, cancellation.clone())
         .await
         .unwrap();
     entered(&compressor, 1).await;
@@ -838,7 +838,7 @@ async fn compression_hooks_run_in_order_without_corrupting_usage() {
         .build()
         .unwrap();
     let result = agent
-        .run(input(301, 101), Cancellation::new())
+        .run(input(301, 101), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -873,7 +873,7 @@ async fn compression_hook_error_never_fails_foreground_or_commits_summary() {
         .build()
         .unwrap();
     let result = agent
-        .run(input(301, 101), Cancellation::new())
+        .run(input(301, 101), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -915,7 +915,7 @@ async fn react_uses_same_background_lifecycle() {
         .build()
         .unwrap();
     let result = agent
-        .run(input(301, 101), Cancellation::new())
+        .run(input(301, 101), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -1078,7 +1078,7 @@ async fn after_hook_failure_does_not_commit_partial_summary() {
         .build()
         .unwrap();
     let result = agent
-        .run(input(301, 101), Cancellation::new())
+        .run(input(301, 101), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -1124,7 +1124,7 @@ async fn long_recall_and_current_prompt_are_not_session_compression_input() {
         .build()
         .unwrap();
     let result = agent
-        .run(input(301, 101), Cancellation::new())
+        .run(input(301, 101), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()

@@ -285,7 +285,7 @@ fn chat_creates_once_and_saves_provider_complete_not_deltas() {
         .memory(config.clone())
         .build()
         .unwrap();
-    let mut events = block_on(agent.run(input(100), Cancellation::new())).unwrap();
+    let mut events = block_on(agent.run(input(100), true, Cancellation::new())).unwrap();
     assert_eq!(saved(&config, 100).status, chat::Status::Running);
     assert!(matches!(
         block_on(events.next()),
@@ -336,7 +336,7 @@ fn react_aggregates_two_model_calls_but_keeps_per_call_usage() {
         .build()
         .unwrap();
     let events = block_on(
-        block_on(agent.run(input(101), Cancellation::new()))
+        block_on(agent.run(input(101), true, Cancellation::new()))
             .unwrap()
             .collect::<Vec<_>>(),
     );
@@ -375,7 +375,7 @@ fn history_usage_is_not_billed_to_the_new_run() {
         .build()
         .unwrap();
     block_on(
-        block_on(first.run(input(102), Cancellation::new()))
+        block_on(first.run(input(102), true, Cancellation::new()))
             .unwrap()
             .collect::<Vec<_>>(),
     );
@@ -388,7 +388,7 @@ fn history_usage_is_not_billed_to_the_new_run() {
         .build()
         .unwrap();
     block_on(
-        block_on(second.run(input(103), Cancellation::new()))
+        block_on(second.run(input(103), true, Cancellation::new()))
             .unwrap()
             .collect::<Vec<_>>(),
     );
@@ -409,7 +409,7 @@ fn chat_cancellation_preserves_received_text_and_known_usage() {
         .build()
         .unwrap();
     let cancellation = Cancellation::new();
-    let mut events = block_on(agent.run(input(104), cancellation.clone())).unwrap();
+    let mut events = block_on(agent.run(input(104), true, cancellation.clone())).unwrap();
     block_on(events.next()).unwrap().unwrap();
     cancellation.cancel();
     let Some(Ok(Event::Complete {
@@ -448,7 +448,7 @@ fn react_tool_cancellation_does_not_double_count_a_completed_model() {
         .build()
         .unwrap();
     let events = block_on(
-        block_on(agent.run(input(105), Cancellation::new()))
+        block_on(agent.run(input(105), true, Cancellation::new()))
             .unwrap()
             .collect::<Vec<_>>(),
     );
@@ -477,7 +477,7 @@ fn react_active_second_call_cancellation_adds_only_that_partial_call() {
         .build()
         .unwrap();
     let c = Cancellation::new();
-    let mut events = block_on(agent.run(input(106), c.clone())).unwrap();
+    let mut events = block_on(agent.run(input(106), true, c.clone())).unwrap();
     for _ in 0..3 {
         block_on(events.next()).unwrap().unwrap();
     }
@@ -498,7 +498,7 @@ fn model_creation_failure_closes_chat_as_failed() {
         .memory(config.clone())
         .build()
         .unwrap();
-    let error = block_on(agent.run(input(107), Cancellation::new())).unwrap_err();
+    let error = block_on(agent.run(input(107), true, Cancellation::new())).unwrap_err();
     assert_eq!(
         (error.code.as_str(), error.details.as_deref()),
         ("TRANSPORT", Some("unchanged"))
@@ -530,7 +530,7 @@ fn stream_failure_does_not_persist_delta_as_a_final_answer() {
         .build()
         .unwrap();
     let events = block_on(
-        block_on(agent.run(input(108), Cancellation::new()))
+        block_on(agent.run(input(108), true, Cancellation::new()))
             .unwrap()
             .collect::<Vec<_>>(),
     );
@@ -554,7 +554,7 @@ fn react_failure_keeps_previous_settled_usage_not_intermediate_message() {
         .build()
         .unwrap();
     let events = block_on(
-        block_on(agent.run(input(109), Cancellation::new()))
+        block_on(agent.run(input(109), true, Cancellation::new()))
             .unwrap()
             .collect::<Vec<_>>(),
     );
@@ -605,7 +605,7 @@ fn original_input_is_immutable_but_final_output_includes_hooks() {
         .build()
         .unwrap();
     block_on(
-        block_on(agent.run(input(110), Cancellation::new()))
+        block_on(agent.run(input(110), true, Cancellation::new()))
             .unwrap()
             .collect::<Vec<_>>(),
     );
@@ -640,7 +640,7 @@ fn output_hook_failure_does_not_erase_provider_usage() {
                 .build()
                 .unwrap();
             let events = block_on(
-                block_on(agent.run(input(111), Cancellation::new()))
+                block_on(agent.run(input(111), true, Cancellation::new()))
                     .unwrap()
                     .collect::<Vec<_>>(),
             );
@@ -656,7 +656,7 @@ fn output_hook_failure_does_not_erase_provider_usage() {
                 .build()
                 .unwrap();
             let events = block_on(
-                block_on(agent.run(input(111), Cancellation::new()))
+                block_on(agent.run(input(111), true, Cancellation::new()))
                     .unwrap()
                     .collect::<Vec<_>>(),
             );
@@ -688,7 +688,7 @@ fn cancellation_in_output_hook_refines_same_call_without_double_counting() {
                 .build()
                 .unwrap();
             block_on(
-                block_on(agent.run(input(112), Cancellation::new()))
+                block_on(agent.run(input(112), true, Cancellation::new()))
                     .unwrap()
                     .collect::<Vec<_>>(),
             );
@@ -703,7 +703,7 @@ fn cancellation_in_output_hook_refines_same_call_without_double_counting() {
                 .build()
                 .unwrap();
             block_on(
-                block_on(agent.run(input(112), Cancellation::new()))
+                block_on(agent.run(input(112), true, Cancellation::new()))
                     .unwrap()
                     .collect::<Vec<_>>(),
             );
@@ -731,7 +731,7 @@ fn storage_create_and_update_errors_are_direct_and_not_retried() {
             .memory(config.clone())
             .build()
             .unwrap();
-        let output = block_on(agent.run(input(113), Cancellation::new()));
+        let output = block_on(agent.run(input(113), true, Cancellation::new()));
         if fail_create {
             assert_eq!(output.unwrap_err(), storage_error());
             assert!(model.requests.lock().unwrap().is_empty());
@@ -753,7 +753,7 @@ fn abandoned_stream_does_not_spawn_background_closure() {
         .memory(config.clone())
         .build()
         .unwrap();
-    let mut events = block_on(agent.run(input(114), Cancellation::new())).unwrap();
+    let mut events = block_on(agent.run(input(114), true, Cancellation::new())).unwrap();
     block_on(events.next()).unwrap().unwrap();
     drop(events);
     assert_eq!(saved(&config, 114).status, chat::Status::Running);
@@ -771,12 +771,12 @@ fn duplicate_chat_id_is_conflict_not_resume_or_overwrite() {
         .build()
         .unwrap();
     block_on(
-        block_on(agent.run(input(115), Cancellation::new()))
+        block_on(agent.run(input(115), true, Cancellation::new()))
             .unwrap()
             .collect::<Vec<_>>(),
     );
     assert_eq!(
-        block_on(agent.run(input(115), Cancellation::new()))
+        block_on(agent.run(input(115), true, Cancellation::new()))
             .unwrap_err()
             .code,
         "CONFLICT"
@@ -797,7 +797,7 @@ fn unknown_usage_stays_unknown_and_no_memory_requires_no_ids() {
         .build()
         .unwrap();
     block_on(
-        block_on(agent.run(input(116), Cancellation::new()))
+        block_on(agent.run(input(116), true, Cancellation::new()))
             .unwrap()
             .collect::<Vec<_>>(),
     );
@@ -810,7 +810,7 @@ fn unknown_usage_stays_unknown_and_no_memory_requires_no_ids() {
         .build()
         .unwrap();
     let events = block_on(
-        block_on(agent.run(Input::default(), Cancellation::new()))
+        block_on(agent.run(Input::default(), true, Cancellation::new()))
             .unwrap()
             .collect::<Vec<_>>(),
     );
@@ -829,8 +829,8 @@ fn independent_runs_of_one_agent_do_not_share_a_usage_ledger() {
         .memory(config.clone())
         .build()
         .unwrap();
-    let first = block_on(agent.run(input(120), Cancellation::new())).unwrap();
-    let second = block_on(agent.run(input(121), Cancellation::new())).unwrap();
+    let first = block_on(agent.run(input(120), true, Cancellation::new())).unwrap();
+    let second = block_on(agent.run(input(121), true, Cancellation::new())).unwrap();
     block_on(second.collect::<Vec<_>>());
     block_on(first.collect::<Vec<_>>());
     assert_eq!(saved(&config, 120).usage.unwrap().total, Some(13));
@@ -851,7 +851,7 @@ fn max_iters_and_missing_complete_are_failed_not_successful_closure() {
         .build()
         .unwrap();
     let events = block_on(
-        block_on(agent.run(input(122), Cancellation::new()))
+        block_on(agent.run(input(122), true, Cancellation::new()))
             .unwrap()
             .collect::<Vec<_>>(),
     );
@@ -871,7 +871,7 @@ fn max_iters_and_missing_complete_are_failed_not_successful_closure() {
         .build()
         .unwrap();
     let events = block_on(
-        block_on(agent.run(input(123), Cancellation::new()))
+        block_on(agent.run(input(123), true, Cancellation::new()))
             .unwrap()
             .collect::<Vec<_>>(),
     );
@@ -902,7 +902,7 @@ fn known_usage_on_a_failed_stream_is_retained_without_estimating_missing_fields(
                 .build()
                 .unwrap();
             block_on(
-                block_on(agent.run(input(124), Cancellation::new()))
+                block_on(agent.run(input(124), true, Cancellation::new()))
                     .unwrap()
                     .collect::<Vec<_>>(),
             );
@@ -913,7 +913,7 @@ fn known_usage_on_a_failed_stream_is_retained_without_estimating_missing_fields(
                 .build()
                 .unwrap();
             block_on(
-                block_on(agent.run(input(124), Cancellation::new()))
+                block_on(agent.run(input(124), true, Cancellation::new()))
                     .unwrap()
                     .collect::<Vec<_>>(),
             );
@@ -944,7 +944,7 @@ fn hooks_cannot_redirect_the_persisted_chat_to_a_different_owner() {
         .build()
         .unwrap();
     assert_eq!(
-        block_on(agent.run(input(125), Cancellation::new()))
+        block_on(agent.run(input(125), true, Cancellation::new()))
             .unwrap_err()
             .code,
         "INVALID_ARGUMENTS"
@@ -977,7 +977,7 @@ fn cancellation_during_final_write_does_not_spin_or_restart_the_update() {
         .build()
         .unwrap();
     let c = Cancellation::new();
-    let mut events = block_on(agent.run(input(126), c.clone())).unwrap();
+    let mut events = block_on(agent.run(input(126), true, c.clone())).unwrap();
     let wake = Arc::new(Wake(AtomicUsize::new(0)));
     let waker = futures_util::task::waker(wake.clone());
     let mut cx = Context::from_waker(&waker);
@@ -1020,7 +1020,7 @@ fn chat_persistence_rejects_nonassistant_final_without_changing_unconfigured_run
         .build()
         .unwrap();
     let events = block_on(
-        block_on(agent.run(input(127), Cancellation::new()))
+        block_on(agent.run(input(127), true, Cancellation::new()))
             .unwrap()
             .collect::<Vec<_>>(),
     );
@@ -1032,7 +1032,7 @@ fn chat_persistence_rejects_nonassistant_final_without_changing_unconfigured_run
     let model = Model::new(vec![Step::events(vec![complete(message.clone(), None)])]);
     let agent = agent::react().model(model).build().unwrap();
     let events = block_on(
-        block_on(agent.run(Input::default(), Cancellation::new()))
+        block_on(agent.run(Input::default(), true, Cancellation::new()))
             .unwrap()
             .collect::<Vec<_>>(),
     );

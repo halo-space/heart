@@ -427,10 +427,14 @@ async fn memory_worker() {
         .await
         .unwrap();
     let agent = agent::chat().model(Model).memory(config).build().unwrap();
-    let events = agent.run(Input {
+    let events = agent.run(
+    Input {
         metadata: json!({"tenant_id":1,"user_id":2,"agent_id":3,"session_id":101,"chat_id":300 + phase}).as_object().unwrap().clone(),
         payload: vec![Payload { r#type: "text".into(), data: json!({"value":"current"}), mime_type: None }],
-    }, Cancellation::new()).await.unwrap().collect::<Vec<_>>().await;
+    },
+    true,
+    Cancellation::new(),
+    ).await.unwrap().collect::<Vec<_>>().await;
     assert!(events.iter().all(Result::is_ok));
     tokio::time::timeout(Duration::from_secs(4), async {
         loop {

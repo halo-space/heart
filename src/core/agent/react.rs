@@ -172,7 +172,7 @@ impl<M> Builder<M> {
         self
     }
 
-    /// Supply application-generated execution IDs independently of Memory.
+    /// Supply application-generated execution/question IDs independently of Memory.
     /// Configuration and build do not invoke this function. The application
     /// owns uniqueness across concurrent runs and restored executions.
     ///
@@ -222,6 +222,7 @@ where
         }
         validate_subagents(&self.subagents)?;
         Ok(Agent {
+            replies: Default::default(),
             model: std::sync::Arc::new(model),
             system_prompt: self.system_prompt,
             toolkit: std::sync::Arc::new(self.toolkit),
@@ -239,6 +240,7 @@ where
 }
 
 pub struct Agent<M> {
+    replies: crate::harness::reply::Hub,
     model: std::sync::Arc<M>,
     system_prompt: Option<String>,
     toolkit: std::sync::Arc<Toolkit>,
@@ -282,11 +284,23 @@ where
 {
     type Stream = Pin<Box<dyn Stream<Item = Result<Event, Error>> + 'static>>;
 
-    async fn run(&self, input: Input, cancellation: Cancellation) -> Result<Self::Stream, Error> {
+    async fn reply(&self, input: Input, cancellation: Cancellation) -> Result<(), Error> {
+        self.replies.submit(input, &cancellation)
+    }
+
+    async fn run(
+        &self,
+        input: Input,
+        stream: bool,
+        cancellation: Cancellation,
+    ) -> Result<Self::Stream, Error> {
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "react agent run cancelled"));
         }
         let embedded = crate::harness::embedded::active();
+        if !embedded {
+            self.replies.ensure_idle(&input.metadata)?;
+        }
         let checkpoint = self.checkpoint.clone().filter(|_| !embedded);
         let history = if embedded {
             History::default()
@@ -323,6 +337,7 @@ where
                     "checkpoint belongs to a different Agent input",
                 ));
             }
+            crate::harness::checkpoint::check_waits(snapshot)?;
             if let Some(result) = crate::harness::checkpoint::terminal(snapshot)? {
                 let mut result = result;
                 if let Ok(event) = &mut result {
@@ -336,6 +351,11 @@ where
             }
         }
         let original = input.clone();
+        let interaction = if embedded {
+            crate::harness::embedded::interaction()
+        } else {
+            Some(self.replies.start(original.metadata.clone())?)
+        };
         let input = if restored.is_some() {
             input
         } else {
@@ -380,6 +400,10 @@ where
             recalled,
         );
         let mut state = ReActState {
+            _interaction_owner: interaction.as_ref().map(crate::harness::reply::Run::owner),
+            interaction,
+            waits: Vec::new(),
+            stream,
             model: std::sync::Arc::clone(&self.model),
             toolkit: std::sync::Arc::new(toolkit),
             subagents: self.subagents.clone(),
@@ -407,6 +431,9 @@ where
             checkpoint_id,
             plan_execution: false,
             active_tasks: FuturesUnordered::new(),
+            task_runs: BTreeMap::new(),
+            task_slots: Arc::new(tokio::sync::Semaphore::new(self.max_concurrency)),
+            task_ready: Arc::new(futures_util::task::AtomicWaker::new()),
             task_error: None,
             dispatch_failed: false,
             is_plan_task: false,
@@ -440,6 +467,31 @@ where
         if let Some(snapshot) = restored {
             restore_state(&mut state, snapshot)?;
             if external_wait {
+                // Until the saved question-to-Step association is available,
+                // reject ambiguous feedback rather than append it to every
+                // waiting task. Match fill_ready's possible input consumers;
+                // saved Tool phases keep their existing continuation path.
+                let ambiguous = state.graph.as_ref().is_some_and(|graph| {
+                    state
+                        .external_resume_nodes
+                        .iter()
+                        .filter(|node_id| {
+                            !graph.nodes[*node_id]
+                                .execution
+                                .as_ref()
+                                .and_then(|execution| execution.attempts.last())
+                                .is_some_and(|attempt| tools::pending(&attempt.steps))
+                        })
+                        .take(2)
+                        .count()
+                        > 1
+                });
+                if ambiguous {
+                    return Err(Error::new(
+                        "CONFLICT",
+                        "feedback has multiple possible waiting consumers",
+                    ));
+                }
                 state.resume_input = Some(input);
                 if state.graph.is_none()
                     && let Some(resume_input) = state.resume_input.clone()
@@ -451,18 +503,26 @@ where
             }
         }
         let chat_id = state.query.metadata.get("chat_id").and_then(Value::as_i64);
-        Ok(Box::pin(unfold(state, next_react_event::<M>).map(
-            move |mut result| {
-                if let Ok(event) = &mut result {
-                    crate::harness::observation::associate(event, chat_id, None);
-                }
-                result
-            },
-        )))
+        Ok(Box::pin(
+            unfold(state, next_react_event::<M>)
+                .filter(move |result| {
+                    std::future::ready(stream || !matches!(result, Ok(Event::Delta { .. })))
+                })
+                .map(move |mut result| {
+                    if let Ok(event) = &mut result {
+                        crate::harness::observation::associate(event, chat_id, None);
+                    }
+                    result
+                }),
+        ))
     }
 }
 
 struct ReActState<M: Chat> {
+    _interaction_owner: Option<crate::harness::reply::Owner>,
+    interaction: Option<crate::harness::reply::Run>,
+    waits: Vec<crate::runtime::agent::wait::Wait>,
+    stream: bool,
     model: std::sync::Arc<M>,
     toolkit: std::sync::Arc<Toolkit>,
     subagents: std::sync::Arc<Vec<SubAgent>>,
@@ -484,6 +544,10 @@ struct ReActState<M: Chat> {
     checkpoint_id: Option<i64>,
     plan_execution: bool,
     active_tasks: FuturesUnordered<Pin<Box<dyn Future<Output = TaskProgress<M>> + 'static>>>,
+    /// Handles to the actual task accounting, never another serialized scene.
+    task_runs: BTreeMap<String, execution::Active>,
+    task_slots: Arc<tokio::sync::Semaphore>,
+    task_ready: Arc<futures_util::task::AtomicWaker>,
     task_error: Option<Error>,
     dispatch_failed: bool,
     is_plan_task: bool,
@@ -537,6 +601,7 @@ enum Planning {
 }
 
 enum ToolProgress {
+    Interaction(crate::harness::reply::Change),
     Observation(Box<crate::harness::subagent::Observation>),
     Called(
         usize,
@@ -562,6 +627,8 @@ struct PendingSubAgent {
 // Private per-call dependencies, not a new component Context or Runtime state.
 #[derive(Clone)]
 struct ToolExecution {
+    interaction: Option<crate::harness::reply::Run>,
+    id_fn: Option<fn() -> i64>,
     toolkit: std::sync::Arc<Toolkit>,
     hooks: Hooks,
     access: Access,
@@ -573,12 +640,14 @@ async fn check_tool_permission(
     state: &ToolExecution,
     call: &Call,
 ) -> Result<(), PermissionFailure> {
-    crate::harness::access::check_tool(
+    crate::harness::reply::check(
         &state.access,
         &state.hooks,
         state.metadata.clone(),
         call,
         &state.cancellation,
+        state.interaction.as_ref(),
+        state.id_fn,
     )
     .await
     .map_err(|failure| match failure {
@@ -589,28 +658,23 @@ async fn check_tool_permission(
     })
 }
 
-async fn call_with_permission(
-    state: &ToolExecution,
-    call: &Call,
-) -> Result<(Call, Message), PermissionFailure> {
+async fn prepare_tool(state: &ToolExecution, call: &Call) -> Result<Call, PermissionFailure> {
     state
         .toolkit
         .validate(call)
         .map_err(PermissionFailure::Tool)?;
-    check_tool_permission(state, call).await?;
+    if state.access.is_configured() {
+        check_tool_permission(state, call).await?;
+    }
     let effective = state
         .toolkit
         .prepare_call(call.clone(), &state.cancellation)
         .await
         .map_err(PermissionFailure::Tool)?;
-    if effective.arguments != call.arguments {
+    if state.access.is_configured() && effective.arguments != call.arguments {
         check_tool_permission(state, &effective).await?;
     }
-    state
-        .toolkit
-        .call_prepared(effective, &state.cancellation)
-        .await
-        .map_err(PermissionFailure::Tool)
+    Ok(effective)
 }
 
 fn decode_subagent_input(
@@ -706,6 +770,14 @@ async fn next_react_event<M: Chat + 'static>(
         state.run.settle(state.partial.usage.clone());
     }
     let result = if state.done {
+        if result.as_ref().is_err_and(|error| error.code != "WAITING") && !state.waits.is_empty() {
+            state.waits.clear();
+            crate::harness::tool_steps::cancel_pending(&mut state.steps);
+            execution::cancel_active(&mut state);
+        }
+        if let Some(run) = &state.interaction {
+            run.close();
+        }
         let mut terminal = result;
         if let Err(error) = save_checkpoint(&state, checkpoint_snapshot(&state, &terminal)).await {
             terminal = Err(error);
@@ -769,15 +841,18 @@ fn closeout_state<M: Chat>(
         chat_id: state.query.metadata.get("chat_id").and_then(Value::as_i64),
         r#type: "agent".into(),
         status: status.into(),
-        usage: state.run.usage(),
-        execution: state
-            .root
-            .snapshot(status, state.run.usage(), result.as_ref().err().cloned()),
+        usage: execution::usage(state),
+        execution: state.root.snapshot(
+            status,
+            execution::usage(state),
+            result.as_ref().err().cloned(),
+        ),
         graph: graph_state,
         nodes,
         history,
         messages: state.messages.clone(),
         steps: state.steps.clone(),
+        waits: state.waits.clone(),
         error: result.as_ref().err().cloned(),
         final_message: match result {
             Ok(Event::Complete { message, .. }) => {
@@ -826,10 +901,10 @@ fn checkpoint_snapshot<M: Chat>(state: &ReActState<M>, result: &Result<Event, Er
         chat_id: state.checkpoint_id,
         r#type: "agent".into(),
         status: result_status(result).into(),
-        usage: state.run.usage(),
+        usage: execution::usage(state),
         execution: state.root.snapshot(
             result_status(result),
-            state.run.usage(),
+            execution::usage(state),
             result.as_ref().err().cloned(),
         ),
         graph,
@@ -837,6 +912,7 @@ fn checkpoint_snapshot<M: Chat>(state: &ReActState<M>, result: &Result<Event, Er
         history,
         messages: state.messages.clone(),
         steps: state.steps.clone(),
+        waits: state.waits.clone(),
         error: result.as_ref().err().cloned(),
         final_message: match result {
             Ok(Event::Complete { message, .. }) => {
@@ -1073,7 +1149,10 @@ fn waiting_snapshot<M: Chat>(state: &ReActState<M>) -> Value {
         }),
     );
     snapshot["status"] = Value::String("waiting".into());
-    if let Some(execution) = state.root.snapshot("waiting", state.run.usage(), None) {
+    if let Some(execution) = state
+        .root
+        .snapshot("waiting", execution::usage(state), None)
+    {
         snapshot["execution"] =
             serde_json::to_value(execution).expect("serializable root execution");
     }
@@ -1203,32 +1282,30 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     state.metadata.get("chat_id").and_then(Value::as_i64),
                     source,
                 );
+                let admission =
+                    crate::harness::reply::Slot::waiting(slots, state.task_ready.clone());
+                let interaction = state
+                    .interaction
+                    .as_ref()
+                    .map(|run| run.branch(admission.clone()));
+                let observer = observer.with_interaction(interaction.clone());
                 let subagents = state.subagents.clone();
                 let parent = state.metadata.clone();
                 let id_fn = state.id_fn;
                 let cancellation = state.cancellation.clone();
                 state.active_tools.push(Box::pin(async move {
-                    let permit = match cancellable(
-                        async {
-                            slots
-                                .acquire_owned()
-                                .await
-                                .map_err(|_| Error::new("CANCELLED", "agent capacity closed"))
-                        },
-                        &cancellation,
-                    )
-                    .await
-                    {
-                        Ok(permit) => permit,
-                        Err(error) => {
-                            return ToolProgress::SubAgent(
-                                index,
-                                call,
-                                Box::new(Err(SubAgentFailure::new(error))),
-                                None,
-                            );
-                        }
+                    let entering = match &interaction {
+                        Some(run) => run.continue_execution(&cancellation).await,
+                        None => admission.acquire(&cancellation).await,
                     };
+                    if let Err(error) = entering {
+                        return ToolProgress::SubAgent(
+                            index,
+                            call,
+                            Box::new(Err(SubAgentFailure::new(error))),
+                            None,
+                        );
+                    }
                     let result = execute_subagent(
                         subagents,
                         call.clone(),
@@ -1239,7 +1316,8 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         Some(observer),
                     )
                     .await;
-                    ToolProgress::SubAgent(index, call, Box::new(result), Some(permit))
+                    admission.release();
+                    ToolProgress::SubAgent(index, call, Box::new(result), None)
                 }));
                 continue;
             }
@@ -1252,6 +1330,8 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 }
             }
             let execution = ToolExecution {
+                interaction: state.interaction.clone(),
+                id_fn: state.id_fn,
                 toolkit: state.toolkit.clone(),
                 hooks: state.hooks.clone(),
                 access: state.access.clone(),
@@ -1260,6 +1340,23 @@ async fn next_react_event_inner<M: Chat + 'static>(
             };
             let slots = state.tool_slots.clone();
             state.active_tools.push(Box::pin(async move {
+                // Human permission waits must not retain Tool execution slots.
+                let effective = match prepare_tool(&execution, &call).await {
+                    Ok(effective) => effective,
+                    Err(error) => {
+                        return ToolProgress::Called(index, call, Box::new(Err(error)), None);
+                    }
+                };
+                if let Some(run) = &execution.interaction
+                    && let Err(error) = run.continue_execution(&execution.cancellation).await
+                {
+                    return ToolProgress::Called(
+                        index,
+                        call,
+                        Box::new(Err(PermissionFailure::Hook(error))),
+                        None,
+                    );
+                }
                 let permit = match cancellable(
                     async {
                         slots
@@ -1281,15 +1378,11 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         );
                     }
                 };
-                let result = if execution.access.is_configured() {
-                    call_with_permission(&execution, &call).await
-                } else {
-                    execution
-                        .toolkit
-                        .call(call.clone(), &execution.cancellation)
-                        .await
-                        .map_err(PermissionFailure::Tool)
-                };
+                let result = execution
+                    .toolkit
+                    .call_prepared(effective, &execution.cancellation)
+                    .await
+                    .map_err(PermissionFailure::Tool);
                 ToolProgress::Called(index, call, Box::new(result), Some(permit))
             }));
         }
@@ -1305,6 +1398,11 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 {
                     state.tool_progress.push_back(progress);
                 }
+                if let Some(run) = &state.interaction
+                    && let Poll::Ready(change) = run.poll_change(context)
+                {
+                    return Poll::Ready(Some(ToolProgress::Interaction(change)));
+                }
                 // Successful observations already produced by a sibling must
                 // be delivered/applied before a waiting/error closes the run.
                 if let Poll::Ready(observation) = state.child_relay.poll_event(context) {
@@ -1313,6 +1411,11 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 if let Some(progress) = state.tool_progress.pop_front() {
                     Poll::Ready(Some(progress))
                 } else {
+                    if execution::waiting_on_feedback(&state)
+                        && let Some(run) = &state.interaction
+                    {
+                        run.suspend();
+                    }
                     Poll::Pending
                 }
             })
@@ -1322,18 +1425,76 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 return Some((Ok(cancelled_event(&mut state)), state));
             }
             match progress.expect("nonempty Tool futures remain until polled") {
+                ToolProgress::Interaction(change) => {
+                    let run = state.interaction.clone().expect("interaction owner");
+                    match crate::harness::reply::apply(
+                        change,
+                        &mut state.steps,
+                        &mut state.waits,
+                        &run,
+                    ) {
+                        Ok(Some(question)) => {
+                            let snapshot = checkpoint_snapshot(
+                                &state,
+                                &Err(Error::new("WAITING", "Agent is waiting for approval")),
+                            );
+                            if let Err(error) = save_checkpoint(&state, snapshot).await {
+                                state.done = true;
+                                return Some((Err(error), state));
+                            }
+                            if state.cancellation.is_cancelled() {
+                                state.done = true;
+                                return Some((Ok(cancelled_event(&mut state)), state));
+                            }
+                            return Some((Ok(question), state));
+                        }
+                        Ok(None) => continue,
+                        Err(error) => {
+                            state.done = true;
+                            return Some((Err(error), state));
+                        }
+                    }
+                }
                 ToolProgress::Observation(observation) => {
+                    let question = match observation.question() {
+                        Ok(question) => question,
+                        Err(error) => {
+                            state.done = true;
+                            return Some((Err(error), state));
+                        }
+                    };
                     state.child_nodes_dirty |= state.is_plan_task && observation.has_facts();
                     let result = if state.is_plan_task {
                         crate::harness::subagent::observe(&mut state.child_nodes, &observation)
+                            .and_then(|_| {
+                                crate::harness::subagent::sync_waits(
+                                    &state.child_nodes,
+                                    &mut state.waits,
+                                    &observation,
+                                )
+                            })
                     } else {
-                        state.root.observe(&observation)
+                        state
+                            .root
+                            .observe(&observation)
+                            .and_then(|_| state.root.sync_waits(&mut state.waits, &observation))
                     };
                     if let Err(error) = result {
                         state.done = true;
                         return Some((Err(error), state));
                     }
                     state.run.settle_child(observation.usage);
+                    if question {
+                        if let Err(error) = save_checkpoint(&state, waiting_snapshot(&state)).await
+                        {
+                            state.done = true;
+                            return Some((Err(error), state));
+                        }
+                        if state.cancellation.is_cancelled() {
+                            state.done = true;
+                            return Some((Ok(cancelled_event(&mut state)), state));
+                        }
+                    }
                     return Some((Ok(observation.event), state));
                 }
                 ToolProgress::Evaluated(call_id, Ok(evaluation)) => {
@@ -1739,15 +1900,57 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 state.dispatch_failed = true;
             }
             if !state.active_tasks.is_empty() {
-                let progress = state.active_tasks.next().await.expect("active task");
+                let progress = poll_fn(|cx| {
+                    state.task_ready.register(cx.waker());
+                    match state.active_tasks.poll_next_unpin(cx) {
+                        Poll::Ready(progress) => Poll::Ready(progress),
+                        Poll::Pending
+                            if state.task_slots.available_permits() > 0
+                                && state
+                                    .graph
+                                    .as_ref()
+                                    .is_some_and(|graph| !graph.ready_nodes().is_empty()) =>
+                        {
+                            Poll::Ready(None)
+                        }
+                        Poll::Pending => {
+                            if state.task_runs.values().all(|active| !active.slot_held())
+                                && let Some(run) = &state.interaction
+                            {
+                                run.suspend();
+                            }
+                            Poll::Pending
+                        }
+                    }
+                })
+                .await;
+                let Some(progress) = progress else { continue };
                 match execution::commit(&mut state, progress) {
-                    Ok((event, terminal)) => {
-                        if terminal
-                            && let Err(error) =
-                                save_checkpoint(&state, running_snapshot(&state)).await
+                    Ok((event, save)) => {
+                        let question = event.as_ref().is_some_and(|event| match event {
+                            Event::Complete { message, .. } => {
+                                message.metadata.contains_key("reply_id")
+                            }
+                            _ => false,
+                        });
+                        if save
+                            && let Err(error) = save_checkpoint(
+                                &state,
+                                if state.waits.is_empty() {
+                                    running_snapshot(&state)
+                                } else {
+                                    waiting_snapshot(&state)
+                                },
+                            )
+                            .await
                         {
                             state.done = true;
                             return Some((Err(error), state));
+                        }
+                        if question && state.cancellation.is_cancelled() {
+                            // Never present an actionable question after its
+                            // owner was cancelled during Checkpoint saving.
+                            continue;
                         }
                         if let Some(event) = event {
                             return Some((Ok(event), state));
@@ -1770,6 +1973,22 @@ async fn next_react_event_inner<M: Chat + 'static>(
             }
         }
 
+        // A delegated plan may have released its enclosing admission while
+        // all of its tasks awaited feedback. Its own final inference is work
+        // too, and must not bypass capacity after the last task completes.
+        if let Some(run) = &state.interaction
+            && let Err(error) = run.continue_execution(&state.cancellation).await
+        {
+            state.done = true;
+            return Some((
+                if state.cancellation.is_cancelled() {
+                    Ok(cancelled_event(&mut state))
+                } else {
+                    Err(error)
+                },
+                state,
+            ));
+        }
         if state
             .iteration
             .try_update(Ordering::Relaxed, Ordering::Relaxed, |used| {
@@ -1792,6 +2011,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 &state.query,
                 state.graph.as_ref().map(|graph| &graph.plan),
                 evaluation.feedback.as_ref(),
+                state.stream,
             ) {
                 Ok(request) => request,
                 Err(error) => {
@@ -1806,6 +2026,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 &state.query,
                 state.graph.as_ref().map(|graph| &graph.plan),
                 None,
+                state.stream,
             ) {
                 Ok(request) => request,
                 Err(error) => {
@@ -1836,7 +2057,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 messages: state.messages.clone(),
                 tools,
                 tool_choice: Some(ToolChoice::Auto),
-                stream: true,
+                stream: state.stream,
                 ..Request::default()
             }
         };
@@ -1878,6 +2099,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
 }
 
 fn cancelled_event<M: Chat>(state: &mut ReActState<M>) -> Event {
+    state.waits.clear();
     crate::harness::tool_steps::cancel_pending(&mut state.steps);
     if !state.model_pending {
         // The prior Complete was already settled. Cancellation while executing
@@ -1956,8 +2178,9 @@ fn decode_call(part: &Part) -> Result<Call, Error> {
 }
 
 fn tool_success_message(call: &Call, mut message: Message) -> Message {
-    // Keep the Tool's own Message untouched as the business result. The
-    // invocation identity is correlation metadata, not a result envelope.
+    // Keep business content/values, but not execution/question observation
+    // metadata that must not leak into the next model input.
+    crate::harness::observation::clear_source(&mut message);
     message
         .metadata
         .insert("call_id".into(), Value::String(call.call_id.clone()));
@@ -2122,7 +2345,7 @@ mod tests {
             .evaluator(evaluator)
             .build()
             .unwrap();
-        let stream = block_on(agent.run(Input::default(), Cancellation::new())).unwrap();
+        let stream = block_on(agent.run(Input::default(), true, Cancellation::new())).unwrap();
         let events = block_on(stream.collect::<Vec<_>>());
         assert_eq!(*calls.lock().unwrap(), 2);
         let complete = events
@@ -2155,12 +2378,12 @@ mod tests {
             metadata: Map::from_iter([("chat_id".into(), json!(901))]),
             payload: Vec::new(),
         };
-        let first = block_on(agent.run(input.clone(), Cancellation::new())).unwrap();
+        let first = block_on(agent.run(input.clone(), true, Cancellation::new())).unwrap();
         let first_events = block_on(first.collect::<Vec<_>>());
         assert!(first_events.iter().any(|event| event.is_ok()));
         assert_eq!(*calls.lock().unwrap(), 1);
 
-        let restored = block_on(agent.run(input, Cancellation::new())).unwrap();
+        let restored = block_on(agent.run(input, true, Cancellation::new())).unwrap();
         let restored_events = block_on(restored.collect::<Vec<_>>());
         assert!(matches!(
             restored_events.as_slice(),
@@ -2269,7 +2492,7 @@ mod tests {
                     .build()
                     .unwrap();
                 let events = agent
-                    .run(checkpoint_input(), Cancellation::new())
+                    .run(checkpoint_input(), true, Cancellation::new())
                     .await
                     .unwrap()
                     .collect::<Vec<_>>()
@@ -2327,7 +2550,7 @@ mod tests {
             });
 
             let events = agent
-                .run(input, Cancellation::new())
+                .run(input, true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -2373,7 +2596,7 @@ mod tests {
                 .unwrap();
 
             let first = agent
-                .run(checkpoint_input(), Cancellation::new())
+                .run(checkpoint_input(), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -2385,7 +2608,7 @@ mod tests {
             );
 
             let second = agent
-                .run(checkpoint_input(), Cancellation::new())
+                .run(checkpoint_input(), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -2515,7 +2738,7 @@ mod tests {
     impl<A: AgentContract> TestAgent for A {
         fn events(&self, input: Input) -> TestEvents<'_> {
             Box::pin(async move {
-                self.run(input, Cancellation::new())
+                self.run(input, true, Cancellation::new())
                     .await
                     .unwrap()
                     .collect::<Vec<_>>()
@@ -2567,7 +2790,7 @@ mod tests {
                 .build()
                 .unwrap();
             let events = agent
-                .run(checkpoint_input(), Cancellation::new())
+                .run(checkpoint_input(), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -2638,7 +2861,7 @@ mod tests {
                 .build()
                 .unwrap();
             let events = agent
-                .run(checkpoint_input(), Cancellation::new())
+                .run(checkpoint_input(), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -2701,7 +2924,7 @@ mod tests {
                 .unwrap();
 
             let events = agent
-                .run(checkpoint_input(), Cancellation::new())
+                .run(checkpoint_input(), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -2768,7 +2991,7 @@ mod tests {
                         .unwrap();
                     let cancellation = Cancellation::new();
                     let mut stream = agent
-                        .run(checkpoint_input(), cancellation.clone())
+                        .run(checkpoint_input(), true, cancellation.clone())
                         .await
                         .unwrap();
                     let mut events = Vec::new();
@@ -2818,7 +3041,7 @@ mod tests {
                         .build()
                         .unwrap();
                     let replay = restored
-                        .run(checkpoint_input(), Cancellation::new())
+                        .run(checkpoint_input(), true, Cancellation::new())
                         .await
                         .unwrap()
                         .collect::<Vec<_>>()
@@ -3017,7 +3240,7 @@ mod tests {
             .with_id_fn(test_id)
             .build()
             .unwrap();
-        let stream = block_on(parent.run(Input::default(), Cancellation::new())).unwrap();
+        let stream = block_on(parent.run(Input::default(), true, Cancellation::new())).unwrap();
         let events = block_on(stream.collect::<Vec<_>>());
         let messages = events
             .into_iter()
@@ -3041,11 +3264,22 @@ mod tests {
     struct WaitingSubAgent;
 
     impl AgentContract for WaitingSubAgent {
+        async fn reply(
+            &self,
+            _: crate::agent::Input,
+            _: crate::Cancellation,
+        ) -> Result<(), crate::Error> {
+            Err(crate::Error::new(
+                "NOT_FOUND",
+                "fixture has no live feedback consumer",
+            ))
+        }
         type Stream = futures_util::stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
 
         async fn run(
             &self,
             _input: Input,
+            _stream: bool,
             _cancellation: Cancellation,
         ) -> Result<Self::Stream, Error> {
             // A real waiting Agent captures its resumable scene before
@@ -3228,7 +3462,7 @@ mod tests {
             }))
             .build()
             .unwrap();
-        let mut events = block_on(agent.run(Input::default(), Cancellation::new())).unwrap();
+        let mut events = block_on(agent.run(Input::default(), true, Cancellation::new())).unwrap();
         assert!(matches!(
             block_on(events.next()),
             Some(Ok(Event::Complete { .. }))
@@ -3309,7 +3543,7 @@ mod tests {
             )
             .build()
             .unwrap();
-        let events = block_on(agent.run(Input::default(), Cancellation::new())).unwrap();
+        let events = block_on(agent.run(Input::default(), true, Cancellation::new())).unwrap();
         let events = block_on(events.collect::<Vec<_>>());
         assert!(events.iter().all(Result::is_ok), "{events:?}");
         assert_eq!(*model_calls.lock().unwrap(), 2);
@@ -3363,8 +3597,8 @@ mod tests {
             .build()
             .expect("react agent build");
 
-        let mut events =
-            block_on(agent.run(Input::default(), Cancellation::new())).expect("react agent run");
+        let mut events = block_on(agent.run(Input::default(), true, Cancellation::new()))
+            .expect("react agent run");
         assert!(matches!(
             block_on(events.next()),
             Some(Ok(Event::Complete { .. }))
@@ -3415,8 +3649,8 @@ mod tests {
             )
             .build()
             .expect("react agent build");
-        let mut events =
-            block_on(agent.run(Input::default(), Cancellation::new())).expect("react agent run");
+        let mut events = block_on(agent.run(Input::default(), true, Cancellation::new()))
+            .expect("react agent run");
         let mut error = None;
         while let Some(item) = block_on(events.next()) {
             if let Err(value) = item {
@@ -3451,8 +3685,8 @@ mod tests {
             .build()
             .expect("react agent build");
 
-        let mut events =
-            block_on(agent.run(Input::default(), Cancellation::new())).expect("react agent run");
+        let mut events = block_on(agent.run(Input::default(), true, Cancellation::new()))
+            .expect("react agent run");
         let _assistant = block_on(events.next()).expect("assistant event");
         let tool_error = block_on(events.next())
             .expect("tool error event")

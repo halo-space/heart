@@ -10,6 +10,17 @@ struct Task<M: Chat> {
     state: ReActState<M>,
     messages: Messages,
     previous_usage: Option<crate::model::token::Usage>,
+    slot: crate::harness::reply::Slot,
+}
+
+pub(super) struct Active {
+    run: Run,
+    slot: crate::harness::reply::Slot,
+}
+impl Active {
+    pub(super) fn slot_held(&self) -> bool {
+        self.slot.held()
+    }
 }
 
 pub(super) struct TaskProgress<M: Chat> {
@@ -31,9 +42,17 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
         .graph
         .as_mut()
         .ok_or_else(|| Error::new("INVALID_STATE", "plan graph is not initialized"))?;
-    let capacity = state
-        .max_concurrency
-        .saturating_sub(state.active_tasks.len());
+    for (id, active) in &state.task_runs {
+        let node = graph.state_mut(id)?;
+        node.status = if active.slot.held() {
+            Status::Running
+        } else {
+            Status::Waiting
+        };
+        let status = node.status.clone();
+        node.current_attempt_mut()?.status = status;
+    }
+    let capacity = state.task_slots.available_permits();
     let resumed = state
         .resume_nodes
         .iter()
@@ -184,12 +203,23 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
         } else {
             Messages::default()
         };
+        let slot =
+            crate::harness::reply::Slot::new(state.task_slots.clone(), state.task_ready.clone())?;
+        let interaction = state
+            .interaction
+            .as_ref()
+            .map(|run| run.branch(slot.clone()));
         let mut task = Task {
             node_id,
             exec_id,
             messages: output,
             previous_usage,
+            slot: slot.clone(),
             state: ReActState {
+                _interaction_owner: interaction.as_ref().map(crate::harness::reply::Run::owner),
+                interaction,
+                waits: Vec::new(),
+                stream: state.stream,
                 model: state.model.clone(),
                 toolkit: state.toolkit.clone(),
                 subagents: state.subagents.clone(),
@@ -210,6 +240,9 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 plan_execution: false,
                 plan_finalizing: false,
                 active_tasks: FuturesUnordered::new(),
+                task_runs: BTreeMap::new(),
+                task_slots: state.task_slots.clone(),
+                task_ready: state.task_ready.clone(),
                 task_error: None,
                 dispatch_failed: false,
                 is_plan_task: true,
@@ -247,6 +280,13 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
         if resumed {
             tools::restore(&mut task.state)?;
         }
+        state.task_runs.insert(
+            task.node_id.clone(),
+            Active {
+                run: task.state.run.clone(),
+                slot,
+            },
+        );
         state.active_tasks.push(Box::pin(advance(task)));
     }
     Ok(())
@@ -260,6 +300,70 @@ pub(super) fn commit<M: Chat + 'static>(
         mut task,
         mut result,
     } = progress;
+    if waiting_on_feedback(&task.state) {
+        task.slot.release();
+    }
+    let mut question = false;
+    if let Ok(Event::Complete { message, .. }) = &result
+        && let Some(id) = message.metadata.get("reply_id").and_then(Value::as_i64)
+    {
+        question = task.state.steps.iter().any(|step| {
+            step.waits
+                .get(&id)
+                .is_some_and(|record| record.status == "waiting")
+        });
+        for node in task.state.child_nodes.values() {
+            if let Some(scene) = node
+                .execution
+                .as_ref()
+                .and_then(|execution| execution.attempts.last())
+                .and_then(|attempt| attempt.agent.as_ref())
+                .filter(|scene| matches!(scene["status"].as_str(), Some("waiting" | "running")))
+            {
+                question |= crate::runtime::agent::wait::question(scene, id)?;
+            }
+        }
+        if !question {
+            return Err(Error::new(
+                "INVALID_STATE",
+                "task question has no actual waiting Step",
+            ));
+        }
+    }
+    let coordinate = crate::runtime::agent::wait::Node {
+        node_id: task.node_id.clone(),
+        exec_id: task.exec_id,
+        idx: state
+            .graph
+            .as_ref()
+            .expect("executing plan graph")
+            .state(&task.node_id)?
+            .execution
+            .as_ref()
+            .and_then(|execution| execution.attempts.last())
+            .ok_or_else(|| Error::new("INVALID_STATE", "plan task has no current Attempt"))?
+            .idx,
+    };
+    let desired = task
+        .state
+        .waits
+        .iter()
+        .map(|wait| {
+            let mut wait = wait.clone();
+            wait.nodes.insert(0, coordinate.clone());
+            wait
+        })
+        .collect::<Vec<_>>();
+    // Preserve global arrival order, removing only this task's resolved
+    // locators. Question/feedback facts remain in its actual Attempt.steps.
+    state
+        .waits
+        .retain(|wait| wait.nodes.first() != Some(&coordinate) || desired.contains(wait));
+    for wait in desired {
+        if !state.waits.contains(&wait) {
+            state.waits.push(wait);
+        }
+    }
     // A forwarded child Complete is observation, not this task's output or
     // model input. Only the separately committed delegation result belongs here.
     let child_observation = match &result {
@@ -276,7 +380,10 @@ pub(super) fn commit<M: Chat + 'static>(
         }
         _ => false,
     };
-    if !child_observation && let Ok(Event::Complete { message, .. }) = &result {
+    if !child_observation
+        && !question
+        && let Ok(Event::Complete { message, .. }) = &result
+    {
         let mut original = message.clone();
         crate::harness::observation::clear_source(&mut original);
         task.messages.push(original);
@@ -299,17 +406,33 @@ pub(super) fn commit<M: Chat + 'static>(
         }
         let graph = state.graph.as_mut().expect("executing plan graph");
         let node = graph.state_mut(&task.node_id)?;
+        let status = if task.slot.held() {
+            Status::Running
+        } else {
+            Status::Waiting
+        };
+        node.status = status.clone();
         node.messages = Some(task.messages.clone());
         if let Some(execution) = node.execution.as_mut() {
             execution.messages = task.messages.clone();
         }
         let attempt = node.current_attempt_mut()?;
+        attempt.status = status;
         attempt.messages = committed;
         attempt.steps = task.state.steps.clone();
         if task.state.child_nodes_dirty {
             attempt.nodes = task.state.child_nodes.clone();
             task.state.child_nodes_dirty = false;
         }
+        node.set_attempt_result(
+            if task.slot.held() {
+                Status::Running
+            } else {
+                Status::Waiting
+            },
+            crate::model::token::merge(task.previous_usage.clone(), task.state.run.usage()),
+            None,
+        )?;
         if let Ok(event) = &mut result {
             crate::harness::observation::associate(
                 event,
@@ -318,14 +441,21 @@ pub(super) fn commit<M: Chat + 'static>(
             );
         }
         state.active_tasks.push(Box::pin(advance(task)));
-        return Ok((result.ok(), false));
+        return Ok((result.ok(), question));
     }
     let new_usage = task.state.run.usage();
+    task.slot.release();
+    state.task_runs.remove(&task.node_id);
     // Settle each task's actual model calls once, including failure/cancel.
     // Individual forwarded Events retain their per-call Usage unchanged.
     state.run.settle(new_usage.clone());
     let usage = crate::model::token::merge(task.previous_usage, new_usage);
     let graph = state.graph.as_mut().expect("executing plan graph");
+    // Live approval may have marked the task waiting without ending its
+    // invocation. Its terminal transition still belongs to that same Attempt.
+    if graph.state(&task.node_id)?.status == Status::Waiting {
+        graph.resume(&task.node_id)?;
+    }
     let mut context = task.state.messages.clone();
     // An eval error may stop the task before the normal ordered drain. Keep
     // successful call facts already emitted in that incomplete batch too.
@@ -393,6 +523,64 @@ pub(super) fn commit<M: Chat + 'static>(
         );
     }
     Ok(committed)
+}
+
+/// A fatal parent error (including failed question persistence) ends active
+/// task consumers too. Keep their committed facts, not actionable orphan waits.
+pub(super) fn cancel_active<M: Chat>(state: &mut ReActState<M>) {
+    for active in std::mem::take(&mut state.task_runs).into_values() {
+        // These handles contain only work since this invocation resumed,
+        // unlike Node.usage which also retains previously settled attempts.
+        state.run.settle(active.run.usage());
+        active.slot.release();
+    }
+    let Some(graph) = state.graph.as_mut() else {
+        return;
+    };
+    for node in graph
+        .nodes
+        .values_mut()
+        .filter(|node| matches!(node.status, Status::Running | Status::Waiting))
+    {
+        if let Some(attempt) = node
+            .execution
+            .as_mut()
+            .and_then(|execution| execution.attempts.last_mut())
+        {
+            crate::harness::tool_steps::cancel_pending(&mut attempt.steps);
+        }
+        node.status = Status::Cancelled;
+        // Active graph nodes have a current Attempt by construction.
+        node.set_attempt_result(Status::Cancelled, node.usage.clone(), None)
+            .expect("active graph node has a current Attempt");
+    }
+}
+
+pub(super) fn waiting_on_feedback<M: Chat>(state: &ReActState<M>) -> bool {
+    // Selection creates Steps for the whole Tool batch. Calls still queued
+    // behind a suspended call are not executing and cannot retain admission.
+    !state.waits.is_empty()
+        && !state.steps.iter().any(|step| {
+            step.status == "running"
+                && !(step.kind == "agent"
+                    && state
+                        .interaction
+                        .as_ref()
+                        .is_some_and(|run| run.children_blocked()))
+                && !state
+                    .pending_calls
+                    .iter()
+                    .any(|(_, call)| step.call_id.as_deref() == Some(call.call_id.as_str()))
+        })
+}
+
+pub(super) fn usage<M: Chat>(state: &ReActState<M>) -> Option<crate::model::token::Usage> {
+    state
+        .task_runs
+        .values()
+        .fold(state.run.usage(), |total, active| {
+            crate::model::token::merge(total, active.run.usage())
+        })
 }
 
 pub(super) fn finalize<M: Chat>(state: &mut ReActState<M>) -> Result<(), Error> {

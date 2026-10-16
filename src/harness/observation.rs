@@ -3,7 +3,11 @@
 use crate::{Message, event::Event};
 
 pub(crate) fn clear_source(message: &mut Message) {
-    for key in ["chat_id", "node_id", "exec_id"] {
+    // reply_id belongs to the runtime's question/feedback association, just
+    // as the other fields belong to execution observation. Neither is model
+    // context. Strip only top-level metadata: business content/values and
+    // the authoritative Input/Step waiting facts must remain untouched.
+    for key in ["chat_id", "node_id", "exec_id", "reply_id"] {
         message.metadata.remove(key);
     }
 }

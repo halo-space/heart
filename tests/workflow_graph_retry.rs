@@ -116,9 +116,19 @@ fn restored_external_wait_advances_the_barrier_and_runs_its_downstream() {
 }
 
 impl Agent for CountedAgent {
+    async fn reply(
+        &self,
+        _: halo_agents::agent::Input,
+        _: halo_agents::Cancellation,
+    ) -> Result<(), halo_agents::Error> {
+        Err(halo_agents::Error::new(
+            "NOT_FOUND",
+            "fixture has no live feedback consumer",
+        ))
+    }
     type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
 
-    async fn run(&self, _: Input, _: Cancellation) -> Result<Self::Stream, Error> {
+    async fn run(&self, _: Input, _stream: bool, _: Cancellation) -> Result<Self::Stream, Error> {
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 && self.fail_once {
             return Err(Error::new("TIMEOUT", "temporary child failure"));
         }

@@ -120,6 +120,15 @@ pub(crate) fn resume_calls(
     steps: &[Step],
     messages: &mut Messages,
 ) -> Result<Vec<(usize, Call)>, Error> {
+    for step in steps {
+        for wait in step.waits.values() {
+            if wait.kind.trim().is_empty()
+                || !matches!(wait.status.as_str(), "waiting" | "resolved")
+            {
+                return Err(invalid_checkpoint("invalid Agent Step waiting record"));
+            }
+        }
+    }
     for step in steps
         .iter()
         .filter(|step| step.kind == "tool" && step.stage.is_some())

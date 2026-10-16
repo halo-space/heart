@@ -71,6 +71,19 @@ pub(crate) fn invalid(message: &str) -> Error {
     Error::new("INVALID_STATE", message)
 }
 
+/// Validate native waiting positions before any Model/Tool/Memory work. Until
+/// the targeted consumer is connected, an explicit human wait must not fall
+/// through to generic continuation or silently lose its ordered index.
+pub(crate) fn check_waits(state: &Value) -> Result<(), Error> {
+    if crate::runtime::agent::wait::validate(state)? {
+        return Err(Error::new(
+            "WAITING",
+            "Agent is waiting for targeted external feedback",
+        ));
+    }
+    Ok(())
+}
+
 /// Check ownership from the canonical state and its saved original input.
 /// Root metadata can be empty; the original query still owns the run and must
 /// never be bypassed when continuation changes payload.

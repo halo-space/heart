@@ -207,7 +207,7 @@ fn execution_source_is_only_in_events_not_plan_history_checkpoint_or_next_model_
         let mut input = input();
         input.metadata.insert("chat_id".into(), json!(8101));
         let events = agent
-            .run(input, Cancellation::new())
+            .run(input, true, Cancellation::new())
             .await
             .unwrap()
             .collect::<Vec<_>>()
@@ -303,7 +303,7 @@ fn slow_source_is_not_lost_and_join_receives_both_committed_results() {
             .with_max_concurrency(2)
             .build()
             .unwrap();
-        let mut events = agent.run(input(), Cancellation::new()).await.unwrap();
+        let mut events = agent.run(input(), true, Cancellation::new()).await.unwrap();
         for _ in 0..3 {
             message(events.next().await.unwrap());
         }
@@ -362,7 +362,7 @@ fn failed_task_waits_for_independent_work_without_activating_its_downstream() {
             .with_max_concurrency(2)
             .build()
             .unwrap();
-        let mut events = agent.run(input(), Cancellation::new()).await.unwrap();
+        let mut events = agent.run(input(), true, Cancellation::new()).await.unwrap();
         for _ in 0..3 {
             message(events.next().await.unwrap());
         }
@@ -405,7 +405,7 @@ fn cancelling_parallel_tasks_settles_each_admitted_task_and_never_starts_queued_
         let cancellation = Cancellation::new();
         let mut query = input();
         query.metadata.insert("chat_id".into(), json!(8103));
-        let mut events = agent.run(query, cancellation.clone()).await.unwrap();
+        let mut events = agent.run(query, true, cancellation.clone()).await.unwrap();
         for _ in 0..3 {
             message(events.next().await.unwrap());
         }
@@ -443,7 +443,7 @@ fn dropping_parallel_plan_stream_releases_all_owned_task_futures() {
             .with_max_concurrency(2)
             .build()
             .unwrap();
-        let mut events = agent.run(input(), Cancellation::new()).await.unwrap();
+        let mut events = agent.run(input(), true, Cancellation::new()).await.unwrap();
         for _ in 0..3 {
             message(events.next().await.unwrap());
         }
@@ -468,7 +468,7 @@ fn one_slot_does_not_eagerly_start_queued_roots_or_dependents() {
             .with_max_concurrency(1)
             .build()
             .unwrap();
-        let mut events = agent.run(input(), Cancellation::new()).await.unwrap();
+        let mut events = agent.run(input(), true, Cancellation::new()).await.unwrap();
         for _ in 0..3 {
             message(events.next().await.unwrap());
         }

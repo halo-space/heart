@@ -218,7 +218,7 @@ fn planned_eval_wait_resumes_the_same_attempt_and_keeps_feedback_local() {
             payload: vec![],
         };
         let events = agent
-            .run(input.clone(), Cancellation::new())
+            .run(input.clone(), true, Cancellation::new())
             .await
             .unwrap()
             .collect::<Vec<_>>()
@@ -243,7 +243,7 @@ fn planned_eval_wait_resumes_the_same_attempt_and_keeps_feedback_local() {
             .build()
             .unwrap();
         let events = restored
-            .run(input, Cancellation::new())
+            .run(input, true, Cancellation::new())
             .await
             .unwrap()
             .collect::<Vec<_>>()
@@ -339,7 +339,7 @@ fn tool_business_feedback_repairs_only_its_plan_node_and_keeps_successful_calls(
             payload: vec![],
         };
         let events = agent
-            .run(input, Cancellation::new())
+            .run(input, true, Cancellation::new())
             .await
             .unwrap()
             .collect::<Vec<_>>()
@@ -413,6 +413,7 @@ fn tool_eval_technical_failure_keeps_call_results_and_finishes_independent_nodes
                     metadata: part_data(json!({"chat_id":601})),
                     payload: vec![],
                 },
+                true,
                 Cancellation::new(),
             )
             .await

@@ -281,7 +281,7 @@ fn mcp_skill_name_collision_is_rejected_before_model_work() {
         .toolkit(toolkit)
         .build()
         .unwrap();
-    let error = block_on(agent.run(Input::default(), Cancellation::new()))
+    let error = block_on(agent.run(Input::default(), true, Cancellation::new()))
         .err()
         .unwrap();
     assert_eq!(error.code, "INVALID_ARGUMENTS");
@@ -384,7 +384,7 @@ fn skill_registration_does_not_advertise_model_tools() {
         .unwrap();
     block_on(async {
         let output = agent
-            .run(Input::default(), Cancellation::new())
+            .run(Input::default(), true, Cancellation::new())
             .await
             .unwrap()
             .collect::<Vec<_>>()

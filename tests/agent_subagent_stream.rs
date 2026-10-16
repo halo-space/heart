@@ -144,7 +144,7 @@ async fn start(
                 .checkpoint(checkpoint)
                 .build()
                 .unwrap()
-                .run(input(), Cancellation::new())
+                .run(input(), true, Cancellation::new())
                 .await
                 .unwrap(),
         )
@@ -157,7 +157,7 @@ async fn start(
                 .checkpoint(checkpoint)
                 .build()
                 .unwrap()
-                .run(input(), Cancellation::new())
+                .run(input(), true, Cancellation::new())
                 .await
                 .unwrap(),
         )
@@ -354,8 +354,18 @@ async fn concurrent_children_emit_live_and_parent_context_keeps_selection_order(
 
 struct WaitingChild;
 impl Agent for WaitingChild {
+    async fn reply(
+        &self,
+        _: halo_agents::agent::Input,
+        _: halo_agents::Cancellation,
+    ) -> Result<(), halo_agents::Error> {
+        Err(halo_agents::Error::new(
+            "NOT_FOUND",
+            "fixture has no live feedback consumer",
+        ))
+    }
     type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-    async fn run(&self, _: Input, _: Cancellation) -> Result<Self::Stream, Error> {
+    async fn run(&self, _: Input, _stream: bool, _: Cancellation) -> Result<Self::Stream, Error> {
         Ok(stream::iter(vec![
             Ok(Event::Delta {
                 message: text(Role::Assistant, "text", "before waiting"),
@@ -437,8 +447,18 @@ async fn dropping_the_parent_stream_releases_the_child_without_background_produc
 
 struct SourcedChild;
 impl Agent for SourcedChild {
+    async fn reply(
+        &self,
+        _: halo_agents::agent::Input,
+        _: halo_agents::Cancellation,
+    ) -> Result<(), halo_agents::Error> {
+        Err(halo_agents::Error::new(
+            "NOT_FOUND",
+            "fixture has no live feedback consumer",
+        ))
+    }
     type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-    async fn run(&self, _: Input, _: Cancellation) -> Result<Self::Stream, Error> {
+    async fn run(&self, _: Input, _stream: bool, _: Cancellation) -> Result<Self::Stream, Error> {
         let mut message = text(Role::Assistant, "text", "descendant");
         message
             .metadata
@@ -556,7 +576,12 @@ async fn planned_task_forwards_live_child_events_but_commits_only_its_own_output
         .checkpoint(checkpoint.clone())
         .build()
         .unwrap();
-    let mut events: TestStream = Box::pin(parent.run(input(), Cancellation::new()).await.unwrap());
+    let mut events: TestStream = Box::pin(
+        parent
+            .run(input(), true, Cancellation::new())
+            .await
+            .unwrap(),
+    );
     let source = loop {
         let event = next(&mut events).await.unwrap();
         if matches!(&event,Event::Delta {message} if message.content[0].r#type=="think") {
@@ -714,8 +739,18 @@ async fn nested_workflow_forwards_the_same_live_child_source_without_extra_subsc
 
 struct MultiStageChild(Arc<Notify>);
 impl Agent for MultiStageChild {
+    async fn reply(
+        &self,
+        _: halo_agents::agent::Input,
+        _: halo_agents::Cancellation,
+    ) -> Result<(), halo_agents::Error> {
+        Err(halo_agents::Error::new(
+            "NOT_FOUND",
+            "fixture has no live feedback consumer",
+        ))
+    }
     type Stream = Pin<Box<dyn Stream<Item = Result<Event, Error>> + Send>>;
-    async fn run(&self, _: Input, _: Cancellation) -> Result<Self::Stream, Error> {
+    async fn run(&self, _: Input, _stream: bool, _: Cancellation) -> Result<Self::Stream, Error> {
         Ok(Box::pin(stream::unfold(
             (0, self.0.clone()),
             |(phase, gate)| async move {

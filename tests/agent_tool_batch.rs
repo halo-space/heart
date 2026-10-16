@@ -210,7 +210,7 @@ fn bounded_overlap_emits_completed_results_but_model_sees_original_order() {
             .with_max_concurrency(2)
             .build()
             .unwrap();
-        let mut events = agent.run(input(), Cancellation::new()).await.unwrap();
+        let mut events = agent.run(input(), true, Cancellation::new()).await.unwrap();
         message(events.next().await.unwrap());
         let mut next = Box::pin(events.next());
         assert!(poll!(next.as_mut()).is_pending());
@@ -260,7 +260,7 @@ fn one_slot_keeps_calls_serial_without_eagerly_starting_the_queue() {
             .with_max_concurrency(1)
             .build()
             .unwrap();
-        let mut events = agent.run(input(), Cancellation::new()).await.unwrap();
+        let mut events = agent.run(input(), true, Cancellation::new()).await.unwrap();
         message(events.next().await.unwrap());
         let mut next = Box::pin(events.next());
         assert!(poll!(next.as_mut()).is_pending());
@@ -291,7 +291,7 @@ fn pending_eval_holds_the_slot_and_blocks_next_inference() {
             .with_max_concurrency(1)
             .build()
             .unwrap();
-        let mut events = agent.run(input(), Cancellation::new()).await.unwrap();
+        let mut events = agent.run(input(), true, Cancellation::new()).await.unwrap();
         message(events.next().await.unwrap());
         assert_eq!(message(events.next().await.unwrap()).values["index"], 1);
         let mut next = Box::pin(events.next());
@@ -317,7 +317,7 @@ fn failed_call_is_direct_context_and_does_not_repeat_successful_siblings() {
             .build()
             .unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -358,7 +358,10 @@ fn cancellation_releases_admitted_futures_without_starting_queued_calls() {
             .build()
             .unwrap();
         let cancellation = Cancellation::new();
-        let mut events = agent.run(input(), cancellation.clone()).await.unwrap();
+        let mut events = agent
+            .run(input(), true, cancellation.clone())
+            .await
+            .unwrap();
         message(events.next().await.unwrap());
         let mut next = Box::pin(events.next());
         assert!(poll!(next.as_mut()).is_pending());
@@ -387,7 +390,7 @@ fn dropping_stream_releases_pending_tool_resources() {
             .toolkit(Toolkit::new().tool(tool))
             .build()
             .unwrap();
-        let mut events = agent.run(input(), Cancellation::new()).await.unwrap();
+        let mut events = agent.run(input(), true, Cancellation::new()).await.unwrap();
         message(events.next().await.unwrap());
         assert!(events.next().now_or_never().is_none());
         assert_eq!(probe.lock().unwrap().active, 2);
@@ -410,7 +413,7 @@ fn eval_failure_keeps_success_event_and_never_repeats_call() {
             .toolkit(Toolkit::new().tool(tool))
             .build()
             .unwrap();
-        let mut events = agent.run(input(), Cancellation::new()).await.unwrap();
+        let mut events = agent.run(input(), true, Cancellation::new()).await.unwrap();
         message(events.next().await.unwrap());
         assert_eq!(message(events.next().await.unwrap()).values["index"], 1);
         let error = events.next().await.unwrap().unwrap_err();
@@ -443,7 +446,7 @@ fn business_feedback_does_not_masquerade_as_tool_error_context() {
             .build()
             .unwrap();
         let events: Vec<_> = agent
-            .run(input(), Cancellation::new())
+            .run(input(), true, Cancellation::new())
             .await
             .unwrap()
             .collect()
@@ -499,7 +502,7 @@ fn permission_hook_failure_releases_siblings_and_never_enters_model_context() {
             .with_max_concurrency(2)
             .build()
             .unwrap();
-        let mut events = agent.run(input(), Cancellation::new()).await.unwrap();
+        let mut events = agent.run(input(), true, Cancellation::new()).await.unwrap();
         message(events.next().await.unwrap());
         assert_eq!(
             events.next().await.unwrap().unwrap_err().message,
@@ -528,7 +531,7 @@ fn reusing_agent_does_not_reuse_prior_batch_results_or_pending_work() {
             .unwrap();
         for _ in 0..2 {
             let events: Vec<_> = agent
-                .run(input(), Cancellation::new())
+                .run(input(), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect()

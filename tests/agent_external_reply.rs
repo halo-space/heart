@@ -1,7 +1,8 @@
-//! Known external-reply defect; not a completed recovery capability.
+//! Ambiguous external feedback must be rejected before model dispatch.
+//! This guard is not the still-pending targeted live reply implementation.
 use std::sync::{Arc, Mutex};
 
-use futures_util::{StreamExt, stream};
+use futures_util::stream;
 use halo_agents::{
     Cancellation, Error, Message, Messages,
     agent::{self, Agent, Input},
@@ -29,7 +30,6 @@ impl Chat for Model {
 }
 
 #[tokio::test]
-#[ignore = "ISSUE-021: external reply currently reaches both waiting plan nodes; waiting consumer contract needs confirmation"]
 async fn one_external_reply_must_not_be_broadcast_to_multiple_waiting_nodes() {
     let original: Input = serde_json::from_value(json!({
         "metadata":{"chat_id":501,"session_id":601},
@@ -82,44 +82,25 @@ async fn one_external_reply_must_not_be_broadcast_to_multiple_waiting_nodes() {
         .with_id_fn(|| panic!("restoration must not allocate new identities"))
         .build()
         .unwrap();
-    let reply: Input = serde_json::from_value(json!({
-        "metadata":original.metadata,
-        "payload":[{"type":"json","data":{"value":{"approved":true}}}]
-    }))
-    .unwrap();
-    let events = agent
-        .run(reply, Cancellation::new())
-        .await
-        .expect("valid waiting fixture")
-        .collect::<Vec<_>>()
-        .await;
-    assert!(
-        events.iter().all(Result::is_ok),
-        "fixture failed before reply consumption: {events:?}"
-    );
-    let recipients = requests
-        .lock()
-        .unwrap()
-        .iter()
-        .filter(|request| {
-            request
-                .messages
-                .0
-                .iter()
-                .any(|message| message.values.contains_key("plan_node"))
-                && request.messages.0.iter().any(|message| {
-                    message
-                        .content
-                        .iter()
-                        .any(|part| part.data.get("value") == Some(&json!({"approved":true})))
-                })
-        })
-        .count();
-    assert!(
-        recipients <= 1,
-        "one external reply reached {recipients} distinct waiting nodes"
-    );
-    if recipients == 0 {
+    for reply_id in [None, Some(5001)] {
+        let mut reply: Input = serde_json::from_value(json!({
+            "metadata":original.metadata,
+            "payload":[{"type":"json","data":{"value":{"approved":true}}}]
+        }))
+        .unwrap();
+        if let Some(reply_id) = reply_id {
+            reply.metadata.insert("reply_id".into(), json!(reply_id));
+        }
+        let error = match agent.run(reply, true, Cancellation::new()).await {
+            Ok(_) => panic!("ambiguous feedback must not start a model stream"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code, "CONFLICT");
+        assert_eq!(
+            error.message,
+            "feedback has multiple possible waiting consumers"
+        );
+        assert!(requests.lock().unwrap().is_empty());
         assert_eq!(
             checkpoint.load(501, &Cancellation::new()).await.unwrap(),
             snapshot,

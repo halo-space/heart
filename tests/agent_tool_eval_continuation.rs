@@ -250,7 +250,7 @@ async fn graphless_roots_keep_canonical_child_identity_and_do_not_duplicate_pare
                 .checkpoint(checkpoint.clone())
                 .build()
                 .unwrap()
-                .run(input("original parent question"), Cancellation::new())
+                .run(input("original parent question"), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -263,7 +263,7 @@ async fn graphless_roots_keep_canonical_child_identity_and_do_not_duplicate_pare
                 .checkpoint(checkpoint.clone())
                 .build()
                 .unwrap()
-                .run(input("original parent question"), Cancellation::new())
+                .run(input("original parent question"), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -307,7 +307,7 @@ async fn graphless_roots_keep_canonical_child_identity_and_do_not_duplicate_pare
                 .checkpoint(checkpoint.clone())
                 .build()
                 .unwrap()
-                .run(input("approved"), Cancellation::new())
+                .run(input("approved"), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -320,7 +320,7 @@ async fn graphless_roots_keep_canonical_child_identity_and_do_not_duplicate_pare
                 .checkpoint(checkpoint.clone())
                 .build()
                 .unwrap()
-                .run(input("approved"), Cancellation::new())
+                .run(input("approved"), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -372,7 +372,7 @@ async fn ordinary_agent_checkpoint_needs_no_root_execution_or_id_function_call()
                 .checkpoint(checkpoint.clone())
                 .build()
                 .unwrap()
-                .run(input("hello"), Cancellation::new())
+                .run(input("hello"), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -384,7 +384,7 @@ async fn ordinary_agent_checkpoint_needs_no_root_execution_or_id_function_call()
                 .checkpoint(checkpoint.clone())
                 .build()
                 .unwrap()
-                .run(input("hello"), Cancellation::new())
+                .run(input("hello"), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -424,7 +424,7 @@ async fn cached_root_child_and_waiting_tool_restore_in_original_call_order() {
                 .checkpoint(checkpoint.clone())
                 .build()
                 .unwrap()
-                .run(input("mixed task"), Cancellation::new())
+                .run(input("mixed task"), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -438,7 +438,7 @@ async fn cached_root_child_and_waiting_tool_restore_in_original_call_order() {
                 .checkpoint(checkpoint.clone())
                 .build()
                 .unwrap()
-                .run(input("mixed task"), Cancellation::new())
+                .run(input("mixed task"), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -466,7 +466,7 @@ async fn cached_root_child_and_waiting_tool_restore_in_original_call_order() {
                 .checkpoint(checkpoint.clone())
                 .build()
                 .unwrap()
-                .run(input("approved"), Cancellation::new())
+                .run(input("approved"), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -480,7 +480,7 @@ async fn cached_root_child_and_waiting_tool_restore_in_original_call_order() {
                 .checkpoint(checkpoint.clone())
                 .build()
                 .unwrap()
-                .run(input("approved"), Cancellation::new())
+                .run(input("approved"), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -585,7 +585,7 @@ async fn planned_pending_eval_cancellation_keeps_attempt_result_and_never_admits
 async fn cancel_after_child<A: Agent>(agent: A, token: Cancellation) {
     let mut events = Box::pin(
         agent
-            .run(input("parent task"), token.clone())
+            .run(input("parent task"), true, token.clone())
             .await
             .unwrap(),
     );
@@ -622,7 +622,7 @@ async fn terminal_child_scene_delivery_is_not_billed_as_another_model_call() {
                 .build()
                 .unwrap();
             let events = agent
-                .run(input("parent task"), Cancellation::new())
+                .run(input("parent task"), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -637,7 +637,7 @@ async fn terminal_child_scene_delivery_is_not_billed_as_another_model_call() {
                 .build()
                 .unwrap();
             let events = agent
-                .run(input("parent task"), Cancellation::new())
+                .run(input("parent task"), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -661,7 +661,7 @@ async fn terminal_child_scene_delivery_is_not_billed_as_another_model_call() {
             .unwrap();
         assert!(
             child
-                .run(child_input, Cancellation::new())
+                .run(child_input, true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -717,7 +717,7 @@ async fn terminal_child_scene_delivery_is_not_billed_as_another_model_call() {
                 .checkpoint(checkpoint.clone())
                 .build()
                 .unwrap()
-                .run(input("approved"), Cancellation::new())
+                .run(input("approved"), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -730,7 +730,7 @@ async fn terminal_child_scene_delivery_is_not_billed_as_another_model_call() {
                 .checkpoint(checkpoint.clone())
                 .build()
                 .unwrap()
-                .run(input("approved"), Cancellation::new())
+                .run(input("approved"), true, Cancellation::new())
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -976,7 +976,7 @@ async fn planned_subagent_wait_must_not_replay_child_tool_after_checkpoint_resto
         .build()
         .unwrap();
     let events = first
-        .run(input("parent task"), Cancellation::new())
+        .run(input("parent task"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -1019,7 +1019,7 @@ async fn planned_subagent_wait_must_not_replay_child_tool_after_checkpoint_resto
         .build()
         .unwrap();
     let events = restored
-        .run(input("approved"), Cancellation::new())
+        .run(input("approved"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -1159,7 +1159,7 @@ async fn direct_child_survives_later_plan_creation_without_entering_static_nodes
         .build()
         .unwrap();
     let events = parent
-        .run(input("delegate then plan"), Cancellation::new())
+        .run(input("delegate then plan"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -1258,6 +1258,7 @@ async fn planned_subagent_inherits_id_function_for_its_own_plan_and_restores_tha
                 } else {
                     "approved"
                 }),
+                true,
                 Cancellation::new(),
             )
             .await
@@ -1325,7 +1326,7 @@ async fn repeated_registered_subagent_has_distinct_nodes_and_retains_successful_
         .build()
         .unwrap();
     let events = parent
-        .run(input("parent task"), Cancellation::new())
+        .run(input("parent task"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -2231,7 +2232,7 @@ async fn react_waiting_eval_resumes_eval_without_repeating_before_or_call() {
         .build()
         .unwrap();
     let events = first
-        .run(input("weather?"), Cancellation::new())
+        .run(input("weather?"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -2254,7 +2255,7 @@ async fn react_waiting_eval_resumes_eval_without_repeating_before_or_call() {
         .build()
         .unwrap();
     let events = restored
-        .run(input("approved"), Cancellation::new())
+        .run(input("approved"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -2315,7 +2316,7 @@ async fn completed_sibling_eval_is_reused_and_context_keeps_selection_order() {
         .build()
         .unwrap();
     let events = first
-        .run(input("weather?"), Cancellation::new())
+        .run(input("weather?"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -2333,7 +2334,7 @@ async fn completed_sibling_eval_is_reused_and_context_keeps_selection_order() {
         .build()
         .unwrap();
     let events = restored
-        .run(input("approved"), Cancellation::new())
+        .run(input("approved"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -2368,7 +2369,7 @@ async fn chat_batch_restores_results_and_evals_without_parent_model_reselection(
         .unwrap();
     let original = input("weather?");
     let events = first
-        .run(original.clone(), Cancellation::new())
+        .run(original.clone(), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -2391,7 +2392,7 @@ async fn chat_batch_restores_results_and_evals_without_parent_model_reselection(
         .build()
         .unwrap();
     let mut stream = restored
-        .run(input("approved"), Cancellation::new())
+        .run(input("approved"), true, Cancellation::new())
         .await
         .unwrap();
     assert!(
@@ -2449,7 +2450,7 @@ async fn chat_invalid_eval_scene_is_not_overwritten_or_given_to_model() {
         .build()
         .unwrap();
     let _ = first
-        .run(input("weather?"), Cancellation::new())
+        .run(input("weather?"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -2468,7 +2469,7 @@ async fn chat_invalid_eval_scene_is_not_overwritten_or_given_to_model() {
         .build()
         .unwrap();
     let error = restored
-        .run(input("approved"), Cancellation::new())
+        .run(input("approved"), true, Cancellation::new())
         .await
         .unwrap_err();
     assert_eq!(error.code, "INVALID_STATE");
@@ -2491,7 +2492,7 @@ async fn chat_running_batch_checkpoint_reuses_success_and_retains_usage() {
         .unwrap();
     let original = input("weather?");
     let mut first_stream = first
-        .run(original.clone(), Cancellation::new())
+        .run(original.clone(), true, Cancellation::new())
         .await
         .unwrap();
     assert!(first_stream.next().await.unwrap().is_ok());
@@ -2510,7 +2511,7 @@ async fn chat_running_batch_checkpoint_reuses_success_and_retains_usage() {
         .build()
         .unwrap();
     let stream = restored
-        .run(input("continue"), Cancellation::new())
+        .run(input("continue"), true, Cancellation::new())
         .await
         .unwrap();
     assert!(model.requests.lock().unwrap().is_empty());
@@ -2551,7 +2552,10 @@ async fn chat_cancellation_drops_pending_followup_provider_and_keeps_previous_us
         .build()
         .unwrap();
     let token = Cancellation::new();
-    let mut stream = first.run(input("weather?"), token.clone()).await.unwrap();
+    let mut stream = first
+        .run(input("weather?"), true, token.clone())
+        .await
+        .unwrap();
     assert!(stream.next().await.unwrap().is_ok());
     assert!(stream.next().await.unwrap().is_ok());
     let cancel = tokio::spawn(async move {
@@ -2596,7 +2600,10 @@ async fn cancelling_pending_chat_eval_keeps_call_result_and_marks_only_unfinishe
         .build()
         .unwrap();
     let token = Cancellation::new();
-    let mut events = agent.run(input("weather?"), token.clone()).await.unwrap();
+    let mut events = agent
+        .run(input("weather?"), true, token.clone())
+        .await
+        .unwrap();
     assert!(events.next().await.unwrap().is_ok());
     let cancel = tokio::spawn(async move {
         while !entered.load(std::sync::atomic::Ordering::Relaxed) {
@@ -2633,7 +2640,7 @@ async fn missing_eval_result_is_rejected_before_model_or_state_writes() {
         .build()
         .unwrap();
     let _ = first
-        .run(input("weather?"), Cancellation::new())
+        .run(input("weather?"), true, Cancellation::new())
         .await
         .unwrap()
         .collect::<Vec<_>>()
@@ -2651,7 +2658,10 @@ async fn missing_eval_result_is_rejected_before_model_or_state_writes() {
         .checkpoint(checkpoint.clone())
         .build()
         .unwrap();
-    let error = match restored.run(input("approved"), Cancellation::new()).await {
+    let error = match restored
+        .run(input("approved"), true, Cancellation::new())
+        .await
+    {
         Ok(_) => panic!("invalid eval scene was accepted"),
         Err(error) => error,
     };
@@ -2720,7 +2730,7 @@ async fn eval_worker() {
             .checkpoint(checkpoint.clone())
             .build()
             .unwrap()
-            .run(request, Cancellation::new())
+            .run(request, true, Cancellation::new())
             .await
             .unwrap()
             .collect::<Vec<_>>()
@@ -2732,7 +2742,7 @@ async fn eval_worker() {
             .checkpoint(checkpoint.clone())
             .build()
             .unwrap()
-            .run(request, Cancellation::new())
+            .run(request, true, Cancellation::new())
             .await
             .unwrap()
             .collect::<Vec<_>>()
@@ -3224,6 +3234,7 @@ async fn planned_child_worker() {
         let events = parent
             .run(
                 input(if wait { "parent task" } else { "approved" }),
+                true,
                 Cancellation::new(),
             )
             .await
