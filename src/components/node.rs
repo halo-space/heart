@@ -1,6 +1,5 @@
 use std::future::Future;
 
-use crate::components::message::Messages;
 use crate::runtime::cancellation::Cancellation;
 
 pub(crate) mod input;
@@ -36,19 +35,5 @@ where
 {
     async fn call(&self, input: I, cancellation: Cancellation) -> Result<Signal<O>, E> {
         (self)(input, cancellation).await.map(Signal::Complete)
-    }
-}
-
-/// Small first-slice smoke node used to verify the contract before the full
-/// Workflow Runtime is introduced.
-pub struct Echo;
-
-impl Node<Messages, Messages, crate::Error> for Echo {
-    async fn call(
-        &self,
-        input: Messages,
-        _cancellation: Cancellation,
-    ) -> Result<Signal<Messages>, crate::Error> {
-        Ok(Signal::Complete(input))
     }
 }

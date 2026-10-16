@@ -11,6 +11,7 @@ pub mod mcp;
 pub mod memory;
 mod message_transform;
 pub mod middleware;
+pub mod node;
 mod operation;
 pub mod permission;
 pub mod plan;

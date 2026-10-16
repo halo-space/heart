@@ -32,7 +32,10 @@ pub mod middleware {
     pub use crate::core::middleware::Retry;
 }
 pub use components::model;
-pub use components::node;
+pub mod node {
+    pub use crate::components::node::*;
+    pub use crate::core::node::Echo;
+}
 pub use components::permission;
 pub use components::plan;
 pub use components::prompt;
