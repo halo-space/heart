@@ -1,4 +1,4 @@
-//! Compile-time glue for the frozen Node contract; no execution state.
+//! Compile-time validation for Workflow Node registration.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as Tokens;

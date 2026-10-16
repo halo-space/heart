@@ -47,10 +47,10 @@ pub use components::skill;
 pub use components::tool;
 pub use components::workspace;
 pub use core::provider;
-/// Optional declaration macro for the existing Node contract.
-/// Ordinary functions work without the attribute; this only checks their
-/// contract at the definition site. Components may use `call = method` or
-/// `signal = method` on an inherent impl, without a wrapping Node object.
+/// Optional compile-time check that a function or component method can be
+/// registered as a Workflow Node. Ordinary functions work without the
+/// attribute. Components may use `call = method` or `signal = method` on an
+/// inherent impl, without a wrapping Node object.
 ///
 /// ```
 /// use halo_agents::{Cancellation, Error, node, runtime::workflow::WorkflowBuilder};

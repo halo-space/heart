@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 license = "MIT"
-description = "Optional compile-time Node declaration glue for Heart"
+description = "Compile-time validation for Heart Workflow node registration"
 
 [lib]
 proc-macro = true
