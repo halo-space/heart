@@ -6,6 +6,7 @@
 extern crate self as halo_agents;
 
 pub mod agent;
+pub mod cancellation;
 mod components;
 pub mod core;
 pub mod runtime;
@@ -36,6 +37,7 @@ pub mod node {
     pub use crate::components::node::*;
     pub use crate::core::node::Echo;
 }
+pub use cancellation::Cancellation;
 pub use components::permission;
 pub use components::plan;
 pub use components::prompt;
@@ -76,7 +78,6 @@ pub use core::provider;
 /// fn synchronous(_: i64, _: Cancellation) -> Result<i64, Error> { Ok(1) }
 /// ```
 pub use heart_node_macros::node;
-pub use runtime::cancellation::Cancellation;
 
 // Compile the attribute in the defining library too, not only downstream
 // examples. This is a test-only assertion, with no node or runtime created.
