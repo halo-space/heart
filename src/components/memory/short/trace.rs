@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::Cancellation;
 use crate::components::memory::short::Error;
-use crate::runtime::cancellation::Cancellation;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Trace {

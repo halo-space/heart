@@ -1,6 +1,6 @@
 use std::future::Future;
 
-use crate::runtime::cancellation::Cancellation;
+use crate::Cancellation;
 
 pub type Error = crate::Error;
 

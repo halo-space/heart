@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::Cancellation;
 use crate::components::document::Document;
-use crate::runtime::cancellation::Cancellation;
 
 pub type Error = crate::Error;
 

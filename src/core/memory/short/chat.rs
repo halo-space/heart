@@ -4,8 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde_json::{Map, Value};
 
+use crate::Cancellation;
 use crate::components::memory::short::{Error, chat};
-use crate::runtime::cancellation::Cancellation;
 
 pub struct InMemory {
     records: RwLock<BTreeMap<i64, chat::Chat>>,

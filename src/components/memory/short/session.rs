@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::Cancellation;
 use crate::components::memory::short::Error;
 use crate::components::memory::short::Type;
 use crate::components::model::token::Usage;
-use crate::runtime::cancellation::Cancellation;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]

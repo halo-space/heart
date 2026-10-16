@@ -9,11 +9,11 @@ mod tests {
     use futures_executor::block_on;
     use serde_json::Value;
 
+    use crate::Cancellation;
     use crate::components::memory::short::chat::Store as _;
     use crate::components::memory::short::session::Store as _;
     use crate::components::memory::short::trace::Store as _;
     use crate::components::memory::short::{Type, chat, session, trace};
-    use crate::runtime::cancellation::Cancellation;
 
     #[test]
     fn short_memory_stores_keep_their_own_crud_boundaries() {

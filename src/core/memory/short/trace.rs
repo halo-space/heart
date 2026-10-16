@@ -2,8 +2,8 @@ use std::collections::BTreeMap;
 use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::Cancellation;
 use crate::components::memory::short::{Error, trace};
-use crate::runtime::cancellation::Cancellation;
 
 pub struct InMemory {
     records: RwLock<BTreeMap<i64, trace::Trace>>,

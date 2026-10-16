@@ -7,8 +7,8 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::Cancellation;
 use crate::components::event::Event;
-use crate::runtime::cancellation::Cancellation;
 
 pub type Error = crate::Error;
 

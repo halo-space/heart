@@ -12,6 +12,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::Cancellation;
 use crate::components::agent::{Agent as AgentContract, Error, Input};
 use crate::components::evaluation::{Evaluation, Evaluator};
 use crate::components::event::Event;
@@ -31,7 +32,6 @@ use crate::core::memory::history::{History, Run};
 use crate::runtime::agent::checkpoint::Backend;
 use crate::runtime::agent::node::Step;
 use crate::runtime::agent::tool_steps;
-use crate::runtime::cancellation::Cancellation;
 
 pub struct Builder<M = ()> {
     model: Option<M>,

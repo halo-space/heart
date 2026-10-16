@@ -153,9 +153,9 @@ fn message_text(message: &Message, key: &str) -> Option<String> {
 
 pub mod raptor {
     use super::{Document, Error, Relation, await_model, complete_message, message_text};
+    use crate::Cancellation;
     use crate::components::message::{Message, Messages};
     use crate::components::model::{chat::Chat, embed::Embed};
-    use crate::runtime::cancellation::Cancellation;
     use serde::{Deserialize, Serialize};
     use serde_json::{Map, Value};
     use std::collections::HashSet;
@@ -425,9 +425,9 @@ pub mod raptor {
 pub mod graph_impl {
     use super::graph_types::Evidence;
     use super::{Document, Error, complete_request};
+    use crate::Cancellation;
     use crate::components::message::{Message, Messages};
     use crate::components::model::chat::Chat;
-    use crate::runtime::cancellation::Cancellation;
     use serde::{Deserialize, Serialize};
     use serde_json::{Map, Value};
     use std::collections::{BTreeMap, BTreeSet};
@@ -719,12 +719,12 @@ mod tests {
         location::{Location, Range},
         raptor::Raptor,
     };
+    use crate::Cancellation;
     use crate::components::{
         event::Event,
         message::{Message, Role},
         model::{self, chat::Chat, embed::Embed},
     };
-    use crate::runtime::cancellation::Cancellation;
 
     struct FakeStream(VecDeque<Result<Event, model::Error>>);
     impl Stream for FakeStream {

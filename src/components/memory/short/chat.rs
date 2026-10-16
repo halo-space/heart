@@ -1,11 +1,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
+use crate::Cancellation;
 use crate::components::memory::short::Error;
 use crate::components::memory::short::Type;
 use crate::components::message::Message;
 use crate::components::model::token::Usage;
-use crate::runtime::cancellation::Cancellation;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Payload {

@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
+use crate::Cancellation;
 use crate::Error;
 use crate::agent::{self, Agent};
 use crate::components::event::Event;
@@ -22,7 +23,6 @@ use crate::components::message::Role;
 pub use crate::components::middleware::RetryPolicy;
 use crate::components::model::token::Usage;
 use crate::components::node::{Node, Signal};
-use crate::runtime::cancellation::Cancellation;
 use crate::runtime::workflow::node::{AttemptStatus, Step, StepAttempt};
 
 pub const START: &str = "START";

@@ -16,6 +16,7 @@ use futures_util::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
+use crate::Cancellation;
 use crate::components::agent::{Error, Input};
 use crate::components::evaluation::{Evaluation, Evaluator};
 use crate::components::event::Event;
@@ -33,7 +34,6 @@ use crate::runtime::agent::checkpoint::{Backend, invalid as invalid_checkpoint};
 use crate::runtime::agent::graph::Graph;
 use crate::runtime::agent::node::Step;
 use crate::runtime::agent::{GraphState, State as AgentState};
-use crate::runtime::cancellation::Cancellation;
 
 mod execution;
 mod tools;

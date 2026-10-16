@@ -3,8 +3,8 @@ use std::sync::RwLock;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use crate::Cancellation;
 use crate::components::memory::short::{Error, session};
-use crate::runtime::cancellation::Cancellation;
 
 /// Independent in-memory Session CRUD. `update` uses the submitted snapshot's
 /// `updated_time` for optimistic concurrency; read latest after `CONFLICT` and

@@ -3,8 +3,8 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+use crate::Cancellation;
 use crate::Error;
-use crate::runtime::cancellation::Cancellation;
 
 /// Lifecycle extension contract shared by Node and Agent owners. Runtime
 /// remains responsible for execution identity, attempts and state commits.

@@ -3,6 +3,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
+use crate::Cancellation;
 use crate::components::agent::Error;
 use crate::components::mcp::Server;
 use crate::components::message::{Message, Messages};
@@ -10,7 +11,6 @@ use crate::components::skill::{Definition as SkillDefinition, Skill};
 use crate::components::tool::{
     Call, Evaluation, Tool, ToolDefinition, call_prepared, prepare_call, validate_call,
 };
-use crate::runtime::cancellation::Cancellation;
 
 type CallFuture = Pin<Box<dyn Future<Output = Result<(Call, Message), Error>> + Send + 'static>>;
 type PrepareFuture = Pin<Box<dyn Future<Output = Result<Call, Error>> + Send + 'static>>;

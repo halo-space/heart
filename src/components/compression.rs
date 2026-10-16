@@ -1,5 +1,5 @@
+use crate::Cancellation;
 use crate::components::message::Messages;
-use crate::runtime::cancellation::Cancellation;
 
 pub type Error = crate::Error;
 

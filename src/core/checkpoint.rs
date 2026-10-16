@@ -3,8 +3,8 @@ use std::sync::RwLock;
 
 use serde_json::Value;
 
+use crate::Cancellation;
 use crate::components::checkpoint::{Checkpoint, Error};
-use crate::runtime::cancellation::Cancellation;
 
 /// Zero-configuration checkpoint implementation. Each `id` has one
 /// current state and a later save atomically replaces that state.

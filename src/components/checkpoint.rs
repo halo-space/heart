@@ -1,7 +1,7 @@
 use serde_json::Value;
 use std::sync::Arc;
 
-use crate::runtime::cancellation::Cancellation;
+use crate::Cancellation;
 
 pub type Error = crate::Error;
 
