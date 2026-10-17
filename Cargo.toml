@@ -23,6 +23,9 @@ serde_json = { version = "1", features = ["preserve_order"] }
 schemars = "0.8"
 sha2 = "0.10"
 rand = "0.10.2"
+regex = "1"
+globset = "0.4"
+elasticsearch = { version = "9.1.0-alpha.1", default-features = false, features = ["rustls-tls"] }
 tokio = { version = "1", features = ["rt", "net", "time", "fs", "io-util", "process", "sync"] }
 serde-saphyr = { version = "1.3.0", default-features = false, features = ["deserialize"] }
 rmcp = { version = "3.5.1", default-features = false, features = ["client", "transport-child-process", "transport-async-rw", "transport-streamable-http-client-reqwest", "reqwest"] }

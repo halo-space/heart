@@ -431,24 +431,25 @@ async fn local_workspace_cancelled_write_preserves_original() {
     assert_eq!(std::fs::read_dir(&dir.0).unwrap().count(), 1);
 }
 
-#[test]
-fn server_reference_workspace_has_no_local_path_and_returns_snapshots() {
-    let workspace = core::workspace::InMemory::new();
+#[tokio::test]
+async fn local_workspace_returns_owned_data_and_physically_deletes_records() {
+    let directory = Directory::new();
+    let workspace = core::workspace::Local::new(&directory.0).unwrap();
     let cancel = Cancellation::new();
-    assert_eq!(workspace.definition().mode, Mode::Server);
-    assert!(workspace.definition().path.is_none());
-    block_on(workspace.write("notes", vec![1, 2, 3], &cancel)).unwrap();
-    let mut snapshot = block_on(workspace.read("notes", &cancel)).unwrap();
+    assert!(workspace.definition().path.is_some());
+    workspace
+        .write("notes", vec![1, 2, 3], &cancel)
+        .await
+        .unwrap();
+    let mut snapshot = workspace.read("notes", &cancel).await.unwrap();
     snapshot.clear();
     assert_eq!(
-        block_on(workspace.read("notes", &cancel)).unwrap(),
+        workspace.read("notes", &cancel).await.unwrap(),
         vec![1, 2, 3]
     );
-    block_on(workspace.delete("notes", &cancel)).unwrap();
+    workspace.delete("notes", &cancel).await.unwrap();
     assert_eq!(
-        block_on(workspace.delete("notes", &cancel))
-            .unwrap_err()
-            .code,
+        workspace.delete("notes", &cancel).await.unwrap_err().code,
         "NOT_FOUND"
     );
 }

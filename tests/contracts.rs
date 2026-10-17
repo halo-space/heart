@@ -299,31 +299,6 @@ fn mcp_and_workspace_are_explicit_adapters() {
                 metadata: Default::default(),
             })
         }
-
-        async fn read(
-            &self,
-            _path: &str,
-            _cancellation: &Cancellation,
-        ) -> Result<Vec<u8>, halo_agents::workspace::Error> {
-            Ok(Vec::new())
-        }
-
-        async fn write(
-            &self,
-            _path: &str,
-            _data: Vec<u8>,
-            _cancellation: &Cancellation,
-        ) -> Result<(), halo_agents::workspace::Error> {
-            Ok(())
-        }
-
-        async fn delete(
-            &self,
-            _path: &str,
-            _cancellation: &Cancellation,
-        ) -> Result<(), halo_agents::workspace::Error> {
-            Ok(())
-        }
     }
 
     let cancellation = Cancellation::new();
@@ -353,12 +328,8 @@ fn mcp_and_workspace_are_explicit_adapters() {
         halo_agents::workspace::Mode::Server
     );
     assert!(
-        block_on(halo_agents::workspace::Workspace::write(
-            &Workspace,
-            "remote/file",
-            vec![1],
-            &cancellation,
-        ))
-        .is_ok()
+        halo_agents::workspace::Workspace::definition(&Workspace)
+            .path
+            .is_none()
     );
 }

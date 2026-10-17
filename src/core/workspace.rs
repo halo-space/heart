@@ -2,12 +2,8 @@
 //! trusted against concurrent symlink/path replacement by other processes.
 
 use std::{
-    collections::BTreeMap,
     path::{Component, Path, PathBuf},
-    sync::{
-        RwLock,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
 };
 
 use tokio::io::AsyncWriteExt;
@@ -17,7 +13,11 @@ use crate::{
     workspace::{Definition, Mode, Workspace},
 };
 
+use super::agent::toolkit::Toolkit;
 use super::operation::{cancellable, check};
+
+pub mod es;
+mod tools;
 
 static TEMP: AtomicU64 = AtomicU64::new(0);
 
@@ -33,6 +33,7 @@ impl Drop for Temporary {
 pub struct Local {
     root: PathBuf,
     definition: Definition,
+    toolkit: Toolkit,
 }
 
 impl Local {
@@ -57,7 +58,15 @@ impl Local {
                 path: Some(path),
                 metadata: Default::default(),
             },
+            toolkit: Toolkit::new(),
         })
+    }
+
+    /// Mount the application's Tools, MCP servers and Skills in this workspace.
+    /// This only stores configuration; it performs no tool calls or discovery.
+    pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
+        self.toolkit = toolkit;
+        self
     }
 
     async fn resolve(&self, path: &str, cancellation: &Cancellation) -> Result<PathBuf, Error> {
@@ -85,12 +94,70 @@ impl Local {
     }
 }
 
+impl From<Local> for Toolkit {
+    fn from(mut workspace: Local) -> Self {
+        let toolkit = std::mem::take(&mut workspace.toolkit);
+        tools::attach(workspace, toolkit)
+    }
+}
+
 impl Workspace for Local {
     fn definition(&self) -> &Definition {
         &self.definition
     }
+}
 
-    async fn read(&self, path: &str, cancellation: &Cancellation) -> Result<Vec<u8>, Error> {
+impl Local {
+    /// List sorted workspace-relative paths. `.` is the root; shallow listing
+    /// includes directories, recursive listing returns files without symlinks.
+    pub async fn list(
+        &self,
+        path: &str,
+        recursive: bool,
+        cancellation: &Cancellation,
+    ) -> Result<Vec<String>, Error> {
+        check(cancellation)?;
+        let base = if path == "." {
+            self.root.clone()
+        } else {
+            self.resolve(path, cancellation).await?
+        };
+        cancellable(
+            async {
+                let mut pending = vec![base];
+                let mut paths = Vec::new();
+                while let Some(directory) = pending.pop() {
+                    check(cancellation)?;
+                    let mut entries = tokio::fs::read_dir(directory).await.map_err(io_error)?;
+                    while let Some(entry) = entries.next_entry().await.map_err(io_error)? {
+                        check(cancellation)?;
+                        let kind = entry.file_type().await.map_err(io_error)?;
+                        if kind.is_symlink() || (!kind.is_file() && !kind.is_dir()) {
+                            continue;
+                        }
+                        let entry_path = entry.path();
+                        if kind.is_dir() && recursive {
+                            pending.push(entry_path);
+                        } else {
+                            let relative = entry_path.strip_prefix(&self.root).map_err(|_| {
+                                Error::new("PERMISSION_DENIED", "workspace path escaped its root")
+                            })?;
+                            let relative = relative.to_str().ok_or_else(|| {
+                                Error::new("INVALID_ARGUMENTS", "workspace path must be UTF-8")
+                            })?;
+                            paths.push(relative.replace(std::path::MAIN_SEPARATOR, "/"));
+                        }
+                    }
+                }
+                paths.sort();
+                Ok(paths)
+            },
+            cancellation,
+        )
+        .await
+    }
+
+    pub async fn read(&self, path: &str, cancellation: &Cancellation) -> Result<Vec<u8>, Error> {
         check(cancellation)?;
         let path = self.resolve(path, cancellation).await?;
         cancellable(
@@ -100,7 +167,7 @@ impl Workspace for Local {
         .await
     }
 
-    async fn write(
+    pub async fn write(
         &self,
         path: &str,
         data: Vec<u8>,
@@ -153,83 +220,12 @@ impl Workspace for Local {
         committed
     }
 
-    async fn delete(&self, path: &str, cancellation: &Cancellation) -> Result<(), Error> {
+    pub async fn delete(&self, path: &str, cancellation: &Cancellation) -> Result<(), Error> {
         check(cancellation)?;
         let path = self.resolve(path, cancellation).await?;
         check(cancellation)?;
         // No recursive directory deletion.
         tokio::fs::remove_file(path).await.map_err(io_error)
-    }
-}
-
-/// Zero-filesystem reference backend for server mode. Application database
-/// implementations implement the same Workspace contract, not another trait.
-pub struct InMemory {
-    definition: Definition,
-    resources: RwLock<BTreeMap<String, Vec<u8>>>,
-}
-
-impl InMemory {
-    pub fn new() -> Self {
-        Self {
-            definition: Definition {
-                mode: Mode::Server,
-                path: None,
-                metadata: Default::default(),
-            },
-            resources: RwLock::new(BTreeMap::new()),
-        }
-    }
-}
-
-impl Default for InMemory {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl Workspace for InMemory {
-    fn definition(&self) -> &Definition {
-        &self.definition
-    }
-    async fn read(&self, path: &str, cancellation: &Cancellation) -> Result<Vec<u8>, Error> {
-        check(cancellation)?;
-        validate_path(path)?;
-        self.resources
-            .read()
-            .map_err(|_| Error::new("INTERNAL", "workspace lock poisoned"))?
-            .get(path)
-            .cloned()
-            .ok_or_else(|| Error::new("NOT_FOUND", "workspace resource not found"))
-    }
-    async fn write(
-        &self,
-        path: &str,
-        data: Vec<u8>,
-        cancellation: &Cancellation,
-    ) -> Result<(), Error> {
-        check(cancellation)?;
-        validate_path(path)?;
-        let mut resources = self
-            .resources
-            .write()
-            .map_err(|_| Error::new("INTERNAL", "workspace lock poisoned"))?;
-        check(cancellation)?;
-        resources.insert(path.to_owned(), data);
-        Ok(())
-    }
-    async fn delete(&self, path: &str, cancellation: &Cancellation) -> Result<(), Error> {
-        check(cancellation)?;
-        validate_path(path)?;
-        let mut resources = self
-            .resources
-            .write()
-            .map_err(|_| Error::new("INTERNAL", "workspace lock poisoned"))?;
-        check(cancellation)?;
-        resources
-            .remove(path)
-            .map(|_| ())
-            .ok_or_else(|| Error::new("NOT_FOUND", "workspace resource not found"))
     }
 }
 
@@ -257,6 +253,7 @@ fn io_error(error: std::io::Error) -> Error {
         std::io::ErrorKind::NotFound => "NOT_FOUND",
         std::io::ErrorKind::PermissionDenied => "PERMISSION_DENIED",
         std::io::ErrorKind::AlreadyExists => "CONFLICT",
+        std::io::ErrorKind::NotADirectory => "INVALID_ARGUMENTS",
         _ => "IO_ERROR",
     };
     // OS messages may reveal absolute paths; do not expose raw diagnostics.

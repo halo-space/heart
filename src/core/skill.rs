@@ -7,7 +7,6 @@ use crate::{
     message::Role,
     model::content::part::{Part, object as part_data},
     skill::{Definition, Skill as Contract},
-    workspace::Workspace,
 };
 
 /// A selected Skill's instructions and explicit executor. Loading a Skill does
@@ -108,10 +107,11 @@ impl<F> Skill<F> {
         )
     }
 
-    /// Reads one explicit resource from a caller-selected Workspace. Local and
-    /// server resources use the same contract; no hidden workspace lookup.
-    pub async fn load<W: Workspace>(
-        workspace: &W,
+    /// Load one file from an explicit Local workspace. Database-backed skills
+    /// can use `new` or `from_markdown` with the data retrieved by their backend;
+    /// the common Workspace contract does not prescribe a file loading API.
+    pub async fn load(
+        workspace: &super::workspace::Local,
         path: &str,
         executor: F,
         cancellation: &Cancellation,

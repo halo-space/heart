@@ -14,7 +14,42 @@ src/
 └── harness/      DeepAgents 式的高阶 Agent 组装能力，不是 Agent/Workflow 的通用中间层
 ```
 
-`components` 只定义契约边界；Agent 与 Workflow 是两类独立能力，各自使用自己的 Runtime，并共同复用 `core` 中适用的能力。基础 Agent 实现与 DeepAgents 式高阶 Harness 都组合 Core 能力。Harness 不承接所有 Agent 和 Workflow 共用的生命周期逻辑；共享代码按真实语义归属到相应 Runtime、组件契约或 Core 实现。源码正在按此目标对齐；目前 `harness` 仅保留目标命名空间，高阶 Harness 组装能力尚未实现。
+`components` 只定义契约边界；Agent 与 Workflow 是两类独立能力，各自使用自己的 Runtime，并共同复用 `core` 中适用的能力。基础 Agent 实现与 DeepAgents 式高阶 Harness 都组合 Core 能力。Harness 是面向长任务 Agent 的场景化组装与默认策略层，不承接所有 Agent 和 Workflow 共用的生命周期逻辑，也不另造执行 Runtime。当前 Harness 基于 Core ReAct，提供长任务默认提示词，以及可选 Workspace 的文件工具；迭代上限沿用 Core ReAct 默认值并可单独配置。Memory、Checkpoint、Permission、Middleware、Toolkit 和 SubAgent 仍复用现有能力。
+
+## Workspace 与 Harness
+
+工具、MCP 和 Skill 先组装进 Toolkit，再挂载到 Workspace；Harness 接收配置好的 Workspace：
+
+```rust
+let workspace = core::workspace::Local::new("./workspace")?
+    .toolkit(toolkit);
+
+let agent = harness::builder()
+    .model(chat)
+    .workspace(workspace)
+    .build()?;
+```
+
+`./workspace` 是应用准备的已有目录，`toolkit` 和 `chat` 是已经配置的实例。
+当前 Core 已提供 Local 的列目录、读取、写入、精确编辑、Glob 匹配和正则搜索六种默认文件工具。
+这些工具与自定义工具共用 Toolkit 和已有权限、执行机制；删除和命令工具不会自动添加。
+显式删除/命令工具及共享文件环境的 Docker Workspace 仍在实现中。
+
+Workspace 的存储模式区分本地文件（Local）与数据库（Server）。Server 直接操作数据库，不模拟文件路径；
+默认只提供 write(data)、read(id)、update(id, data)、delete(id) 四个基础工具，复杂查询由用户实现自己的 Tool，
+继续复用 Toolkit、Permission 和 Message/Error。公共 Workspace 只保留 definition()，文件方法归具体 Local；
+不再提供公开的 Workspace InMemory 实现或兼容别名；文件测试使用临时 Local 目录。
+这不影响 Memory、Checkpoint 等其他组件的内存实现。
+ES 后端已提供 `core::workspace::es::new(client, index)?.toolkit(toolkit)`，client 为应用初始化的官方 `elasticsearch::Elasticsearch`。
+当前接入官方 9.1.0-alpha.1 客户端，真实集群及其他 ES 主版本兼容性尚未验收。
+不增加 config.filter/config.schema，不内置固定字段补齐策略。参数校验沿工具 Schema，业务校验和补齐可用用户 Hook。
+索引和 mapping 由应用准备；四个工具的实现及 Toolkit/Harness 接线已落地，真实 ES 集群验收尚未运行。
+写入先检查索引存在，使用 `_create` 防止覆盖，再通过实时 GET 返回落库记录；update 不 upsert，delete 物理删除。
+工具内部不自动重试；请求发出后的取消/连接中断不代表写入回滚。若需严格禁止并发删索引后的自动重建，应由应用配置 ES 权限/自动创建策略。
+
+本地协议回归：`cargo test --offline --test workspace_es`。
+真实集群测试默认忽略；应用预先准备隔离测试索引后，设置 `HEART_ES_URL`、`HEART_ES_TEST_INDEX`，按需设置 `HEART_ES_API_KEY`（已编码 API Key），
+再运行 `cargo test --test workspace_es es_real_cluster_crud_smoke -- --ignored --exact`。该测试不建索引或改 mapping，只清理它生成的记录 ID。
 
 ## 当前状态
 

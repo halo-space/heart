@@ -173,6 +173,17 @@ impl Toolkit {
         }
     }
 
+    /// Combine two independently assembled capability sets. Local Tool and
+    /// Skill names must remain unique; names discovered from MCP servers are
+    /// checked when the Toolkit is prepared for a run.
+    pub fn merge(mut self, other: Self) -> Result<Self, Error> {
+        self.entries.extend(other.entries);
+        self.mcps.extend(other.mcps);
+        self.skills.extend(other.skills);
+        self.validate_names(&self.entries)?;
+        Ok(self)
+    }
+
     /// Add one Tool. Repeated calls may add different concrete Tool types.
     pub fn tool<T>(mut self, tool: T) -> Self
     where
