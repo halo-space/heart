@@ -85,6 +85,24 @@ struct Backend {
     index: String,
 }
 
+impl Backend {
+    async fn ensure_index(&self) -> Result<(), Error> {
+        // Both create and update can auto-create an absent ES index. In
+        // particular, doc_as_upsert=false prevents document insertion but
+        // does NOT prevent index creation. Do not cache this check.
+        // Applications must still prohibit auto-creation in cluster policy /
+        // credentials to cover concurrent index deletion after this request.
+        let response = self
+            .client
+            .indices()
+            .exists(IndicesExistsParts::Index(&[&self.index]))
+            .send()
+            .await
+            .map_err(transport_error)?;
+        success(response.status_code().as_u16())
+    }
+}
+
 #[derive(Clone, Copy)]
 enum Kind {
     Write,
@@ -182,13 +200,7 @@ impl Operation {
                 // Do not provision an application index as a side effect of a
                 // normal Tool call. ES cluster privileges/settings must also
                 // forbid auto-creation if an index is deleted concurrently.
-                let exists = client
-                    .indices()
-                    .exists(IndicesExistsParts::Index(&[index]))
-                    .send()
-                    .await
-                    .map_err(transport_error)?;
-                success(exists.status_code().as_u16())?;
+                self.backend.ensure_index().await?;
                 let response = client
                     .create(CreateParts::IndexId(index, &id))
                     .body(&data)
@@ -243,6 +255,7 @@ impl Operation {
                     ));
                 }
                 let id = id.to_string();
+                self.backend.ensure_index().await?;
                 let response = client
                     .update(UpdateParts::IndexId(index, &id))
                     .body(json!({"doc":data,"doc_as_upsert":false}))

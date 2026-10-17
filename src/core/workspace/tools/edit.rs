@@ -4,7 +4,7 @@ use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::RwLock;
 
-use super::{Call, Local, Message, Tool, ToolDefinition, arguments, definition, tool_message};
+use super::{Call, Files, Message, Tool, ToolDefinition, arguments, definition, tool_message};
 use crate::{Cancellation, Error, core::operation::cancellable};
 
 #[derive(Deserialize)]
@@ -18,13 +18,13 @@ struct Arguments {
 }
 
 pub(super) struct Edit {
-    workspace: Arc<Local>,
+    workspace: Arc<Files>,
     access: Arc<RwLock<()>>,
     definition: ToolDefinition,
 }
 
 impl Edit {
-    pub(super) fn new(workspace: Arc<Local>, access: Arc<RwLock<()>>) -> Self {
+    pub(super) fn new(workspace: Arc<Files>, access: Arc<RwLock<()>>) -> Self {
         Self {
             workspace,
             access,

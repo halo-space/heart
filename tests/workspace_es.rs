@@ -233,6 +233,7 @@ async fn es_crud_uses_atomic_create_partial_update_physical_delete_and_stored_so
         (201, json!({"result":"created"})),
         (200, document(stored.clone())),
         (200, document(stored.clone())),
+        (200, Value::Null),
         (200, json!({"result":"updated"})),
         (200, document(updated.clone())),
         (200, json!({"result":"deleted"})),
@@ -302,6 +303,7 @@ async fn es_crud_uses_atomic_create_partial_update_physical_delete_and_stored_so
             ("POST", "/records/_create/3001"),
             ("GET", "/records/_doc/3001"),
             ("GET", "/records/_doc/3001"),
+            ("HEAD", "/records"),
             ("POST", "/records/_update/3001"),
             ("GET", "/records/_doc/3001"),
             ("DELETE", "/records/_doc/3001"),
@@ -313,7 +315,7 @@ async fn es_crud_uses_atomic_create_partial_update_physical_delete_and_stored_so
         json!({"id":3001,"content":"raw","kept":true})
     );
     assert_eq!(
-        requests[4].body,
+        requests[5].body,
         json!({"doc":{"content":"new"},"doc_as_upsert":false})
     );
 }
@@ -321,7 +323,9 @@ async fn es_crud_uses_atomic_create_partial_update_physical_delete_and_stored_so
 #[tokio::test]
 async fn es_noop_and_missing_records_return_zero_without_upsert_or_soft_delete() {
     let mut fixture = Fixture::new(vec![
+        (200, Value::Null),
         (200, json!({"result":"noop"})),
+        (200, Value::Null),
         (404, json!({"error":{"type":"document_missing_exception"}})),
         (404, json!({"result":"not_found"})),
         (404, json!({"found":false})),
@@ -401,7 +405,7 @@ async fn es_missing_index_is_error_not_empty_success_or_automatic_provisioning()
         );
         fixture.finish().await;
         assert_eq!(fixture.requests.lock().unwrap().len(), 1);
-        if name == "write" {
+        if matches!(name, "write" | "update") {
             assert_eq!(fixture.requests.lock().unwrap()[0].method, "HEAD");
         }
     }
@@ -504,7 +508,8 @@ async fn es_invalid_success_envelopes_are_not_reported_as_empty_data() {
         );
         fixture.finish().await;
     }
-    let mut fixture = Fixture::new(vec![(200, json!({"result":"created"}))]).await;
+    let mut fixture =
+        Fixture::new(vec![(200, Value::Null), (200, json!({"result":"created"}))]).await;
     assert_eq!(
         run(
             &Toolkit::from(fixture.workspace()),
@@ -517,6 +522,30 @@ async fn es_invalid_success_envelopes_are_not_reported_as_empty_data() {
         "INVALID_RESPONSE"
     );
     fixture.finish().await;
+}
+
+#[tokio::test]
+async fn es_update_preflight_failure_never_sends_mutation() {
+    for (status, code) in [
+        (404, "NOT_FOUND"),
+        (403, "PERMISSION_DENIED"),
+        (503, "UNAVAILABLE"),
+    ] {
+        let mut fixture = Fixture::new(vec![(status, Value::Null)]).await;
+        let error = run(
+            &Toolkit::from(fixture.workspace()),
+            "update",
+            json!({"id":1,"data":{"content":"must not dispatch"}}),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(error.code, code);
+        fixture.finish().await;
+        let requests = fixture.requests.lock().unwrap();
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].method, "HEAD");
+        assert_eq!(requests[0].target, "/records");
+    }
 }
 
 #[tokio::test]

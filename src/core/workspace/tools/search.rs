@@ -7,7 +7,7 @@ use serde_json::{Value, json};
 use tokio::sync::RwLock;
 
 use super::{
-    Call, Local, Message, Tool, ToolDefinition, arguments, definition, reading, tool_message,
+    Call, Files, Message, Tool, ToolDefinition, arguments, definition, reading, tool_message,
 };
 use crate::{Cancellation, Error, core::operation::check};
 
@@ -91,23 +91,23 @@ fn schema(extra: Value, required: &[&str]) -> Value {
 }
 
 pub(super) struct List {
-    workspace: Arc<Local>,
+    workspace: Arc<Files>,
     access: Arc<RwLock<()>>,
     definition: ToolDefinition,
 }
 pub(super) struct Glob {
-    workspace: Arc<Local>,
+    workspace: Arc<Files>,
     access: Arc<RwLock<()>>,
     definition: ToolDefinition,
 }
 pub(super) struct Grep {
-    workspace: Arc<Local>,
+    workspace: Arc<Files>,
     access: Arc<RwLock<()>>,
     definition: ToolDefinition,
 }
 
 impl List {
-    pub(super) fn new(workspace: Arc<Local>, access: Arc<RwLock<()>>) -> Self {
+    pub(super) fn new(workspace: Arc<Files>, access: Arc<RwLock<()>>) -> Self {
         Self {
             workspace,
             access,
@@ -120,7 +120,7 @@ impl List {
     }
 }
 impl Glob {
-    pub(super) fn new(workspace: Arc<Local>, access: Arc<RwLock<()>>) -> Self {
+    pub(super) fn new(workspace: Arc<Files>, access: Arc<RwLock<()>>) -> Self {
         Self {
             workspace,
             access,
@@ -136,7 +136,7 @@ impl Glob {
     }
 }
 impl Grep {
-    pub(super) fn new(workspace: Arc<Local>, access: Arc<RwLock<()>>) -> Self {
+    pub(super) fn new(workspace: Arc<Files>, access: Arc<RwLock<()>>) -> Self {
         Self {
             workspace,
             access,

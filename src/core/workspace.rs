@@ -16,7 +16,9 @@ use crate::{
 use super::agent::toolkit::Toolkit;
 use super::operation::{cancellable, check};
 
+pub mod docker;
 pub mod es;
+pub use docker::Docker;
 mod tools;
 
 static TEMP: AtomicU64 = AtomicU64::new(0);
@@ -34,6 +36,7 @@ pub struct Local {
     root: PathBuf,
     definition: Definition,
     toolkit: Toolkit,
+    sandbox: Option<crate::sandbox::Local>,
 }
 
 impl Local {
@@ -59,6 +62,7 @@ impl Local {
                 metadata: Default::default(),
             },
             toolkit: Toolkit::new(),
+            sandbox: None,
         })
     }
 
@@ -66,6 +70,14 @@ impl Local {
     /// This only stores configuration; it performs no tool calls or discovery.
     pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
         self.toolkit = toolkit;
+        self
+    }
+
+    /// Explicitly select host command execution, automatically binding its
+    /// Tool to this root. This does not start a process or provide isolation.
+    /// Docker execution must use its own shared-environment Workspace instead.
+    pub fn sandbox(mut self, sandbox: crate::sandbox::Local) -> Self {
+        self.sandbox = Some(sandbox);
         self
     }
 
@@ -97,7 +109,7 @@ impl Local {
 impl From<Local> for Toolkit {
     fn from(mut workspace: Local) -> Self {
         let toolkit = std::mem::take(&mut workspace.toolkit);
-        tools::attach(workspace, toolkit)
+        tools::attach(workspace.into(), toolkit)
     }
 }
 

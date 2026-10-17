@@ -263,7 +263,6 @@ async fn child_reply<A: Agent>(
         .as_u64()
         .unwrap()
         - 3002) as usize;
-    let b_index = 1 - a_index;
     let restored = agent::chat()
         .model(Model {
             requests: Default::default(),
@@ -275,50 +274,9 @@ async fn child_reply<A: Agent>(
     assert!(
         matches!(restored.run(input(),mode,Cancellation::new()).await,Err(error) if error.code=="WAITING")
     );
-    agent
-        .reply(answer(b, json!(true)), Cancellation::new())
-        .await
-        .unwrap();
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            let event = events.next().await.unwrap().unwrap();
-            if !mode {
-                assert!(!matches!(event, Event::Delta { .. }));
-            }
-            if let Event::Complete { message, .. } = event
-                && message.metadata.get("node_id").and_then(Value::as_str) == Some(&node_b)
-                && message.values.get("answer") == Some(&json!("done"))
-            {
-                break;
-            }
-        }
-    })
-    .await
-    .unwrap();
-    assert_eq!(children[b_index].log.calls.lock().unwrap().len(), 1);
-    assert!(children[a_index].log.calls.lock().unwrap().is_empty());
-    assert_eq!(
-        model.0.lock().unwrap().len(),
-        1,
-        "parent inference must wait for its other child"
-    );
-    agent
-        .reply(answer(b, json!(true)), Cancellation::new())
-        .await
-        .unwrap();
-    assert_eq!(
-        agent
-            .reply(answer(b, json!(false)), Cancellation::new())
-            .await
-            .unwrap_err()
-            .code,
-        "CONFLICT"
-    );
-    agent
-        .reply(answer(a, json!(approve_first)), Cancellation::new())
-        .await
-        .unwrap();
-    finish(&mut events).await;
+    let mut prefix = reply_in_fifo(&agent, &mut events, answer(a, json!(approve_first))).await;
+    prefix.extend(reply_in_fifo(&agent, &mut events, answer(b, json!(true))).await);
+    prefix.extend(finish(&mut events).await);
     assert_eq!(
         children[a_index].log.calls.lock().unwrap().len(),
         usize::from(approve_first)
@@ -743,13 +701,11 @@ async fn child_plan_reply<A: Agent>(
     );
     assert!(left.calls.lock().unwrap().is_empty());
     assert!(right.calls.lock().unwrap().is_empty());
+    let mut output = Vec::new();
     for id in ids {
-        agent
-            .reply(answer(id, json!(true)), Cancellation::new())
-            .await
-            .unwrap();
+        output.extend(reply_in_fifo(&agent, &mut events, answer(id, json!(true))).await);
     }
-    finish(&mut events).await;
+    output.extend(finish(&mut events).await);
     let state = store.load(1001, &Cancellation::new()).await.unwrap();
     assert_eq!(state["status"], "succeeded");
     assert_eq!(state["waits"], json!([]));
@@ -963,45 +919,12 @@ async fn planned_delegation_replies_keep_task_and_child_ownership_and_release_ca
                     assert!(
                         matches!(fresh.run(input(),mode,Cancellation::new()).await,Err(error) if error.code=="WAITING")
                     );
-                    agent
-                        .reply(answer(second, json!(true)), Cancellation::new())
-                        .await
-                        .unwrap();
-                    let second_task = &ownership.iter().find(|item| item.2 == second).unwrap().0;
-                    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-                        loop {
-                            let event = events.next().await.unwrap().unwrap();
-                            if !mode {
-                                assert!(!matches!(event, Event::Delta { .. }));
-                            }
-                            if let Event::Complete { message, .. } = event
-                                && message.values.get("result") == Some(&json!(second_task))
-                            {
-                                break;
-                            }
-                        }
-                    })
-                    .await
-                    .unwrap();
-                    assert_eq!(
-                        probes
-                            .iter()
-                            .map(|probe| probe.log.calls.lock().unwrap().len())
-                            .sum::<usize>(),
-                        1
+                    let mut output =
+                        reply_in_fifo(&agent, &mut events, answer(first, json!(approve_first)))
+                            .await;
+                    output.extend(
+                        reply_in_fifo(&agent, &mut events, answer(second, json!(true))).await,
                     );
-                    assert!(
-                        model
-                            .0
-                            .lock()
-                            .unwrap()
-                            .iter()
-                            .all(|request| task_id(request) != Some("c"))
-                    );
-                    agent
-                        .reply(answer(second, json!(true)), Cancellation::new())
-                        .await
-                        .unwrap();
                     assert_eq!(
                         agent
                             .reply(answer(second, json!(false)), Cancellation::new())
@@ -1010,11 +933,7 @@ async fn planned_delegation_replies_keep_task_and_child_ownership_and_release_ca
                             .code,
                         "CONFLICT"
                     );
-                    agent
-                        .reply(answer(first, json!(approve_first)), Cancellation::new())
-                        .await
-                        .unwrap();
-                    let output = finish(&mut events).await;
+                    output.extend(finish(&mut events).await);
                     if !mode {
                         assert!(
                             output
@@ -1256,13 +1175,11 @@ async fn planned_child_own_plan_keeps_all_three_native_wait_coordinates() {
         assert!(
             matches!(restored.run(input(),mode,Cancellation::new()).await,Err(error) if error.code=="WAITING")
         );
-        for id in ids.into_iter().rev() {
-            agent
-                .reply(answer(id, json!(true)), Cancellation::new())
-                .await
-                .unwrap();
+        let mut output = Vec::new();
+        for id in ids {
+            output.extend(reply_in_fifo(&agent, &mut events, answer(id, json!(true))).await);
         }
-        let output = finish(&mut events).await;
+        output.extend(finish(&mut events).await);
         if !mode {
             assert!(
                 output
@@ -1689,41 +1606,10 @@ async fn planned_questions_keep_native_owners_and_continue_only_the_answered_tas
             saved
         );
 
-        agent
-            .reply(answer(second, json!(true)), Cancellation::new())
-            .await
-            .unwrap();
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                let event = events.next().await.unwrap().unwrap();
-                if !mode {
-                    assert!(!matches!(event, Event::Delta { .. }));
-                }
-                if let Event::Complete { message, .. } = event
-                    && message.metadata.get("node_id").and_then(Value::as_str) == Some(&b)
-                    && message.values.get("result").and_then(Value::as_str) == Some(&b)
-                {
-                    break;
-                }
-            }
-        })
-        .await
-        .unwrap();
-        assert_eq!(log.calls.lock().unwrap().len(), 1);
-        assert_eq!(log.calls.lock().unwrap()[0].arguments["city"], b);
-        assert!(
-            model
-                .0
-                .lock()
-                .unwrap()
-                .iter()
-                .all(|request| task_id(request) != Some("c"))
-        );
-        let one_left = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
-        assert_eq!(one_left["waits"].as_array().unwrap().len(), 1);
-        assert_eq!(one_left["waits"][0]["nodes"][0]["node_id"], a);
-        assert_eq!(one_left["nodes"][&b]["status"], "succeeded");
-        // Completed branch history accepts the same late retry, never A.
+        let mut prefix =
+            reply_in_fifo(&agent, &mut events, answer(first, json!(approve_first))).await;
+        prefix.extend(reply_in_fifo(&agent, &mut events, answer(second, json!(true))).await);
+        // Repeating the same submitted response is idempotent; changing it conflicts.
         agent
             .reply(answer(second, json!(true)), Cancellation::new())
             .await
@@ -1736,11 +1622,6 @@ async fn planned_questions_keep_native_owners_and_continue_only_the_answered_tas
                 .code,
             "CONFLICT"
         );
-        assert!(poll!(events.next()).is_pending());
-        agent
-            .reply(answer(first, json!(approve_first)), Cancellation::new())
-            .await
-            .unwrap();
         let mut tail = Vec::new();
         tokio::time::timeout(std::time::Duration::from_secs(2), async {
             while let Some(event) = events.next().await {
@@ -1918,35 +1799,21 @@ async fn queued_tool_calls_do_not_keep_an_externally_waiting_task_admitted() {
         second.metadata["node_id"], "b",
         "A's queued, unstarted Tool is not active work"
     );
-    agent
-        .reply(answer(b, json!(true)), Cancellation::new())
-        .await
-        .unwrap();
-    loop {
-        let event = tokio::time::timeout(std::time::Duration::from_secs(2), events.next())
+    assert_eq!(
+        agent
+            .reply(answer(b, json!(true)), Cancellation::new())
             .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
-        if let Event::Complete { message, .. } = event
-            && message.values.get("result") == Some(&json!("b"))
-        {
-            break;
-        }
-    }
-    agent
-        .reply(answer(a, json!(true)), Cancellation::new())
-        .await
-        .unwrap();
+            .unwrap_err()
+            .code,
+        "CONFLICT"
+    );
+    let mut prefix = reply_in_fifo(&agent, &mut events, answer(a, json!(true))).await;
     let (queued, third) = question(&mut events).await;
     assert_eq!(third.metadata["node_id"], "a");
     assert_ne!(queued, a);
-    assert_eq!(log.calls.lock().unwrap().len(), 2);
-    agent
-        .reply(answer(queued, json!(true)), Cancellation::new())
-        .await
-        .unwrap();
-    finish(&mut events).await;
+    prefix.extend(reply_in_fifo(&agent, &mut events, answer(b, json!(true))).await);
+    prefix.extend(reply_in_fifo(&agent, &mut events, answer(queued, json!(true))).await);
+    prefix.extend(finish(&mut events).await);
     assert_eq!(log.calls.lock().unwrap().len(), 3);
 }
 impl Chat for GatedPlannedModel {
@@ -2214,6 +2081,29 @@ async fn finish<S: futures_core::Stream<Item = Result<Event, Error>> + Unpin>(
     })
     .await
     .expect("original run should continue")
+}
+
+async fn reply_in_fifo<A: Agent>(
+    agent: &A,
+    events: &mut std::pin::Pin<Box<A::Stream>>,
+    input: Input,
+) -> Vec<Event> {
+    let mut observed = Vec::new();
+    loop {
+        tokio::select! {
+            biased;
+            event = events.next() => match event {
+                Some(Ok(event)) => observed.push(event),
+                Some(Err(error)) => panic!("Agent run failed while advancing FIFO: {error:?}"),
+                None => panic!("Agent run ended before the requested reply became the FIFO head"),
+            },
+            result = agent.reply(input.clone(), Cancellation::new()) => match result {
+                Ok(()) => return observed,
+                Err(error) if error.code == "CONFLICT" => {},
+                Err(error) => panic!("unexpected FIFO reply error: {error:?}"),
+            }
+        }
+    }
 }
 
 async fn exercise<A: Agent>(
@@ -2510,19 +2400,35 @@ async fn parallel<A: Agent>(agent: A, model: Model, log: Arc<Log>) {
     let (first, _) = question(&mut events).await;
     let (second, _) = question(&mut events).await;
     assert_ne!(first, second);
-    agent
-        .reply(answer(second, json!(true)), Cancellation::new())
-        .await
-        .unwrap();
-    // Poll the original execution once; Chat may retain the batch's output
-    // until its sibling resolves, while ReAct may emit the completed Tool.
-    let _ = poll!(events.next());
-    assert_eq!(log.calls.lock().unwrap().len(), 1);
-    assert_eq!(model.requests.lock().unwrap().len(), 1);
+    assert_eq!(
+        agent
+            .reply(answer(second, json!(true)), Cancellation::new())
+            .await
+            .unwrap_err()
+            .code,
+        "CONFLICT",
+        "reply_id identifies B but cannot skip the FIFO head A"
+    );
+    assert!(log.calls.lock().unwrap().is_empty());
     agent
         .reply(answer(first, json!(false)), Cancellation::new())
         .await
         .unwrap();
+    loop {
+        tokio::select! {
+            biased;
+            event = events.next() => {
+                event.expect("the original Agent stream remains active").unwrap();
+            }
+            result = agent.reply(answer(second, json!(true)), Cancellation::new()) => {
+                match result {
+                    Ok(()) => break,
+                    Err(error) if error.code == "CONFLICT" => {}
+                    Err(error) => panic!("unexpected FIFO reply error: {error:?}"),
+                }
+            }
+        }
+    }
     finish(&mut events).await;
     assert_eq!(
         log.calls.lock().unwrap().len(),
@@ -2533,7 +2439,7 @@ async fn parallel<A: Agent>(agent: A, model: Model, log: Arc<Log>) {
 }
 
 #[tokio::test]
-async fn concurrent_questions_accept_the_targeted_answer_without_broadcasting() {
+async fn concurrent_question_replies_are_consumed_in_fifo_order() {
     for react in [false, true] {
         let log = Arc::new(Log::default());
         let model = Model {
@@ -2819,25 +2725,13 @@ async fn recover_direct_children<A: Agent>(
     let second = located_reply_id(&saved, 1);
     let mut events = Box::pin(
         agent
-            .run(answer(second, json!(approve)), mode, Cancellation::new())
+            .run(answer(first, json!(true)), mode, Cancellation::new())
             .await
             .unwrap(),
     );
-    assert_eq!(question(&mut events).await.0, first);
+    assert_eq!(question(&mut events).await.0, second);
     agent
         .reply(answer(second, json!(approve)), Cancellation::new())
-        .await
-        .unwrap();
-    assert_eq!(
-        agent
-            .reply(answer(second, json!(!approve)), Cancellation::new())
-            .await
-            .unwrap_err()
-            .code,
-        "CONFLICT"
-    );
-    agent
-        .reply(answer(first, json!(true)), Cancellation::new())
         .await
         .unwrap();
     let output = finish(&mut events).await;
@@ -3036,13 +2930,17 @@ async fn saved_planned_child_approvals_restore_through_task_and_child_coordinate
                         .unwrap();
                     let mut events = Box::pin(
                         restored
-                            .run(answer(second, json!(approve)), mode, Cancellation::new())
+                            .run(answer(first, json!(true)), mode, Cancellation::new())
                             .await
                             .unwrap(),
                     );
-                    assert_eq!(question(&mut events).await.0, first);
-                    // The addressed task can complete while its peer stays
-                    // waiting; neither the task nor its child's selector replays.
+                    assert_eq!(question(&mut events).await.0, second);
+                    restored
+                        .reply(answer(second, json!(approve)), Cancellation::new())
+                        .await
+                        .unwrap();
+                    // The saved FIFO head is resolved first; the next child
+                    // remains waiting until its own turn.
                     let second_task = saved["waits"][1]["nodes"][0]["node_id"].as_str().unwrap();
                     let completion =
                         tokio::time::timeout(std::time::Duration::from_secs(2), async {
@@ -3075,7 +2973,6 @@ async fn saved_planned_child_approvals_restore_through_task_and_child_coordinate
                             .map(|probe| probe.log.calls.lock().unwrap().len())
                             .collect::<Vec<_>>()
                     );
-                    assert!(poll!(events.next()).is_pending());
                     assert!(
                         model
                             .0
@@ -3084,17 +2981,11 @@ async fn saved_planned_child_approvals_restore_through_task_and_child_coordinate
                             .iter()
                             .all(|request| task_id(request) != Some("c"))
                     );
-                    assert_eq!(
-                        probes
-                            .iter()
-                            .map(|probe| probe.log.calls.lock().unwrap().len())
-                            .sum::<usize>(),
-                        usize::from(approve)
-                    );
-                    restored
-                        .reply(answer(second, json!(approve)), Cancellation::new())
-                        .await
-                        .unwrap();
+                    let completed_calls = probes
+                        .iter()
+                        .map(|probe| probe.log.calls.lock().unwrap().len())
+                        .sum::<usize>();
+                    assert!((1..=2).contains(&completed_calls));
                     assert_eq!(
                         restored
                             .reply(answer(second, json!(!approve)), Cancellation::new())
@@ -3103,10 +2994,6 @@ async fn saved_planned_child_approvals_restore_through_task_and_child_coordinate
                             .code,
                         "CONFLICT"
                     );
-                    restored
-                        .reply(answer(first, json!(true)), Cancellation::new())
-                        .await
-                        .unwrap();
                     let events = finish(&mut events).await;
                     if !mode {
                         assert!(
@@ -3238,7 +3125,7 @@ async fn saved_child_plan_approvals_restore_all_three_native_coordinates() {
             .checkpoint(store.clone())
             .build()
             .unwrap();
-        let selected = *ids.last().unwrap();
+        let selected = ids[0];
         let mut events = Box::pin(
             restored
                 .run(answer(selected, json!(false)), mode, Cancellation::new())
@@ -3249,14 +3136,12 @@ async fn saved_child_plan_approvals_restore_all_three_native_coordinates() {
         for _ in 0..2 {
             pending.push(question(&mut events).await.0);
         }
-        assert_eq!(pending, ids[..2]);
-        for id in pending.into_iter().rev() {
-            restored
-                .reply(answer(id, json!(true)), Cancellation::new())
-                .await
-                .unwrap();
+        assert_eq!(pending, ids[1..]);
+        let mut output = Vec::new();
+        for id in pending {
+            output.extend(reply_in_fifo(&restored, &mut events, answer(id, json!(true))).await);
         }
-        finish(&mut events).await;
+        output.extend(finish(&mut events).await);
         let final_state = store.load(1001, &Cancellation::new()).await.unwrap();
         assert_eq!(final_state["status"], "succeeded");
         assert_eq!(final_state["usage"]["total"], 234);
@@ -3314,7 +3199,7 @@ async fn saved_child_approval_rejects_invalid_feedback_and_stale_inner_coordinat
 {
     for planned in [false, true] {
         let saved = saved_nested_fixture(planned, false, false).await;
-        let id = located_reply_id(&saved, 1);
+        let id = located_reply_id(&saved, 0);
         let store = Arc::new(Store::default());
         store
             .inner
@@ -3343,10 +3228,10 @@ async fn saved_child_approval_rejects_invalid_feedback_and_stale_inner_coordinat
             );
             assert_eq!(store.load(1001, &Cancellation::new()).await.unwrap(), saved);
         }
-        let depth = saved["waits"][1]["nodes"].as_array().unwrap().len();
+        let depth = saved["waits"][0]["nodes"].as_array().unwrap().len();
         for field in ["node_id", "exec_id", "idx"] {
             let mut corrupt = saved.clone();
-            corrupt["waits"][1]["nodes"][depth - 1][field] = if field == "node_id" {
+            corrupt["waits"][0]["nodes"][depth - 1][field] = if field == "node_id" {
                 json!("missing")
             } else {
                 json!(999)
@@ -3381,16 +3266,14 @@ async fn finish_addressed_child<A: Agent>(
     store: Arc<core::checkpoint::InMemory>,
 ) -> Value {
     let first = located_reply_id(saved, 0);
-    let second = located_reply_id(saved, 1);
-    let path = saved["waits"][1]["nodes"].as_array().unwrap();
+    let path = saved["waits"][0]["nodes"].as_array().unwrap();
     let child = path.last().unwrap()["node_id"].as_str().unwrap();
     let mut events = Box::pin(
         agent
-            .run(answer(second, json!(true)), false, Cancellation::new())
+            .run(answer(first, json!(true)), false, Cancellation::new())
             .await
             .unwrap(),
     );
-    assert_eq!(question(&mut events).await.0, first);
     tokio::time::timeout(std::time::Duration::from_secs(2), async {
         loop {
             if let Event::Complete {
@@ -3413,7 +3296,7 @@ async fn finish_addressed_child<A: Agent>(
     let partial = store.load(1001, &Cancellation::new()).await.unwrap();
     assert_eq!(partial["waits"].as_array().unwrap().len(), 1);
     assert_eq!(
-        located_step(&partial, &saved["waits"][1])["waits"][second.to_string()]["status"],
+        located_step(&partial, &saved["waits"][0])["waits"][first.to_string()]["status"],
         "resolved"
     );
     partial
@@ -3428,7 +3311,7 @@ async fn finish_remaining_child<A: Agent>(
     let first = located_reply_id(saved, 0);
     let second = located_reply_id(saved, 1);
     assert!(
-        matches!(agent.run(answer(second, json!(false)), false, Cancellation::new()).await, Err(error) if error.code == "CONFLICT")
+        matches!(agent.run(answer(first, json!(false)), false, Cancellation::new()).await, Err(error) if error.code == "CONFLICT")
     );
     assert_eq!(
         store.load(1001, &Cancellation::new()).await.unwrap(),
@@ -3440,18 +3323,12 @@ async fn finish_remaining_child<A: Agent>(
             .await
             .unwrap(),
     );
-    assert_eq!(question(&mut events).await.0, first);
-    assert!(poll!(events.next()).is_pending());
-    agent
-        .reply(answer(first, json!(false)), Cancellation::new())
-        .await
-        .unwrap();
     finish(&mut events).await;
     let final_state = store.load(1001, &Cancellation::new()).await.unwrap();
     assert_eq!(final_state["status"], "succeeded");
     assert_eq!(
-        located_step(&final_state, &saved["waits"][1]),
-        located_step(partial, &saved["waits"][1])
+        located_step(&final_state, &saved["waits"][0]),
+        located_step(partial, &saved["waits"][0])
     );
     assert_eq!(final_state["query"], saved["query"]);
     assert_eq!(
@@ -3540,10 +3417,13 @@ async fn a_second_child_recovery_reuses_successful_siblings_and_retains_duplicat
             )
             .await;
         }
-        assert!(
+        assert_eq!(
             probes
                 .iter()
-                .all(|probe| probe.log.calls.lock().unwrap().is_empty())
+                .map(|probe| probe.log.calls.lock().unwrap().len())
+                .sum::<usize>(),
+            1,
+            "the remaining child task executes once after its FIFO turn"
         );
         assert_eq!(
             probes
@@ -3559,7 +3439,7 @@ async fn a_second_child_recovery_reuses_successful_siblings_and_retains_duplicat
 #[tokio::test]
 async fn restored_child_approval_does_not_execute_when_outer_save_fails_or_is_cancelled() {
     let saved = saved_nested_fixture(false, false, false).await;
-    let id = located_reply_id(&saved, 1);
+    let id = located_reply_id(&saved, 0);
     let store = Arc::new(FailingStore::default());
     store
         .0
@@ -3657,13 +3537,13 @@ async fn child_worker_finish<A: Agent>(
     let second = located_reply_id(&saved, 1);
     let mut events = Box::pin(
         agent
-            .run(answer(second, json!(approve)), mode, Cancellation::new())
+            .run(answer(first, json!(true)), mode, Cancellation::new())
             .await
             .unwrap(),
     );
-    assert_eq!(question(&mut events).await.0, first);
+    assert_eq!(question(&mut events).await.0, second);
     agent
-        .reply(answer(first, json!(true)), Cancellation::new())
+        .reply(answer(second, json!(approve)), Cancellation::new())
         .await
         .unwrap();
     let output = finish(&mut events).await;
@@ -3864,7 +3744,7 @@ fn plan_reply_id(scene: &Value, index: usize) -> i64 {
 #[tokio::test]
 async fn saved_planned_approval_rejects_bad_input_and_stale_native_targets_without_side_effects() {
     let saved = saved_plan_questions(false).await;
-    let id = plan_reply_id(&saved, 1);
+    let id = plan_reply_id(&saved, 0);
     let store = Arc::new(Store::default());
     store
         .inner
@@ -3942,29 +3822,25 @@ async fn saved_planned_approval_reuses_a_successful_sibling_on_a_second_recovery
             .with_id_fn(next_id)
             .build()
             .unwrap();
-        let mut events = Box::pin(
+        assert!(matches!(
             original
                 .run(answer(second, json!(true)), mode, Cancellation::new())
+                .await,
+            Err(error) if error.code == "CONFLICT"
+        ));
+        assert_eq!(store.load(1001, &Cancellation::new()).await.unwrap(), saved);
+        let mut events = Box::pin(
+            original
+                .run(answer(first, json!(true)), mode, Cancellation::new())
                 .await
                 .unwrap(),
         );
-        assert_eq!(question(&mut events).await.0, first);
-        tokio::time::timeout(std::time::Duration::from_secs(2), async {
-            loop {
-                if let Event::Complete { message, .. } = events.next().await.unwrap().unwrap()
-                    && message.values.get("result") == Some(&json!(b))
-                {
-                    break;
-                }
-            }
-        })
-        .await
-        .unwrap();
-        // Commit B's terminal native facts and the remaining A wait at the
+        assert_eq!(question(&mut events).await.0, second);
+        // Commit A's terminal native facts and the remaining B wait at the
         // existing waiting boundary before dropping the stream.
         assert!(poll!(events.next()).is_pending());
         let partial = store.load(1001, &Cancellation::new()).await.unwrap();
-        assert_eq!(partial["nodes"][b]["status"], "succeeded");
+        assert_eq!(partial["nodes"][a]["status"], "succeeded");
         drop(events);
         drop(original);
         assert_eq!(first_log.calls.lock().unwrap().len(), 1);
@@ -3979,44 +3855,28 @@ async fn saved_planned_approval_reuses_a_successful_sibling_on_a_second_recovery
             .with_id_fn(next_id)
             .build()
             .unwrap();
-        // A late duplicate of B cannot approve A after process-local state
-        // has been discarded; conflict must fail before any side effect.
-        assert!(
-            matches!(restored.run(answer(second, json!(false)), mode, Cancellation::new()).await, Err(error) if error.code == "CONFLICT")
-        );
-        assert_eq!(
-            store.load(1001, &Cancellation::new()).await.unwrap(),
-            partial
-        );
         let mut events = Box::pin(
             restored
                 .run(answer(second, json!(true)), mode, Cancellation::new())
                 .await
                 .unwrap(),
         );
-        assert_eq!(question(&mut events).await.0, first);
-        assert!(poll!(events.next()).is_pending());
-        assert!(log.calls.lock().unwrap().is_empty());
-        assert!(model.0.lock().unwrap().is_empty());
-        restored
-            .reply(answer(first, json!(false)), Cancellation::new())
-            .await
-            .unwrap();
         finish(&mut events).await;
         let final_state = store.load(1001, &Cancellation::new()).await.unwrap();
-        assert_eq!(final_state["nodes"][b], partial["nodes"][b]);
+        assert_eq!(final_state["nodes"][a], partial["nodes"][a]);
+        assert_eq!(final_state["nodes"][b]["status"], "succeeded");
         assert_eq!(
             final_state["nodes"][a]["execution"]["exec_id"],
             saved["nodes"][a]["execution"]["exec_id"]
         );
         assert_eq!(final_state["usage"]["total"], 104);
         assert_eq!(model.0.lock().unwrap().len(), 3);
-        assert!(log.calls.lock().unwrap().is_empty());
+        assert_eq!(log.calls.lock().unwrap().len(), 1);
     }
 }
 
 #[tokio::test]
-async fn restored_planned_questions_preserve_saved_fifo_order_instead_of_node_name_order() {
+async fn restored_planned_questions_reject_non_head_feedback_and_preserve_saved_fifo_order() {
     let mut saved = saved_plan_questions(false).await;
     saved["waits"].as_array_mut().unwrap().reverse();
     let first = plan_reply_id(&saved, 0);
@@ -4036,19 +3896,23 @@ async fn restored_planned_questions_preserve_saved_fifo_order_instead_of_node_na
         .with_id_fn(next_id)
         .build()
         .unwrap();
-    // Answer the later question; the earlier saved consumer must still be
-    // presented first even when its node sorts after the answered node.
+    assert!(matches!(
+        agent.run(answer(second, json!(true)), false, Cancellation::new()).await,
+        Err(error) if error.code == "CONFLICT"
+    ));
+    assert_eq!(store.load(1001, &Cancellation::new()).await.unwrap(), saved);
     let mut events = Box::pin(
         agent
-            .run(answer(second, json!(true)), false, Cancellation::new())
+            .run(answer(first, json!(true)), false, Cancellation::new())
             .await
             .unwrap(),
     );
-    assert_eq!(question(&mut events).await.0, first);
+    assert_eq!(question(&mut events).await.0, second);
     let waiting = store.load(1001, &Cancellation::new()).await.unwrap();
-    assert_eq!(waiting["waits"], saved["waits"]);
+    assert_eq!(waiting["waits"].as_array().unwrap().len(), 1);
+    assert_eq!(plan_reply_id(&waiting, 0), second);
     agent
-        .reply(answer(first, json!(false)), Cancellation::new())
+        .reply(answer(second, json!(false)), Cancellation::new())
         .await
         .unwrap();
     finish(&mut events).await;
@@ -4058,7 +3922,7 @@ async fn restored_planned_questions_preserve_saved_fifo_order_instead_of_node_na
 #[tokio::test]
 async fn restored_planned_approval_save_failure_and_cancellation_do_not_authorize_tools() {
     let saved = saved_plan_questions(false).await;
-    let id = plan_reply_id(&saved, 1);
+    let id = plan_reply_id(&saved, 0);
     let failed = Arc::new(FailingStore::default());
     failed
         .0
@@ -4088,11 +3952,13 @@ async fn restored_planned_approval_save_failure_and_cancellation_do_not_authoriz
             .any(|event| matches!(event, Err(error) if error.message == "waiting save failed"))
     );
     assert!(events.iter().all(|event| !matches!(event, Ok(Event::Complete { message, .. }) if message.metadata.contains_key("reply_id"))));
-    assert!(model.0.lock().unwrap().is_empty());
-    assert!(log.calls.lock().unwrap().is_empty());
+    // Task A was approved and completed before saving the next waiting
+    // question failed. That failure must not authorize task B's Tool.
+    assert_eq!(model.0.lock().unwrap().len(), 1);
+    assert_eq!(log.calls.lock().unwrap().len(), 1);
     let terminal = failed.load(1001, &Cancellation::new()).await.unwrap();
     assert_eq!(terminal["waits"], json!([]));
-    assert_eq!(terminal["usage"]["total"], 52);
+    assert_eq!(terminal["usage"]["total"], 65);
     assert_eq!(
         agent
             .reply(answer(id, json!(true)), Cancellation::new())
@@ -4129,14 +3995,21 @@ async fn restored_planned_approval_save_failure_and_cancellation_do_not_authoriz
             .await
             .unwrap(),
     );
+    assert!(matches!(
+        poll!(events.next()),
+        std::task::Poll::Ready(Some(Ok(Event::Complete { message, .. })))
+            if message.role == Role::Function
+    ));
     assert!(poll!(events.next()).is_pending());
     assert_eq!(store.blocked.load(Ordering::SeqCst), 1);
+    let model_calls_before_cancel = model.0.lock().unwrap().len();
+    let tool_calls_before_cancel = log.calls.lock().unwrap().len();
     cancellation.cancel();
     release.send(()).unwrap();
     let events = finish(&mut events).await;
     assert!(events.iter().all(|event| !matches!(event, Event::Complete { message, .. } if message.metadata.contains_key("reply_id"))));
-    assert!(model.0.lock().unwrap().is_empty());
-    assert!(log.calls.lock().unwrap().is_empty());
+    assert_eq!(model.0.lock().unwrap().len(), model_calls_before_cancel);
+    assert_eq!(log.calls.lock().unwrap().len(), tool_calls_before_cancel);
     assert_eq!(
         agent
             .reply(answer(id, json!(true)), Cancellation::new())
@@ -4184,13 +4057,13 @@ async fn planned_approval_recovery_worker() {
         .unwrap();
     let mut events = Box::pin(
         agent
-            .run(answer(second, json!(approve)), mode, Cancellation::new())
+            .run(answer(first, json!(false)), mode, Cancellation::new())
             .await
             .unwrap(),
     );
-    assert_eq!(question(&mut events).await.0, first);
+    assert_eq!(question(&mut events).await.0, second);
     agent
-        .reply(answer(first, json!(false)), Cancellation::new())
+        .reply(answer(second, json!(approve)), Cancellation::new())
         .await
         .unwrap();
     let events = finish(&mut events).await;
@@ -4366,15 +4239,16 @@ async fn saved_planned_approvals_route_same_call_ids_to_their_actual_tasks() {
                 .unwrap();
             let mut events = Box::pin(
                 restored
-                    .run(answer(second, json!(approve)), mode, Cancellation::new())
+                    .run(answer(first, json!(false)), mode, Cancellation::new())
                     .await
                     .unwrap(),
             );
             let (again, _) = question(&mut events).await;
-            assert_eq!(
-                again, first,
-                "re-present saved question, never allocate a new one"
-            );
+            assert_eq!(again, second, "next saved question retains its ID");
+            restored
+                .reply(answer(second, json!(approve)), Cancellation::new())
+                .await
+                .unwrap();
             tokio::time::timeout(std::time::Duration::from_secs(2), async {
                 loop {
                     let event = events.next().await.unwrap().unwrap();
@@ -4391,7 +4265,6 @@ async fn saved_planned_approvals_route_same_call_ids_to_their_actual_tasks() {
             })
             .await
             .unwrap();
-            assert!(poll!(events.next()).is_pending());
             assert_eq!(log.calls.lock().unwrap().len(), usize::from(approve));
             if approve {
                 assert_eq!(log.calls.lock().unwrap()[0].arguments["city"], b);
@@ -4405,13 +4278,8 @@ async fn saved_planned_approvals_route_same_call_ids_to_their_actual_tasks() {
                     .all(|request| task_id(request) != Some("c"))
             );
             let partial = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
-            assert_eq!(partial["waits"].as_array().unwrap().len(), 1);
-            assert_eq!(partial["waits"][0], saved["waits"][0]);
+            assert_eq!(partial["waits"], json!([]));
             assert_eq!(partial["nodes"][&b]["status"], "succeeded");
-            restored
-                .reply(answer(second, json!(approve)), Cancellation::new())
-                .await
-                .unwrap();
             assert_eq!(
                 restored
                     .reply(answer(second, json!(!approve)), Cancellation::new())
@@ -4420,10 +4288,6 @@ async fn saved_planned_approvals_route_same_call_ids_to_their_actual_tasks() {
                     .code,
                 "CONFLICT"
             );
-            restored
-                .reply(answer(first, json!(true)), Cancellation::new())
-                .await
-                .unwrap();
             let tail = finish(&mut events).await;
             if !mode {
                 assert!(
@@ -4447,7 +4311,7 @@ async fn saved_planned_approvals_route_same_call_ids_to_their_actual_tasks() {
                     "resolved"
                 );
             }
-            assert_eq!(log.calls.lock().unwrap().len(), 1 + usize::from(approve));
+            assert_eq!(log.calls.lock().unwrap().len(), usize::from(approve));
             assert_eq!(model.0.lock().unwrap().len(), 4);
             // Saved task history, not just root history, also protects a
             // repeated terminal run from replaying the plan/tools.
@@ -4746,14 +4610,19 @@ async fn recover_two_root_approvals<A: Agent>(
     drop(original);
     let saved = store.load(1001, &Cancellation::new()).await.unwrap();
     let restored = create(true);
+    assert!(matches!(
+        restored.run(answer(b, json!(true)), mode, Cancellation::new()).await,
+        Err(error) if error.code == "CONFLICT"
+    ));
+    assert_eq!(store.load(1001, &Cancellation::new()).await.unwrap(), saved);
     let mut events = Box::pin(
         restored
-            .run(answer(b, json!(true)), mode, Cancellation::new())
+            .run(answer(a, json!(false)), mode, Cancellation::new())
             .await
             .unwrap(),
     );
     let (again, _) = question(&mut events).await;
-    assert_eq!(again, a, "unanswered question retains its saved ID");
+    assert_eq!(again, b, "the next question retains its saved ID");
     loop {
         match poll!(events.next()) {
             std::task::Poll::Ready(Some(event)) => {
@@ -4764,8 +4633,7 @@ async fn recover_two_root_approvals<A: Agent>(
         }
     }
     assert_eq!(model.requests.lock().unwrap().len(), 1);
-    assert_eq!(log.calls.lock().unwrap().len(), 1);
-    assert_eq!(log.calls.lock().unwrap()[0].call_id, "c2");
+    assert!(log.calls.lock().unwrap().is_empty());
     restored
         .reply(answer(b, json!(true)), Cancellation::new())
         .await
@@ -4778,10 +4646,6 @@ async fn recover_two_root_approvals<A: Agent>(
             .code,
         "CONFLICT"
     );
-    restored
-        .reply(answer(a, json!(false)), Cancellation::new())
-        .await
-        .unwrap();
     finish(&mut events).await;
     assert_eq!(log.calls.lock().unwrap().len(), 1);
     assert_eq!(model.requests.lock().unwrap().len(), 2);
@@ -5280,13 +5144,16 @@ async fn recover_root_approval<A: Agent>(
     );
     let (id, _) = question(&mut events).await;
     let saved = store.load(1001, &Cancellation::new()).await.unwrap();
+    assert_eq!(saved["stream"], mode);
     assert!(log.calls.lock().unwrap().is_empty());
     drop(events);
     drop(original);
     let restored = create(true);
     let mut output = Box::pin(
         restored
-            .run(answer(id, json!(allow)), mode, Cancellation::new())
+            // The Checkpoint owns the mode for this continued run; the new
+            // invocation's argument must not switch delivery halfway through.
+            .run(answer(id, json!(allow)), !mode, Cancellation::new())
             .await
             .unwrap(),
     );
@@ -5311,6 +5178,7 @@ async fn recover_root_approval<A: Agent>(
     }
     let final_state = store.load(1001, &Cancellation::new()).await.unwrap();
     assert_eq!(final_state["status"], "succeeded");
+    assert_eq!(final_state["stream"], mode);
     assert_eq!(final_state["usage"]["total"], 26);
     assert_eq!(final_state["query"], saved["query"]);
     assert_eq!(
@@ -5600,6 +5468,7 @@ impl Checkpoint for FailingStore {
         self.0.delete(id, cancellation).await
     }
 }
+
 async fn failed_save<A: Agent>(agent: A, store: Arc<FailingStore>, log: Arc<Log>) {
     let events = agent
         .run(input(), false, Cancellation::new())

@@ -31,9 +31,42 @@ let agent = harness::builder()
 ```
 
 `./workspace` 是应用准备的已有目录，`toolkit` 和 `chat` 是已经配置的实例。
-当前 Core 已提供 Local 的列目录、读取、写入、精确编辑、Glob 匹配和正则搜索六种默认文件工具。
-这些工具与自定义工具共用 Toolkit 和已有权限、执行机制；删除和命令工具不会自动添加。
-显式删除/命令工具及共享文件环境的 Docker Workspace 仍在实现中。
+Local 默认自带列目录、读取、写入、精确编辑、Glob、Grep 和单文件删除七种基础工具，无需逐个挂载。
+命令能力只有显式配置执行环境后才自动提供；与自定义工具共用同一个 Toolkit、权限和执行机制：
+
+```rust
+let workspace = core::workspace::Local::new("./workspace")?
+    .sandbox(halo_agents::sandbox::Local::default()) // 可选；不配置则没有命令工具
+    .toolkit(toolkit); // 可选的自定义 Tool、MCP、Skill
+```
+
+命令与文件工具使用同一目录，默认文件工具的删除不递归删除目录。Local 命令具有宿主机权限，不是隔离沙箱；
+超时、取消和输出限制沿用所配置的 Sandbox，取消不回滚已发生的修改。
+
+Docker Workspace 让文件工具和命令共用一个持续存在的容器，构造不启动容器，首次异步操作时初始化：
+
+```rust
+let workspace = core::workspace::Docker::new(core::workspace::docker::Config {
+    sandbox: core::sandbox::docker::Config {
+        image: "应用已准备的镜像".into(), // image 与资源限制复用 Sandbox 配置
+        ..Default::default()
+    },
+    workdir: "/workspace".into(),
+    host_workdir: None, // 需要挂载时显式提供已有宿主机目录
+    env: Default::default(),
+})?.toolkit(toolkit);
+```
+
+同样交给 Harness 的 `.workspace(workspace)`，自动提供七种文件工具与命令工具，不逐个挂载。
+镜像须自带 `/bin/sh`、`sleep/cat/mkdir/mv/rm/find`（find 支持 NUL 输出及深度限制）；框架不拉取、构建或安装。
+默认无宿主机挂载、无网络，复用 Sandbox 的非 root、只读根文件系统与资源限制。显式挂载的目录权限由应用准备。
+直接使用 Workspace 时可以异步 `close()`；工具持有环境到最后一个拥有者释放，Drop 清理需 Tokio 仍存活且为尽力执行。
+超时/输出限制同时约束文件协议与命令。执行中超时、取消、输出超限或连接异常会关闭该容器，
+避免未停止的命令在后续文件操作背后继续写入；不会自动换一个空容器重试。
+这不回滚修改，未挂载的临时文件随容器释放，宿主机挂载的数据不删除。
+
+协议回归：`cargo test --offline --test workspace_docker`。真实容器测试需显式设置已有的
+`HEART_WORKSPACE_TEST_IMAGE`，再运行 `cargo test --test workspace_docker docker_workspace_real_ -- --ignored`；不自动拉取镜像。
 
 Workspace 的存储模式区分本地文件（Local）与数据库（Server）。Server 直接操作数据库，不模拟文件路径；
 默认只提供 write(data)、read(id)、update(id, data)、delete(id) 四个基础工具，复杂查询由用户实现自己的 Tool，
@@ -41,15 +74,19 @@ Workspace 的存储模式区分本地文件（Local）与数据库（Server）�
 不再提供公开的 Workspace InMemory 实现或兼容别名；文件测试使用临时 Local 目录。
 这不影响 Memory、Checkpoint 等其他组件的内存实现。
 ES 后端已提供 `core::workspace::es::new(client, index)?.toolkit(toolkit)`，client 为应用初始化的官方 `elasticsearch::Elasticsearch`。
-当前接入官方 9.1.0-alpha.1 客户端，真实集群及其他 ES 主版本兼容性尚未验收。
+当前接入官方 9.1.0-alpha.1 客户端，已在单节点 Elasticsearch 9.5.4 上完成真实基础操作验收；其他主版本、TLS/鉴权及多节点故障场景不在这次验收范围。
 不增加 config.filter/config.schema，不内置固定字段补齐策略。参数校验沿工具 Schema，业务校验和补齐可用用户 Hook。
-索引和 mapping 由应用准备；四个工具的实现及 Toolkit/Harness 接线已落地，真实 ES 集群验收尚未运行。
-写入先检查索引存在，使用 `_create` 防止覆盖，再通过实时 GET 返回落库记录；update 不 upsert，delete 物理删除。
+索引和 mapping 由应用准备；四个工具及 Toolkit/Harness 接线均经过协议与真实集群回归。
+write/update 先检查索引存在；write 使用 `_create` 防覆盖，再通过实时 GET 返回实际落库记录。
+update 不 upsert，delete 物理删除；仅 `doc_as_upsert=false` 不能阻止 ES 为缺失索引自动建空索引，因此更新同样保留存在检查。
 工具内部不自动重试；请求发出后的取消/连接中断不代表写入回滚。若需严格禁止并发删索引后的自动重建，应由应用配置 ES 权限/自动创建策略。
 
 本地协议回归：`cargo test --offline --test workspace_es`。
 真实集群测试默认忽略；应用预先准备隔离测试索引后，设置 `HEART_ES_URL`、`HEART_ES_TEST_INDEX`，按需设置 `HEART_ES_API_KEY`（已编码 API Key），
 再运行 `cargo test --test workspace_es es_real_cluster_crud_smoke -- --ignored --exact`。该测试不建索引或改 mapping，只清理它生成的记录 ID。
+扩展验收运行 `cargo test --test workspace_es_real -- --ignored`，覆盖 i64 极值、并发新增冲突、缺索引、实际 Harness/权限和 Pipeline 结果。
+完整扩展组还需 `HEART_ES_PIPELINE_TEST_INDEX` 指向独立的既有索引：其默认 ingest pipeline 将 `content` 转小写，
+并设置 `metadata.ingested=true`。索引、mapping 与 pipeline 都由测试调用方准备，不由 Workspace 创建。
 
 ## 当前状态
 

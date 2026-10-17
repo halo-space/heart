@@ -221,7 +221,8 @@ async fn workspace_preserves_tools_mcps_and_skills_without_eager_discovery() {
             "workspace_list",
             "workspace_edit",
             "workspace_glob",
-            "workspace_grep"
+            "workspace_grep",
+            "workspace_delete"
         ]
     );
     let cancellation = Cancellation::new();
@@ -324,6 +325,7 @@ async fn harness_uses_workspace_mounted_tools_in_the_existing_model_loop() {
         ),
         tool_call("workspace_read", json!({"path":"draft.txt"})),
         tool_call("echo", json!({})),
+        tool_call("workspace_delete", json!({"path":"draft.txt"})),
         message(Role::Assistant, "done"),
     ]);
     let workspace = core::workspace::Local::new(&directory.0)
@@ -342,13 +344,10 @@ async fn harness_uses_workspace_mounted_tools_in_the_existing_model_loop() {
         .collect()
         .await;
     assert!(events.iter().all(Result::is_ok));
-    assert_eq!(events.len(), 15, "eight model calls and seven tool results");
-    assert_eq!(
-        std::fs::read(directory.0.join("draft.txt")).unwrap(),
-        b"edited draft"
-    );
+    assert_eq!(events.len(), 17, "nine model calls and eight tool results");
+    assert!(!directory.0.join("draft.txt").exists());
     let requests = requests.lock().unwrap();
-    assert_eq!(requests.len(), 8);
+    assert_eq!(requests.len(), 9);
     let names: Vec<_> = requests[0]
         .tools
         .iter()
@@ -362,14 +361,11 @@ async fn harness_uses_workspace_mounted_tools_in_the_existing_model_loop() {
         "workspace_edit",
         "workspace_glob",
         "workspace_grep",
+        "workspace_delete",
     ] {
         assert!(names.contains(&name));
     }
-    assert!(
-        !names
-            .iter()
-            .any(|name| name.contains("delete") || name.contains("shell"))
-    );
+    assert!(!names.iter().any(|name| name.contains("shell")));
     let read_result = requests[6]
         .messages
         .0
@@ -682,4 +678,133 @@ async fn definition_only_server_still_checks_existing_permission_before_call() {
         .await;
     assert!(events.iter().all(Result::is_ok));
     assert_eq!(calls.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn configured_workspace_commands_use_the_original_harness_loop_and_shared_files() {
+    let directory = Directory::new();
+    let (model, requests) = Model::new(vec![
+        tool_call(
+            "workspace_write",
+            json!({"path":"draft.txt","content":"draft"}),
+        ),
+        tool_call(
+            "workspace_exec_shell",
+            json!({"args":["/bin/sh","-c","printf edited > draft.txt"]}),
+        ),
+        tool_call("workspace_read", json!({"path":"draft.txt"})),
+        tool_call("workspace_delete", json!({"path":"draft.txt"})),
+        message(Role::Assistant, "done"),
+    ]);
+    let agent = harness::builder()
+        .model(model)
+        .workspace(
+            core::workspace::Local::new(&directory.0)
+                .unwrap()
+                .sandbox(halo_agents::sandbox::Local::default()),
+        )
+        .build()
+        .unwrap();
+    let events: Vec<_> = agent
+        .run(input(), false, Cancellation::new())
+        .await
+        .unwrap()
+        .collect()
+        .await;
+    assert!(events.iter().all(Result::is_ok));
+    assert_eq!(events.len(), 9);
+    assert!(!directory.0.join("draft.txt").exists());
+    let requests = requests.lock().unwrap();
+    assert_eq!(requests.len(), 5);
+    assert_eq!(
+        requests[0].tools.len(),
+        9,
+        "eight workspace Tools and the existing built-in plan"
+    );
+    let read = requests[3]
+        .messages
+        .as_slice()
+        .iter()
+        .rev()
+        .find(|message| message.role == Role::Tool)
+        .unwrap();
+    assert!(
+        read.content[0].data["value"]
+            .as_str()
+            .unwrap()
+            .contains("edited")
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn permission_denial_blocks_builtin_delete_and_command_without_side_effects() {
+    for name in ["workspace_delete", "workspace_exec_shell"] {
+        let directory = Directory::new();
+        std::fs::write(directory.0.join("keep.txt"), "keep").unwrap();
+        let args = if name == "workspace_delete" {
+            json!({"path":"keep.txt"})
+        } else {
+            json!({"args":["/bin/sh","-c","printf wrong > keep.txt; printf wrong > unexpected"]})
+        };
+        let (model, _) = Model::new(vec![
+            tool_call(name, args),
+            message(Role::Assistant, "denied"),
+        ]);
+        let checks = Arc::new(AtomicUsize::new(0));
+        let checked = Arc::clone(&checks);
+        let permission = core::permission::Permission::new(
+            move |request: halo_agents::permission::Request, _: Cancellation| {
+                assert_eq!(request.resource, name);
+                checked.fetch_add(1, Ordering::SeqCst);
+                async {
+                    Ok(Decision {
+                        behavior: Behavior::Deny,
+                        reason: Some("read only".into()),
+                    })
+                }
+            },
+        );
+        let agent = harness::builder()
+            .model(model)
+            .workspace(
+                core::workspace::Local::new(&directory.0)
+                    .unwrap()
+                    .sandbox(halo_agents::sandbox::Local::default()),
+            )
+            .permission(permission)
+            .build()
+            .unwrap();
+        let events: Vec<_> = agent
+            .run(input(), false, Cancellation::new())
+            .await
+            .unwrap()
+            .collect()
+            .await;
+        assert!(events.iter().all(Result::is_ok));
+        assert!(checks.load(Ordering::SeqCst) > 0);
+        assert_eq!(
+            std::fs::read_to_string(directory.0.join("keep.txt")).unwrap(),
+            "keep"
+        );
+        assert!(!directory.0.join("unexpected").exists());
+    }
+}
+
+#[test]
+fn automatically_bound_operations_still_reject_custom_name_collisions() {
+    for name in ["workspace_delete", "workspace_exec_shell"] {
+        let directory = Directory::new();
+        let (model, requests) = Model::new(vec![]);
+        let workspace = core::workspace::Local::new(&directory.0)
+            .unwrap()
+            .sandbox(halo_agents::sandbox::Local::default())
+            .toolkit(Toolkit::new().tool(Echo(definition(name))));
+        let Err(error) = harness::builder().model(model).workspace(workspace).build() else {
+            panic!("built-in operation collision was accepted");
+        };
+        assert_eq!(error.code, "INVALID_ARGUMENTS");
+        assert!(requests.lock().unwrap().is_empty());
+    }
 }

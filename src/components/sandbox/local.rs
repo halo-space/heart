@@ -1,7 +1,8 @@
 //! Default host execution, NOT an isolation mechanism. Only run trusted commands.
-//! The process inherits the application's environment, directory and permissions.
+//! Standalone execution inherits the application's environment, directory and
+//! permissions. Workspace binding may set a per-command cwd, not isolation.
 
-use std::{future::Future, process::Stdio, task::Poll, time::Duration};
+use std::{future::Future, path::Path, process::Stdio, task::Poll, time::Duration};
 
 use futures_util::future::poll_fn;
 use serde::Deserialize;
@@ -59,10 +60,13 @@ struct Input {
     args: Vec<String>,
 }
 
-impl Sandbox for Local {
-    async fn execute(
+impl Local {
+    // Workspace reuses this executor with a fixed per-command cwd. This is
+    // deliberately not another public Sandbox operation or model argument.
+    pub(crate) async fn execute_at(
         &self,
         request: Request,
+        directory: Option<&Path>,
         cancellation: &Cancellation,
     ) -> Result<Response, Error> {
         check(cancellation)?;
@@ -90,7 +94,7 @@ impl Sandbox for Local {
             async {
                 tokio::time::timeout(
                     self.config.timeout,
-                    run(&input.args, self.config.max_output),
+                    run(&input.args, self.config.max_output, directory),
                 )
                 .await
                 .map_err(|_| Error::new("TIMEOUT", "local operation timed out"))?
@@ -105,11 +109,29 @@ impl Sandbox for Local {
     }
 }
 
-async fn run(args: &[String], limit: usize) -> Result<serde_json::Value, Error> {
+impl Sandbox for Local {
+    async fn execute(
+        &self,
+        request: Request,
+        cancellation: &Cancellation,
+    ) -> Result<Response, Error> {
+        self.execute_at(request, None, cancellation).await
+    }
+}
+
+async fn run(
+    args: &[String],
+    limit: usize,
+    directory: Option<&Path>,
+) -> Result<serde_json::Value, Error> {
     // Explicit argv: no shell expansion, implicit script interpreter, retry or
     // fallback. A caller may explicitly choose a shell as the first argument.
-    let mut child = Command::new(&args[0])
-        .args(&args[1..])
+    let mut command = Command::new(&args[0]);
+    command.args(&args[1..]);
+    if let Some(directory) = directory {
+        command.current_dir(directory);
+    }
+    let mut child = command
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())

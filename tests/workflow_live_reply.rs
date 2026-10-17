@@ -235,6 +235,28 @@ async fn finish<S: futures_core::Stream<Item = Result<Event, Error>> + Unpin>(
         .unwrap()
 }
 
+async fn reply_in_fifo<S: futures_core::Stream<Item = Result<Event, Error>> + Unpin>(
+    workflow: &Runtime,
+    events: &mut S,
+    input: Messages,
+) -> Vec<Result<Event, Error>> {
+    let mut observed = Vec::new();
+    loop {
+        tokio::select! {
+            biased;
+            event = events.next() => match event {
+                Some(event) => observed.push(event),
+                None => panic!("Workflow ended before the reply became the FIFO head"),
+            },
+            result = workflow.reply(input.clone(), Cancellation::new()) => match result {
+                Ok(()) => return observed,
+                Err(error) if error.code == "CONFLICT" => {},
+                Err(error) => panic!("unexpected Workflow FIFO reply error: {error:?}"),
+            }
+        }
+    }
+}
+
 #[tokio::test]
 async fn workflow_reply_continues_real_agent_on_the_same_stream() {
     for react in [false, true] {
@@ -331,7 +353,7 @@ async fn workflow_reply_continues_real_agent_on_the_same_stream() {
 }
 
 #[tokio::test]
-async fn workflow_concurrent_questions_are_targeted_and_keep_the_join_blocked() {
+async fn workflow_concurrent_questions_are_consumed_in_fifo_order_and_keep_the_join_blocked() {
     for react in [false, true] {
         for depth in [0, 2] {
             let (compiled, probes) = compiled(react, depth, 2);
@@ -373,10 +395,42 @@ async fn workflow_concurrent_questions_are_targeted_and_keep_the_join_blocked() 
                     .unwrap()
                     .is_empty()
             );
+            assert_eq!(
+                workflow
+                    .reply(answer(second, true), Cancellation::new())
+                    .await
+                    .unwrap_err()
+                    .code,
+                "CONFLICT",
+                "reply_id identifies the later question but cannot skip the FIFO head"
+            );
             workflow
-                .reply(answer(second, true), Cancellation::new())
+                .reply(answer(first, false), Cancellation::new())
                 .await
                 .unwrap();
+            assert_eq!(
+                probes
+                    .iter()
+                    .map(|probe| probe.calls.lock().unwrap().len())
+                    .sum::<usize>(),
+                0,
+                "the later operation cannot run before the head question is consumed"
+            );
+            loop {
+                tokio::select! {
+                    biased;
+                    event = events.next() => {
+                        event.expect("the original Workflow stream remains active").unwrap();
+                    }
+                    result = workflow.reply(answer(second, true), Cancellation::new()) => {
+                        match result {
+                            Ok(()) => break,
+                            Err(error) if error.code == "CONFLICT" => {}
+                            Err(error) => panic!("unexpected FIFO reply error: {error:?}"),
+                        }
+                    }
+                }
+            }
             tokio::time::timeout(std::time::Duration::from_secs(3), async {
                 loop {
                     if let Event::Complete { message, .. } = events.next().await.unwrap().unwrap()
@@ -398,19 +452,6 @@ async fn workflow_concurrent_questions_are_targeted_and_keep_the_join_blocked() 
                     .sum::<usize>(),
                 1
             );
-            assert_eq!(
-                probes[if first_node == "a" { 0 } else { 1 }]
-                    .model
-                    .0
-                    .lock()
-                    .unwrap()
-                    .len(),
-                1
-            );
-            workflow
-                .reply(answer(first, false), Cancellation::new())
-                .await
-                .unwrap();
             let output = finish(&mut events).await;
             assert!(output.iter().all(Result::is_ok), "{output:?}");
             drop(events);
@@ -972,6 +1013,114 @@ async fn dropping_a_nested_workflow_after_a_node_complete_retains_its_success() 
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
+#[tokio::test]
+async fn saved_workflow_approval_replies_restore_the_actual_agent_through_nested_graphs() {
+    for react in [false, true] {
+        for depth in [0, 2] {
+            for approved in [false, true] {
+                let (compiled, probes) = compiled(react, depth, 1);
+                let store = Arc::new(Store::default());
+                let first = Runtime::new(1001, compiled.clone())
+                    .unwrap()
+                    .with_checkpoint(store.clone());
+                let mut original = Box::pin(
+                    first
+                        .run(initial(), Arc::new(next_id), Cancellation::new())
+                        .await
+                        .unwrap(),
+                );
+                let (reply_id, _) = question(&mut original).await;
+                drop(original);
+                drop(first);
+
+                let saved = store.load(1001, &Cancellation::new()).await.unwrap();
+                let scene = &leaf(&saved)["nodes"]["a"]["executions"]
+                    .as_object()
+                    .unwrap()
+                    .values()
+                    .next()
+                    .unwrap()["attempts"][0]["agent"];
+                assert_eq!(scene["status"], "waiting");
+                assert!(!scene["waits"].as_array().unwrap().is_empty());
+                assert_eq!(saved["usage"]["total"], 13);
+
+                let mut restored = Runtime::from_snapshot(1001, compiled, saved)
+                    .unwrap()
+                    .with_checkpoint(store.clone());
+                restored
+                    .reply(answer(reply_id, approved), Cancellation::new())
+                    .await
+                    .unwrap();
+                let output = restored
+                    .run(
+                        initial(),
+                        Arc::new(|| panic!("approval recovery must reuse saved execution ids")),
+                        Cancellation::new(),
+                    )
+                    .await
+                    .unwrap()
+                    .collect::<Vec<_>>()
+                    .await;
+                assert!(
+                    output.iter().all(Result::is_ok),
+                    "{react}/{depth}/{approved}: {output:?}"
+                );
+                assert_eq!(restored.state().status, graph::Status::Succeeded);
+                assert_eq!(restored.state().usage.as_ref().unwrap().total, Some(26));
+                assert_eq!(probes[0].calls.lock().unwrap().len(), usize::from(approved));
+                assert_eq!(probes[0].model.0.lock().unwrap().len(), 2);
+                assert_eq!(probes[0].checkpoint.loads.load(Ordering::SeqCst), 0);
+                assert_eq!(probes[0].checkpoint.saves.load(Ordering::SeqCst), 0);
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn saved_workflow_approval_rejects_invalid_or_unmatched_reply_before_state_changes() {
+    let (compiled, probes) = compiled(true, 1, 1);
+    let store = Arc::new(Store::default());
+    let first = Runtime::new(1001, compiled.clone())
+        .unwrap()
+        .with_checkpoint(store.clone());
+    let mut original = Box::pin(
+        first
+            .run(initial(), Arc::new(next_id), Cancellation::new())
+            .await
+            .unwrap(),
+    );
+    let (reply_id, _) = question(&mut original).await;
+    drop(original);
+    drop(first);
+    let saved = store.load(1001, &Cancellation::new()).await.unwrap();
+    let restored = Runtime::from_snapshot(1001, compiled, saved).unwrap();
+    let before = restored.snapshot().unwrap();
+
+    let mut invalid = answer(reply_id, true);
+    invalid.0[0].content[0]
+        .data
+        .insert("value".into(), json!({"approved":"yes"}));
+    assert_eq!(
+        restored
+            .reply(invalid, Cancellation::new())
+            .await
+            .unwrap_err()
+            .code,
+        "INVALID_ARGUMENTS"
+    );
+    assert_eq!(
+        restored
+            .reply(answer(reply_id + 1, true), Cancellation::new())
+            .await
+            .unwrap_err()
+            .code,
+        "NOT_FOUND"
+    );
+    assert_eq!(restored.snapshot().unwrap(), before);
+    assert_eq!(probes[0].model.0.lock().unwrap().len(), 1);
+    assert!(probes[0].calls.lock().unwrap().is_empty());
+}
+
 #[derive(Default)]
 struct PlanningModel(Mutex<Vec<Request>>);
 impl Chat for PlanningModel {
@@ -1087,15 +1236,9 @@ async fn workflow_reply_targets_actual_agent_plan_tasks_even_when_node_names_rep
                 "same_call"
             );
         }
-        workflow
-            .reply(answer(second, true), Cancellation::new())
-            .await
-            .unwrap();
-        workflow
-            .reply(answer(first, true), Cancellation::new())
-            .await
-            .unwrap();
-        let output = finish(&mut events).await;
+        let mut output = reply_in_fifo(&workflow, &mut events, answer(first, true)).await;
+        output.extend(reply_in_fifo(&workflow, &mut events, answer(second, true)).await);
+        output.extend(finish(&mut events).await);
         assert!(output.iter().all(Result::is_ok), "{output:?}");
         drop(events);
         assert_eq!(workflow.state().status, graph::Status::Succeeded);

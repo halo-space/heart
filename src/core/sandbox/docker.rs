@@ -15,7 +15,7 @@ use crate::{
     sandbox::{Request, Response, Sandbox},
 };
 
-const LABEL: &str = "halo.agents.operation";
+pub(crate) const LABEL: &str = "halo.agents.operation";
 
 /// Concrete Docker settings, not Runtime configuration. Image must already be
 /// available to the application's Docker daemon. No image is chosen implicitly.
@@ -44,48 +44,34 @@ impl Default for Config {
     }
 }
 
-pub struct Docker {
-    config: Config,
-    program: PathBuf,
-}
-
-impl Docker {
-    /// Construction only validates local settings; it does not start a daemon
-    /// or container. Execution requires an existing Tokio I/O/time runtime.
-    pub fn new(config: Config) -> Result<Self, Error> {
-        if config.image.is_empty()
-            || config.image.starts_with('-')
-            || config
+impl Config {
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        if self.image.is_empty()
+            || self.image.starts_with('-')
+            || self
                 .image
                 .chars()
                 .any(|c| c.is_whitespace() || c.is_control())
-            || config.memory < 6 * 1024 * 1024
-            || !config.cpus.is_finite()
-            || config.cpus <= 0.0
-            || config.pids == 0
-            || config.timeout.is_zero()
-            || config.max_output == 0
-            || config.max_output == usize::MAX
+            || self.memory < 6 * 1024 * 1024
+            || !self.cpus.is_finite()
+            || self.cpus <= 0.0
+            || self.pids == 0
+            || self.timeout.is_zero()
+            || self.max_output == 0
+            || self.max_output == usize::MAX
         {
             return Err(Error::new(
                 "INVALID_ARGUMENTS",
                 "invalid Docker sandbox configuration",
             ));
         }
-        Ok(Self {
-            config,
-            program: PathBuf::from("docker"),
-        })
+        Ok(())
     }
 
-    async fn run(&self, args: &[String], guard: &Guard) -> Result<Response, Error> {
-        let memory = self.config.memory.to_string();
-        let mut create = vec![
-            "create".into(),
-            "--name".into(),
-            guard.name.clone(),
-            "--label".into(),
-            format!("{LABEL}={}", guard.token),
+    /// Shared security/resource policy for one-shot Sandbox and persistent
+    /// Workspace containers. Mounts and process lifetime belong to the caller.
+    pub(crate) fn create_args(&self) -> Vec<String> {
+        vec![
             "--pull".into(),
             "never".into(),
             "--init".into(),
@@ -98,19 +84,45 @@ impl Docker {
             "--user".into(),
             "65534:65534".into(),
             "--network".into(),
-            if self.config.network {
-                "bridge".into()
-            } else {
-                "none".into()
-            },
+            if self.network { "bridge" } else { "none" }.into(),
             "--memory".into(),
-            memory.clone(),
+            self.memory.to_string(),
             "--memory-swap".into(),
-            memory,
+            self.memory.to_string(),
             "--cpus".into(),
-            self.config.cpus.to_string(),
+            self.cpus.to_string(),
             "--pids-limit".into(),
-            self.config.pids.to_string(),
+            self.pids.to_string(),
+        ]
+    }
+}
+
+pub struct Docker {
+    config: Config,
+    program: PathBuf,
+}
+
+impl Docker {
+    /// Construction only validates local settings; it does not start a daemon
+    /// or container. Execution requires an existing Tokio I/O/time runtime.
+    pub fn new(config: Config) -> Result<Self, Error> {
+        config.validate()?;
+        Ok(Self {
+            config,
+            program: PathBuf::from("docker"),
+        })
+    }
+
+    async fn run(&self, args: &[String], guard: &Guard) -> Result<Response, Error> {
+        let mut create = vec![
+            "create".into(),
+            "--name".into(),
+            guard.name.clone(),
+            "--label".into(),
+            format!("{LABEL}={}", guard.token),
+        ];
+        create.extend(self.config.create_args());
+        create.extend([
             "--tmpfs".into(),
             "/tmp:rw,nosuid,nodev,size=64m,mode=1777".into(),
             "--tmpfs".into(),
@@ -120,7 +132,7 @@ impl Docker {
             "--entrypoint".into(),
             args[0].clone(),
             self.config.image.clone(),
-        ];
+        ]);
         create.extend_from_slice(&args[1..]);
         let created = cli(&self.program, &create, 4096).await?;
         if !created.success {
@@ -269,9 +281,40 @@ struct Output {
 }
 
 async fn cli(program: &std::path::Path, args: &[String], limit: usize) -> Result<Output, Error> {
+    let output = cli_bytes(program, args, None, limit).await?;
+    let stdout = String::from_utf8(output.stdout)
+        .map_err(|_| Error::new("INVALID_RESPONSE", "sandbox stdout is not UTF-8"))?;
+    let stderr = String::from_utf8(output.stderr)
+        .map_err(|_| Error::new("INVALID_RESPONSE", "sandbox stderr is not UTF-8"))?;
+    Ok(Output {
+        stdout,
+        stderr,
+        success: output.code == 0,
+    })
+}
+
+pub(crate) struct Bytes {
+    pub(crate) stdout: Vec<u8>,
+    pub(crate) stderr: Vec<u8>,
+    pub(crate) code: i32,
+}
+
+/// Internal Docker transport shared by Sandbox and Workspace. It does not
+/// execute user argv on the host, and never logs arguments/environment values.
+pub(crate) async fn cli_bytes(
+    program: &std::path::Path,
+    args: &[String],
+    input: Option<&[u8]>,
+    limit: usize,
+) -> Result<Bytes, Error> {
+    use tokio::io::AsyncWriteExt;
     let mut child = Command::new(program)
         .args(args)
-        .stdin(Stdio::null())
+        .stdin(if input.is_some() {
+            Stdio::piped()
+        } else {
+            Stdio::null()
+        })
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .kill_on_drop(true)
@@ -281,20 +324,32 @@ async fn cli(program: &std::path::Path, args: &[String], limit: usize) -> Result
         })?;
     let stdout = child.stdout.take().expect("stdout was piped");
     let stderr = child.stderr.take().expect("stderr was piped");
-    let (stdout, stderr, status) =
-        futures_util::try_join!(read(stdout, limit), read(stderr, limit), async {
+    let stdin = child.stdin.take();
+    let (stdout, stderr, status, ()) = futures_util::try_join!(
+        read(stdout, limit),
+        read(stderr, limit),
+        async {
             child.wait().await.map_err(|e| {
                 Error::new("UNAVAILABLE", "Docker CLI wait failed").with_details(e.to_string())
             })
-        })?;
-    let stdout = String::from_utf8(stdout)
-        .map_err(|_| Error::new("INVALID_RESPONSE", "sandbox stdout is not UTF-8"))?;
-    let stderr = String::from_utf8(stderr)
-        .map_err(|_| Error::new("INVALID_RESPONSE", "sandbox stderr is not UTF-8"))?;
-    Ok(Output {
+        },
+        async {
+            if let Some(mut stdin) = stdin {
+                // A container-side validation failure can close stdin early;
+                // the exit status/stderr remain the authoritative result.
+                if let Err(error) = stdin.write_all(input.unwrap_or_default()).await
+                    && error.kind() != std::io::ErrorKind::BrokenPipe
+                {
+                    return Err(Error::new("UNAVAILABLE", "Docker input write failed"));
+                }
+            }
+            Ok(())
+        }
+    )?;
+    Ok(Bytes {
         stdout,
         stderr,
-        success: status.success(),
+        code: status.code().unwrap_or(-1),
     })
 }
 
@@ -313,11 +368,11 @@ async fn read(reader: impl AsyncRead + Unpin, limit: usize) -> Result<Vec<u8>, E
     Ok(bytes)
 }
 
-fn container_id(id: &str) -> bool {
+pub(crate) fn container_id(id: &str) -> bool {
     id.len() == 64 && id.bytes().all(|c| c.is_ascii_hexdigit())
 }
 
-struct Guard {
+pub(crate) struct Guard {
     program: PathBuf,
     name: String,
     token: String,
@@ -325,7 +380,24 @@ struct Guard {
 }
 
 impl Guard {
-    async fn cleanup(&mut self) -> Result<(), Error> {
+    pub(crate) fn new(program: PathBuf, prefix: &str) -> Self {
+        let token = format!("{:032x}", rand::random::<u128>());
+        Self {
+            program,
+            name: format!("{prefix}-{token}"),
+            token,
+            armed: true,
+        }
+    }
+
+    pub(crate) fn name(&self) -> &str {
+        &self.name
+    }
+    pub(crate) fn token(&self) -> &str {
+        &self.token
+    }
+
+    pub(crate) async fn cleanup(&mut self) -> Result<(), Error> {
         let result = cleanup(&self.program, &self.name, &self.token).await;
         if result.is_ok() {
             self.armed = false;
@@ -363,9 +435,8 @@ async fn cleanup(program: &std::path::Path, name: &str, token: &str) -> Result<(
         .await?;
         if !inspected.success {
             // Missing container is idempotent; daemon/auth failures are not.
-            if inspected.stderr.contains("No such object")
-                || inspected.stderr.contains("No such container")
-            {
+            let stderr = inspected.stderr.to_ascii_lowercase();
+            if stderr.contains("no such object") || stderr.contains("no such container") {
                 return Ok(());
             }
             return Err(Error::new("UNAVAILABLE", "sandbox cleanup lookup failed"));
