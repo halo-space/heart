@@ -8,6 +8,8 @@ pub(crate) struct Restore {
     questions: BTreeMap<String, Question>,
     history: BTreeMap<i64, Option<Value>>,
     tasks: BTreeMap<wait::Node, Consumer>,
+    feedback: BTreeMap<String, super::feedback::Saved>,
+    feedback_history: BTreeMap<i64, super::feedback::Delivery>,
 }
 
 #[derive(Default)]
@@ -15,11 +17,12 @@ pub(super) struct Consumer {
     waits: Vec<wait::Wait>,
     questions: BTreeMap<String, Question>,
     children: BTreeMap<wait::Node, Consumer>,
+    feedback: BTreeMap<String, super::feedback::Saved>,
 }
 
 // Follow native current containers only, never arbitrary business JSON or
 // older executions. Child scenes are not copied into another recovery store.
-fn steps(scene: &Value) -> Result<Vec<Step>, Error> {
+pub(super) fn steps(scene: &Value) -> Result<Vec<Step>, Error> {
     wait::validate(scene)?;
     let mut steps: Vec<Step> = serde_json::from_value(
         scene
@@ -87,9 +90,42 @@ fn same_feedback(steps: &[Step], input: &Input) -> Result<bool, Error> {
             "saved question identity is ambiguous",
         ));
     }
+    if record.kind == "input" {
+        record.validate()?;
+        if record.question.metadata.get("chat_id") != input.metadata.get("chat_id")
+            || record
+                .question
+                .metadata
+                .get("reply_id")
+                .and_then(Value::as_i64)
+                != Some(id)
+        {
+            return Err(Error::new(
+                "INVALID_STATE",
+                "saved feedback question identity is invalid",
+            ));
+        }
+        let message = crate::core::agent::input::user_message(input.clone());
+        if record
+            .feedback
+            .as_slice()
+            .iter()
+            .any(|saved| saved.content == message.content)
+        {
+            return Ok(true);
+        }
+        if record.status == "resolved" {
+            return Err(Error::new(
+                "CONFLICT",
+                "this question already received all required feedback",
+            ));
+        }
+        return Ok(false);
+    }
     if record.kind != "approval" || record.status != "resolved" {
         return Ok(false);
     }
+    record.validate()?;
     if record.question.metadata.get("chat_id") != input.metadata.get("chat_id")
         || record
             .question
@@ -124,26 +160,72 @@ pub(crate) fn duplicate(scene: &Value, input: &Input) -> Result<bool, Error> {
 }
 
 pub(crate) fn prepare(scene: &Value, input: &Input) -> Result<Option<Restore>, Error> {
+    prepare_input(scene, Some(input))
+}
+
+/// A sibling restored by its Workflow owner has no submitted reply yet.
+/// Recreate its own native consumer without fabricating external input.
+pub(crate) fn pending(scene: &Value) -> Result<Option<Restore>, Error> {
+    prepare_input(scene, None)
+}
+
+fn prepare_input(scene: &Value, input: Option<&Input>) -> Result<Option<Restore>, Error> {
     if !wait::validate(scene)? {
         return Ok(None);
     }
     let waits: Vec<wait::Wait> = serde_json::from_value(scene["waits"].clone())
         .map_err(|_| Error::new("INVALID_STATE", "invalid saved waits"))?;
-    let id = match input.metadata.get("reply_id") {
-        None => {
+    let id = match input.and_then(|input| input.metadata.get("reply_id")) {
+        None if input.is_some() => {
             return Err(Error::new(
                 "WAITING",
                 "Agent is waiting for targeted external feedback",
             ));
         }
-        Some(value) => value
-            .as_i64()
-            .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "reply_id must be an i64"))?,
+        Some(value) => Some(
+            value
+                .as_i64()
+                .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "reply_id must be an i64"))?,
+        ),
+        None => None,
     };
     let all_steps = steps(scene)?;
     let mut history = BTreeMap::new();
+    let mut feedback_history = BTreeMap::new();
     for step in &all_steps {
         for (id, record) in &step.waits {
+            record.validate()?;
+            if record.kind == "input" {
+                if record.question.metadata.get("chat_id") != scene.get("chat_id")
+                    || record
+                        .question
+                        .metadata
+                        .get("reply_id")
+                        .and_then(Value::as_i64)
+                        != Some(*id)
+                {
+                    return Err(Error::new(
+                        "INVALID_STATE",
+                        "saved feedback question identity is invalid",
+                    ));
+                }
+                feedback_history.insert(
+                    *id,
+                    super::feedback::Delivery {
+                        count: record.count,
+                        submitted: record
+                            .feedback
+                            .as_slice()
+                            .iter()
+                            .map(|message| {
+                                serde_json::to_value(&message.content)
+                                    .expect("feedback serialization")
+                            })
+                            .collect(),
+                        sender: None,
+                    },
+                );
+            }
             let submission = (record.kind == "approval"
                 && record.status == "resolved"
                 && record.feedback.as_slice().len() == 1
@@ -168,9 +250,14 @@ pub(crate) fn prepare(scene: &Value, input: &Input) -> Result<Option<Restore>, E
     }
     let mut questions = BTreeMap::new();
     let mut tasks = BTreeMap::<wait::Node, Consumer>::new();
-    let duplicate = same_feedback(&all_steps, input)?;
+    let duplicate = input
+        .map(|input| same_feedback(&all_steps, input))
+        .transpose()?
+        .unwrap_or(false);
     let mut targeted = duplicate;
     let mut reply_order = Vec::new();
+    let mut feedback = BTreeMap::new();
+    let mut approval_input = false;
     for position in &waits {
         let step: Step = serde_json::from_value(
             wait::scene_step(scene, &position.nodes, &position.step)?.clone(),
@@ -184,7 +271,7 @@ pub(crate) fn prepare(scene: &Value, input: &Input) -> Result<Option<Restore>, E
         if step.kind != "tool"
             || step.stage.as_deref() != Some("call")
             || unresolved.len() != 1
-            || unresolved[0].1.kind != "approval"
+            || !matches!(unresolved[0].1.kind.as_str(), "approval" | "input")
         {
             return Err(Error::new(
                 "WAITING",
@@ -211,8 +298,43 @@ pub(crate) fn prepare(scene: &Value, input: &Input) -> Result<Option<Restore>, E
             ));
         }
         reply_order.push(reply_id);
-        let selected = reply_id == id;
+        let selected = Some(reply_id) == id;
         targeted |= selected;
+        if record.kind == "input" {
+            let mut destination = &mut feedback;
+            let mut children = &mut tasks;
+            // scene_step above has validated each current containment edge.
+            // Rebuild consumers at those exact coordinates, never by Call ID
+            // across sibling tasks or children.
+            for (index, node) in position.nodes.iter().enumerate() {
+                let consumer = children.entry(node.clone()).or_default();
+                consumer.waits.push(wait::Wait {
+                    nodes: position.nodes[index + 1..].to_vec(),
+                    step: position.step.clone(),
+                });
+                destination = &mut consumer.feedback;
+                children = &mut consumer.children;
+            }
+            if destination
+                .insert(
+                    call.call_id.clone(),
+                    super::feedback::Saved {
+                        call,
+                        id: reply_id,
+                        record: record.clone(),
+                        input: input.filter(|_| selected).cloned(),
+                    },
+                )
+                .is_some()
+            {
+                return Err(Error::new(
+                    "INVALID_STATE",
+                    "saved feedback operation is ambiguous",
+                ));
+            }
+            continue;
+        }
+        approval_input |= selected;
         let mut owned_questions = &mut questions;
         let mut children = &mut tasks;
         for (index, node) in position.nodes.iter().enumerate() {
@@ -231,7 +353,7 @@ pub(crate) fn prepare(scene: &Value, input: &Input) -> Result<Option<Restore>, E
                     call,
                     id: reply_id,
                     message: record.question.clone(),
-                    input: selected.then(|| input.clone()),
+                    input: input.filter(|_| selected).cloned(),
                 },
             )
             .is_some()
@@ -242,25 +364,30 @@ pub(crate) fn prepare(scene: &Value, input: &Input) -> Result<Option<Restore>, E
             ));
         }
     }
-    if !targeted {
+    if input.is_some() && !targeted {
         return Err(Error::new(
             "NOT_FOUND",
             "reply does not identify a saved waiting question",
         ));
     }
-    if !duplicate && reply_order.first().is_some_and(|first| id != *first) {
+    if input.is_some() && !duplicate && reply_order.first().is_some_and(|first| id != Some(*first))
+    {
         return Err(Error::new(
             "CONFLICT",
             "replies must be submitted in the waiting question order",
         ));
     }
-    approved(input)?;
+    if approval_input {
+        approved(input.expect("selected approval has submitted input"))?;
+    }
     Ok(Some(Restore {
         waits,
         reply_order,
         questions,
         history,
         tasks,
+        feedback,
+        feedback_history,
     }))
 }
 
@@ -279,11 +406,40 @@ impl Run {
                     owner: Arc::downgrade(&self.0),
                     sender: None,
                     submitted,
+                    feedback: None,
                 },
             );
         }
-        *self.0.order.lock().expect("question order lock poisoned") =
-            restore.reply_order.into_iter().collect();
+        for (id, feedback) in restore.feedback_history {
+            directory.insert(
+                id,
+                super::Question {
+                    active: feedback.submitted.len() == feedback.count,
+                    owner: Arc::downgrade(&self.0),
+                    sender: None,
+                    submitted: None,
+                    feedback: Some(feedback),
+                },
+            );
+        }
+        *self
+            .0
+            .feedback
+            .lock()
+            .expect("saved feedback lock poisoned") = restore.feedback;
+        let mut order = self.0.order.lock().expect("question order lock poisoned");
+        if self.0.parent.is_none() {
+            *order = restore.reply_order.into_iter().collect();
+        } else {
+            // An enclosing Workflow can already have restored the global
+            // order. A local Agent must never replace it with its own subset.
+            for id in restore.reply_order {
+                if !order.contains(&id) {
+                    order.push_back(id);
+                }
+            }
+        }
+        drop(order);
         *self
             .0
             .restored
@@ -323,6 +479,11 @@ impl Run {
             .restored_tasks
             .lock()
             .expect("restored consumer lock poisoned") = consumer.children;
+        *task
+            .0
+            .feedback
+            .lock()
+            .expect("saved feedback lock poisoned") = consumer.feedback;
         task.0.restoring.store(true, Ordering::Release);
         consumer.waits
     }
@@ -374,6 +535,7 @@ impl Run {
                 cancellation,
             )
             .await?;
+            super::feedback::release_slot();
             crate::runtime::cancellation::cancellable(
                 async {
                     receiver
@@ -402,6 +564,7 @@ impl Run {
         )
         .await?;
         self.continue_execution(cancellation).await?;
+        super::feedback::acquire_slot(cancellation).await?;
         if decision {
             Ok(saved.clone())
         } else {
@@ -415,8 +578,57 @@ pub(crate) async fn consume(
     step: &Step,
     cancellation: &Cancellation,
 ) -> Result<Option<Call>, Error> {
+    // A Tool can already have consumed its approval before asking for ordinary
+    // input. Recover that exact operation's approval, not a fresh question
+    // behind the still-pending input. The caller rechecks the current policy
+    // and compares the actual Call, so Deny or changed arguments never inherit it.
+    if step.stage.as_deref() == Some("call")
+        && step
+            .waits
+            .values()
+            .any(|wait| wait.kind == "input" && wait.status == "waiting")
+    {
+        let mut authorized = false;
+        for record in step.waits.values().filter(|wait| wait.kind == "approval") {
+            record.validate()?;
+            if record.status != "resolved" {
+                return Err(Error::new(
+                    "INVALID_STATE",
+                    "Tool input precedes its approval",
+                ));
+            }
+            let feedback = &record.feedback.as_slice()[0];
+            let input = Input {
+                metadata: feedback.metadata.clone(),
+                payload: feedback
+                    .content
+                    .iter()
+                    .map(|part| crate::agent::Payload {
+                        r#type: part.r#type.clone(),
+                        data: Value::Object(part.data.clone()),
+                        mime_type: None,
+                    })
+                    .collect(),
+            };
+            if !approved(&input)? {
+                return Err(Error::new(
+                    "PERMISSION_DENIED",
+                    "saved operation was denied",
+                ));
+            }
+            authorized = true;
+        }
+        if authorized {
+            return step.call.clone().map(Some).ok_or_else(|| {
+                Error::new("INVALID_STATE", "saved approved Tool has no actual Call")
+            });
+        }
+    }
     if step.stage.as_deref() != Some("call")
-        || !step.waits.values().any(|wait| wait.status == "waiting")
+        || !step
+            .waits
+            .values()
+            .any(|wait| wait.status == "waiting" && wait.kind == "approval")
     {
         return Ok(None);
     }

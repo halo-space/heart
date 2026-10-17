@@ -25,11 +25,13 @@ impl Active {
 
 pub(super) struct TaskProgress<M: Chat> {
     task: Task<M>,
-    result: Result<Event, Error>,
+    result: Option<Result<Event, Error>>,
 }
 
 async fn advance<M: Chat + 'static>(mut task: Task<M>) -> TaskProgress<M> {
-    let (result, state) = next_react_event(task.state).await.expect("live plan task");
+    let (result, state) = next_react_progress(task.state)
+        .await
+        .expect("live plan task");
     task.state = state;
     TaskProgress { task, result }
 }
@@ -294,6 +296,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 steps,
                 child_nodes,
                 child_nodes_dirty: false,
+                feedback_dirty: false,
                 root: crate::core::agent::subagent::Root::default(),
                 partial: Message::new(Role::Assistant),
                 done: false,
@@ -334,7 +337,7 @@ pub(super) fn commit<M: Chat + 'static>(
         task.slot.release();
     }
     let mut question = false;
-    if let Ok(Event::Complete { message, .. }) = &result
+    if let Some(Ok(Event::Complete { message, .. })) = &result
         && let Some(id) = message.metadata.get("reply_id").and_then(Value::as_i64)
     {
         question = task.state.steps.iter().any(|step| {
@@ -397,7 +400,7 @@ pub(super) fn commit<M: Chat + 'static>(
     // A forwarded child Complete is observation, not this task's output or
     // model input. Only the separately committed delegation result belongs here.
     let child_observation = match &result {
-        Ok(Event::Delta { message } | Event::Complete { message, .. }) => {
+        Some(Ok(Event::Delta { message } | Event::Complete { message, .. })) => {
             match (
                 message.metadata.get("node_id").and_then(Value::as_str),
                 message.metadata.get("exec_id").and_then(Value::as_i64),
@@ -412,7 +415,7 @@ pub(super) fn commit<M: Chat + 'static>(
     };
     if !child_observation
         && !question
-        && let Ok(Event::Complete { message, .. }) = &result
+        && let Some(Ok(Event::Complete { message, .. })) = &result
     {
         let mut original = message.clone();
         crate::runtime::observation::clear_source(&mut original);
@@ -423,12 +426,12 @@ pub(super) fn commit<M: Chat + 'static>(
         if !child_observation
             && matches!(
                 &result,
-                Ok(Event::Complete {
+                Some(Ok(Event::Complete {
                     finish_reason: Some(reason),
                     ..
-                }) if reason == "tool"
+                })) if reason == "tool"
             )
-            && let Ok(Event::Complete { message, .. }) = &result
+            && let Some(Ok(Event::Complete { message, .. })) = &result
         {
             let mut original = message.clone();
             crate::runtime::observation::clear_source(&mut original);
@@ -454,6 +457,21 @@ pub(super) fn commit<M: Chat + 'static>(
             attempt.nodes = task.state.child_nodes.clone();
             task.state.child_nodes_dirty = false;
         }
+        if let Some(run) = &state.interaction {
+            // The task and all nested child facts now belong to the outer
+            // graph. Embedded owners defer FIFO advancement to their parent.
+            run.commit_feedback(&attempt.steps);
+            for node in attempt.nodes.values() {
+                if let Some(scene) = node
+                    .execution
+                    .as_ref()
+                    .and_then(|execution| execution.attempts.last())
+                    .and_then(|attempt| attempt.agent.as_ref())
+                {
+                    run.commit_scene_feedback(scene)?;
+                }
+            }
+        }
         node.set_attempt_result(
             if task.slot.held() {
                 Status::Running
@@ -463,16 +481,21 @@ pub(super) fn commit<M: Chat + 'static>(
             crate::model::token::merge(task.previous_usage.clone(), task.state.run.usage()),
             None,
         )?;
-        if let Ok(event) = &mut result {
+        if let Some(Ok(event)) = &mut result {
             crate::runtime::observation::associate(
                 event,
                 state.query.metadata.get("chat_id").and_then(Value::as_i64),
                 Some((&task.node_id, task.exec_id)),
             );
         }
+        let feedback = std::mem::take(&mut task.state.feedback_dirty);
+        let save = question
+            || ((result.is_none() || feedback)
+                && (!state.waits.is_empty() || crate::runtime::agent::scope::active()));
         state.active_tasks.push(Box::pin(advance(task)));
-        return Ok((result.ok(), question));
+        return Ok((result.and_then(Result::ok), save));
     }
+    let result = result.expect("a finished task has a terminal result");
     let new_usage = task.state.run.usage();
     task.slot.release();
     state.task_runs.remove(&task.node_id);

@@ -29,6 +29,7 @@ fn native_step_roundtrip_preserves_questions_feedback_and_business_result_separa
                 Wait {
                     kind: "approval".into(),
                     status: "resolved".into(),
+                    count: 1,
                     question: question.clone(),
                     feedback: Messages::new([first.clone()]),
                 },
@@ -38,6 +39,7 @@ fn native_step_roundtrip_preserves_questions_feedback_and_business_result_separa
                 Wait {
                     kind: "ask".into(),
                     status: "waiting".into(),
+                    count: 3,
                     question: question.clone(),
                     feedback: Messages::new([first, second]),
                 },
@@ -54,7 +56,8 @@ fn native_step_roundtrip_preserves_questions_feedback_and_business_result_separa
     };
     let value = serde_json::to_value(&state).unwrap();
     let wait = &value["steps"][0]["waits"]["5002"];
-    assert_eq!(wait.as_object().unwrap().len(), 4);
+    assert_eq!(wait.as_object().unwrap().len(), 5);
+    assert_eq!(wait["count"], 3);
     assert_eq!(wait["kind"], "ask");
     assert_eq!(wait["status"], "waiting");
     assert_eq!(wait["question"], serde_json::to_value(question).unwrap());
@@ -79,6 +82,7 @@ fn reply_identity_remains_exact_i64_despite_json_object_keys() {
             Wait {
                 kind: "ask".into(),
                 status: "waiting".into(),
+                count: 1,
                 question: Message::new(Role::Assistant),
                 feedback: Messages::default(),
             },

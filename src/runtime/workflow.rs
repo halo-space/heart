@@ -4,10 +4,12 @@
 //! builder records an immutable graph definition and the runtime owns the
 //! single mutable graph state for one `chat_id`.
 
+mod admission;
 mod events;
 pub mod graph;
 pub mod node;
 pub mod tool;
+pub mod wait;
 
 use serde_json::Value;
 use std::collections::BTreeSet;
@@ -131,10 +133,10 @@ impl Runtime {
             .expect("drop the Workflow run stream before mutating State")
     }
     pub fn with_max_concurrency(mut self, max_concurrency: usize) -> Result<Self, Error> {
-        if max_concurrency == 0 {
+        if max_concurrency == 0 || max_concurrency > tokio::sync::Semaphore::MAX_PERMITS {
             return Err(Error::new(
                 "INVALID_ARGUMENTS",
-                "max_concurrency must be positive",
+                "max_concurrency must be positive and within the supported permit limit",
             ));
         }
         self.engine_mut().max_concurrency = max_concurrency;
@@ -229,7 +231,7 @@ impl Runtime {
         let id = state["chat_id"].as_i64().expect("Workflow identity");
         checkpoint.save(id, state, cancellation).await
     }
-    /// Submit to the actual live approval Step. Outputs stay on the original run stream.
+    /// Submit to the actual feedback Step. Outputs stay on the original run stream.
     /// This value scopes the reply submission; it does not cancel other Workflow or Agent runs.
     pub async fn reply(
         &self,
@@ -239,7 +241,7 @@ impl Runtime {
         if response.as_slice().len() != 1 {
             return Err(Error::new(
                 "INVALID_ARGUMENTS",
-                "one live approval submission must identify one question Message",
+                "one feedback submission must identify one question Message",
             ));
         }
         let input = messages_to_agent_input(&response);
@@ -286,12 +288,19 @@ impl Runtime {
         let mut metadata = messages_to_agent_input(&initial_messages).metadata;
         metadata.insert("chat_id".into(), engine.state.chat_id.into());
         let interaction = self.replies.start(metadata)?;
+        if engine.accepts_saved_replies {
+            interaction.restore_order(wait::ids(&engine.state)?);
+        }
         let owner = interaction.owner();
+        let limit = engine.max_concurrency;
         Ok(events::stream(events::Output::default(), async move {
             let _owner = owner;
-            events::with_interaction(
-                interaction,
-                engine.execute(initial_messages, next_exec_id, cancellation),
+            admission::run(
+                limit,
+                events::with_interaction(
+                    interaction,
+                    engine.execute(initial_messages, next_exec_id, cancellation),
+                ),
             )
             .await
         }))
@@ -318,14 +327,40 @@ struct Engine {
 }
 
 impl Engine {
+    #[allow(clippy::too_many_arguments)]
     async fn accept_progress(
         &mut self,
         node_id: &str,
         exec_id: i64,
         mut attempt: node::Attempt,
         event: Option<crate::event::Event>,
+        entered: bool,
         cancellation: &crate::Cancellation,
+        base: Option<&node::Attempt>,
     ) -> Result<(), Error> {
+        if entered {
+            let execution = self.state.node_mut(node_id)?.execution_mut(exec_id)?;
+            if !matches!(
+                execution.status,
+                node::ExecutionStatus::Pending
+                    | node::ExecutionStatus::Running
+                    | node::ExecutionStatus::Waiting
+            ) {
+                return Err(Error::new(
+                    "INVALID_STATE",
+                    "admission target is no longer active",
+                ));
+            }
+            let current = execution
+                .attempts
+                .last_mut()
+                .filter(|current| current.idx == attempt.idx)
+                .ok_or_else(|| Error::new("INVALID_STATE", "admission target Attempt changed"))?;
+            execution.status = node::ExecutionStatus::Running;
+            current.status = node::AttemptStatus::Running;
+            // In-memory handoff only: neither a new Event nor a Checkpoint.
+            return Box::pin(self.publish(None, false)).await;
+        }
         let delta = matches!(&event, Some(crate::event::Event::Delta { .. }));
         let question = event.as_ref().and_then(|event| match event {
             crate::event::Event::Complete { message, .. } => {
@@ -333,6 +368,23 @@ impl Engine {
             }
             _ => None,
         });
+        let feedback = if delta {
+            false
+        } else {
+            let previous = self
+                .state
+                .nodes
+                .get(node_id)
+                .and_then(|node| node.executions.get(&exec_id))
+                .and_then(|execution| execution.attempts.last());
+            let before = previous.map(attempt_feedback).unwrap_or_default();
+            attempt_feedback(&attempt)
+                .iter()
+                .any(|(id, count)| *count > before.get(id).copied().unwrap_or(0))
+        };
+        if let Some(base) = base.filter(|_| attempt.agent.is_some()) {
+            prepend_agent_observations(&mut attempt, base);
+        }
         if let Some(id) = question
             && !attempt_question(&attempt, id)?
         {
@@ -378,7 +430,17 @@ impl Engine {
         }
         let chat_id = self.state.chat_id;
         self.state.bind_agent_chat_id(chat_id)?;
-        if question.is_some() {
+        if !delta {
+            wait::update(&mut self.state, node_id, exec_id)?;
+        }
+        if !delta && let Some(run) = events::interaction() {
+            let attempt = self.state.nodes[node_id].executions[&exec_id]
+                .attempts
+                .last()
+                .expect("committed Workflow progress");
+            commit_feedback(attempt, &run)?;
+        }
+        if question.is_some() || feedback {
             if let Some(checkpoint) = &self.checkpoint {
                 checkpoint(
                     self.state.chat_id,
@@ -390,11 +452,11 @@ impl Engine {
             if cancellation.is_cancelled() {
                 return Err(Error::new(
                     "CANCELLED",
-                    "Workflow cancelled before presenting approval",
+                    "Workflow cancelled while committing feedback",
                 ));
             }
         }
-        self.publish(event, delta).await
+        Box::pin(self.publish(event, delta)).await
     }
 
     async fn publish(&self, event: Option<crate::event::Event>, delta: bool) -> Result<(), Error> {
@@ -455,6 +517,7 @@ impl Engine {
         let state: State = serde_json::from_value(snapshot)
             .map_err(|error| Error::new("INVALID_CHECKPOINT", error.to_string()))?;
         state.check_identity(chat_id)?;
+        wait::validate(&state)?;
         if state.definition_id != workflow.definition().definition_id
             || state.version != workflow.definition().version
         {
@@ -577,6 +640,9 @@ impl Engine {
             .get("reply_id")
             .and_then(Value::as_i64)
             .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "reply requires reply_id"))?;
+        if saved_feedback_duplicate(&self.state, &input)? {
+            return Ok(());
+        }
         let mut paths = self.state.reply_paths(reply_id)?;
         if paths.len() != 1 {
             return Err(Error::new(
@@ -594,6 +660,14 @@ impl Engine {
         }
         let path = paths.pop().expect("one validated reply path");
         let scene = agent_scene_for_reply_path(&self.state, &path)?;
+        if !crate::runtime::agent::reply::saved_duplicate(scene, &input)?
+            && wait::ids(&self.state)?.first() != Some(&reply_id)
+        {
+            return Err(Error::new(
+                "CONFLICT",
+                "replies must be submitted in the saved Workflow question order",
+            ));
+        }
         let Some(_) = crate::runtime::agent::reply::prepare_restore(scene, &input)? else {
             return Err(Error::new(
                 "NOT_FOUND",
@@ -606,8 +680,7 @@ impl Engine {
         // to the existing active Attempt below.
         if self
             .state
-            .waits
-            .get(&path[0].node_id)
+            .pause(&path[0].node_id)?
             .is_some_and(|wait| wait.exec_id == path[0].exec_id)
         {
             return self.state.resume(&path[0].node_id, response);
@@ -664,6 +737,19 @@ impl Engine {
         next_exec_id: Arc<dyn Fn() -> i64 + Send + Sync>,
         cancellation: crate::Cancellation,
     ) -> Result<Messages, Error> {
+        admission::inherit(
+            self.max_concurrency,
+            Box::pin(self.execute_inner(initial_messages, next_exec_id, cancellation)),
+        )
+        .await
+    }
+
+    async fn execute_inner(
+        &mut self,
+        initial_messages: Messages,
+        next_exec_id: Arc<dyn Fn() -> i64 + Send + Sync>,
+        cancellation: crate::Cancellation,
+    ) -> Result<Messages, Error> {
         self.validate_run_input(&initial_messages)?;
         // A terminal snapshot is already closed. Re-running it is a read of
         // the committed result and must not create another Chat/Trace record
@@ -672,9 +758,8 @@ impl Engine {
             self.state.status,
             graph::Status::Succeeded | graph::Status::Failed | graph::Status::Cancelled
         ) {
-            let result = self
-                .run_inner(initial_messages, next_exec_id, cancellation)
-                .await;
+            let result =
+                Box::pin(self.run_inner(initial_messages, next_exec_id, cancellation)).await;
             if result.is_ok() {
                 for event in terminal_observations(&self.state) {
                     events::emit(event).await;
@@ -690,9 +775,7 @@ impl Engine {
             return result;
         }
         self.begin_history(&initial_messages, &cancellation).await?;
-        let result = self
-            .run_inner(initial_messages, next_exec_id, cancellation)
-            .await;
+        let result = Box::pin(self.run_inner(initial_messages, next_exec_id, cancellation)).await;
         if let Err(error) = &result
             && error.code != "WAITING"
         {
@@ -710,7 +793,9 @@ impl Engine {
                             .filter(|(_, execution)| {
                                 matches!(
                                     execution.status,
-                                    node::ExecutionStatus::Running | node::ExecutionStatus::Waiting
+                                    node::ExecutionStatus::Pending
+                                        | node::ExecutionStatus::Running
+                                        | node::ExecutionStatus::Waiting
                                 )
                             })
                             .map(move |(exec_id, _)| (id.clone(), *exec_id))
@@ -849,6 +934,11 @@ impl Engine {
                     .last()
                     .map(|attempt| attempt.idx)
                     .ok_or_else(|| Error::new("INVALID_STATE", "execution has no attempt"))?;
+                let base = self.state.nodes[&node_id].executions[&exec_id]
+                    .attempts
+                    .last()
+                    .expect("validated Attempt")
+                    .clone();
                 let invocation = events::with_source(
                     self.state.chat_id,
                     &node_id,
@@ -864,10 +954,12 @@ impl Engine {
                         committed_tool_messages(&self.state.nodes[&node_id].executions[&exec_id]),
                         None,
                     ),
-                )
-                .await;
+                );
+                let invocation = self
+                    .continue_invocation(&node_id, invocation, &cancellation, &base)
+                    .await?;
                 let invocation_graph = invocation.graph;
-                self.replace_resumed_attempts(&node_id, exec_id, invocation.attempts)?;
+                self.replace_resumed_attempts(&node_id, exec_id, invocation.attempts, Some(&base))?;
                 if let Some(graph) = invocation_graph {
                     self.attach_graph(&node_id, exec_id, graph)?;
                 }
@@ -901,7 +993,7 @@ impl Engine {
             }
             let ready = self.ready_nodes();
             if ready.is_empty() {
-                if !self.state.waits.is_empty() {
+                if !self.state.waits.is_empty() || !self.state.pauses().is_empty() {
                     self.state.status = graph::Status::Paused;
                     return Err(Error::new("WAITING", "workflow is waiting for input"));
                 }
@@ -954,13 +1046,23 @@ impl Engine {
                     })
                     .collect(),
             )?;
+            for (node_id, exec_id, _, _, target, _) in &specs {
+                if !matches!(target, Target::Graph { .. }) {
+                    self.state
+                        .node_mut(node_id)?
+                        .execution_mut(*exec_id)?
+                        .status = node::ExecutionStatus::Pending;
+                }
+            }
+            // Capture allocated child executions before polling their work,
+            // including pending leaves. This is not a persistence trigger.
+            Box::pin(self.publish(None, false)).await?;
 
-            let limit = self.max_concurrency;
             let task_cancellation = cancellation.clone();
             let task_next_exec_id = Arc::clone(&next_exec_id);
             let chat_id = self.state.chat_id;
             let relay = events::Relay::default();
-            let slots = Arc::new(tokio::sync::Semaphore::new(limit));
+            let slots = admission::slots();
             let changed = Arc::new(futures_util::task::AtomicWaker::new());
             let interaction = events::interaction();
             let mut active = Vec::new();
@@ -970,15 +1072,24 @@ impl Engine {
                     let cancellation = task_cancellation.clone();
                     let next_exec_id = Arc::clone(&task_next_exec_id);
                     let relay = relay.clone();
-                    let slot =
-                        crate::runtime::agent::reply::Slot::waiting(slots.clone(), changed.clone());
-                    let run = interaction.as_ref().map(|run| run.branch(slot.clone()));
+                    // Graphs are containers, not admitted work. Their leaves
+                    // use this same outer semaphore, including after restore.
+                    let slot = (!matches!(&target, Target::Graph { .. })).then(|| {
+                        crate::runtime::agent::reply::Slot::waiting(slots.clone(), changed.clone())
+                    });
+                    let run = interaction.as_ref().map(|run| match &slot {
+                        Some(slot) => run.branch(slot.clone()),
+                        None => run.child(),
+                    });
                     active.push((node_id.clone(), exec_id, run.clone(), slot.clone()));
                     async move {
                         let owner = run.as_ref().map(|run| run.owner());
                         let entering = match &run {
                             Some(run) => run.continue_execution(&cancellation).await,
-                            None => slot.acquire(&cancellation).await,
+                            None => match &slot {
+                                Some(slot) => slot.acquire(&cancellation).await,
+                                None => Ok(()),
+                            },
                         };
                         if let Err(error) = entering {
                             return (
@@ -1019,7 +1130,9 @@ impl Engine {
                         )
                         .await;
                         drop(owner);
-                        slot.release();
+                        if let Some(slot) = slot {
+                            slot.release();
+                        }
                         (node_id, exec_id, from, result)
                     }
                 })
@@ -1057,7 +1170,9 @@ impl Engine {
                             run.suspend();
                         }
                     }
-                    if active.iter().all(|(_, _, _, slot)| !slot.held())
+                    if active
+                        .iter()
+                        .all(|(_, _, _, slot)| slot.as_ref().is_none_or(|slot| !slot.held()))
                         && let Some(run) = &interaction
                     {
                         run.suspend();
@@ -1073,11 +1188,19 @@ impl Engine {
                             exec_id,
                             attempt,
                             event,
+                            entered,
                             ack,
                         } = *progress;
-                        let result = self
-                            .accept_progress(&node_id, exec_id, attempt, event, &cancellation)
-                            .await;
+                        let result = Box::pin(self.accept_progress(
+                            &node_id,
+                            exec_id,
+                            attempt,
+                            event,
+                            entered,
+                            &cancellation,
+                            None,
+                        ))
+                        .await;
                         let _ = ack.send(result.clone());
                         result?;
                         continue;
@@ -1109,7 +1232,7 @@ impl Engine {
                 self.state.recompute_usage();
                 self.observe_commit(&node_id, exec_id).await?;
             }
-            if self.state.waits.is_empty() {
+            if self.state.waits.is_empty() && self.state.pauses().is_empty() {
                 self.state.status = graph::Status::Running;
             }
             self.state.recompute_usage();
@@ -1224,7 +1347,9 @@ impl Engine {
                     .filter(|execution| {
                         matches!(
                             execution.status,
-                            node::ExecutionStatus::Running | node::ExecutionStatus::Waiting
+                            node::ExecutionStatus::Pending
+                                | node::ExecutionStatus::Running
+                                | node::ExecutionStatus::Waiting
                         )
                     })
                     .map(|execution| (node_id.clone(), execution.exec_id))
@@ -1401,8 +1526,8 @@ impl Engine {
         next_exec_id: &Arc<dyn Fn() -> i64 + Send + Sync>,
         cancellation: &crate::Cancellation,
     ) -> Result<bool, Error> {
-        let recovery_reply = self.recovery_reply.take();
-        let target = if let Some(reply) = &recovery_reply {
+        let mut recovery_reply = self.recovery_reply.take();
+        if let Some(reply) = &recovery_reply {
             let current = reply
                 .path
                 .first()
@@ -1428,93 +1553,375 @@ impl Engine {
                 })
                 .ok_or_else(|| Error::new("INVALID_STATE", "saved reply target is not active"))?;
             let _ = execution;
-            Some((current.node_id.clone(), current.exec_id))
-        } else {
-            self.state.waiting_execution()
-        };
-        let Some((node_id, exec_id)) = target else {
-            self.recovery_reply = recovery_reply;
-            return Ok(false);
-        };
-        let execution = self.state.nodes[&node_id].executions[&exec_id].clone();
-        self.state
-            .node_mut(&node_id)?
-            .execution_mut(exec_id)?
-            .status = node::ExecutionStatus::Running;
-        let previous_idx = execution
-            .attempts
-            .last()
-            .map(|attempt| attempt.idx)
-            .ok_or_else(|| Error::new("INVALID_STATE", "waiting execution has no attempt"))?;
-        let retry = self.definition().nodes[&node_id].retry.clone();
-        let target = self.target_for(&node_id, exec_id)?;
-        let mut input = self.input_for(&node_id, &execution.from)?;
-        let mut nested_reply = None;
-        if let Some(mut reply) = recovery_reply {
-            let target = reply.path.remove(0);
-            if target.node_id != node_id || target.exec_id != exec_id {
-                return Err(Error::new("INVALID_STATE", "saved reply target changed"));
-            }
-            match self.target_for(&node_id, exec_id)? {
-                Target::Agent(_, _) if reply.path.is_empty() => {
-                    let mut agent_input: AgentInput = serde_json::from_value(input)
-                        .map_err(|error| Error::new("INVALID_STATE", error.to_string()))?;
-                    agent_input.payload = reply.input.payload;
-                    agent_input.metadata.extend(reply.input.metadata);
-                    input = serde_json::to_value(agent_input)
-                        .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))?;
-                }
-                Target::Graph { .. } if !reply.path.is_empty() => {
-                    nested_reply = Some(reply);
-                }
-                _ => {
-                    return Err(Error::new(
-                        "INVALID_STATE",
-                        "saved reply path does not match its Workflow Node",
-                    ));
-                }
-            }
         }
-        let invocation = events::with_source(
-            self.state.chat_id,
-            &node_id,
-            exec_id,
-            invoke_with_retry(
+        let targets = self
+            .state
+            .nodes
+            .iter()
+            .flat_map(|(node_id, node)| {
+                node.executions
+                    .values()
+                    .filter(|execution| {
+                        execution.idx == self.state.step
+                            && execution.waits.is_empty()
+                            && matches!(
+                                execution.status,
+                                node::ExecutionStatus::Pending
+                                    | node::ExecutionStatus::Running
+                                    | node::ExecutionStatus::Waiting
+                            )
+                            && execution.attempts.last().is_some_and(|attempt| {
+                                attempt.status == node::AttemptStatus::Waiting
+                            })
+                    })
+                    .map(move |execution| (node_id.clone(), execution.exec_id))
+            })
+            .collect::<Vec<_>>();
+        if targets.is_empty() {
+            return Ok(false);
+        }
+        let mut specs = Vec::new();
+        let mut bases = std::collections::BTreeMap::new();
+        for (node_id, exec_id) in targets {
+            let execution = self.state.nodes[&node_id].executions[&exec_id].clone();
+            let previous_idx = execution
+                .attempts
+                .last()
+                .map(|attempt| attempt.idx)
+                .ok_or_else(|| Error::new("INVALID_STATE", "waiting execution has no attempt"))?;
+            let retry = self.definition().nodes[&node_id].retry.clone();
+            let target = self.target_for(&node_id, exec_id)?;
+            let mut input = self.input_for(&node_id, &execution.from)?;
+            let mut nested_reply = None;
+            if recovery_reply.as_ref().is_some_and(|reply| {
+                reply
+                    .path
+                    .first()
+                    .is_some_and(|target| target.node_id == node_id && target.exec_id == exec_id)
+            }) {
+                let mut reply = recovery_reply.take().expect("matched recovery reply");
+                let target = reply.path.remove(0);
+                if target.node_id != node_id || target.exec_id != exec_id {
+                    return Err(Error::new("INVALID_STATE", "saved reply target changed"));
+                }
+                match self.target_for(&node_id, exec_id)? {
+                    Target::Agent(_, _) if reply.path.is_empty() => {
+                        let mut agent_input: AgentInput = serde_json::from_value(input)
+                            .map_err(|error| Error::new("INVALID_STATE", error.to_string()))?;
+                        agent_input.payload = reply.input.payload;
+                        agent_input.metadata.extend(reply.input.metadata);
+                        input = serde_json::to_value(agent_input).map_err(|error| {
+                            Error::new("SERIALIZATION_ERROR", error.to_string())
+                        })?;
+                    }
+                    Target::Graph { .. } if !reply.path.is_empty() => {
+                        nested_reply = Some(reply);
+                    }
+                    _ => {
+                        return Err(Error::new(
+                            "INVALID_STATE",
+                            "saved reply path does not match its Workflow Node",
+                        ));
+                    }
+                }
+            }
+            let base = execution
+                .attempts
+                .last()
+                .expect("validated current Attempt")
+                .clone();
+            bases.insert((node_id.clone(), exec_id), base);
+            specs.push((
+                node_id,
+                exec_id,
                 target,
                 input,
-                cancellation.clone(),
                 retry,
-                Arc::clone(next_exec_id),
-                self.state.chat_id,
-                // A running Attempt found in a restored snapshot was never
-                // committed as a completed/failed attempt. Normalize it to
-                // waiting, then resume that same Attempt rather than treating
-                // process recovery as a user-visible retry.
                 previous_idx,
                 committed_tool_messages(&execution),
                 nested_reply,
-            ),
-        )
-        .await;
-        let invocation_graph = invocation.graph;
-        self.replace_resumed_attempts(&node_id, exec_id, invocation.attempts)?;
-        if let Some(graph) = invocation_graph {
-            self.attach_graph(&node_id, exec_id, graph)?;
+            ));
         }
-        match invocation.outcome {
-            Outcome::Complete(value) => {
-                let messages = self.output_messages(&node_id, value)?;
-                let to = self.outgoing(&node_id, &messages)?;
-                self.state
-                    .complete_execution(&node_id, exec_id, messages, to)?;
+        if recovery_reply.is_some() {
+            return Err(Error::new(
+                "INVALID_STATE",
+                "saved reply has no active continuation",
+            ));
+        }
+        // Rebuild all current consumers concurrently under the same admission
+        // limit. Awaiting one Agent to completion first can strand a FIFO head
+        // whose owner is another saved branch.
+        let relay = events::Relay::default();
+        let slots = admission::slots();
+        let changed = Arc::new(futures_util::task::AtomicWaker::new());
+        let interaction = events::interaction();
+        let chat_id = self.state.chat_id;
+        let mut active = Vec::new();
+        let mut results = specs
+            .into_iter()
+            .map(
+                |(node_id, exec_id, target, input, retry, idx, messages, reply)| {
+                    let cancellation = cancellation.clone();
+                    let next_exec_id = Arc::clone(next_exec_id);
+                    let relay = relay.clone();
+                    let slot = (!matches!(&target, Target::Graph { .. })).then(|| {
+                        crate::runtime::agent::reply::Slot::waiting(slots.clone(), changed.clone())
+                    });
+                    let run = interaction.as_ref().map(|run| match &slot {
+                        Some(slot) => run.branch(slot.clone()),
+                        None => run.child(),
+                    });
+                    active.push((node_id.clone(), exec_id, run.clone(), slot.clone()));
+                    async move {
+                        let owner = run.as_ref().map(|run| run.owner());
+                        let entering = match &run {
+                            Some(run) => run.continue_execution(&cancellation).await,
+                            None => match &slot {
+                                Some(slot) => slot.acquire(&cancellation).await,
+                                None => Ok(()),
+                            },
+                        };
+                        let invocation = match entering {
+                            Ok(()) => {
+                                events::with_optional_interaction(
+                                    run,
+                                    events::with_relay(
+                                        relay,
+                                        events::with_source(
+                                            chat_id,
+                                            &node_id,
+                                            exec_id,
+                                            invoke_with_retry(
+                                                target,
+                                                input,
+                                                cancellation,
+                                                retry,
+                                                next_exec_id,
+                                                chat_id,
+                                                idx,
+                                                messages,
+                                                reply,
+                                            ),
+                                        ),
+                                    ),
+                                )
+                                .await
+                            }
+                            Err(error) => Invocation {
+                                attempts: Vec::new(),
+                                outcome: if error.code == "CANCELLED" {
+                                    Outcome::Cancelled
+                                } else {
+                                    Outcome::Failed(error)
+                                },
+                                graph: None,
+                            },
+                        };
+                        drop(owner);
+                        if let Some(slot) = slot {
+                            slot.release();
+                        }
+                        (node_id, exec_id, invocation)
+                    }
+                },
+            )
+            .collect::<futures_util::stream::FuturesUnordered<_>>();
+        enum Next<T> {
+            Facts(Box<events::Progress>),
+            Finished(Box<T>),
+        }
+        loop {
+            let next = std::future::poll_fn(|cx| {
+                changed.register(cx.waker());
+                match results.poll_next_unpin(cx) {
+                    std::task::Poll::Ready(Some(result)) => {
+                        return std::task::Poll::Ready(Some(Next::Finished(Box::new(result))));
+                    }
+                    std::task::Poll::Ready(None) => return std::task::Poll::Ready(None),
+                    std::task::Poll::Pending => {}
+                }
+                if let std::task::Poll::Ready(facts) = relay.poll(cx) {
+                    return std::task::Poll::Ready(Some(Next::Facts(Box::new(facts))));
+                }
+                for (node_id, exec_id, run, _) in &active {
+                    if self.state.nodes[node_id].executions[exec_id]
+                        .attempts
+                        .last()
+                        .is_some_and(|attempt| attempt.status == node::AttemptStatus::Waiting)
+                        && let Some(run) = run
+                        && run.children_blocked()
+                    {
+                        run.suspend();
+                    }
+                }
+                if active
+                    .iter()
+                    .all(|(_, _, _, slot)| slot.as_ref().is_none_or(|slot| !slot.held()))
+                    && let Some(run) = &interaction
+                {
+                    run.suspend();
+                }
+                std::task::Poll::Pending
+            })
+            .await;
+            let Some(next) = next else { break };
+            let (node_id, exec_id, invocation) = match next {
+                Next::Facts(progress) => {
+                    let events::Progress {
+                        node_id,
+                        exec_id,
+                        attempt,
+                        event,
+                        entered,
+                        ack,
+                    } = *progress;
+                    let result = Box::pin(self.accept_progress(
+                        &node_id,
+                        exec_id,
+                        attempt,
+                        event,
+                        entered,
+                        cancellation,
+                        bases.get(&(node_id.clone(), exec_id)),
+                    ))
+                    .await;
+                    let _ = ack.send(result.clone());
+                    result?;
+                    continue;
+                }
+                Next::Finished(result) => *result,
+            };
+            let base = bases
+                .get(&(node_id.clone(), exec_id))
+                .expect("saved continuation baseline");
+            // Admission can be cancelled before invoking any component. Keep
+            // the entire original scene; there is no replacement Attempt.
+            if invocation.attempts.is_empty() {
+                match invocation.outcome {
+                    Outcome::Cancelled => self.state.cancel_execution(&node_id, exec_id)?,
+                    Outcome::Failed(error) => {
+                        self.state.fail_execution(&node_id, exec_id, error)?
+                    }
+                    _ => return Err(Error::new("INVALID_STATE", "continuation has no Attempt")),
+                }
+                self.state.recompute_usage();
+                self.observe_commit(&node_id, exec_id).await?;
+                continue;
             }
-            Outcome::Wait(wait_id) => self.state.wait_execution(&node_id, exec_id, wait_id)?,
-            Outcome::Cancelled => self.state.cancel_execution(&node_id, exec_id)?,
-            Outcome::Failed(error) => self.state.fail_execution(&node_id, exec_id, error)?,
+            let invocation_graph = invocation.graph;
+            self.replace_resumed_attempts(&node_id, exec_id, invocation.attempts, Some(base))?;
+            if let Some(graph) = invocation_graph {
+                self.attach_graph(&node_id, exec_id, graph)?;
+            }
+            match invocation.outcome {
+                Outcome::Complete(value) => {
+                    let messages = self.output_messages(&node_id, value)?;
+                    let to = self.outgoing(&node_id, &messages)?;
+                    self.state
+                        .complete_execution(&node_id, exec_id, messages, to)?;
+                }
+                Outcome::Wait(wait_id) => self.state.wait_execution(&node_id, exec_id, wait_id)?,
+                Outcome::Cancelled => self.state.cancel_execution(&node_id, exec_id)?,
+                Outcome::Failed(error) => self.state.fail_execution(&node_id, exec_id, error)?,
+            }
+            self.state.recompute_usage();
+            self.observe_commit(&node_id, exec_id).await?;
         }
-        self.state.recompute_usage();
-        self.observe_commit(&node_id, exec_id).await?;
         Ok(true)
+    }
+
+    /// Restored invocations need the same backpressured native handoff as
+    /// fresh work. This is private execution plumbing, not a second run API.
+    async fn continue_invocation<F: Future<Output = Invocation>>(
+        &mut self,
+        node_id: &str,
+        invocation: F,
+        cancellation: &crate::Cancellation,
+        base: &node::Attempt,
+    ) -> Result<Invocation, Error> {
+        let relay = events::Relay::default();
+        let changed = Arc::new(futures_util::task::AtomicWaker::new());
+        let slot = self.workflow.graph_node(node_id).is_none().then(|| {
+            crate::runtime::agent::reply::Slot::waiting(admission::slots(), changed.clone())
+        });
+        let run = events::interaction().map(|run| match &slot {
+            Some(slot) => run.branch(slot.clone()),
+            None => run.child(),
+        });
+        let _owner = run.as_ref().map(|run| run.owner());
+        match &run {
+            Some(run) => run.continue_execution(cancellation).await?,
+            None => {
+                if let Some(slot) = &slot {
+                    slot.acquire(cancellation).await?;
+                }
+            }
+        }
+        let mut invocation = Box::pin(events::with_optional_interaction(
+            run.clone(),
+            events::with_relay(relay.clone(), invocation),
+        ));
+        loop {
+            enum Next {
+                Facts(Box<events::Progress>),
+                Finished(Box<Invocation>),
+            }
+            let next = std::future::poll_fn(|cx| {
+                changed.register(cx.waker());
+                if let std::task::Poll::Ready(result) = invocation.as_mut().poll(cx) {
+                    return std::task::Poll::Ready(Next::Finished(Box::new(result)));
+                }
+                if let std::task::Poll::Ready(facts) = relay.poll(cx) {
+                    return std::task::Poll::Ready(Next::Facts(Box::new(facts)));
+                }
+                if self.state.nodes[node_id]
+                    .executions
+                    .values()
+                    .any(|execution| {
+                        execution
+                            .attempts
+                            .last()
+                            .is_some_and(|attempt| attempt.status == node::AttemptStatus::Waiting)
+                    })
+                    && let Some(run) = &run
+                    && run.children_blocked()
+                {
+                    run.suspend();
+                }
+                std::task::Poll::Pending
+            })
+            .await;
+            match next {
+                Next::Finished(result) => {
+                    if let Some(slot) = &slot {
+                        slot.release();
+                    }
+                    return Ok(*result);
+                }
+                Next::Facts(facts) => {
+                    let events::Progress {
+                        node_id,
+                        exec_id,
+                        attempt,
+                        event,
+                        entered,
+                        ack,
+                    } = *facts;
+                    let result = Box::pin(self.accept_progress(
+                        &node_id,
+                        exec_id,
+                        attempt,
+                        event,
+                        entered,
+                        cancellation,
+                        Some(base),
+                    ))
+                    .await;
+                    let _ = ack.send(result.clone());
+                    result?;
+                }
+            }
+        }
     }
 
     async fn observe_commit(&self, node_id: &str, exec_id: i64) -> Result<(), Error> {
@@ -1522,6 +1929,9 @@ impl Engine {
         if definition.agent || definition.workflow.is_some() {
             // Agent calls already forward their real stream, and Graph Node
             // containers must not duplicate the child's observations.
+            // Their final committed status still belongs in the parent scene,
+            // including while a sibling keeps this graph waiting.
+            Box::pin(self.publish(None, false)).await?;
             return Ok(());
         }
         let execution = &self.state.nodes[node_id].executions[&exec_id];
@@ -1562,7 +1972,7 @@ impl Engine {
             // Before presenting a nested node's result, its owning Graph
             // Attempt must receive the already-committed native scene too.
             // This updates memory only, not another Checkpoint write.
-            self.publish(Some(event), false).await?;
+            Box::pin(self.publish(Some(event), false)).await?;
         }
         Ok(())
     }
@@ -1638,6 +2048,7 @@ impl Engine {
         node_id: &str,
         exec_id: i64,
         mut attempts: Vec<node::Attempt>,
+        base: Option<&node::Attempt>,
     ) -> Result<(), Error> {
         let execution = self.state.node_mut(node_id)?.execution_mut(exec_id)?;
         let previous = execution
@@ -1651,7 +2062,8 @@ impl Engine {
                 "invalid resumed attempt history",
             ));
         }
-        let original = execution.attempts.last().expect("checked current Attempt");
+        let original =
+            base.unwrap_or_else(|| execution.attempts.last().expect("checked current Attempt"));
         attempts[0].created_time = original.created_time;
         if original.agent.is_some() {
             let cumulative = attempts[0]
@@ -1677,15 +2089,7 @@ impl Engine {
             // The Agent scene is canonical for recovery. Keep already
             // observed process facts too, rather than replacing the current
             // Workflow Attempt with only the resumed stream segment.
-            let mut messages = original.messages.clone();
-            messages.0.append(&mut attempts[0].messages.0);
-            attempts[0].messages = messages;
-            let mut steps = original.steps.clone();
-            for (index, step) in attempts[0].steps.iter_mut().enumerate() {
-                step.id = format!("complete_{}", original.steps.len() + index + 1);
-            }
-            steps.append(&mut attempts[0].steps);
-            attempts[0].steps = steps;
+            prepend_agent_observations(&mut attempts[0], original);
         }
         execution.attempts.pop();
         execution.attempts.extend(attempts);
@@ -1726,12 +2130,89 @@ fn attempt_waiting(attempt: &node::Attempt) -> bool {
         .is_some_and(|waits| !waits.is_empty())
         || attempt.graph.as_ref().is_some_and(|state| {
             !state.waits.is_empty()
+                || !state.pauses().is_empty()
                 || state
                     .nodes
                     .values()
                     .flat_map(|node| node.executions.values())
                     .any(|execution| execution.attempts.last().is_some_and(attempt_waiting))
         })
+}
+
+fn attempt_feedback(attempt: &node::Attempt) -> std::collections::BTreeMap<String, usize> {
+    let mut progress = attempt
+        .agent
+        .as_ref()
+        .map(crate::runtime::agent::wait::input_progress)
+        .unwrap_or_default();
+    if let Some(graph) = &attempt.graph {
+        for execution in graph
+            .nodes
+            .values()
+            .flat_map(|node| node.executions.values())
+        {
+            if execution.idx == graph.step
+                && let Some(attempt) = execution.attempts.last()
+            {
+                progress.extend(attempt_feedback(attempt));
+            }
+        }
+    }
+    progress
+}
+
+fn commit_feedback(
+    attempt: &node::Attempt,
+    run: &crate::runtime::agent::reply::Run,
+) -> Result<(), Error> {
+    if let Some(scene) = &attempt.agent {
+        run.commit_scene_feedback(scene)?;
+    }
+    if let Some(graph) = &attempt.graph {
+        for execution in graph
+            .nodes
+            .values()
+            .flat_map(|node| node.executions.values())
+        {
+            if execution.idx == graph.step
+                && let Some(attempt) = execution.attempts.last()
+            {
+                commit_feedback(attempt, run)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn prepend_agent_observations(attempt: &mut node::Attempt, base: &node::Attempt) {
+    let mut messages = base.messages.clone();
+    messages.0.append(&mut attempt.messages.0);
+    attempt.messages = messages;
+    let mut steps = base.steps.clone();
+    for (index, step) in attempt.steps.iter_mut().enumerate() {
+        step.id = format!("complete_{}", base.steps.len() + index + 1);
+    }
+    steps.append(&mut attempt.steps);
+    attempt.steps = steps;
+}
+
+// A resolved contribution remains a fact even after its locator leaves the
+// pending queue or its containing graph finishes. It is not a new submission.
+fn saved_feedback_duplicate(state: &graph::State, input: &AgentInput) -> Result<bool, Error> {
+    let mut duplicate = false;
+    for node in state.nodes.values() {
+        for execution in node.executions.values() {
+            if let Some(attempt) = execution.attempts.last() {
+                if let Some(scene) = &attempt.agent {
+                    duplicate |= crate::runtime::agent::reply::saved_duplicate(scene, input)?;
+                }
+                if let Some(child) = &attempt.graph {
+                    duplicate |= saved_feedback_duplicate(child, input)?;
+                }
+            }
+        }
+    }
+    Ok(duplicate)
 }
 
 fn agent_scene_for_reply_path<'a>(
@@ -1915,6 +2396,20 @@ fn invoke_with_retry(
 ) -> Pin<Box<dyn Future<Output = Invocation> + 'static>> {
     Box::pin(async move {
         let mut attempts = Vec::new();
+        if !matches!(&target, Target::Graph { .. })
+            && let Err(error) = events::entered(attempt_start).await
+        {
+            return Invocation {
+                attempts: vec![node::Attempt {
+                    idx: attempt_start,
+                    status: node::AttemptStatus::Failed,
+                    error: Some(error.clone()),
+                    ..Default::default()
+                }],
+                outcome: Outcome::Failed(error),
+                graph: None,
+            };
+        }
         // ToolNode-only committed call facts. They remain private to this one
         // logical execution and are restored from all saved Attempts on recovery;
         // ordinary Nodes keep the unchanged single-call path.
@@ -2114,15 +2609,10 @@ fn invoke_with_retry(
                                         graph: None,
                                     };
                                 };
-                                let Some(wait_id) = (state.waits.len() == 1).then(|| {
-                                    state
-                                        .waits
-                                        .values()
-                                        .next()
-                                        .expect("one wait")
-                                        .wait_id
-                                        .clone()
-                                }) else {
+                                let pauses = state.pauses();
+                                let Some(wait_id) =
+                                    (pauses.len() == 1).then(|| pauses[0].wait_id.clone())
+                                else {
                                     attempt.status = node::AttemptStatus::Failed;
                                     let error = Error::new(
                                         "CONFLICT",
@@ -3541,10 +4031,14 @@ mod tests {
         let child_execution = &snapshot["nodes"]["child"]["executions"]["1300"];
         assert_eq!(child_execution["status"], "waiting");
         assert_eq!(child_execution["attempts"][0]["graph"]["status"], "paused");
-        assert!(
-            child_execution["attempts"][0]["graph"]["waits"]
-                .get("approval")
-                .is_some()
+        assert_eq!(
+            child_execution["attempts"][0]["graph"]["waits"],
+            serde_json::json!([])
+        );
+        assert_eq!(
+            child_execution["attempts"][0]["graph"]["nodes"]["approval"]["executions"]["1300"]["waits"]
+                ["approval"]["status"],
+            "waiting"
         );
 
         let mut restored = Runtime::from_snapshot(19, parent, snapshot).unwrap();
@@ -3683,7 +4177,11 @@ mod tests {
         assert_eq!(execution.status, node::ExecutionStatus::Waiting);
         assert_eq!(execution.attempts.len(), 1);
         assert_eq!(execution.attempts[0].status, node::AttemptStatus::Waiting);
-        assert_eq!(runtime.state().waits["agent"].wait_id, "approval");
+        assert!(runtime.state().waits.is_empty());
+        assert_eq!(
+            runtime.state().pause("agent").unwrap().unwrap().wait_id,
+            "approval"
+        );
 
         runtime
             .resume(

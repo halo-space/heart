@@ -40,6 +40,8 @@ pub(super) struct Progress {
     pub exec_id: i64,
     pub attempt: super::node::Attempt,
     pub event: Option<Event>,
+    /// Admission changes only status, never replaces saved Attempt facts.
+    pub entered: bool,
     pub ack: tokio::sync::oneshot::Sender<Result<(), Error>>,
 }
 impl Relay {
@@ -107,7 +109,27 @@ pub(super) fn has_parent() -> bool {
 }
 pub(super) async fn progress(
     attempt: super::node::Attempt,
+    event: Option<Event>,
+) -> Result<(), Error> {
+    Box::pin(handoff(attempt, event, false)).await
+}
+
+pub(super) async fn entered(idx: u32) -> Result<(), Error> {
+    Box::pin(handoff(
+        super::node::Attempt {
+            idx,
+            ..Default::default()
+        },
+        None,
+        true,
+    ))
+    .await
+}
+
+async fn handoff(
+    attempt: super::node::Attempt,
     mut event: Option<Event>,
+    entered: bool,
 ) -> Result<(), Error> {
     let (Ok(relay), Ok((_, node_id, exec_id))) =
         (RELAY.try_with(Clone::clone), SOURCE.try_with(Clone::clone))
@@ -134,6 +156,7 @@ pub(super) async fn progress(
             exec_id,
             attempt,
             event,
+            entered,
             ack,
         });
     relay.0.consumer.wake();

@@ -56,10 +56,94 @@ pub struct Wait {
     pub kind: String,
     /// waiting or resolved; resolved does not imply successful node execution.
     pub status: String,
+    /// Required contributions, fixed when the wait starts. Missing input uses
+    /// the ordinary one-feedback default; serialized scenes retain the value.
+    #[serde(default = "Wait::default_count")]
+    pub count: usize,
     /// The actual question, not the Tool's successful business result.
     pub question: Message,
     /// Contributions retained for this question; not automatic model context.
     pub feedback: Messages,
+}
+
+impl Wait {
+    fn default_count() -> usize {
+        1
+    }
+
+    /// Start one question's collection. This creates waiting facts only; its
+    /// owning execution still registers/presents the question and resumes work.
+    pub fn new(kind: impl Into<String>, question: Message, count: usize) -> Result<Self, Error> {
+        let record = Self {
+            kind: kind.into(),
+            status: "waiting".into(),
+            count,
+            question,
+            feedback: Messages::default(),
+        };
+        record
+            .validate()
+            .map_err(|error| Error::new("INVALID_ARGUMENTS", error.message))?;
+        Ok(record)
+    }
+
+    /// Collect feedback for this question and report whether it is resolved.
+    /// This does not evaluate content, grant permission, mark a node successful,
+    /// emit events or wake an execution. Those remain the owner's responsibility.
+    /// The role/content/values payload identifies a retransmission; changes to
+    /// transport metadata or usage do not turn it into another contribution.
+    pub fn reply(&mut self, feedback: Message) -> Result<bool, Error> {
+        self.validate()?;
+        if self
+            .feedback
+            .as_slice()
+            .iter()
+            .any(|saved| Self::same_feedback(saved, &feedback))
+        {
+            return Ok(self.status == "resolved");
+        }
+        if self.status == "resolved" {
+            return Err(Error::new(
+                "CONFLICT",
+                "this question already received all required feedback",
+            ));
+        }
+        self.feedback.push(feedback);
+        let resolved = self.feedback.as_slice().len() == self.count;
+        if resolved {
+            self.status = "resolved".into();
+        }
+        Ok(resolved)
+    }
+
+    pub(crate) fn validate(&self) -> Result<(), Error> {
+        if self.kind.trim().is_empty()
+            || self.count == 0
+            || (self.kind == "approval" && self.count != 1)
+            || !matches!(self.status.as_str(), "waiting" | "resolved")
+        {
+            return Err(Error::new("INVALID_STATE", "invalid feedback wait"));
+        }
+        let feedback = self.feedback.as_slice();
+        if feedback.len() > self.count
+            || (self.status == "resolved") != (feedback.len() == self.count)
+            || feedback.iter().enumerate().any(|(idx, message)| {
+                feedback[..idx]
+                    .iter()
+                    .any(|previous| Self::same_feedback(previous, message))
+            })
+        {
+            return Err(Error::new(
+                "INVALID_STATE",
+                "feedback does not match the saved wait count and status",
+            ));
+        }
+        Ok(())
+    }
+
+    fn same_feedback(left: &Message, right: &Message) -> bool {
+        left.role == right.role && left.content == right.content && left.values == right.values
+    }
 }
 
 /// One logical internal Agent operation belonging to an Attempt.

@@ -8,7 +8,7 @@ use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
 
-use futures_util::StreamExt;
+use futures_core::Stream;
 use schemars::{JsonSchema, schema_for};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
@@ -71,10 +71,13 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
         let agent = Arc::clone(&self.agent);
         Box::pin(async move {
             let interaction = super::events::interaction().map(|run| run.child());
-            if let Some(scene) = restore.as_ref()
-                && input.metadata.contains_key("reply_id")
-            {
-                let restored = match crate::runtime::agent::reply::prepare_restore(scene, &input) {
+            if let Some(scene) = restore.as_ref() {
+                let prepared = if input.metadata.contains_key("reply_id") {
+                    crate::runtime::agent::reply::prepare_restore(scene, &input)
+                } else {
+                    crate::runtime::agent::reply::prepare_pending(scene)
+                };
+                let restored = match prepared {
                     Ok(Some(restored)) => Some(restored),
                     Ok(None) => None,
                     Err(error) => {
@@ -94,8 +97,9 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                         .restore_approvals(restored);
                 }
             }
-            let scope =
-                crate::runtime::agent::scope::Scope::new(restore).with_interaction(interaction);
+            let scope = crate::runtime::agent::scope::Scope::new(restore)
+                .with_feedback(super::events::has_parent())
+                .with_interaction(interaction);
             let observed = scope.clone();
             let mut run = crate::runtime::agent::scope::run(scope.clone(), async move {
                 let mut messages = Messages::default();
@@ -115,7 +119,46 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                 };
                 futures_util::pin_mut!(stream);
                 let mut final_assistant = None;
-                while let Some(event) = stream.next().await {
+                let mut published: Option<Arc<Value>> = None;
+                enum Update {
+                    Event(Box<Result<Event, Error>>),
+                    Scene,
+                }
+                loop {
+                    let update = std::future::poll_fn(|cx| {
+                        match stream.as_mut().poll_next(cx) {
+                            std::task::Poll::Ready(event) => std::task::Poll::Ready(
+                                event.map(|event| Update::Event(Box::new(event))),
+                            ),
+                            std::task::Poll::Pending => {
+                                if super::events::has_parent()
+                                    && let Some(scene) = observed.latest_shared()
+                                    && published.as_ref().is_none_or(|old| !Arc::ptr_eq(old, &scene))
+                                    && crate::runtime::agent::wait::has_input(&scene)
+                                {
+                                    published = Some(scene);
+                                    std::task::Poll::Ready(Some(Update::Scene))
+                                } else {
+                                    std::task::Poll::Pending
+                                }
+                            }
+                        }
+                    }).await;
+                    let Some(update) = update else { break };
+                    let event = match update {
+                        Update::Scene => {
+                            if let Err(error) = super::events::progress(
+                                agent_attempt(&observed, &steps, &messages, usage.clone()), None,
+                            ).await {
+                                return AgentRun { result: Err(error), messages, steps, usage, scene: None };
+                            }
+                            continue;
+                        }
+                        Update::Event(event) => {
+                            published = observed.latest_shared();
+                            *event
+                        }
+                    };
                     match event {
                         Ok(Event::Delta { message }) => {
                             if let Err(error) = super::events::progress(
@@ -184,7 +227,7 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                                     return AgentRun {
                                         result: Err(Error::new(
                                             "WAITING",
-                                            "embedded approval requires its owning Workflow continuation",
+                                            "embedded feedback requires its owning Workflow continuation",
                                         )),
                                         messages,
                                         steps,
@@ -624,18 +667,22 @@ pub enum Status {
     Paused,
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct Wait {
-    pub node_id: String,
-    pub exec_id: i64,
-    pub wait_id: String,
+pub use super::wait::Wait;
+
+/// Derived lookup for an ordinary Node pause. The actual record remains in
+/// Execution.waits; this is never a parallel persisted index.
+#[derive(Clone)]
+pub(crate) struct Pause {
+    pub(crate) node_id: String,
+    pub(crate) exec_id: i64,
+    pub(crate) wait_id: String,
 }
 
 /// Serializable Workflow Runtime state for one `chat_id`.
 ///
 /// Node execution data remains nested under `nodes[node_id]`; `waits` is a
-/// graph-level index keyed by `node_id` so restoring a waiting node does not
-/// require scanning every node.  This type intentionally does not run a
+/// ordered human-feedback locator list. Ordinary Node pause facts remain in
+/// their owning Execution.waits. This type intentionally does not run a
 /// scheduler or persist an external Checkpoint.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct State {
@@ -653,7 +700,7 @@ pub struct State {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial: Option<Messages>,
     #[serde(default)]
-    pub waits: BTreeMap<String, Wait>,
+    pub waits: Vec<Wait>,
     pub nodes: BTreeMap<String, crate::runtime::workflow::node::State>,
 }
 
@@ -688,7 +735,7 @@ impl State {
             status: Status::Running,
             usage: None,
             initial: None,
-            waits: BTreeMap::new(),
+            waits: Vec::new(),
             nodes,
         }
     }
@@ -745,7 +792,9 @@ impl State {
         Ok(())
     }
 
-    /// Marks in-flight executions from a persisted snapshot as waiting.
+    /// Marks unfinished Attempts from a persisted snapshot as waiting.
+    /// A queued execution stays Pending until actual admission; normalization
+    /// does not claim it ran or consume a retry.
     /// The logical execution remains active so Runtime can reuse its exec_id;
     /// only a later call may continue the same execution. Explicit external
     /// waits are intentionally left untouched.
@@ -753,7 +802,11 @@ impl State {
         let mut changed = false;
         for node in self.nodes.values_mut() {
             for execution in node.executions.values_mut() {
-                if execution.status != crate::runtime::workflow::node::ExecutionStatus::Running {
+                if !matches!(
+                    execution.status,
+                    crate::runtime::workflow::node::ExecutionStatus::Pending
+                        | crate::runtime::workflow::node::ExecutionStatus::Running
+                ) {
                     continue;
                 }
                 if let Some(attempt) = execution.attempts.last_mut()
@@ -772,25 +825,7 @@ impl State {
         changed
     }
 
-    pub(crate) fn waiting_execution(&self) -> Option<(String, i64)> {
-        self.nodes.iter().find_map(|(node_id, node)| {
-            node.executions.iter().find_map(|(exec_id, execution)| {
-                (execution.idx == self.step
-                    && matches!(
-                        execution.status,
-                        crate::runtime::workflow::node::ExecutionStatus::Running
-                            | crate::runtime::workflow::node::ExecutionStatus::Waiting
-                    )
-                    && execution.waits.is_empty()
-                    && execution.attempts.last().is_some_and(|attempt| {
-                        attempt.status == crate::runtime::workflow::node::AttemptStatus::Waiting
-                    }))
-                .then_some((node_id.clone(), *exec_id))
-            })
-        })
-    }
-
-    /// Locate a saved approval only through active Workflow executions and
+    /// Locate saved feedback only through active Workflow executions and
     /// their actual embedded Agent/Graph scenes.
     pub(crate) fn reply_paths(&self, reply_id: i64) -> Result<Vec<Vec<ReplyExecution>>, Error> {
         let mut paths = Vec::new();
@@ -894,17 +929,61 @@ impl State {
             .ok_or_else(|| Error::new("NOT_FOUND", "workflow node state was not found"))
     }
 
-    pub fn add_wait(&mut self, wait: Wait) -> Result<(), Error> {
-        self.node(&wait.node_id)?;
-        if self.waits.contains_key(&wait.node_id) {
-            return Err(Error::new("CONFLICT", "workflow node already has a wait"));
-        }
-        self.waits.insert(wait.node_id.clone(), wait);
-        Ok(())
+    pub(crate) fn pauses(&self) -> Vec<Pause> {
+        self.nodes
+            .iter()
+            .flat_map(|(node_id, node)| {
+                node.executions
+                    .values()
+                    .filter(move |execution| {
+                        execution.idx == self.step
+                            && execution.status
+                                == crate::runtime::workflow::node::ExecutionStatus::Waiting
+                    })
+                    .flat_map(move |execution| {
+                        execution
+                            .waits
+                            .iter()
+                            .filter(|(_, record)| record.status == "waiting")
+                            .map(move |(wait_id, _)| Pause {
+                                node_id: node_id.clone(),
+                                exec_id: execution.exec_id,
+                                wait_id: wait_id.clone(),
+                            })
+                    })
+            })
+            .collect()
     }
 
-    pub fn remove_wait(&mut self, node_id: &str) -> Option<Wait> {
-        self.waits.remove(node_id)
+    pub(crate) fn pause(&self, node_id: &str) -> Result<Option<Pause>, Error> {
+        let mut matches = self
+            .nodes
+            .get(node_id)
+            .into_iter()
+            .flat_map(|node| node.executions.values())
+            .filter(|execution| {
+                execution.idx == self.step
+                    && execution.status == crate::runtime::workflow::node::ExecutionStatus::Waiting
+            })
+            .flat_map(|execution| {
+                execution
+                    .waits
+                    .iter()
+                    .filter(|(_, record)| record.status == "waiting")
+                    .map(move |(wait_id, _)| Pause {
+                        node_id: node_id.into(),
+                        exec_id: execution.exec_id,
+                        wait_id: wait_id.clone(),
+                    })
+            });
+        let first = matches.next();
+        if matches.next().is_some() {
+            return Err(Error::new(
+                "INVALID_STATE",
+                "workflow node has ambiguous active pauses",
+            ));
+        }
+        Ok(first)
     }
 
     fn common_terminal_step(&self, sources: &[String]) -> Option<u64> {
@@ -938,7 +1017,7 @@ impl State {
     /// The response is kept in execution facts so a restored runtime can
     /// resume without a second mailbox or scheduler record.
     pub(crate) fn resume(&mut self, node_id: &str, response: Messages) -> Result<(), Error> {
-        let wait = match self.waits.get(node_id).cloned() {
+        let wait = match self.pause(node_id)? {
             Some(wait) => wait,
             None => {
                 let already_resolved = self.nodes.get(node_id).and_then(|node| {
@@ -972,7 +1051,7 @@ impl State {
         if let Some(attempt) = execution.attempts.last_mut()
             && let Some(child) = attempt.graph.as_mut()
         {
-            let child_waits = child.waits.keys().cloned().collect::<Vec<_>>();
+            let child_waits = child.pauses();
             let reply_id = response
                 .as_slice()
                 .iter()
@@ -982,20 +1061,17 @@ impl State {
                 .and_then(serde_json::Value::as_i64);
             let child_node_id = if let Some(reply_id) = reply_id {
                 let mut matching = Vec::new();
-                for child_node_id in &child_waits {
-                    let Some(wait) = child.waits.get(child_node_id) else {
-                        continue;
-                    };
+                for wait in &child_waits {
                     let Some(attempt) = child
                         .nodes
-                        .get(child_node_id)
+                        .get(&wait.node_id)
                         .and_then(|node| node.executions.get(&wait.exec_id))
                         .and_then(|execution| execution.attempts.last())
                     else {
                         continue;
                     };
                     if super::attempt_question(attempt, reply_id)? {
-                        matching.push(child_node_id.clone());
+                        matching.push(wait.node_id.clone());
                     }
                 }
                 if matching.len() > 1 {
@@ -1011,7 +1087,7 @@ impl State {
                     )
                 })?
             } else if child_waits.len() == 1 {
-                child_waits[0].clone()
+                child_waits[0].node_id.clone()
             } else if child_waits.is_empty() {
                 String::new()
             } else {
@@ -1052,7 +1128,6 @@ impl State {
         let node = self.node_mut(node_id)?;
         node.executions.insert(wait.exec_id, execution);
         node.status = crate::runtime::workflow::node::Status::Active;
-        self.waits.remove(node_id);
         self.status = Status::Running;
         Ok(())
     }
@@ -1403,6 +1478,7 @@ impl State {
         execution.messages = messages;
         execution.to = to;
         node.status = crate::runtime::workflow::node::Status::Succeeded;
+        self.forget_wait_locations(node_id, exec_id);
         Ok(())
     }
 
@@ -1412,7 +1488,7 @@ impl State {
         exec_id: i64,
         wait_id: String,
     ) -> Result<(), Error> {
-        if self.waits.contains_key(node_id) {
+        if self.pause(node_id)?.is_some() {
             return Err(Error::new("CONFLICT", "workflow node already has a wait"));
         }
         let node = self.node_mut(node_id)?;
@@ -1437,11 +1513,7 @@ impl State {
                 response: None,
             },
         );
-        self.add_wait(Wait {
-            node_id: node_id.into(),
-            exec_id,
-            wait_id,
-        })
+        Ok(())
     }
 
     pub fn fail_execution(
@@ -1454,7 +1526,8 @@ impl State {
         let execution = node.execution_mut(exec_id)?;
         if !matches!(
             execution.status,
-            crate::runtime::workflow::node::ExecutionStatus::Running
+            crate::runtime::workflow::node::ExecutionStatus::Pending
+                | crate::runtime::workflow::node::ExecutionStatus::Running
                 | crate::runtime::workflow::node::ExecutionStatus::Waiting
         ) {
             return Err(Error::new("INVALID_STATE", "execution is not active"));
@@ -1472,6 +1545,7 @@ impl State {
         }
         execution.error = Some(error);
         node.status = crate::runtime::workflow::node::Status::Failed;
+        self.forget_wait_locations(node_id, exec_id);
         Ok(())
     }
 
@@ -1480,7 +1554,8 @@ impl State {
         let execution = node.execution_mut(exec_id)?;
         if !matches!(
             execution.status,
-            crate::runtime::workflow::node::ExecutionStatus::Running
+            crate::runtime::workflow::node::ExecutionStatus::Pending
+                | crate::runtime::workflow::node::ExecutionStatus::Running
                 | crate::runtime::workflow::node::ExecutionStatus::Waiting
         ) {
             return Err(Error::new("INVALID_STATE", "execution is not active"));
@@ -1496,7 +1571,17 @@ impl State {
             attempt.status = crate::runtime::workflow::node::AttemptStatus::Cancelled;
         }
         node.status = crate::runtime::workflow::node::Status::Cancelled;
+        self.forget_wait_locations(node_id, exec_id);
         Ok(())
+    }
+
+    fn forget_wait_locations(&mut self, node_id: &str, exec_id: i64) {
+        self.waits.retain(|wait| {
+            !wait
+                .nodes
+                .first()
+                .is_some_and(|owner| owner.node_id == node_id && owner.exec_id == exec_id)
+        });
     }
 
     /// Completes the current barrier and advances the graph step. A waiting,
@@ -2604,7 +2689,7 @@ mod tests {
     }
 
     #[test]
-    fn state_initializes_start_nodes_and_indexes_waits() {
+    fn state_initializes_start_nodes_and_keeps_pause_facts_on_execution() {
         let compiled = single().compile().unwrap();
         let mut state = State::new(1, compiled.definition());
         assert_eq!(state.step, 0);
@@ -2615,50 +2700,44 @@ mod tests {
         );
 
         state
-            .add_wait(Wait {
-                node_id: "answer".into(),
-                exec_id: 1,
-                wait_id: "wait_001".into(),
-            })
+            .start_execution(compiled.definition(), "answer", 1, vec![])
             .unwrap();
-        assert_eq!(state.waits["answer"].wait_id, "wait_001");
-        assert_eq!(state.remove_wait("answer").unwrap().node_id, "answer");
+        state
+            .wait_execution("answer", 1, "wait_001".into())
+            .unwrap();
+        assert!(state.waits.is_empty());
+        assert_eq!(state.pause("answer").unwrap().unwrap().wait_id, "wait_001");
+        assert_eq!(
+            state.nodes["answer"].executions[&1].waits["wait_001"].status,
+            "waiting"
+        );
     }
 
     #[test]
-    fn state_rejects_wait_for_unknown_node_and_duplicate_node_wait() {
+    fn state_rejects_pause_for_unknown_node_and_duplicate_node_pause() {
         let compiled = single().compile().unwrap();
         let mut state = State::new(1, compiled.definition());
         assert_eq!(
             state
-                .add_wait(Wait {
-                    node_id: "missing".into(),
-                    exec_id: 1,
-                    wait_id: "wait_001".into(),
-                })
+                .wait_execution("missing", 1, "wait_001".into())
                 .unwrap_err()
                 .code,
             "NOT_FOUND"
         );
         state
-            .add_wait(Wait {
-                node_id: "answer".into(),
-                exec_id: 1,
-                wait_id: "wait_001".into(),
-            })
+            .start_execution(compiled.definition(), "answer", 1, vec![])
+            .unwrap();
+        state
+            .wait_execution("answer", 1, "wait_001".into())
             .unwrap();
         assert_eq!(
             state
-                .add_wait(Wait {
-                    node_id: "answer".into(),
-                    exec_id: 1,
-                    wait_id: "wait_002".into(),
-                })
+                .wait_execution("answer", 1, "wait_002".into())
                 .unwrap_err()
                 .code,
             "CONFLICT"
         );
-        assert_eq!(state.waits["answer"].wait_id, "wait_001");
+        assert_eq!(state.pause("answer").unwrap().unwrap().wait_id, "wait_001");
     }
 
     #[test]
@@ -2694,13 +2773,6 @@ mod tests {
                     ..Default::default()
                 },
             );
-            child
-                .add_wait(Wait {
-                    node_id: "answer".into(),
-                    exec_id: 10,
-                    wait_id: "child_wait".into(),
-                })
-                .unwrap();
             child
         };
 
@@ -2743,13 +2815,6 @@ mod tests {
             .unwrap()
             .executions
             .insert(1, execution);
-        state
-            .add_wait(Wait {
-                node_id: "answer".into(),
-                exec_id: 1,
-                wait_id: "wait_001".into(),
-            })
-            .unwrap();
 
         // A valid child wait must not be resolved when the parent record is
         // invalid: the entire failed operation leaves the live graph intact.
@@ -2769,7 +2834,7 @@ mod tests {
                 .resume("answer", Messages::default())
                 .unwrap_err()
                 .code,
-            "INVALID_STATE"
+            "NOT_FOUND"
         );
         assert_eq!(invalid, before);
 
@@ -2794,7 +2859,10 @@ mod tests {
             .unwrap()
             .as_ref()
             .clone();
-        assert_eq!(historical.waits["answer"].wait_id, "child_wait");
+        assert_eq!(
+            historical.pause("answer").unwrap().unwrap().wait_id,
+            "child_wait"
+        );
         assert_eq!(
             historical.nodes["answer"].executions[&10].status,
             ExecutionStatus::Waiting

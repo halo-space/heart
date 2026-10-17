@@ -6,6 +6,115 @@ use serde_json::Value;
 
 use crate::{Error, runtime::agent::node::Step};
 
+/// Ask for ordinary feedback from an independent Chat/ReAct Tool execution,
+/// including ReAct plan tasks and delegated Chat/ReAct children with plans.
+/// The original run presents the question and owns all output. The initiator
+/// fixes count here; Agent::reply only supplies the correlated contributions.
+/// This does not request approval or automatically add feedback to a prompt.
+/// New questions require the Agent's application-provided ID function.
+/// Embedded Workflow execution hands progress to its actual outer owner.
+/// Restoring questions across multiple Workflow Agent branches additionally
+/// requires their persisted global order; an ambiguous scene fails closed.
+/// Recovery reenters the
+/// Tool and reuses its saved question; it does not recover arbitrary Rust frames
+/// or guarantee exactly-once external effects around this wait.
+pub async fn ask(
+    question: crate::Message,
+    count: usize,
+    cancellation: &crate::Cancellation,
+) -> Result<crate::Messages, Error> {
+    super::reply::feedback::ask(question, count, cancellation).await
+}
+
+/// Inspect only current native containers, not business JSON or history.
+/// Resolved records also matter: their changed scene must reach the root.
+pub(crate) fn has_input(scene: &Value) -> bool {
+    input_record(scene, false)
+}
+
+pub(crate) fn has_waiting_input(scene: &Value) -> bool {
+    input_record(scene, true)
+}
+
+pub(crate) fn input_progress(scene: &Value) -> std::collections::BTreeMap<String, usize> {
+    fn owner(value: &Value, progress: &mut std::collections::BTreeMap<String, usize>) {
+        for step in value["steps"].as_array().into_iter().flatten() {
+            for (id, record) in step["waits"].as_object().into_iter().flatten() {
+                if record["kind"] == "input" {
+                    progress.insert(
+                        id.clone(),
+                        record["feedback"].as_array().map_or(0, Vec::len),
+                    );
+                }
+            }
+        }
+        nodes(value.get("nodes"), progress);
+    }
+    fn nodes(value: Option<&Value>, progress: &mut std::collections::BTreeMap<String, usize>) {
+        for node in value
+            .and_then(Value::as_object)
+            .into_iter()
+            .flat_map(|nodes| nodes.values())
+        {
+            if let Some(attempt) = node["execution"]["attempts"]
+                .as_array()
+                .and_then(|attempts| attempts.last())
+            {
+                owner(attempt, progress);
+                if let Some(scene) = attempt.get("agent").filter(|scene| scene.is_object()) {
+                    visit(scene, progress);
+                }
+            }
+        }
+    }
+    fn visit(scene: &Value, progress: &mut std::collections::BTreeMap<String, usize>) {
+        owner(scene, progress);
+        if let Some(attempt) = scene["execution"]["attempts"]
+            .as_array()
+            .and_then(|attempts| attempts.last())
+        {
+            nodes(attempt.get("nodes"), progress);
+        }
+    }
+    let mut progress = std::collections::BTreeMap::new();
+    visit(scene, &mut progress);
+    progress
+}
+
+fn input_record(scene: &Value, waiting: bool) -> bool {
+    fn owner(value: &Value, waiting: bool) -> bool {
+        value["steps"].as_array().is_some_and(|steps| {
+            steps.iter().any(|step| {
+                step["waits"].as_object().is_some_and(|waits| {
+                    waits.values().any(|record| {
+                        record["kind"] == "input" && (!waiting || record["status"] == "waiting")
+                    })
+                })
+            })
+        }) || nodes(value.get("nodes"), waiting)
+    }
+    fn nodes(value: Option<&Value>, waiting: bool) -> bool {
+        value.and_then(Value::as_object).is_some_and(|nodes| {
+            nodes.values().any(|node| {
+                node["execution"]["attempts"]
+                    .as_array()
+                    .and_then(|attempts| attempts.last())
+                    .is_some_and(|attempt| {
+                        owner(attempt, waiting)
+                            || attempt
+                                .get("agent")
+                                .is_some_and(|scene| input_record(scene, waiting))
+                    })
+            })
+        })
+    }
+    owner(scene, waiting)
+        || scene["execution"]["attempts"]
+            .as_array()
+            .and_then(|attempts| attempts.last())
+            .is_some_and(|attempt| nodes(attempt.get("nodes"), waiting))
+}
+
 /// Existing execution coordinates of one containing node, outermost first.
 #[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct Node {
@@ -239,9 +348,7 @@ pub(crate) fn validate(scene: &Value) -> Result<bool, Error> {
         }
         let mut unresolved = false;
         for (reply_id, record) in step.waits {
-            if record.kind.trim().is_empty()
-                || !matches!(record.status.as_str(), "waiting" | "resolved")
-            {
+            if record.validate().is_err() {
                 return Err(invalid("invalid Agent Step waiting record"));
             }
             if record.status == "waiting" {

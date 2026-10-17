@@ -23,9 +23,11 @@ use std::{
 };
 use tokio::sync::oneshot;
 
+pub(crate) mod feedback;
 mod restore;
 pub(crate) use restore::consume as consume_restore;
 pub(crate) use restore::duplicate as saved_duplicate;
+pub(crate) use restore::pending as prepare_pending;
 pub(crate) use restore::prepare as prepare_restore;
 
 #[derive(Default)]
@@ -62,6 +64,7 @@ struct Inner {
     restored: Mutex<BTreeMap<String, restore::Question>>,
     restored_tasks: Mutex<BTreeMap<wait::Node, restore::Consumer>>,
     restoring: AtomicBool,
+    feedback: Mutex<BTreeMap<String, feedback::Saved>>,
 }
 
 struct Question {
@@ -69,6 +72,7 @@ struct Question {
     owner: Weak<Inner>,
     sender: Option<oneshot::Sender<Input>>,
     submitted: Option<Value>,
+    feedback: Option<feedback::Delivery>,
 }
 
 /// Transient task admission, not another runtime scene or persisted queue.
@@ -99,7 +103,7 @@ impl Slot {
             .map_err(|_| Error::new("CONCURRENCY_LIMIT", "no planned task slot available"))?;
         Ok(Self::with_permit(slots, changed, permit))
     }
-    fn with_permit(
+    pub(crate) fn with_permit(
         slots: Arc<tokio::sync::Semaphore>,
         changed: Arc<AtomicWaker>,
         permit: tokio::sync::OwnedSemaphorePermit,
@@ -148,6 +152,19 @@ impl Slot {
 }
 
 pub(crate) enum Change {
+    Collect {
+        call: Call,
+        id: i64,
+        record: Box<Wait>,
+        present: bool,
+        ack: oneshot::Sender<Result<(), Error>>,
+    },
+    Feedback {
+        call: Call,
+        id: i64,
+        input: Input,
+        ack: oneshot::Sender<Result<bool, Error>>,
+    },
     Present {
         call: Call,
         id: i64,
@@ -212,6 +229,7 @@ impl Hub {
             restored: Default::default(),
             restored_tasks: Default::default(),
             restoring: AtomicBool::new(false),
+            feedback: Default::default(),
         }));
         if let Some(id) = id {
             runs.insert(id, Arc::downgrade(&run.0));
@@ -263,6 +281,9 @@ impl Hub {
         // This handoff entry is installed by the actual approval consumer;
         // it does not classify arbitrary user inputs as permission decisions.
         let payload = feedback_signature(&input);
+        if question.feedback.is_some() {
+            return feedback::submit(&run, questions, id, input, payload);
+        }
         if let Some(previous) = &question.submitted {
             return if previous == &payload {
                 Ok(())
@@ -343,6 +364,11 @@ fn feedback_signature(input: &Input) -> Value {
 }
 
 impl Run {
+    /// Seed only from a validated outer State's existing ordered locators.
+    /// Consumer ownership/authorization still comes from the actual Steps.
+    pub(crate) fn restore_order(&self, ids: Vec<i64>) {
+        *self.0.order.lock().expect("question order lock poisoned") = ids.into_iter().collect();
+    }
     /// Same run/question directory, separate actual execution consumer. Not
     /// another public run, lifecycle, snapshot or output channel.
     pub(crate) fn branch(&self, slot: Slot) -> Self {
@@ -371,6 +397,7 @@ impl Run {
             restored: Default::default(),
             restored_tasks: Default::default(),
             restoring: AtomicBool::new(false),
+            feedback: Default::default(),
         }));
         self.0
             .children
@@ -444,10 +471,14 @@ impl Run {
                     .filter(|question| {
                         question.owner.ptr_eq(&Arc::downgrade(&self.0))
                             && question.submitted.is_none()
+                            && question
+                                .feedback
+                                .as_ref()
+                                .is_none_or(|delivery| delivery.submitted.len() < delivery.count)
                     })
-                    .filter_map(|question| {
+                    .map(|question| {
                         question.active = false;
-                        question.sender.take()
+                        (question.sender.take(), question.feedback.take())
                     })
                     .collect::<Vec<_>>();
                 (BTreeMap::new(), senders)
@@ -518,6 +549,7 @@ impl Run {
                     owner: Arc::downgrade(&self.0),
                     sender: Some(sender),
                     submitted: None,
+                    feedback: None,
                 },
             );
         }
@@ -543,6 +575,7 @@ impl Run {
             cancellation,
         )
         .await?;
+        feedback::release_slot();
         let input = crate::runtime::cancellation::cancellable(
             async {
                 receiver
@@ -570,6 +603,7 @@ impl Run {
         )
         .await?;
         self.continue_execution(cancellation).await?;
+        feedback::acquire_slot(cancellation).await?;
         if decision {
             Ok(())
         } else {
@@ -585,6 +619,9 @@ pub(crate) fn apply(
     owner: &Run,
 ) -> Result<Option<Event>, Error> {
     match change {
+        change @ (Change::Collect { .. } | Change::Feedback { .. }) => {
+            feedback::apply(change, steps, waits, owner)
+        }
         Change::Present {
             call,
             id,
@@ -607,14 +644,14 @@ pub(crate) fn apply(
                         "question identity already exists in Step",
                     ));
                 }
+                if let Some(record) = step.waits.get(&id) {
+                    record.validate()?;
+                }
                 step.call = Some(call);
                 step.status = "waiting".into();
-                step.waits.entry(id).or_insert_with(|| Wait {
-                    kind: "approval".into(),
-                    status: "waiting".into(),
-                    question: (*question).clone(),
-                    feedback: Default::default(),
-                });
+                if let std::collections::btree_map::Entry::Vacant(entry) = step.waits.entry(id) {
+                    entry.insert(Wait::new("approval", (*question).clone(), 1)?);
+                }
                 let position = wait::Wait {
                     nodes: Vec::new(),
                     step: step.id.clone(),
@@ -676,10 +713,12 @@ pub(crate) fn apply(
                         "waiting questions must be consumed in order",
                     ));
                 }
-                record
-                    .feedback
-                    .push(crate::core::agent::input::user_message(input));
-                record.status = "resolved".into();
+                if !record.reply(crate::core::agent::input::user_message(input))? {
+                    return Err(Error::new(
+                        "INVALID_STATE",
+                        "approval feedback is incomplete",
+                    ));
+                }
                 step.status = "running".into();
                 waits.retain(|position| !position.nodes.is_empty() || position.step != step.id);
                 owner

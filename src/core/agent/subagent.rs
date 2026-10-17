@@ -9,7 +9,6 @@ use crate::{
     model::token::{InputDetails, OutputDetails, Usage},
     tool::Call,
 };
-use futures_util::StreamExt;
 use futures_util::task::AtomicWaker;
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -122,7 +121,7 @@ impl std::fmt::Debug for SubAgent {
 }
 
 /// Private, consumer-driven forwarding. Each running child can enqueue only
-/// one event, then waits for the parent to take it. No producer task, persisted
+/// one event or native scene update, then waits for the parent to take it. No producer task, persisted
 /// queue, replay protocol or second public stream is created.
 #[derive(Clone, Default)]
 pub(crate) struct Relay(Arc<RelayState>);
@@ -172,7 +171,8 @@ pub(crate) struct Observer {
 }
 
 pub(crate) struct Observation {
-    pub event: Event,
+    pub event: Option<Event>,
+    pub feedback: bool,
     pub source: (String, i64),
     pub scene: Option<Arc<Value>>,
     pub usage: Option<Usage>,
@@ -180,11 +180,20 @@ pub(crate) struct Observation {
 }
 
 impl Observation {
+    pub(crate) fn commit_feedback(
+        &self,
+        owner: Option<&crate::runtime::agent::reply::Run>,
+    ) -> Result<(), Error> {
+        if let (Some(owner), Some(scene)) = (owner, &self.scene) {
+            owner.commit_scene_feedback(scene)?;
+        }
+        Ok(())
+    }
     pub(crate) fn has_facts(&self) -> bool {
         self.scene.is_some() || self.usage.is_some() || self.message.is_some()
     }
     pub(crate) fn question(&self) -> Result<bool, Error> {
-        let Event::Complete { message, .. } = &self.event else {
+        let Some(Event::Complete { message, .. }) = &self.event else {
             return Ok(false);
         };
         let Some(id) = message.metadata.get("reply_id").and_then(Value::as_i64) else {
@@ -214,16 +223,19 @@ impl Observer {
     }
     async fn emit(
         &self,
-        mut event: Event,
+        mut event: Option<Event>,
         scene: Option<Arc<Value>>,
         usage: Option<Usage>,
         message: Option<Message>,
+        feedback: bool,
     ) {
-        crate::runtime::observation::associate(
-            &mut event,
-            self.chat_id,
-            Some((&self.source.0, self.source.1)),
-        );
+        if let Some(event) = &mut event {
+            crate::runtime::observation::associate(
+                event,
+                self.chat_id,
+                Some((&self.source.0, self.source.1)),
+            );
+        }
         let (acknowledgement, consumed) = tokio::sync::oneshot::channel();
         self.relay
             .0
@@ -233,6 +245,7 @@ impl Observer {
             .push_back((
                 Observation {
                     event,
+                    feedback,
                     source: self.source.clone(),
                     scene,
                     usage,
@@ -251,6 +264,29 @@ impl Observer {
 pub(crate) struct Root(Arc<Mutex<Option<crate::runtime::agent::node::Execution>>>);
 
 impl Root {
+    pub(crate) fn feedback_waiters(&self) -> usize {
+        self.0
+            .lock()
+            .expect("root execution lock poisoned")
+            .as_ref()
+            .and_then(|execution| execution.attempts.last())
+            .map(|attempt| {
+                attempt
+                    .nodes
+                    .values()
+                    .filter(|node| {
+                        node.status == Status::Waiting
+                            && node
+                                .execution
+                                .as_ref()
+                                .and_then(|execution| execution.attempts.last())
+                                .and_then(|attempt| attempt.agent.as_ref())
+                                .is_some_and(crate::runtime::agent::wait::has_waiting_input)
+                    })
+                    .count()
+            })
+            .unwrap_or(0)
+    }
     pub(crate) fn restore(snapshot: &Value) -> Result<Self, Error> {
         let execution: Option<crate::runtime::agent::node::Execution> = snapshot
             .get("execution")
@@ -861,6 +897,7 @@ pub(crate) fn observe(
         .as_ref()
         .and_then(|scene| scene["status"].as_str())
         .and_then(|status| match status {
+            "running" => Some(Status::Running),
             "succeeded" => Some(Status::Succeeded),
             "failed" => Some(Status::Failed),
             "stopped" => Some(Status::Cancelled),
@@ -1046,8 +1083,14 @@ pub(crate) async fn run(
     id_fn: Option<fn() -> i64>,
     observer: Option<Observer>,
 ) -> Result<Progress, Box<Failure>> {
+    // A descendant cannot enable progress handoff that its enclosing runtime
+    // does not implement. Independent parents start the supported Agent path;
+    // delegated Agent scopes inherit it, while Workflow scopes remain gated.
+    let feedback = observer.is_some()
+        && (!crate::runtime::agent::scope::active() || crate::runtime::agent::scope::feedback());
     let scope = crate::runtime::agent::scope::Scope::new(previous.clone())
         .with_id_fn(id_fn)
+        .with_feedback(feedback)
         .with_interaction(
             observer
                 .as_ref()
@@ -1062,7 +1105,51 @@ pub(crate) async fn run(
     let mut cancelled = false;
     let mut published = None;
     let mut published_scene: Option<Arc<Value>> = None;
-    while let Some(item) = crate::runtime::agent::scope::run(scope.clone(), stream.next()).await {
+    enum Update {
+        Event(Box<Result<Event, Error>>),
+        Scene(Arc<Value>),
+    }
+    loop {
+        let item = crate::runtime::agent::scope::run(
+            scope.clone(),
+            futures_util::future::poll_fn(|cx| match stream.as_mut().poll_next(cx) {
+                Poll::Ready(item) => Poll::Ready(item.map(|event| Update::Event(Box::new(event)))),
+                Poll::Pending => {
+                    let latest = scope.latest_shared();
+                    if observer.is_some()
+                        && let Some(scene) = latest
+                        && published_scene
+                            .as_ref()
+                            .is_none_or(|old| !Arc::ptr_eq(old, &scene))
+                        && crate::runtime::agent::wait::has_input(&scene)
+                    {
+                        Poll::Ready(Some(Update::Scene(scene)))
+                    } else {
+                        Poll::Pending
+                    }
+                }
+            }),
+        )
+        .await;
+        let Some(item) = item else { break };
+        let item = match item {
+            Update::Scene(scene) => {
+                let current = additional_usage(Some(&scene), previous.as_ref(), observed.clone())
+                    .map_err(Failure::new)?;
+                let usage =
+                    usage_since(current.clone(), published.clone()).map_err(Failure::new)?;
+                published = current;
+                let feedback = feedback_changed(&scene, published_scene.as_deref());
+                published_scene = Some(scene.clone());
+                observer
+                    .as_ref()
+                    .expect("progress has an observer")
+                    .emit(None, Some(scene), usage, None, feedback)
+                    .await;
+                continue;
+            }
+            Update::Event(item) => *item,
+        };
         match item {
             Ok(event) => {
                 cancelled |= matches!(&event, Event::Complete { finish_reason: Some(reason), .. } if reason == "cancelled");
@@ -1098,11 +1185,21 @@ pub(crate) async fn run(
                     } else {
                         None
                     };
+                    let feedback = changed
+                        && scene.as_deref().is_some_and(|scene| {
+                            feedback_changed(scene, published_scene.as_deref())
+                        });
                     published_scene = scene.clone();
                     // Only real scene commits update the owner; text deltas
                     // do not copy the whole unchanged Agent State again.
                     observer
-                        .emit(event, scene.filter(|_| changed), usage, message)
+                        .emit(
+                            Some(event),
+                            scene.filter(|_| changed),
+                            usage,
+                            message,
+                            feedback,
+                        )
                         .await;
                 }
             }
@@ -1142,6 +1239,15 @@ pub(crate) async fn run(
         usage,
         scene: scene.or(previous),
     })
+}
+
+fn feedback_changed(scene: &Value, previous: Option<&Value>) -> bool {
+    let before = previous
+        .map(crate::runtime::agent::wait::input_progress)
+        .unwrap_or_default();
+    crate::runtime::agent::wait::input_progress(scene)
+        .iter()
+        .any(|(id, count)| *count > before.get(id).copied().unwrap_or(0))
 }
 
 fn result_message(mut message: Message, call: &Call) -> Message {

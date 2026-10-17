@@ -285,7 +285,10 @@ fn a_signal_component_waits_in_the_existing_workflow_scene() {
             assert_eq!(events.len(), 1);
             assert_eq!(events[0].as_ref().unwrap_err().code, "WAITING");
         }
-        assert_eq!(runtime.state().waits["review"].exec_id, 502);
-        assert_eq!(runtime.state().waits["review"].wait_id, "approval");
+        assert!(runtime.state().waits.is_empty());
+        assert_eq!(
+            runtime.state().nodes["review"].executions[&502].waits["approval"].status,
+            "waiting"
+        );
     });
 }

@@ -467,6 +467,7 @@ async fn reject_wait<A: Agent>(agent: A, checkpoint: Arc<core::checkpoint::InMem
         waits: std::collections::BTreeMap::from([(
             5001,
             halo_agents::runtime::agent::node::Wait {
+                count: 1,
                 kind: "ask".into(),
                 status: "received".into(),
                 question: text("question"),

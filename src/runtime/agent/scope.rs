@@ -11,6 +11,7 @@ pub(crate) struct Scope {
     latest: Arc<Mutex<Option<Arc<Value>>>>,
     id_fn: Option<fn() -> i64>,
     interaction: Option<crate::runtime::agent::reply::Run>,
+    feedback: bool,
 }
 
 impl Scope {
@@ -20,11 +21,16 @@ impl Scope {
             latest: Arc::new(Mutex::new(None)),
             id_fn: id_fn(),
             interaction: None,
+            feedback: false,
         }
     }
 
     pub(crate) fn with_id_fn(mut self, id_fn: Option<fn() -> i64>) -> Self {
         self.id_fn = self.id_fn.or(id_fn);
+        self
+    }
+    pub(crate) fn with_feedback(mut self, enabled: bool) -> Self {
+        self.feedback = enabled;
         self
     }
     pub(crate) fn with_interaction(
@@ -79,6 +85,10 @@ pub(crate) fn interaction() -> Option<crate::runtime::agent::reply::Run> {
         .try_with(|scope| scope.interaction.clone())
         .ok()
         .flatten()
+}
+
+pub(crate) fn feedback() -> bool {
+    CURRENT.try_with(|scope| scope.feedback).unwrap_or(false)
 }
 
 /// An embedded run has an enclosing owner, even on its first call when there

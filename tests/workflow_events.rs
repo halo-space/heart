@@ -579,7 +579,11 @@ fn waiting_stream_ends_after_saving_the_same_waiting_scene() {
             assert_eq!(events.next().await.unwrap().unwrap_err().code, "WAITING");
             let saved = checkpoint.load(1006, &Cancellation::new()).await.unwrap();
             assert_eq!(saved["status"], "paused");
-            assert_eq!(saved["waits"]["review"]["exec_id"], 15000);
+            assert_eq!(saved["waits"], json!([]));
+            assert_eq!(
+                saved["nodes"]["review"]["executions"]["15000"]["waits"]["review"]["status"],
+                "waiting"
+            );
             assert!(events.next().await.is_none());
         }
         assert_eq!(

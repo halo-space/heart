@@ -528,6 +528,9 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
         if !crate::runtime::agent::scope::active() {
             return;
         }
+        crate::runtime::agent::scope::capture(self.live_snapshot());
+    }
+    fn live_snapshot(&self) -> Value {
         let steps = self.steps.lock().expect("Tool steps lock poisoned");
         let mut snapshot = if self.waits.is_empty() {
             checkpoint_state(
@@ -552,7 +555,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
             )
         };
         snapshot["waits"] = serde_json::to_value(&self.waits).expect("waits serialization");
-        crate::runtime::agent::scope::capture(snapshot);
+        snapshot
     }
     // Finish state/history mutations before decorating the outgoing copy.
     fn poll_event(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Event, Error>>> {
@@ -606,6 +609,10 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                     if let Some(run) = this.interaction.clone()
                         && let Poll::Ready(change) = run.poll_change(cx)
                     {
+                        let feedback = matches!(
+                            &change,
+                            crate::runtime::agent::reply::Change::Feedback { .. }
+                        );
                         let applied = crate::runtime::agent::reply::apply(
                             change,
                             &mut this.steps.lock().expect("Tool steps lock poisoned"),
@@ -631,7 +638,26 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                     snapshot,
                                 ));
                             }
-                            Ok(None) => this.capture_live(),
+                            Ok(None) => {
+                                this.capture_live();
+                                if feedback && !this.waits.is_empty() {
+                                    let mut snapshot = waiting_checkpoint_state(
+                                        &this.messages,
+                                        this.run.usage(),
+                                        this.input.as_ref(),
+                                        &this.root,
+                                        &this.steps.lock().expect("Tool steps lock poisoned"),
+                                        this.stream,
+                                    );
+                                    snapshot["waits"] = serde_json::to_value(&this.waits)
+                                        .expect("waits serialization");
+                                    this.pending_checkpoint = Some(checkpoint_future(
+                                        this.checkpoint.clone(),
+                                        this.checkpoint_id,
+                                        snapshot,
+                                    ));
+                                }
+                            }
                             Err(error) => this.close(Err(error)),
                         }
                         return Pin::new(this).poll_next(cx);
@@ -666,12 +692,15 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                 .root
                                 .observe(&observation)
                                 .and_then(|_| this.root.sync_waits(&mut this.waits, &observation))
+                                .and_then(|_| {
+                                    observation.commit_feedback(this.interaction.as_ref())
+                                })
                             {
                                 this.close(Err(error));
                                 return Pin::new(this).poll_next(cx);
                             }
                             this.run.settle_child(observation.usage);
-                            if question {
+                            if question || observation.event.is_none() || observation.feedback {
                                 let mut snapshot = waiting_checkpoint_state(
                                     &this.messages,
                                     this.run.usage(),
@@ -682,7 +711,12 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                 );
                                 snapshot["waits"] =
                                     serde_json::to_value(&this.waits).expect("waits serialization");
-                                this.questions.push_back(observation.event);
+                                if this.waits.is_empty() {
+                                    snapshot = this.live_snapshot();
+                                }
+                                if let Some(event) = observation.event {
+                                    this.questions.push_back(event);
+                                }
                                 this.pending_checkpoint = Some(checkpoint_future(
                                     this.checkpoint.clone(),
                                     this.checkpoint_id,
@@ -690,7 +724,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                 ));
                                 return Pin::new(this).poll_next(cx);
                             }
-                            Poll::Ready(Some(Ok(observation.event)))
+                            Poll::Ready(Some(Ok(observation.event.expect("ordinary event"))))
                         }
                     };
                 }
@@ -1366,7 +1400,10 @@ async fn execute_tool_batch(
         root,
         id_fn,
     } = config;
+    let task_count = calls.len().max(1);
+    let slots = Arc::new(tokio::sync::Semaphore::new(max_concurrency.max(1)));
     let tasks = calls.into_iter().enumerate().map(|(index, call)| {
+        let slots = slots.clone();
         let toolkit = Arc::clone(&toolkit);
         let steps = steps.clone();
         let interaction = interaction.clone();
@@ -1378,56 +1415,37 @@ async fn execute_tool_batch(
         let root = root.clone();
         let relay = relay.clone();
         async move {
-            let result = if call.name == "agent_spawn" && !subagents.is_empty() {
-                if let Some(run) = &interaction
-                    && let Err(error) = run.continue_execution(&cancellation).await
-                {
-                    return (
-                        index,
-                        call,
-                        Err(Box::new(ToolBatchFailure { error, usage: None })),
-                    );
-                }
-                if let Some(message) =
-                    root.message(&steps.lock().expect("Tool steps lock poisoned"), &call)
-                {
-                    return (index, call, Ok((vec![message], None)));
-                }
-                let prepared = root.prepare(
-                    &mut steps.lock().expect("Tool steps lock poisoned"),
-                    &call,
-                    id_fn,
+            let slot = crate::runtime::agent::reply::Slot::waiting(slots, Default::default());
+            if let Err(error) = slot.acquire(&cancellation).await {
+                return (
+                    index,
+                    call,
+                    Err(Box::new(ToolBatchFailure { error, usage: None })),
                 );
-                let restore = match prepared {
-                    Ok(restore) => restore,
-                    Err(error) => {
+            }
+            crate::runtime::agent::reply::feedback::with_slot(slot.clone(), async move {
+                let result = if call.name == "agent_spawn" && !subagents.is_empty() {
+                    if let Some(run) = &interaction
+                        && let Err(error) = run.continue_execution(&cancellation).await
+                    {
                         return (
                             index,
                             call,
                             Err(Box::new(ToolBatchFailure { error, usage: None })),
                         );
                     }
-                };
-                let observer = if let Some(relay) = relay {
-                    let source =
-                        root.source(&steps.lock().expect("Tool steps lock poisoned"), &call);
-                    match source {
-                        Ok(source) => {
-                            let child = interaction
-                                .as_ref()
-                                .map(crate::runtime::agent::reply::Run::child);
-                            if let (Some(parent), Some(child)) = (&interaction, &child) {
-                                parent.restore_consumer(&source, child);
-                            }
-                            Some(
-                                relay
-                                    .observer(
-                                        metadata.get("chat_id").and_then(Value::as_i64),
-                                        source,
-                                    )
-                                    .with_interaction(child),
-                            )
-                        }
+                    if let Some(message) =
+                        root.message(&steps.lock().expect("Tool steps lock poisoned"), &call)
+                    {
+                        return (index, call, Ok((vec![message], None)));
+                    }
+                    let prepared = root.prepare(
+                        &mut steps.lock().expect("Tool steps lock poisoned"),
+                        &call,
+                        id_fn,
+                    );
+                    let restore = match prepared {
+                        Ok(restore) => restore,
                         Err(error) => {
                             return (
                                 index,
@@ -1435,84 +1453,113 @@ async fn execute_tool_batch(
                                 Err(Box::new(ToolBatchFailure { error, usage: None })),
                             );
                         }
+                    };
+                    let observer = if let Some(relay) = relay {
+                        let source =
+                            root.source(&steps.lock().expect("Tool steps lock poisoned"), &call);
+                        match source {
+                            Ok(source) => {
+                                let child =
+                                    interaction.as_ref().map(|run| run.branch(slot.clone()));
+                                if let (Some(parent), Some(child)) = (&interaction, &child) {
+                                    parent.restore_consumer(&source, child);
+                                }
+                                Some(
+                                    relay
+                                        .observer(
+                                            metadata.get("chat_id").and_then(Value::as_i64),
+                                            source,
+                                        )
+                                        .with_interaction(child),
+                                )
+                            }
+                            Err(error) => {
+                                return (
+                                    index,
+                                    call,
+                                    Err(Box::new(ToolBatchFailure { error, usage: None })),
+                                );
+                            }
+                        }
+                    } else {
+                        None
+                    };
+                    let progress = execute_subagent(
+                        subagents,
+                        metadata,
+                        call.clone(),
+                        restore,
+                        cancellation,
+                        id_fn,
+                        observer,
+                    )
+                    .await;
+                    let message = match &progress {
+                        Ok(progress) => Some(progress.message.clone()),
+                        Err(failure)
+                            if matches!(failure.error.code.as_str(), "WAITING" | "CANCELLED") =>
+                        {
+                            None
+                        }
+                        Err(failure) => Some(subagent_error_message(&call, &failure.error)),
+                    };
+                    let completed = root.complete(
+                        &mut steps.lock().expect("Tool steps lock poisoned"),
+                        &call,
+                        &progress,
+                        message,
+                    );
+                    if let Err(error) = completed {
+                        return (
+                            index,
+                            call,
+                            Err(Box::new(ToolBatchFailure { error, usage: None })),
+                        );
+                    }
+                    match progress {
+                        Ok(progress) => Ok((vec![progress.message], progress.usage)),
+                        Err(failure) if failure.error.code == "CANCELLED" => {
+                            Err(Box::new(ToolBatchFailure {
+                                error: failure.error,
+                                usage: failure.usage,
+                            }))
+                        }
+                        Err(failure) if failure.error.code == "WAITING" => {
+                            Err(Box::new(ToolBatchFailure {
+                                error: failure.error,
+                                usage: failure.usage,
+                            }))
+                        }
+                        Err(failure) => Ok((
+                            vec![subagent_error_message(&call, &failure.error)],
+                            failure.usage,
+                        )),
                     }
                 } else {
-                    None
+                    execute_tool(
+                        ToolExecution {
+                            toolkit,
+                            access,
+                            hooks,
+                            metadata,
+                            cancellation,
+                            steps,
+                            interaction,
+                            id_fn,
+                        },
+                        call.clone(),
+                    )
+                    .await
+                    .map(|messages| (messages, None))
+                    .map_err(|error| Box::new(ToolBatchFailure { error, usage: None }))
                 };
-                let progress = execute_subagent(
-                    subagents,
-                    metadata,
-                    call.clone(),
-                    restore,
-                    cancellation,
-                    id_fn,
-                    observer,
-                )
-                .await;
-                let message = match &progress {
-                    Ok(progress) => Some(progress.message.clone()),
-                    Err(failure)
-                        if matches!(failure.error.code.as_str(), "WAITING" | "CANCELLED") =>
-                    {
-                        None
-                    }
-                    Err(failure) => Some(subagent_error_message(&call, &failure.error)),
-                };
-                let completed = root.complete(
-                    &mut steps.lock().expect("Tool steps lock poisoned"),
-                    &call,
-                    &progress,
-                    message,
-                );
-                if let Err(error) = completed {
-                    return (
-                        index,
-                        call,
-                        Err(Box::new(ToolBatchFailure { error, usage: None })),
-                    );
-                }
-                match progress {
-                    Ok(progress) => Ok((vec![progress.message], progress.usage)),
-                    Err(failure) if failure.error.code == "CANCELLED" => {
-                        Err(Box::new(ToolBatchFailure {
-                            error: failure.error,
-                            usage: failure.usage,
-                        }))
-                    }
-                    Err(failure) if failure.error.code == "WAITING" => {
-                        Err(Box::new(ToolBatchFailure {
-                            error: failure.error,
-                            usage: failure.usage,
-                        }))
-                    }
-                    Err(failure) => Ok((
-                        vec![subagent_error_message(&call, &failure.error)],
-                        failure.usage,
-                    )),
-                }
-            } else {
-                execute_tool(
-                    ToolExecution {
-                        toolkit,
-                        access,
-                        hooks,
-                        metadata,
-                        cancellation,
-                        steps,
-                        interaction,
-                        id_fn,
-                    },
-                    call.clone(),
-                )
-                .await
-                .map(|messages| (messages, None))
-                .map_err(|error| Box::new(ToolBatchFailure { error, usage: None }))
-            };
-            (index, call, result)
+                (index, call, result)
+            })
+            .await
         }
     });
     let mut results = futures_util::stream::iter(tasks)
-        .buffer_unordered(max_concurrency.max(1))
+        .buffer_unordered(task_count)
         .collect::<Vec<_>>()
         .await
         .into_iter()
@@ -1786,9 +1833,11 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
         Some((
             saved
                 .call
+                .clone()
                 .ok_or_else(|| Error::new("INVALID_STATE", "eval step has no actual Call"))?,
             saved
                 .message
+                .clone()
                 .ok_or_else(|| Error::new("INVALID_STATE", "eval step has no business result"))?,
         ))
     } else {
@@ -1850,7 +1899,14 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
             if let Some(run) = &interaction {
                 run.continue_execution(&cancellation).await?;
             }
-            toolkit.call_prepared(effective, &cancellation).await
+            crate::runtime::agent::reply::feedback::during(
+                interaction.clone(),
+                effective.clone(),
+                saved.clone(),
+                id_fn,
+                toolkit.call_prepared(effective, &cancellation),
+            )
+            .await
         }
         .await
     } else {
@@ -1858,7 +1914,21 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
             if let Some(run) = &interaction {
                 run.continue_execution(&cancellation).await?;
             }
-            toolkit.call(call.clone(), &cancellation).await
+            let effective = toolkit.prepare_call(call.clone(), &cancellation).await?;
+            if let Some(step) = tool_steps::current(
+                &mut steps.lock().expect("Tool steps lock poisoned"),
+                &call.call_id,
+            ) {
+                step.call = Some(effective.clone());
+            }
+            crate::runtime::agent::reply::feedback::during(
+                interaction.clone(),
+                effective.clone(),
+                saved.clone(),
+                id_fn,
+                toolkit.call_prepared(effective, &cancellation),
+            )
+            .await
         }
         .await
     };

@@ -477,6 +477,7 @@ where
             steps: Vec::new(),
             child_nodes: BTreeMap::new(),
             child_nodes_dirty: false,
+            feedback_dirty: false,
             root: crate::core::agent::subagent::Root::default(),
             partial: Message::new(Role::Assistant),
             done: false,
@@ -595,6 +596,7 @@ struct ReActState<M: Chat> {
     // Planned tasks publish these only into their owning Attempt.nodes.
     child_nodes: BTreeMap<String, crate::runtime::agent::node::State>,
     child_nodes_dirty: bool,
+    feedback_dirty: bool,
     root: crate::core::agent::subagent::Root,
     partial: Message,
     done: bool,
@@ -628,7 +630,7 @@ enum ToolProgress {
         usize,
         Call,
         Box<Result<(Call, Message), PermissionFailure>>,
-        Option<tokio::sync::OwnedSemaphorePermit>,
+        Option<crate::runtime::agent::reply::Slot>,
     ),
     Evaluated(String, Result<ToolEvaluation, Error>),
     SubAgent(
@@ -796,10 +798,26 @@ fn subagent_error_message(call: &Call, error: &Error) -> Message {
 }
 
 async fn next_react_event<M: Chat + 'static>(
-    state: ReActState<M>,
+    mut state: ReActState<M>,
 ) -> Option<(Result<Event, Error>, ReActState<M>)> {
+    loop {
+        let (event, next) = next_react_progress(state).await?;
+        state = next;
+        if let Some(event) = event {
+            return Some((event, state));
+        }
+    }
+}
+
+// Private state handoff: None carries native task progress, never an Event.
+async fn next_react_progress<M: Chat + 'static>(
+    state: ReActState<M>,
+) -> Option<(Option<Result<Event, Error>>, ReActState<M>)> {
     let (result, state) = next_react_event_inner(Box::new(state)).await?;
     let mut state = *state;
+    let Some(result) = result else {
+        return Some((None, state));
+    };
     if result.is_err() && state.model_pending && !state.model_settled {
         state.run.settle(state.partial.usage.clone());
     }
@@ -844,7 +862,13 @@ async fn next_react_event<M: Chat + 'static>(
             waiting_snapshot(&state)
         });
     }
-    Some((result, state))
+    Some((Some(result), state))
+}
+
+fn emitted<T>(
+    (event, state): (Result<Event, Error>, T),
+) -> Option<(Option<Result<Event, Error>>, T)> {
+    Some((Some(event), state))
 }
 
 /// Build the single final Agent state projection used by Chat.graph and
@@ -1218,7 +1242,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
     // A planned parent may poll a delegated ReAct's own planned tasks. Heap
     // ownership avoids moving full run state through each nested poll frame.
     mut state: Box<ReActState<M>>,
-) -> Option<(Result<Event, Error>, Box<ReActState<M>>)> {
+) -> Option<(Option<Result<Event, Error>>, Box<ReActState<M>>)> {
     loop {
         if state.done {
             return None;
@@ -1226,20 +1250,20 @@ async fn next_react_event_inner<M: Chat + 'static>(
 
         if state.cancellation.is_cancelled() && state.active_tasks.is_empty() {
             state.done = true;
-            return Some((Ok(cancelled_event(&mut state)), state));
+            return emitted((Ok(cancelled_event(&mut state)), state));
         }
 
         if let Some(event) = state.child_events.pop_front() {
-            return Some((event, state));
+            return emitted((event, state));
         }
 
         if let Some(error) = state.planning_error.take() {
             state.done = true;
-            return Some((Err(error), state));
+            return emitted((Err(error), state));
         }
 
         if let Some(message) = state.plan_result.take() {
-            return Some((
+            return emitted((
                 Ok(Event::Complete {
                     message,
                     usage: None,
@@ -1249,7 +1273,35 @@ async fn next_react_event_inner<M: Chat + 'static>(
             ));
         }
 
-        while state.active_tools.len() < state.max_concurrency {
+        // Root ordinary-feedback consumers release Tool admission while waiting.
+        // Planned tasks retain their existing task-level suspension policy;
+        // admitting their queued calls here would bypass another ready task.
+        while state.active_tools.len().saturating_sub(
+            state
+                .steps
+                .iter()
+                .filter(|step| {
+                    !state.is_plan_task
+                        && step.status == "waiting"
+                        && step
+                            .waits
+                            .values()
+                            .any(|wait| wait.kind == "input" && wait.status == "waiting")
+                        && step.call_id.as_ref().is_some_and(|id| {
+                            !state
+                                .pending_calls
+                                .iter()
+                                .any(|(_, call)| &call.call_id == id)
+                        })
+                })
+                .count()
+                + if state.is_plan_task {
+                    0
+                } else {
+                    state.root.feedback_waiters()
+                },
+        ) < state.max_concurrency
+        {
             let Some((index, call)) = state.pending_calls.pop_front() else {
                 break;
             };
@@ -1257,7 +1309,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 if let Err(error) = validate_call(&plan_definition(), &call) {
                     let message = tool_error_message(&call, error);
                     state.tool_results.insert(index, message.clone());
-                    return Some((
+                    return emitted((
                         Ok(Event::Complete {
                             message,
                             usage: None,
@@ -1278,7 +1330,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 if let Some(message) = cached {
                     state.pending_subagents.remove(&call.call_id);
                     state.tool_results.insert(index, message.clone());
-                    return Some((
+                    return emitted((
                         Ok(Event::Complete {
                             message,
                             usage: None,
@@ -1301,7 +1353,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     Ok(restore) => restore,
                     Err(error) => {
                         state.done = true;
-                        return Some((Err(error), state));
+                        return emitted((Err(error), state));
                     }
                 };
                 state.child_nodes_dirty |= state.is_plan_task;
@@ -1318,7 +1370,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 // model.  No new public resume API or child ID is introduced.
                 if let Err(error) = save_checkpoint(&state, waiting_snapshot(&state)).await {
                     state.done = true;
-                    return Some((Err(error), state));
+                    return emitted((Err(error), state));
                 }
                 let slots = state.tool_slots.clone();
                 let source = if state.is_plan_task {
@@ -1330,7 +1382,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     Ok(source) => source,
                     Err(error) => {
                         state.done = true;
-                        return Some((Err(error), state));
+                        return emitted((Err(error), state));
                     }
                 };
                 let observer = state.child_relay.observer(
@@ -1384,7 +1436,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 Ok(false) => {}
                 Err(error) => {
                     state.done = true;
-                    return Some((Err(error), state));
+                    return emitted((Err(error), state));
                 }
             }
             let execution = ToolExecution {
@@ -1421,6 +1473,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 let permit = match cancellable(
                     async {
                         slots
+                            .clone()
                             .acquire_owned()
                             .await
                             .map_err(|_| Error::new("CANCELLED", "tool capacity closed"))
@@ -1439,11 +1492,25 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         );
                     }
                 };
-                let result = execution
-                    .toolkit
-                    .call_prepared(effective, &execution.cancellation)
-                    .await
-                    .map_err(PermissionFailure::Tool);
+                let permit = crate::runtime::agent::reply::Slot::with_permit(
+                    slots,
+                    Default::default(),
+                    permit,
+                );
+                let result = crate::runtime::agent::reply::feedback::with_slot(
+                    permit.clone(),
+                    crate::runtime::agent::reply::feedback::during(
+                        execution.interaction.clone(),
+                        effective.clone(),
+                        saved,
+                        execution.id_fn,
+                        execution
+                            .toolkit
+                            .call_prepared(effective, &execution.cancellation),
+                    ),
+                )
+                .await
+                .map_err(PermissionFailure::Tool);
                 ToolProgress::Called(index, call, Box::new(result), Some(permit))
             }));
         }
@@ -1483,10 +1550,14 @@ async fn next_react_event_inner<M: Chat + 'static>(
             .await;
             if state.cancellation.is_cancelled() {
                 state.done = true;
-                return Some((Ok(cancelled_event(&mut state)), state));
+                return emitted((Ok(cancelled_event(&mut state)), state));
             }
             match progress.expect("nonempty Tool futures remain until polled") {
                 ToolProgress::Interaction(change) => {
+                    let feedback = matches!(
+                        &change,
+                        crate::runtime::agent::reply::Change::Feedback { .. }
+                    );
                     let run = state.interaction.clone().expect("interaction owner");
                     match crate::runtime::agent::reply::apply(
                         change,
@@ -1497,24 +1568,46 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         Ok(Some(question)) => {
                             let snapshot = checkpoint_snapshot(
                                 &state,
-                                &Err(Error::new("WAITING", "Agent is waiting for approval")),
+                                &Err(Error::new("WAITING", "Agent is waiting for feedback")),
                             );
                             if let Err(error) = save_checkpoint(&state, snapshot).await {
                                 state.done = true;
-                                return Some((Err(error), state));
+                                return emitted((Err(error), state));
                             }
                             if state.cancellation.is_cancelled() {
                                 state.done = true;
-                                return Some((Ok(cancelled_event(&mut state)), state));
+                                return emitted((Ok(cancelled_event(&mut state)), state));
                             }
-                            return Some((Ok(question), state));
+                            return emitted((Ok(question), state));
                         }
                         Ok(None) => {
+                            if feedback && state.is_plan_task {
+                                // Yield the actual task state to its owner so
+                                // partial collection can reach the outer scene
+                                // without manufacturing an observation Event.
+                                return Some((None, state));
+                            }
+                            if feedback
+                                && (!state.waits.is_empty()
+                                    || crate::runtime::agent::scope::active())
+                                && let Err(error) = save_checkpoint(
+                                    &state,
+                                    if state.waits.is_empty() {
+                                        running_snapshot(&state)
+                                    } else {
+                                        waiting_snapshot(&state)
+                                    },
+                                )
+                                .await
+                            {
+                                state.done = true;
+                                return emitted((Err(error), state));
+                            }
                             continue;
                         }
                         Err(error) => {
                             state.done = true;
-                            return Some((Err(error), state));
+                            return emitted((Err(error), state));
                         }
                     }
                 }
@@ -1523,10 +1616,11 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         Ok(question) => question,
                         Err(error) => {
                             state.done = true;
-                            return Some((Err(error), state));
+                            return emitted((Err(error), state));
                         }
                     };
                     state.child_nodes_dirty |= state.is_plan_task && observation.has_facts();
+                    state.feedback_dirty |= state.is_plan_task && observation.feedback;
                     let result = if state.is_plan_task {
                         crate::core::agent::subagent::observe(&mut state.child_nodes, &observation)
                             .and_then(|_| {
@@ -1542,23 +1636,43 @@ async fn next_react_event_inner<M: Chat + 'static>(
                             .observe(&observation)
                             .and_then(|_| state.root.sync_waits(&mut state.waits, &observation))
                     };
-                    if let Err(error) = result {
+                    if let Err(error) = result.and_then(|_| {
+                        if state.is_plan_task {
+                            Ok(())
+                        } else {
+                            observation.commit_feedback(state.interaction.as_ref())
+                        }
+                    }) {
                         state.done = true;
-                        return Some((Err(error), state));
+                        return emitted((Err(error), state));
                     }
                     state.run.settle_child(observation.usage);
-                    if question {
-                        if let Err(error) = save_checkpoint(&state, waiting_snapshot(&state)).await
+                    if state.is_plan_task && observation.event.is_none() {
+                        return Some((None, state));
+                    }
+                    if question || observation.event.is_none() || observation.feedback {
+                        if let Err(error) = save_checkpoint(
+                            &state,
+                            if state.waits.is_empty() {
+                                running_snapshot(&state)
+                            } else {
+                                waiting_snapshot(&state)
+                            },
+                        )
+                        .await
                         {
                             state.done = true;
-                            return Some((Err(error), state));
+                            return emitted((Err(error), state));
                         }
                         if state.cancellation.is_cancelled() {
                             state.done = true;
-                            return Some((Ok(cancelled_event(&mut state)), state));
+                            return emitted((Ok(cancelled_event(&mut state)), state));
                         }
                     }
-                    return Some((Ok(observation.event), state));
+                    if let Some(event) = observation.event {
+                        return emitted((Ok(event), state));
+                    }
+                    continue;
                 }
                 ToolProgress::Evaluated(call_id, Ok(evaluation)) => {
                     tools::evaluated(&mut state.steps, &call_id, &evaluation);
@@ -1571,7 +1685,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     // Default zero retries: never repeat a successful call to
                     // recover its eval. The emitted result remains unchanged.
                     state.done = true;
-                    return Some((Err(error), state));
+                    return emitted((Err(error), state));
                 }
                 ToolProgress::Called(index, call, result, permit) => {
                     let message = match *result {
@@ -1601,7 +1715,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                             tools::stopped(&mut state.steps, &call.call_id, &error);
                             if error.code == "WAITING" {
                                 state.done = true;
-                                return Some((Err(error), state));
+                                return emitted((Err(error), state));
                             }
                             let message = tool_error_message(&call, error);
                             tools::failed_message(&mut state.steps, &call.call_id, &message);
@@ -1611,7 +1725,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                             tools::stopped(&mut state.steps, &call.call_id, &error);
                             if error.code == "WAITING" {
                                 state.done = true;
-                                return Some((Err(error), state));
+                                return emitted((Err(error), state));
                             }
                             let message = tool_error_message(&call, error);
                             tools::failed_message(&mut state.steps, &call.call_id, &message);
@@ -1620,11 +1734,11 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         Err(PermissionFailure::Hook(error)) => {
                             tools::stopped(&mut state.steps, &call.call_id, &error);
                             state.done = true;
-                            return Some((Err(error), state));
+                            return emitted((Err(error), state));
                         }
                     };
                     state.tool_results.insert(index, message.clone());
-                    return Some((
+                    return emitted((
                         Ok(Event::Complete {
                             message,
                             usage: None,
@@ -1656,7 +1770,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     };
                     if let Err(error) = completed {
                         state.done = true;
-                        return Some((Err(error), state));
+                        return emitted((Err(error), state));
                     }
                     state.run.settle_child(match &*result {
                         Ok(progress) => progress.usage.clone(),
@@ -1668,10 +1782,10 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         if let Err(error) = save_checkpoint(&state, waiting_snapshot(&state)).await
                         {
                             state.done = true;
-                            return Some((Err(error), state));
+                            return emitted((Err(error), state));
                         }
                         state.done = true;
-                        return Some((Err(failure.error.clone()), state));
+                        return emitted((Err(failure.error.clone()), state));
                     }
                     state.pending_subagents.remove(&call.call_id);
                     let message = match *result {
@@ -1681,7 +1795,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     state.tool_results.insert(index, message.clone());
                     if let Err(error) = save_checkpoint(&state, running_snapshot(&state)).await {
                         state.done = true;
-                        return Some((Err(error), state));
+                        return emitted((Err(error), state));
                     }
                     state.child_events.push_back(Ok(Event::Complete {
                         message,
@@ -1689,7 +1803,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         finish_reason: Some("agent".into()),
                     }));
                     if let Some(event) = state.child_events.pop_front() {
-                        return Some((event, state));
+                        return emitted((event, state));
                     }
                 }
             }
@@ -1732,11 +1846,11 @@ async fn next_react_event_inner<M: Chat + 'static>(
             .await;
             if state.cancellation.is_cancelled() {
                 state.done = true;
-                return Some((Ok(cancelled_event(&mut state)), state));
+                return emitted((Ok(cancelled_event(&mut state)), state));
             }
             let Some(item) = item else {
                 state.done = true;
-                return Some((
+                return emitted((
                     Err(Error::new(
                         "INVALID_RESPONSE",
                         "model did not return Complete",
@@ -1747,7 +1861,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
             match item {
                 Err(error) => {
                     state.done = true;
-                    return Some((
+                    return emitted((
                         Err(Error::new(error.code, error.message)
                             .with_optional_details(error.details)),
                         state,
@@ -1756,7 +1870,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 Ok(Event::Delta { mut message }) => {
                     crate::runtime::observation::clear_source(&mut message);
                     collect_delta(&mut state.partial, &message);
-                    return Some((Ok(Event::Delta { message }), state));
+                    return emitted((Ok(Event::Delta { message }), state));
                 }
                 Ok(Event::Complete {
                     mut message,
@@ -1774,7 +1888,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         Ok(message) => message,
                         Err(error) => {
                             state.done = true;
-                            return Some((
+                            return emitted((
                                 if state.cancellation.is_cancelled() {
                                     Ok(cancelled_event(&mut state))
                                 } else {
@@ -1787,7 +1901,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     if let Some(planning) = state.planning.take() {
                         if finish_reason.as_deref() == Some("cancelled") {
                             state.done = true;
-                            return Some((Ok(cancelled_event(&mut state)), state));
+                            return emitted((Ok(cancelled_event(&mut state)), state));
                         }
                         let updated = crate::core::plan::decode_plan(&message).and_then(|plan| {
                             if let Some(graph) = &mut state.graph {
@@ -1802,7 +1916,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                             // is invalid; fail next, without acknowledging it.
                             state.planning_error = Some(error);
                             state.model_pending = false;
-                            return Some((
+                            return emitted((
                                 Ok(Event::Complete {
                                     message,
                                     usage,
@@ -1835,7 +1949,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                             }
                         }
                         state.model_pending = false;
-                        return Some((
+                        return emitted((
                             Ok(Event::Complete {
                                 message,
                                 usage,
@@ -1855,7 +1969,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         Ok(calls) => calls,
                         Err(error) => {
                             state.done = true;
-                            return Some((Err(error), state));
+                            return emitted((Err(error), state));
                         }
                     };
                     if calls.is_empty() {
@@ -1867,7 +1981,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                             Ok(message) => message,
                             Err(error) => {
                                 state.done = true;
-                                return Some((
+                                return emitted((
                                     if state.cancellation.is_cancelled() {
                                         Ok(cancelled_event(&mut state))
                                     } else {
@@ -1890,7 +2004,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                             match evaluation {
                                 Err(error) => {
                                     state.done = true;
-                                    return Some((
+                                    return emitted((
                                         if state.cancellation.is_cancelled() {
                                             Ok(cancelled_event(&mut state))
                                         } else {
@@ -1934,12 +2048,12 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     } else {
                         if let Err(error) = tools::selected(&mut state.steps, &calls) {
                             state.done = true;
-                            return Some((Err(error), state));
+                            return emitted((Err(error), state));
                         }
                         state.pending_calls = calls.into_iter().enumerate().collect();
                     }
                     state.model_pending = false;
-                    return Some((
+                    return emitted((
                         Ok(Event::Complete {
                             message,
                             usage,
@@ -2010,7 +2124,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                             .await
                         {
                             state.done = true;
-                            return Some((Err(error), state));
+                            return emitted((Err(error), state));
                         }
                         if question && state.cancellation.is_cancelled() {
                             // Never present an actionable question after its
@@ -2018,23 +2132,23 @@ async fn next_react_event_inner<M: Chat + 'static>(
                             continue;
                         }
                         if let Some(event) = event {
-                            return Some((Ok(event), state));
+                            return emitted((Ok(event), state));
                         }
                         continue;
                     }
                     Err(error) => {
                         state.done = true;
-                        return Some((Err(error), state));
+                        return emitted((Err(error), state));
                     }
                 }
             }
             if let Some(error) = state.task_error.take() {
                 state.done = true;
-                return Some((Err(error), state));
+                return emitted((Err(error), state));
             }
             if let Err(error) = execution::finalize(&mut state) {
                 state.done = true;
-                return Some((Err(error), state));
+                return emitted((Err(error), state));
             }
         }
 
@@ -2045,7 +2159,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
             && let Err(error) = run.continue_execution(&state.cancellation).await
         {
             state.done = true;
-            return Some((
+            return emitted((
                 if state.cancellation.is_cancelled() {
                     Ok(cancelled_event(&mut state))
                 } else {
@@ -2062,7 +2176,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
             .is_err()
         {
             state.done = true;
-            return Some((
+            return emitted((
                 Err(Error::new(
                     "MAX_ITERS",
                     "react agent reached max_iters before a final assistant response",
@@ -2081,7 +2195,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 Ok(request) => request,
                 Err(error) => {
                     state.done = true;
-                    return Some((Err(error), state));
+                    return emitted((Err(error), state));
                 }
             };
             state.planning = Some(Planning::Evaluation);
@@ -2096,7 +2210,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 Ok(request) => request,
                 Err(error) => {
                     state.done = true;
-                    return Some((Err(error), state));
+                    return emitted((Err(error), state));
                 }
             };
             state.planning = Some(Planning::Selected(index, call));
@@ -2130,7 +2244,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
             Ok(request) => request,
             Err(error) => {
                 state.done = true;
-                return Some((
+                return emitted((
                     if state.cancellation.is_cancelled() {
                         Ok(cancelled_event(&mut state))
                     } else {
@@ -2152,9 +2266,9 @@ async fn next_react_event_inner<M: Chat + 'static>(
             Err(error) => {
                 state.done = true;
                 if state.cancellation.is_cancelled() {
-                    return Some((Ok(cancelled_event(&mut state)), state));
+                    return emitted((Ok(cancelled_event(&mut state)), state));
                 }
-                return Some((
+                return emitted((
                     Err(Error::new(error.code, error.message).with_optional_details(error.details)),
                     state,
                 ));

@@ -45,6 +45,7 @@ fn step(id: &str, reply_id: i64) -> Value {
         waits: [(
             reply_id,
             halo_agents::runtime::agent::node::Wait {
+                count: 1,
                 kind: "approval".into(),
                 status: "waiting".into(),
                 question: Message::new(Role::Assistant),
@@ -159,6 +160,20 @@ async fn cases<A: Agent>(
         "Agent is waiting for targeted external feedback",
     )
     .await;
+
+    for count in [0, 2] {
+        let mut invalid_count = root.clone();
+        invalid_count["steps"][0]["waits"]["5001"]["count"] = json!(count);
+        reject(
+            &agent,
+            &checkpoint,
+            &calls,
+            invalid_count,
+            "INVALID_STATE",
+            "invalid Agent Step waiting record",
+        )
+        .await;
+    }
 
     let mut planned = positioned(base.clone(), vec![coordinate("research", 7001)]);
     planned["graph"] = json!({"plan":{"version":1,"nodes":{"research":{"name":"research","objective":"research"}},"edges":[]}});
@@ -332,6 +347,7 @@ async fn cases<A: Agent>(
     .await;
     let mut bad = root.clone();
     bad["steps"][0]["waits"]["5001"]["status"] = json!("resolved");
+    bad["steps"][0]["waits"]["5001"]["feedback"] = json!([Message::new(Role::User)]);
     reject(
         &agent,
         &checkpoint,
