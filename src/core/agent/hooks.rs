@@ -9,7 +9,7 @@ use crate::{Cancellation, Error, middleware::Middleware};
 type HookFuture = Pin<Box<dyn Future<Output = Result<Value, Error>> + Send + 'static>>;
 
 #[derive(Clone, Copy)]
-enum Stage {
+pub(crate) enum Stage {
     Execute,
     Model,
     SystemPrompt,
@@ -87,126 +87,131 @@ impl<M: Middleware + 'static> Entry for Typed<M> {
 pub(crate) struct Hooks(Vec<Arc<dyn Entry>>);
 
 impl Hooks {
+    pub(crate) fn len(&self) -> usize {
+        self.0.len()
+    }
+
     pub(crate) fn add<M: Middleware + 'static>(&mut self, middleware: M) {
         self.0.push(Arc::new(Typed(Arc::new(middleware))));
     }
 
-    async fn apply<T: Serialize + DeserializeOwned>(
+    async fn apply<T: Clone + Serialize + DeserializeOwned>(
         &self,
         stage: Stage,
         before: bool,
         value: T,
         cancellation: &Cancellation,
     ) -> Result<T, Error> {
-        if self.0.is_empty() {
-            return Ok(value);
+        Box::pin(self.apply_from(stage, before, value, 0, |_, _| Ok(()), cancellation)).await
+    }
+
+    /// The owner acknowledges only successful, typed transformations. An
+    /// unfinished method's local mutation never overwrites the saved input.
+    pub(crate) async fn apply_from<T: Clone + Serialize + DeserializeOwned>(
+        &self,
+        stage: Stage,
+        before: bool,
+        value: T,
+        idx: usize,
+        mut commit: impl FnMut(usize, T) -> Result<(), Error>,
+        cancellation: &Cancellation,
+    ) -> Result<T, Error> {
+        self.apply_from_async(
+            stage,
+            before,
+            value,
+            idx,
+            |idx, value| std::future::ready(commit(idx, value)),
+            cancellation,
+        )
+        .await
+    }
+
+    /// Same driver, with an asynchronous native-owner acknowledgement. This
+    /// permits parallel Tool work to yield facts before the next method runs.
+    pub(crate) async fn apply_from_async<T, K, KF>(
+        &self,
+        stage: Stage,
+        before: bool,
+        mut value: T,
+        idx: usize,
+        mut commit: K,
+        cancellation: &Cancellation,
+    ) -> Result<T, Error>
+    where
+        T: Clone + Serialize + DeserializeOwned,
+        K: FnMut(usize, T) -> KF,
+        KF: Future<Output = Result<(), Error>>,
+    {
+        if idx > self.0.len() {
+            return Err(Error::new("INVALID_STATE", "invalid middleware cursor"));
         }
-        let mut value = serde_json::to_value(value)
-            .map_err(|_| Error::new("INVALID_ARGUMENTS", "cannot encode middleware input"))?;
         // Normal stages unwind in reverse; system prompt is a sequential transform.
         let reverse = !before && !matches!(stage, Stage::SystemPrompt);
-        for offset in 0..self.0.len() {
+        for offset in idx..self.0.len() {
             let index = if reverse {
                 self.0.len() - 1 - offset
             } else {
                 offset
             };
-            value = cancellable(
-                self.0[index].apply(stage, before, value, cancellation.clone()),
+            value = Box::pin(crate::core::lifecycle::prepare(
+                crate::core::lifecycle::Phase::Before,
+                value,
+                |value| async {
+                    let value = serde_json::to_value(value).map_err(|_| {
+                        Error::new("INVALID_ARGUMENTS", "cannot encode middleware input")
+                    })?;
+                    let usage = (!before && matches!(stage, Stage::Model | Stage::Execute))
+                        .then(|| value.get("usage").cloned())
+                        .flatten();
+                    let mut result = self.0[index]
+                        .apply(stage, before, value, cancellation.clone())
+                        .await?;
+                    // Consumption is an invocation fact, not business output.
+                    // Normalize before the next method can observe this value.
+                    if let Some(usage) = usage
+                        && let Some(object) = result.as_object_mut()
+                    {
+                        object.insert("usage".into(), usage);
+                    }
+                    serde_json::from_value(result).map_err(|_| {
+                        Error::new(
+                            "INVALID_ARGUMENTS",
+                            "middleware returned an invalid stage value",
+                        )
+                    })
+                },
+                |value| commit(offset + 1, value),
                 cancellation,
-            )
+            ))
             .await?;
         }
-        serde_json::from_value(value).map_err(|_| {
-            Error::new(
-                "INVALID_ARGUMENTS",
-                "middleware returned an invalid stage value",
-            )
-        })
+        Ok(value)
     }
 
-    pub(crate) async fn before_execute(
+    pub(crate) async fn after_from(
         &self,
-        input: crate::agent::Input,
-        cancellation: &Cancellation,
-    ) -> Result<crate::agent::Input, Error> {
-        self.apply(Stage::Execute, true, input, cancellation).await
-    }
-
-    pub(crate) async fn before_permission(
-        &self,
-        request: crate::permission::Request,
-        cancellation: &Cancellation,
-    ) -> Result<crate::permission::Request, Error> {
-        let original = request.clone();
-        let request = self
-            .apply(Stage::Permission, true, request, cancellation)
-            .await?;
-        check_permission_identity(&original, &request)?;
-        Ok(request)
-    }
-
-    pub(crate) async fn after_permission(
-        &self,
-        request: crate::permission::Request,
-        cancellation: &Cancellation,
-    ) -> Result<(), Error> {
-        let original = request.clone();
-        let request = self
-            .apply(Stage::Permission, false, request, cancellation)
-            .await?;
-        check_permission_identity(&original, &request)
-    }
-
-    pub(crate) async fn prompt(
-        &self,
-        prompt: Option<String>,
-        cancellation: &Cancellation,
-    ) -> Result<Option<String>, Error> {
-        let prompt = self
-            .apply(Stage::SystemPrompt, true, prompt, cancellation)
-            .await?;
-        self.apply(Stage::SystemPrompt, false, prompt, cancellation)
-            .await
-    }
-
-    pub(crate) async fn before_model(
-        &self,
-        request: crate::model::chat::Request,
-        cancellation: &Cancellation,
-    ) -> Result<crate::model::chat::Request, Error> {
-        let request = self
-            .apply(Stage::Model, true, request, cancellation)
-            .await?;
-        request.validate()?;
-        Ok(request)
-    }
-
-    pub(crate) async fn after_model(
-        &self,
+        stage: Stage,
         message: crate::Message,
+        idx: usize,
+        mut commit: impl FnMut(usize, crate::Message) -> Result<(), Error>,
         cancellation: &Cancellation,
     ) -> Result<crate::Message, Error> {
         let usage = message.usage.clone();
-        let mut message: crate::Message = self
-            .apply(Stage::Model, false, message, cancellation)
-            .await?;
-        // Provider accounting is a fact, not a mutable business output.
-        message.usage = usage;
-        Ok(message)
-    }
-
-    pub(crate) async fn after_execute(
-        &self,
-        message: crate::Message,
-        cancellation: &Cancellation,
-    ) -> Result<crate::Message, Error> {
-        let usage = message.usage.clone();
-        let mut message: crate::Message = self
-            .apply(Stage::Execute, false, message, cancellation)
-            .await?;
-        message.usage = usage;
-        Ok(message)
+        let mut result = Box::pin(self.apply_from(
+            stage,
+            false,
+            message,
+            idx,
+            |idx, mut message: crate::Message| {
+                message.usage = usage.clone();
+                commit(idx, message)
+            },
+            cancellation,
+        ))
+        .await?;
+        result.usage = usage;
+        Ok(result)
     }
 
     pub(crate) async fn before_compress(
@@ -227,22 +232,6 @@ impl Hooks {
         self.apply(Stage::Compression, false, messages, cancellation)
             .await
     }
-}
-
-fn check_permission_identity(
-    original: &crate::permission::Request,
-    request: &crate::permission::Request,
-) -> Result<(), Error> {
-    if request.action != original.action
-        || request.resource != original.resource
-        || request.metadata.get("call") != original.metadata.get("call")
-    {
-        return Err(Error::new(
-            "INVALID_ARGUMENTS",
-            "permission middleware cannot change the checked operation or call",
-        ));
-    }
-    Ok(())
 }
 
 pub(crate) async fn cancellable<T>(

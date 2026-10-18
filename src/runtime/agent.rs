@@ -7,8 +7,12 @@
 //! implementation that composes the relevant Core components.
 
 pub(crate) mod checkpoint;
+pub mod completion;
 pub mod graph;
+pub(crate) mod model_steps;
 pub mod node;
+pub mod permission;
+pub mod preparation;
 pub(crate) mod reply;
 pub(crate) mod scope;
 pub(crate) mod tool_steps;
@@ -43,6 +47,12 @@ pub struct State {
     /// Outward delivery mode fixed for this run and restored from Checkpoint.
     pub stream: bool,
     pub usage: Option<Usage>,
+    /// Preparation of this actual Agent invocation (not any shared model).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preparation: Option<preparation::State>,
+    /// Agent's own after_execute result, not the internal model's after phase.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion: Option<completion::State>,
     /// Root Agent execution, created when it first delegates a child. Root
     /// messages/steps remain above the Attempt instead of being duplicated.
     #[serde(default, skip_serializing_if = "Option::is_none")]

@@ -56,13 +56,20 @@ pub(crate) enum Failure {
 
 /// Interpret a completed decision in the Agent's existing lifecycle. This
 /// does not create a Message, consume a reply or grant/copy authorization.
-pub(crate) async fn check_permission(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn check_permission<K, KF>(
     access: &Access,
     hooks: &super::hooks::Hooks,
     mut metadata: serde_json::Map<String, serde_json::Value>,
     call: &crate::tool::Call,
+    saved: Option<crate::runtime::agent::permission::State>,
+    mut commit: K,
     cancellation: &Cancellation,
-) -> Result<(), Failure> {
+) -> Result<Decision, Failure>
+where
+    K: FnMut(crate::runtime::agent::permission::State) -> KF,
+    KF: Future<Output = Result<(), Error>>,
+{
     metadata.insert(
         "call".into(),
         serde_json::to_value(call).map_err(|_| {
@@ -77,40 +84,78 @@ pub(crate) async fn check_permission(
         resource: call.name.clone(),
         metadata,
     };
-    let request = hooks
-        .before_permission(request, cancellation)
+    use crate::runtime::agent::permission::{State, identity};
+    let mut state = match saved {
+        Some(state) if state.stage != "complete" => {
+            state.validate(call, hooks.len()).map_err(Failure::Hook)?;
+            state
+        }
+        _ => State::new(request.clone()),
+    };
+    commit(state.clone()).await.map_err(Failure::Hook)?;
+    if state.stage == "before" {
+        let input = Box::pin(hooks.apply_from_async(
+            super::hooks::Stage::Permission,
+            true,
+            state.input.clone(),
+            state.idx,
+            |idx, input: Request| {
+                let pending = identity(&request, &input).map(|()| {
+                    state.input = input;
+                    state.idx = idx;
+                    commit(state.clone())
+                });
+                async move { pending?.await }
+            },
+            cancellation,
+        ))
         .await
         .map_err(Failure::Hook)?;
+        state.input = input;
+        state.stage = "check".into();
+        state.idx = 0;
+        commit(state.clone()).await.map_err(Failure::Hook)?;
+    }
+    // A saved decision is audit data, not a grant. Restoration always checks
+    // current policy against the acknowledged before input, never after edits.
     let decision = access
-        .check(request.clone(), cancellation)
+        .check(state.input.clone(), cancellation)
         .await
         .map_err(Failure::Policy)?;
-    // Deny and ask are successful checks too, so normal after hooks unwind.
-    hooks
-        .after_permission(request, cancellation)
-        .await
-        .map_err(Failure::Hook)?;
-    match decision.behavior {
-        Behavior::Allow => Ok(()),
-        Behavior::Deny => Err(Failure::Policy(Error::new(
-            "PERMISSION_DENIED",
-            decision
-                .reason
-                .unwrap_or_else(|| "operation denied by permission policy".into()),
-        ))),
-        Behavior::Ask => Err(Failure::Policy(Error::new(
-            "WAITING",
-            decision
-                .reason
-                .unwrap_or_else(|| "operation requires user confirmation".into()),
-        ))),
+    if state.stage != "after" {
+        state.stage = "after".into();
+        state.idx = 0;
+        state.output = Some(state.input.clone());
     }
+    state.decision = Some(decision.clone());
+    commit(state.clone()).await.map_err(Failure::Hook)?;
+    let output = Box::pin(hooks.apply_from_async(
+        super::hooks::Stage::Permission,
+        false,
+        state.output.clone().expect("after Request"),
+        state.idx,
+        |idx, output: Request| {
+            let pending = identity(&state.input, &output).map(|()| {
+                state.output = Some(output);
+                state.idx = idx;
+                commit(state.clone())
+            });
+            async move { pending?.await }
+        },
+        cancellation,
+    ))
+    .await
+    .map_err(Failure::Hook)?;
+    state.output = Some(output);
+    state.stage = "complete".into();
+    commit(state).await.map_err(Failure::Hook)?;
+    Ok(decision)
 }
 
 /// Apply permission policy to an actual tool call and, when configured, route
 /// an Ask decision through the Agent's existing reply interaction.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn check_tool(
+pub(crate) async fn check_tool<K, KF>(
     access: &Access,
     hooks: &super::hooks::Hooks,
     metadata: serde_json::Map<String, serde_json::Value>,
@@ -119,20 +164,90 @@ pub(crate) async fn check_tool(
     interaction: Option<&crate::runtime::agent::reply::Run>,
     id_fn: Option<fn() -> i64>,
     approval: Option<&crate::tool::Call>,
-) -> Result<(), Failure> {
-    match check_permission(access, hooks, metadata, call, cancellation).await {
-        Err(Failure::Policy(error)) if error.code == "WAITING" => {
+    saved: Option<crate::runtime::agent::permission::State>,
+    commit: K,
+) -> Result<(), Failure>
+where
+    K: FnMut(crate::runtime::agent::permission::State) -> KF,
+    KF: Future<Output = Result<(), Error>>,
+{
+    let decision = Box::pin(check_permission(
+        access,
+        hooks,
+        metadata,
+        call,
+        saved,
+        commit,
+        cancellation,
+    ))
+    .await?;
+    match decision.behavior {
+        Behavior::Allow => Ok(()),
+        Behavior::Deny => Err(Failure::Policy(Error::new(
+            "PERMISSION_DENIED",
+            decision
+                .reason
+                .unwrap_or_else(|| "operation denied by permission policy".into()),
+        ))),
+        Behavior::Ask => {
+            let reason = decision
+                .reason
+                .unwrap_or_else(|| "operation requires user confirmation".into());
             if approval == Some(call) {
                 return Ok(());
             }
             if let (Some(run), Some(id_fn)) = (interaction, id_fn) {
-                run.ask(call, &error.message, id_fn, cancellation)
+                run.ask(call, &reason, id_fn, cancellation)
                     .await
                     .map_err(Failure::Policy)
             } else {
-                Err(Failure::Policy(error))
+                Err(Failure::Policy(Error::new("WAITING", reason)))
             }
         }
-        result => result,
     }
+}
+
+pub(crate) fn require_policy(
+    steps: &[crate::runtime::agent::node::Step],
+    configured: bool,
+) -> Result<(), Error> {
+    if !configured
+        && steps.iter().any(|step| {
+            step.permission
+                .as_ref()
+                .is_some_and(|state| state.stage != "complete")
+        })
+    {
+        Err(Error::new(
+            "INVALID_STATE",
+            "unfinished permission requires its configured policy",
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+pub(crate) fn validate_scene(scene: &serde_json::Value, configured: bool) -> Result<(), Error> {
+    if configured {
+        return Ok(());
+    }
+    let steps: Vec<crate::runtime::agent::node::Step> = scene
+        .get("steps")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|_| Error::new("INVALID_STATE", "invalid permission owner"))?
+        .unwrap_or_default();
+    require_policy(&steps, configured)?;
+    if let Some(nodes) = scene.get("nodes").and_then(serde_json::Value::as_object) {
+        for node in nodes.values() {
+            if let Some(attempt) = node["execution"]["attempts"]
+                .as_array()
+                .and_then(|attempts| attempts.last())
+            {
+                validate_scene(attempt, configured)?;
+            }
+        }
+    }
+    Ok(())
 }

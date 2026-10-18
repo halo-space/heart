@@ -38,6 +38,39 @@ impl Ledger {
         }
     }
 
+    /// A restored ledger already contains all settled calls (or its parent owns
+    /// their total). Add only newly known consumption, never replace that total
+    /// with the single call whose after-processing is being resumed.
+    pub(crate) fn refine_saved(&self, previous: Option<&Usage>, updated: &Usage) {
+        fn added(previous: Option<u64>, updated: Option<u64>) -> Option<u64> {
+            updated.map(|value| value.saturating_sub(previous.unwrap_or(0)))
+        }
+        self.settle(Some(Usage {
+            input: added(previous.and_then(|v| v.input), updated.input),
+            output: added(previous.and_then(|v| v.output), updated.output),
+            total: added(previous.and_then(|v| v.total), updated.total),
+            input_details: updated
+                .input_details
+                .as_ref()
+                .map(|details| token::InputDetails {
+                    cached: added(
+                        previous.and_then(|v| v.input_details.as_ref()?.cached),
+                        details.cached,
+                    ),
+                }),
+            output_details: updated
+                .output_details
+                .as_ref()
+                .map(|details| token::OutputDetails {
+                    think: added(
+                        previous.and_then(|v| v.output_details.as_ref()?.think),
+                        details.think,
+                    ),
+                }),
+            ..Default::default()
+        }));
+    }
+
     pub(crate) fn total(&self) -> Option<Usage> {
         let calls = self
             .calls

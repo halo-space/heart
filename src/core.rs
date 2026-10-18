@@ -7,6 +7,7 @@ pub mod checkpoint;
 pub mod compression;
 pub mod document;
 pub mod evaluation;
+pub(crate) mod lifecycle;
 pub mod mcp;
 pub mod memory;
 mod message_transform;
@@ -20,6 +21,7 @@ pub mod reason;
 pub mod sandbox;
 pub mod skill;
 mod structured;
+pub(crate) mod tool;
 pub mod workspace;
 
 /// Compatibility namespace matching the design vocabulary. The idiomatic

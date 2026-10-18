@@ -167,6 +167,18 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 .as_ref()
                 .and_then(|execution| execution.attempts.last())
                 .is_some_and(|attempt| tools::pending(&attempt.steps))
+            && !graph
+                .state(&node_id)?
+                .execution
+                .as_ref()
+                .and_then(|execution| execution.attempts.last())
+                .is_some_and(|attempt| {
+                    crate::runtime::agent::model_steps::continuing(&attempt.steps)
+                        || attempt
+                            .completion
+                            .as_ref()
+                            .is_some_and(crate::runtime::agent::completion::State::pending)
+                })
             && let Some(input) = state.resume_input.clone()
         {
             messages.push(crate::core::agent::input::user_message(input));
@@ -239,6 +251,16 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
         } else {
             Vec::new()
         };
+        let completion = if resumed {
+            graph
+                .state(&node_id)?
+                .execution
+                .as_ref()
+                .and_then(|execution| execution.attempts.last())
+                .and_then(|attempt| attempt.completion.clone())
+        } else {
+            None
+        };
         let mut task = Task {
             node_id,
             exec_id,
@@ -246,6 +268,10 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
             previous_usage,
             slot: slot.clone(),
             state: ReActState {
+                completion,
+                restored_output: None,
+                replayed_completion: false,
+                preparation: None,
                 _interaction_owner: interaction
                     .as_ref()
                     .map(crate::runtime::agent::reply::Run::owner),
@@ -297,6 +323,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 child_nodes,
                 child_nodes_dirty: false,
                 feedback_dirty: false,
+                phase_progress: false,
                 root: crate::core::agent::subagent::Root::default(),
                 partial: Message::new(Role::Assistant),
                 done: false,
@@ -308,9 +335,11 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 model_pending: false,
                 model_settled: false,
                 input_tokens: 0,
+                request: None,
             },
         };
         if resumed {
+            restore_output(&mut task.state)?;
             tools::restore(&mut task.state)?;
         }
         state.task_runs.insert(
@@ -453,6 +482,7 @@ pub(super) fn commit<M: Chat + 'static>(
         attempt.status = status;
         attempt.messages = committed;
         attempt.steps = task.state.steps.clone();
+        attempt.completion = task.state.completion.clone();
         if task.state.child_nodes_dirty {
             attempt.nodes = task.state.child_nodes.clone();
             task.state.child_nodes_dirty = false;
@@ -489,8 +519,10 @@ pub(super) fn commit<M: Chat + 'static>(
             );
         }
         let feedback = std::mem::take(&mut task.state.feedback_dirty);
+        let phase = std::mem::take(&mut task.state.phase_progress);
         let save = question
-            || ((result.is_none() || feedback)
+            || (!phase
+                && (result.is_none() || feedback)
                 && (!state.waits.is_empty() || crate::runtime::agent::scope::active()));
         state.active_tasks.push(Box::pin(advance(task)));
         return Ok((result.and_then(Result::ok), save));
@@ -566,6 +598,7 @@ pub(super) fn commit<M: Chat + 'static>(
     let attempt = graph.state_mut(&task.node_id)?.current_attempt_mut()?;
     attempt.messages = context;
     attempt.steps = task.state.steps;
+    attempt.completion = task.state.completion;
     attempt.nodes = task.state.child_nodes;
     let mut committed = committed?;
     if let Some(event) = &mut committed.0 {

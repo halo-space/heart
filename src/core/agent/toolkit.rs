@@ -9,7 +9,7 @@ use crate::components::mcp::Server;
 use crate::components::message::{Message, Messages};
 use crate::components::skill::{Definition as SkillDefinition, Skill};
 use crate::components::tool::{
-    Call, Evaluation, Tool, ToolDefinition, call_prepared, prepare_call, validate_call,
+    Call, Evaluation, Tool, ToolDefinition, prepare_call, validate_call,
 };
 
 type CallFuture = Pin<Box<dyn Future<Output = Result<(Call, Message), Error>> + Send + 'static>>;
@@ -107,6 +107,9 @@ trait Entry: Send + Sync {
     fn definition(&self) -> ToolDefinition;
     fn prepare(&self, call: Call, cancellation: Cancellation) -> PrepareFuture;
     fn call(&self, call: Call, cancellation: Cancellation) -> CallFuture;
+    fn after(&self, call: Call, message: Message, _cancellation: Cancellation) -> CallFuture {
+        Box::pin(async move { Ok((call, message)) })
+    }
     fn evaluate(
         &self,
         call: Call,
@@ -129,7 +132,18 @@ where
 
     fn call(&self, call: Call, cancellation: Cancellation) -> CallFuture {
         let tool = Arc::clone(&self.tool);
-        Box::pin(async move { call_prepared(tool.as_ref(), call, &cancellation).await })
+        Box::pin(async move {
+            let message = tool.call(&call, &cancellation).await?;
+            Ok((call, message))
+        })
+    }
+
+    fn after(&self, call: Call, mut message: Message, cancellation: Cancellation) -> CallFuture {
+        let tool = Arc::clone(&self.tool);
+        Box::pin(async move {
+            tool.after(&call, &mut message, &cancellation).await?;
+            Ok((call, message))
+        })
     }
 
     fn prepare(&self, call: Call, cancellation: Cancellation) -> PrepareFuture {
@@ -347,8 +361,8 @@ impl Toolkit {
         call: Call,
         cancellation: &Cancellation,
     ) -> Result<(Call, Message), Error> {
-        let call = self.prepare_call(call, cancellation).await?;
-        self.call_prepared(call, cancellation).await
+        self.advance_call(crate::core::lifecycle::Phase::Before, call, cancellation)
+            .await
     }
 
     pub(crate) async fn prepare_call(
@@ -364,7 +378,43 @@ impl Toolkit {
         await_stage(entry.prepare(call, cancellation.clone()), cancellation).await
     }
 
-    pub(crate) async fn call_prepared(
+    async fn advance_call(
+        &self,
+        phase: crate::core::lifecycle::Phase,
+        call: Call,
+        cancellation: &Cancellation,
+    ) -> Result<(Call, Message), Error> {
+        use crate::core::lifecycle::{Methods, Phase, advance};
+        let (call, message) = advance(
+            phase,
+            Phase::Complete,
+            call,
+            None,
+            Methods {
+                before: |call| self.prepare_call(call, cancellation),
+                call: |call| async {
+                    self.invoke(call, cancellation)
+                        .await
+                        .map(|(_, message)| message)
+                },
+                after: |call, message| async {
+                    self.finish(call, message, cancellation)
+                        .await
+                        .map(|(_, message)| message)
+                },
+                // Standalone Toolkit convenience calls have no Runtime owner.
+                // They do not persist recovery facts or attempt stage retries.
+                commit: |_: Phase, _: &Call, _: Option<&Message>| async { Ok(()) },
+            },
+            cancellation,
+        )
+        .await?;
+        Ok((call, message.expect("completed Tool call has a result")))
+    }
+
+    // Native Agent Steps retain each successful boundary before entering the
+    // next user hook. The public convenience lifecycle still runs all stages.
+    pub(crate) async fn invoke(
         &self,
         call: Call,
         cancellation: &Cancellation,
@@ -375,6 +425,24 @@ impl Toolkit {
             .find(|entry| entry.definition().name == call.name)
             .ok_or_else(|| Error::new("NOT_FOUND", "tool is not registered"))?;
         await_stage(entry.call(call, cancellation.clone()), cancellation).await
+    }
+
+    pub(crate) async fn finish(
+        &self,
+        call: Call,
+        message: Message,
+        cancellation: &Cancellation,
+    ) -> Result<(Call, Message), Error> {
+        let entry = self
+            .entries
+            .iter()
+            .find(|entry| entry.definition().name == call.name)
+            .ok_or_else(|| Error::new("NOT_FOUND", "tool is not registered"))?;
+        await_stage(
+            entry.after(call, message, cancellation.clone()),
+            cancellation,
+        )
+        .await
     }
 
     /// Preflight before optional Agent permission checks; no Tool/MCP hooks.

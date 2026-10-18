@@ -6,7 +6,8 @@ use crate::runtime::agent::tool_steps::{current, new_step};
 
 pub(super) fn restore<M: Chat>(state: &mut ReActState<M>) -> Result<(), Error> {
     for step in &state.steps {
-        if step.stage.as_deref() == Some("eval")
+        if step.kind == "tool"
+            && matches!(step.stage.as_deref(), Some("call" | "after" | "eval"))
             && let Some(call) = &step.call
         {
             state.toolkit.validate(call)?;
@@ -40,7 +41,7 @@ pub(super) fn continue_step<M: Chat + 'static>(
     }
     let step = current(&mut state.steps, &call.call_id).expect("selected Tool step");
     match step.stage.as_deref() {
-        Some("call") => {
+        Some("before" | "call" | "after") => {
             step.status = if step.waits.values().any(|wait| wait.status == "waiting") {
                 "waiting"
             } else {
@@ -51,6 +52,16 @@ pub(super) fn continue_step<M: Chat + 'static>(
             Ok(false)
         }
         Some("eval" | "complete") => {
+            if step.stage.as_deref() == Some("complete") && step.status == "failed" {
+                let error = step
+                    .error
+                    .clone()
+                    .ok_or_else(|| invalid_checkpoint("failed Tool step has no error"))?;
+                state
+                    .tool_results
+                    .insert(index, tool_error_message(call, error));
+                return Ok(true);
+            }
             let business = step
                 .message
                 .clone()

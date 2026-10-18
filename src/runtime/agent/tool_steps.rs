@@ -11,7 +11,11 @@ use serde_json::Value;
 use std::collections::BTreeSet;
 
 pub(crate) fn active(step: &Step) -> bool {
-    step.kind == "tool" && matches!(step.stage.as_deref(), Some("call" | "eval" | "complete"))
+    step.kind == "tool"
+        && matches!(
+            step.stage.as_deref(),
+            Some("before" | "call" | "after" | "eval" | "complete")
+        )
 }
 
 pub(crate) fn current<'a>(steps: &'a mut [Step], id: &str) -> Option<&'a mut Step> {
@@ -32,7 +36,7 @@ pub(crate) fn new_step(steps: &mut Vec<Step>, call: &Call) {
         status: "running".into(),
         call_id: Some(call.call_id.clone()),
         call: Some(call.clone()),
-        stage: Some("call".into()),
+        stage: Some("before".into()),
         ..Step::default()
     });
 }
@@ -52,6 +56,25 @@ pub(crate) fn selected(steps: &mut Vec<Step>, calls: &[Call]) -> Result<(), Erro
         new_step(steps, call);
     }
     Ok(())
+}
+
+pub(crate) fn prepared(steps: &mut [Step], call: &Call) {
+    if let Some(step) = current(steps, &call.call_id) {
+        step.call = Some(call.clone());
+        step.stage = Some("call".into());
+        step.status = "running".into();
+        step.error = None;
+    }
+}
+
+pub(crate) fn returned(steps: &mut [Step], call: &Call, message: &Message) {
+    if let Some(step) = current(steps, &call.call_id) {
+        step.call = Some(call.clone());
+        step.message = Some(crate::runtime::observation::original_message(message));
+        step.stage = Some("after".into());
+        step.status = "running".into();
+        step.error = None;
+    }
 }
 
 pub(crate) fn called(steps: &mut [Step], call: &Call, message: &Message) {
@@ -92,7 +115,11 @@ pub(crate) fn stopped(steps: &mut [Step], id: &str, error: &Error) {
 
 pub(crate) fn failed_message(steps: &mut [Step], id: &str, message: &Message) {
     if let Some(step) = current(steps, id) {
-        step.message = Some(crate::runtime::observation::original_message(message));
+        // after can fail after call has already succeeded. Keep that result;
+        // Step.error remains the source of the direct model error context.
+        if step.message.is_none() {
+            step.message = Some(crate::runtime::observation::original_message(message));
+        }
         step.stage = Some("complete".into());
     }
 }
@@ -109,7 +136,10 @@ pub(crate) fn committed(steps: &mut [Step]) {
 pub(crate) fn cancel_pending(steps: &mut [Step]) {
     for step in steps.iter_mut().filter(|step| {
         step.kind == "tool"
-            && matches!(step.stage.as_deref(), Some("call" | "eval"))
+            && matches!(
+                step.stage.as_deref(),
+                Some("before" | "call" | "after" | "eval")
+            )
             && matches!(step.status.as_str(), "running" | "waiting")
     }) {
         step.status = "cancelled".into();
@@ -135,7 +165,7 @@ pub(crate) fn resume_calls(
     {
         if !matches!(
             step.stage.as_deref(),
-            Some("call" | "eval" | "complete" | "committed")
+            Some("before" | "call" | "after" | "eval" | "complete" | "committed")
         ) {
             return Err(invalid_checkpoint("unknown Tool lifecycle stage"));
         }
@@ -191,11 +221,11 @@ pub(crate) fn resume_calls(
             ));
         }
         match step.stage.as_deref() {
-            Some("call")
+            Some("before" | "call")
                 if step.message.is_none()
                     && step.eval.is_none()
                     && matches!(step.status.as_str(), "running" | "waiting") => {}
-            Some("eval")
+            Some("after" | "eval")
                 if step.message.is_some()
                     && step.eval.is_none()
                     && matches!(step.status.as_str(), "running" | "waiting") => {}

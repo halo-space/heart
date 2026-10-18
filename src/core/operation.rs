@@ -12,19 +12,19 @@ pub(super) fn check(cancellation: &Cancellation) -> Result<(), Error> {
     }
 }
 
-pub(super) async fn cancellable<T>(
-    future: impl Future<Output = Result<T, Error>>,
+pub(super) async fn cancellable<T, E: From<Error>>(
+    future: impl Future<Output = Result<T, E>>,
     cancellation: &Cancellation,
-) -> Result<T, Error> {
+) -> Result<T, E> {
     let mut future = std::pin::pin!(future);
     poll_fn(|cx| {
         cancellation.register(cx.waker());
         if let Err(error) = check(cancellation) {
-            return Poll::Ready(Err(error));
+            return Poll::Ready(Err(error.into()));
         }
         let result = future.as_mut().poll(cx);
         if let Err(error) = check(cancellation) {
-            return Poll::Ready(Err(error));
+            return Poll::Ready(Err(error.into()));
         }
         result
     })

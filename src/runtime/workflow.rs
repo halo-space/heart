@@ -538,6 +538,7 @@ impl Engine {
             recovery_reply: None,
             accepts_saved_replies: true,
         };
+        runtime.validate_tool_scenes()?;
         if runtime.state.mark_waiting() {
             runtime.state.status = graph::Status::Running;
         }
@@ -547,6 +548,42 @@ impl Engine {
 
     pub fn definition(&self) -> &Definition {
         self.workflow.definition()
+    }
+
+    fn validate_tool_scenes(&self) -> Result<(), Error> {
+        for (id, node) in &self.state.nodes {
+            for execution in node.executions.values() {
+                if let Some(child) = self.workflow.graph_node(id) {
+                    for attempt in &execution.attempts {
+                        if let Some(state) = &attempt.graph {
+                            Self::from_snapshot(
+                                self.state.chat_id,
+                                child.clone(),
+                                serde_json::to_value(state).map_err(|_| {
+                                    Error::new("INVALID_STATE", "invalid child Tool scene")
+                                })?,
+                            )?;
+                        }
+                    }
+                } else if execution
+                    .attempts
+                    .iter()
+                    .any(|attempt| !attempt.steps.is_empty())
+                    && self.workflow.agent(id).is_none()
+                {
+                    let executor = self
+                        .workflow
+                        .executor(id)
+                        .ok_or_else(|| Error::new("INVALID_STATE", "ToolNode owner is missing"))?;
+                    let input = self.input_for(id, &execution.from)?;
+                    for attempt in &execution.attempts {
+                        executor.validate_recovery(input.clone(), attempt)?;
+                    }
+                    executor.validate_recovery(input, &committed_tool_facts(execution))?;
+                }
+            }
+        }
+        Ok(())
     }
 
     pub fn ready_nodes(&self) -> Vec<String> {
@@ -951,15 +988,15 @@ impl Engine {
                         next_exec_id.clone(),
                         self.state.chat_id,
                         start_idx,
-                        committed_tool_messages(&self.state.nodes[&node_id].executions[&exec_id]),
+                        committed_tool_facts(&self.state.nodes[&node_id].executions[&exec_id]),
                         None,
                     ),
                 );
-                let invocation = self
-                    .continue_invocation(&node_id, invocation, &cancellation, &base)
-                    .await?;
+                let invocation =
+                    self.continue_invocation(&node_id, invocation, &cancellation, &base);
+                let invocation = Box::pin(invocation).await?;
                 let invocation_graph = invocation.graph;
-                self.replace_resumed_attempts(&node_id, exec_id, invocation.attempts, Some(&base))?;
+                self.replace_resumed_attempts(&node_id, exec_id, invocation.attempts, &base)?;
                 if let Some(graph) = invocation_graph {
                     self.attach_graph(&node_id, exec_id, graph)?;
                 }
@@ -973,6 +1010,7 @@ impl Engine {
                     Outcome::Wait(wait_id) => {
                         self.state.wait_execution(&node_id, exec_id, wait_id)?;
                     }
+                    Outcome::Waiting => self.wait_call(&node_id, exec_id)?,
                     Outcome::Cancelled => {
                         self.state.cancel_execution(&node_id, exec_id)?;
                     }
@@ -987,8 +1025,16 @@ impl Engine {
                 self.state.advance_step();
                 continue;
             }
-            if self.resume_waiting(&next_exec_id, &cancellation).await? {
-                self.state.advance_step();
+            if Box::pin(self.resume_waiting(&next_exec_id, &cancellation)).await? {
+                // Reenter each saved invocation once per run. A method that
+                // waits again must yield its scene, not spin on the same wait.
+                if !self.state.advance_step() {
+                    self.state.status = graph::Status::Paused;
+                    return Err(Error::new(
+                        "WAITING",
+                        "workflow batch did not reach a barrier",
+                    ));
+                }
                 continue;
             }
             let ready = self.ready_nodes();
@@ -1122,7 +1168,7 @@ impl Engine {
                                         next_exec_id,
                                         chat_id,
                                         0,
-                                        Messages::default(),
+                                        node::Attempt::default(),
                                         None,
                                     ),
                                 ),
@@ -1222,6 +1268,7 @@ impl Engine {
                     Outcome::Wait(wait_id) => {
                         self.state.wait_execution(&node_id, exec_id, wait_id)?;
                     }
+                    Outcome::Waiting => self.wait_call(&node_id, exec_id)?,
                     Outcome::Cancelled => {
                         self.state.cancel_execution(&node_id, exec_id)?;
                     }
@@ -1638,7 +1685,7 @@ impl Engine {
                 input,
                 retry,
                 previous_idx,
-                committed_tool_messages(&execution),
+                committed_tool_facts(&execution),
                 nested_reply,
             ));
         }
@@ -1809,7 +1856,7 @@ impl Engine {
                 continue;
             }
             let invocation_graph = invocation.graph;
-            self.replace_resumed_attempts(&node_id, exec_id, invocation.attempts, Some(base))?;
+            self.replace_resumed_attempts(&node_id, exec_id, invocation.attempts, base)?;
             if let Some(graph) = invocation_graph {
                 self.attach_graph(&node_id, exec_id, graph)?;
             }
@@ -1821,6 +1868,7 @@ impl Engine {
                         .complete_execution(&node_id, exec_id, messages, to)?;
                 }
                 Outcome::Wait(wait_id) => self.state.wait_execution(&node_id, exec_id, wait_id)?,
+                Outcome::Waiting => self.wait_call(&node_id, exec_id)?,
                 Outcome::Cancelled => self.state.cancel_execution(&node_id, exec_id)?,
                 Outcome::Failed(error) => self.state.fail_execution(&node_id, exec_id, error)?,
             }
@@ -2043,27 +2091,41 @@ impl Engine {
         Ok(())
     }
 
+    // A Tool lifecycle wait has no fabricated human question or response.
+    fn wait_call(&mut self, node_id: &str, exec_id: i64) -> Result<(), Error> {
+        self.state.node_mut(node_id)?.execution_mut(exec_id)?.status =
+            node::ExecutionStatus::Waiting;
+        Ok(())
+    }
+
     fn replace_resumed_attempts(
         &mut self,
         node_id: &str,
         exec_id: i64,
         mut attempts: Vec<node::Attempt>,
-        base: Option<&node::Attempt>,
+        base: &node::Attempt,
     ) -> Result<(), Error> {
         let execution = self.state.node_mut(node_id)?.execution_mut(exec_id)?;
-        let previous = execution
+        // Native progress may already have appended a retry. Replace only
+        // the suffix that this continuation owns, using its original base,
+        // not the now-advanced last Attempt. Earlier history stays immutable.
+        let previous = base.idx as usize;
+        if execution
             .attempts
-            .last()
-            .map(|attempt| attempt.idx)
-            .ok_or_else(|| Error::new("INVALID_STATE", "execution has no attempt"))?;
-        if attempts.is_empty() || attempts[0].idx != previous {
+            .get(previous)
+            .is_none_or(|attempt| attempt.idx != base.idx)
+            || attempts.is_empty()
+            || attempts
+                .iter()
+                .enumerate()
+                .any(|(offset, attempt)| attempt.idx as usize != previous + offset)
+        {
             return Err(Error::new(
                 "INVALID_STATE",
                 "invalid resumed attempt history",
             ));
         }
-        let original =
-            base.unwrap_or_else(|| execution.attempts.last().expect("checked current Attempt"));
+        let original = base;
         attempts[0].created_time = original.created_time;
         if original.agent.is_some() {
             let cumulative = attempts[0]
@@ -2091,7 +2153,7 @@ impl Engine {
             // Workflow Attempt with only the resumed stream segment.
             prepend_agent_observations(&mut attempts[0], original);
         }
-        execution.attempts.pop();
+        execution.attempts.truncate(previous);
         execution.attempts.extend(attempts);
         execution.usage = execution.attempts.iter().fold(None, |total, attempt| {
             crate::components::model::token::merge(total, attempt.usage.clone())
@@ -2124,10 +2186,14 @@ struct Invocation {
 
 fn attempt_waiting(attempt: &node::Attempt) -> bool {
     attempt
-        .agent
-        .as_ref()
-        .and_then(|scene| scene["waits"].as_array())
-        .is_some_and(|waits| !waits.is_empty())
+        .steps
+        .iter()
+        .any(|step| step.stage.is_some() && step.status == "waiting")
+        || attempt
+            .agent
+            .as_ref()
+            .and_then(|scene| scene["waits"].as_array())
+            .is_some_and(|waits| !waits.is_empty())
         || attempt.graph.as_ref().is_some_and(|state| {
             !state.waits.is_empty()
                 || !state.pauses().is_empty()
@@ -2280,6 +2346,7 @@ fn attempt_question(attempt: &node::Attempt, id: i64) -> Result<bool, Error> {
 enum Outcome {
     Complete(Value),
     Wait(String),
+    Waiting,
     Failed(Error),
     Cancelled,
 }
@@ -2297,8 +2364,12 @@ enum Target {
 // Reconstruct successful sub-call facts from the entire logical execution,
 // not just its latest Attempt: an in-flight retry may have no messages yet.
 // This is private ToolNode recovery input, never a partial normal Node output.
-fn committed_tool_messages(execution: &node::Execution) -> Messages {
+fn committed_tool_facts(execution: &node::Execution) -> node::Attempt {
     let mut committed = std::collections::BTreeMap::new();
+    let mut steps = std::collections::BTreeMap::new();
+    for step in execution.attempts.iter().flat_map(|attempt| &attempt.steps) {
+        steps.insert(step.id.clone(), step.clone());
+    }
     for message in execution
         .attempts
         .iter()
@@ -2308,7 +2379,11 @@ fn committed_tool_messages(execution: &node::Execution) -> Messages {
             committed.insert(call_id, message);
         }
     }
-    Messages::new(committed.into_values().cloned())
+    node::Attempt {
+        messages: Messages::new(committed.into_values().cloned()),
+        steps: steps.into_values().collect(),
+        ..Default::default()
+    }
 }
 
 // Replay only actual saved cancellation Completes, never synthesize one from
@@ -2391,7 +2466,7 @@ fn invoke_with_retry(
     next_exec_id: Arc<dyn Fn() -> i64 + Send + Sync>,
     chat_id: i64,
     attempt_start: u32,
-    committed: Messages,
+    committed: node::Attempt,
     recovery_reply: Option<RecoveryReply>,
 ) -> Pin<Box<dyn Future<Output = Invocation> + 'static>> {
     Box::pin(async move {
@@ -2413,7 +2488,7 @@ fn invoke_with_retry(
         // ToolNode-only committed call facts. They remain private to this one
         // logical execution and are restored from all saved Attempts on recovery;
         // ordinary Nodes keep the unchanged single-call path.
-        let mut committed_tool_messages = committed;
+        let mut committed_tool_facts = committed;
         let mut graph_retry_state = match &target {
             Target::Graph { state, .. } => state.clone(),
             _ => None,
@@ -2447,10 +2522,14 @@ fn invoke_with_retry(
                     if let Some(future) = executor.call_with_recovery(
                         input.clone(),
                         cancellation.clone(),
-                        committed_tool_messages.clone(),
+                        node::Attempt {
+                            idx,
+                            ..committed_tool_facts.clone()
+                        },
                     ) {
-                        match future.await {
-                            Ok(Signal::Complete(value)) => {
+                        match events::with_attempt(idx, future).await {
+                            Ok((Signal::Complete(value), steps)) => {
+                                attempt.steps = steps;
                                 if let Ok(messages) =
                                     serde_json::from_value::<Messages>(value.clone())
                                 {
@@ -2458,10 +2537,27 @@ fn invoke_with_retry(
                                 }
                                 Ok(Signal::Complete(value))
                             }
-                            Ok(Signal::Wait(wait)) => Ok(Signal::Wait(wait)),
+                            Ok((Signal::Wait(wait), steps)) => {
+                                attempt.steps = steps;
+                                Ok(Signal::Wait(wait))
+                            }
                             Err(failure) => {
-                                committed_tool_messages = failure.completed.clone();
+                                committed_tool_facts = node::Attempt {
+                                    messages: failure.completed.clone(),
+                                    steps: failure.steps.clone(),
+                                    ..Default::default()
+                                };
                                 attempt.messages = failure.completed;
+                                attempt.steps = failure.steps;
+                                if failure.error.code == "WAITING" {
+                                    attempt.status = node::AttemptStatus::Waiting;
+                                    attempts.push(attempt);
+                                    return Invocation {
+                                        attempts,
+                                        outcome: Outcome::Waiting,
+                                        graph: None,
+                                    };
+                                }
                                 Err(failure.error)
                             }
                         }
@@ -2610,6 +2706,24 @@ fn invoke_with_retry(
                                     };
                                 };
                                 let pauses = state.pauses();
+                                if pauses.is_empty()
+                                    && state
+                                        .nodes
+                                        .values()
+                                        .flat_map(|node| node.executions.values())
+                                        .any(|execution| {
+                                            execution.attempts.last().is_some_and(attempt_waiting)
+                                        })
+                                {
+                                    attempt.status = node::AttemptStatus::Waiting;
+                                    attempt.graph = Some(Box::new(state));
+                                    attempts.push(attempt);
+                                    return Invocation {
+                                        attempts,
+                                        outcome: Outcome::Waiting,
+                                        graph: None,
+                                    };
+                                }
                                 let Some(wait_id) =
                                     (pauses.len() == 1).then(|| pauses[0].wait_id.clone())
                                 else {
@@ -2951,6 +3065,10 @@ fn outgoing(definition: &Definition, node_id: &str) -> Vec<String> {
     result.dedup();
     result
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/workflow_progress.rs"]
+mod progress_tests;
 
 #[cfg(test)]
 mod tests {
@@ -4685,7 +4803,7 @@ mod tests {
             Arc::new(|| 900),
             90,
             1,
-            Messages::default(),
+            node::Attempt::default(),
             None,
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
@@ -4733,7 +4851,10 @@ mod tests {
             Arc::new(|| 1_300),
             19,
             0,
-            Messages::new([committed]),
+            node::Attempt {
+                messages: Messages::new([committed]),
+                ..Default::default()
+            },
             None,
         ));
 
@@ -4867,7 +4988,7 @@ mod tests {
             let partial = block_on(tools.call_with_recovery(
                 input.clone(),
                 Cancellation::new(),
-                Messages::default(),
+                node::Attempt::default(),
             ))
             .unwrap_err();
             assert_eq!(partial.error.code, "TIMEOUT");

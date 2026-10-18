@@ -1,16 +1,22 @@
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use futures_util::future::join_all;
 use serde_json::{Map, Value};
 
+use super::node::{Attempt, AttemptStatus, Step, StepAttempt};
 use crate::Cancellation;
 use crate::Error;
 use crate::components::message::{Message, Messages, Role};
 use crate::components::model::content::part::Part;
 use crate::components::node::{Node, Signal};
-use crate::components::tool::{Call, Tool, ToolDefinition, execute_without_eval};
+use crate::components::tool::{Call, Tool, ToolDefinition};
+use crate::core::lifecycle::Phase;
+
+// Working facts for this invocation only; every acknowledged change is handed
+// back to the actual Runtime Attempt through its existing relay.
+type Facts = Arc<Mutex<Attempt>>;
 
 type ToolFuture = Pin<Box<dyn Future<Output = Result<Message, Error>> + Send + 'static>>;
 
@@ -19,12 +25,13 @@ type ToolFuture = Pin<Box<dyn Future<Output = Result<Message, Error>> + Send + '
 #[derive(Debug)]
 pub(crate) struct RecoveryError {
     pub(crate) completed: Messages,
+    pub(crate) steps: Vec<Step>,
     pub(crate) error: Error,
 }
 
 trait Entry: Send + Sync {
     fn definition(&self) -> ToolDefinition;
-    fn execute(&self, call: Call, cancellation: Cancellation) -> ToolFuture;
+    fn execute(&self, step: Step, facts: Facts, cancellation: Cancellation) -> ToolFuture;
 }
 
 struct TypedEntry<T> {
@@ -39,9 +46,78 @@ where
         self.tool.definition().clone()
     }
 
-    fn execute(&self, call: Call, cancellation: Cancellation) -> ToolFuture {
+    fn execute(&self, mut step: Step, facts: Facts, cancellation: Cancellation) -> ToolFuture {
         let tool = Arc::clone(&self.tool);
-        Box::pin(async move { execute_without_eval(tool.as_ref(), call, &cancellation).await })
+        Box::pin(async move {
+            let phase = phase(&step)?;
+            let call = step.call.clone().expect("validated Tool Call");
+            let result = crate::core::tool::call_from(
+                tool.as_ref(),
+                phase,
+                call,
+                step.message.clone(),
+                |phase, call, message| {
+                    step.stage = Some(
+                        match phase {
+                            Phase::Call => "call",
+                            Phase::After => "after",
+                            Phase::Complete => "complete",
+                            Phase::Before => unreachable!(),
+                        }
+                        .into(),
+                    );
+                    step.call = Some(call.clone());
+                    step.message = message.cloned();
+                    step.status = if phase == Phase::Complete {
+                        "succeeded"
+                    } else {
+                        "running"
+                    }
+                    .into();
+                    step.error = None;
+                    if phase == Phase::Call {
+                        step.attempts.push(StepAttempt {
+                            status: AttemptStatus::Running,
+                            created_time: None,
+                            finished_time: None,
+                            usage: None,
+                            finish_reason: None,
+                            error: None,
+                        });
+                    } else if let Some(attempt) = step.attempts.last_mut() {
+                        attempt.status = AttemptStatus::Succeeded;
+                        attempt.error = None;
+                    }
+                    acknowledge(facts.clone(), step.clone())
+                },
+                &cancellation,
+            )
+            .await;
+            match result {
+                Ok((call, message)) => Ok(success_message(&call, message)),
+                Err(error) => {
+                    step.status = match error.code.as_str() {
+                        "WAITING" => "waiting",
+                        "CANCELLED" => "cancelled",
+                        _ => "failed",
+                    }
+                    .into();
+                    step.error = Some(error.clone());
+                    if step.stage.as_deref() == Some("call")
+                        && let Some(attempt) = step.attempts.last_mut()
+                    {
+                        attempt.status = match error.code.as_str() {
+                            "WAITING" => AttemptStatus::Waiting,
+                            "CANCELLED" => AttemptStatus::Cancelled,
+                            _ => AttemptStatus::Failed,
+                        };
+                        attempt.error = Some(error.clone());
+                    }
+                    acknowledge(facts, step).await?;
+                    Err(error)
+                }
+            }
+        })
     }
 }
 
@@ -135,13 +211,55 @@ impl ToolNode {
             .ok_or_else(|| Error::new("NOT_FOUND", "tool is not registered").with_details(name))
     }
 
-    async fn execute_call(&self, call: Call, cancellation: Cancellation) -> Result<Message, Error> {
+    async fn execute_call(
+        &self,
+        call: Call,
+        facts: Facts,
+        cancellation: Cancellation,
+    ) -> Result<Message, Error> {
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "tool node cancelled"));
         }
         let entry = self.entry(&call.name)?;
-        let message = entry.execute(call.clone(), cancellation).await?;
-        Ok(success_message(&call, message))
+        let mut step = facts
+            .lock()
+            .expect("Tool invocation facts poisoned")
+            .steps
+            .iter()
+            .find(|step| step.call_id.as_deref() == Some(&call.call_id))
+            .cloned()
+            .unwrap_or_else(|| Step {
+                id: call.call_id.clone(),
+                kind: "tool".into(),
+                status: "running".into(),
+                call_id: Some(call.call_id.clone()),
+                stage: Some("before".into()),
+                call: Some(call),
+                ..Default::default()
+            });
+        step.status = "running".into();
+        step.error = None;
+        if step.stage.as_deref() == Some("call") {
+            if step
+                .attempts
+                .last()
+                .is_some_and(|attempt| attempt.status == AttemptStatus::Failed)
+            {
+                step.attempts.push(StepAttempt {
+                    status: AttemptStatus::Running,
+                    created_time: None,
+                    finished_time: None,
+                    usage: None,
+                    finish_reason: None,
+                    error: None,
+                });
+            } else if let Some(attempt) = step.attempts.last_mut() {
+                attempt.status = AttemptStatus::Running;
+                attempt.error = None;
+            }
+        }
+        acknowledge(facts.clone(), step.clone()).await?;
+        entry.execute(step, facts, cancellation).await
     }
 
     fn merge_parallel_errors(errors: Vec<(Call, Error)>) -> Error {
@@ -153,26 +271,33 @@ impl ToolNode {
             .map(|(call, error)| format!("{}: {} {}", call.call_id, error.code, error.message))
             .collect::<Vec<_>>()
             .join("; ");
-        Error::new("TOOL_CALLS_FAILED", "multiple tool calls failed").with_details(details)
-    }
-
-    async fn execute_calls(
-        &self,
-        calls: Vec<Call>,
-        cancellation: Cancellation,
-    ) -> Result<Messages, Error> {
-        self.execute_calls_with_recovery(calls, cancellation, Messages::default())
-            .await
-            .map_err(|failure| failure.error)
+        if errors.iter().all(|(_, error)| error.code == "WAITING") {
+            Error::new("WAITING", "tool calls are waiting").with_details(details)
+        } else {
+            Error::new("TOOL_CALLS_FAILED", "multiple tool calls failed").with_details(details)
+        }
     }
 
     async fn execute_calls_with_recovery(
         &self,
         calls: Vec<Call>,
         cancellation: Cancellation,
-        committed: Messages,
-    ) -> Result<Messages, RecoveryError> {
-        let committed_by_id = committed_messages(&committed);
+        committed: Attempt,
+    ) -> Result<(Messages, Vec<Step>), RecoveryError> {
+        let mut committed_by_id = committed_messages(&committed.messages);
+        for step in &committed.steps {
+            if step.stage.as_deref() == Some("complete") {
+                let call = step.call.as_ref().expect("validated complete Call");
+                committed_by_id.insert(
+                    call.call_id.clone(),
+                    success_message(
+                        call,
+                        step.message.clone().expect("validated complete result"),
+                    ),
+                );
+            }
+        }
+        let facts = Arc::new(Mutex::new(committed));
         let pending = calls
             .iter()
             .filter(|call| !committed_by_id.contains_key(call.call_id.as_str()))
@@ -180,35 +305,58 @@ impl ToolNode {
             .collect::<Vec<_>>();
 
         if pending.is_empty() {
-            return Ok(order_messages(&calls, committed_by_id));
+            return Ok((
+                order_messages(&calls, committed_by_id),
+                facts
+                    .lock()
+                    .expect("Tool invocation facts poisoned")
+                    .steps
+                    .clone(),
+            ));
         }
 
         match self.execution_mode {
             ExecutionMode::Sequential => {
                 let mut output = committed_by_id;
                 for call in pending {
-                    match self.execute_call(call.clone(), cancellation.clone()).await {
+                    match self
+                        .execute_call(call.clone(), facts.clone(), cancellation.clone())
+                        .await
+                    {
                         Ok(message) => {
                             if let Some(call_id) = message_call_id(&message) {
                                 output.insert(call_id, message);
                             }
                         }
                         Err(error) => {
+                            let steps = facts
+                                .lock()
+                                .expect("Tool invocation facts poisoned")
+                                .steps
+                                .clone();
                             return Err(RecoveryError {
                                 completed: order_messages(&calls, output),
+                                steps,
                                 error,
                             });
                         }
                     }
                 }
-                Ok(order_messages(&calls, output))
+                Ok((
+                    order_messages(&calls, output),
+                    facts
+                        .lock()
+                        .expect("Tool invocation facts poisoned")
+                        .steps
+                        .clone(),
+                ))
             }
             ExecutionMode::Parallel => {
                 let results = join_all(
                     pending
                         .iter()
                         .cloned()
-                        .map(|call| self.execute_call(call, cancellation.clone())),
+                        .map(|call| self.execute_call(call, facts.clone(), cancellation.clone())),
                 )
                 .await;
                 let mut output = committed_by_id;
@@ -224,10 +372,22 @@ impl ToolNode {
                     }
                 }
                 if errors.is_empty() {
-                    Ok(order_messages(&calls, output))
+                    Ok((
+                        order_messages(&calls, output),
+                        facts
+                            .lock()
+                            .expect("Tool invocation facts poisoned")
+                            .steps
+                            .clone(),
+                    ))
                 } else {
                     Err(RecoveryError {
                         completed: order_messages(&calls, output),
+                        steps: facts
+                            .lock()
+                            .expect("Tool invocation facts poisoned")
+                            .steps
+                            .clone(),
                         error: Self::merge_parallel_errors(errors),
                     })
                 }
@@ -235,82 +395,12 @@ impl ToolNode {
         }
     }
 
-    /// Private Runtime entry: successful call messages from a prior Attempt
-    /// are reused by call_id, while failed or missing calls are executed.
-    pub(crate) async fn call_with_recovery(
+    pub(crate) fn validate_recovery(
         &self,
-        input: Messages,
-        cancellation: Cancellation,
-        committed: Messages,
-    ) -> Result<Signal<Messages>, RecoveryError> {
-        let assistant = input
-            .as_slice()
-            .iter()
-            .rev()
-            .find(|message| message.role == Role::Assistant)
-            .ok_or_else(|| RecoveryError {
-                completed: Messages::default(),
-                error: Error::new(
-                    "INVALID_ARGUMENTS",
-                    "ToolNode requires an assistant message",
-                ),
-            })?;
-
-        self.validate_tools().map_err(|error| RecoveryError {
-            completed: Messages::default(),
-            error,
-        })?;
-        let calls = assistant
-            .content
-            .iter()
-            .filter(|part| part.r#type == "tool_call")
-            .map(decode_call)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|error| RecoveryError {
-                completed: Messages::default(),
-                error,
-            })?;
-        if calls.is_empty() {
-            return Err(RecoveryError {
-                completed: Messages::default(),
-                error: Error::new(
-                    "INVALID_ARGUMENTS",
-                    "assistant message contains no tool_call",
-                ),
-            });
-        }
-        let mut call_ids = std::collections::BTreeSet::new();
-        for call in &calls {
-            if !call_ids.insert(call.call_id.clone()) {
-                return Err(RecoveryError {
-                    completed: Messages::default(),
-                    error: Error::new(
-                        "INVALID_ARGUMENTS",
-                        "assistant message contains duplicate tool call_id",
-                    )
-                    .with_details(call.call_id.clone()),
-                });
-            }
-            if let Err(error) = self.entry(&call.name) {
-                return Err(RecoveryError {
-                    completed: Messages::default(),
-                    error,
-                });
-            }
-        }
-        let output = self
-            .execute_calls_with_recovery(calls, cancellation, committed)
-            .await?;
-        Ok(Signal::Complete(output))
-    }
-}
-
-impl Node<Messages, Messages, Error> for ToolNode {
-    async fn call(
-        &self,
-        input: Messages,
-        cancellation: Cancellation,
-    ) -> Result<Signal<Messages>, Error> {
+        input: &Messages,
+        committed: &Attempt,
+    ) -> Result<Vec<Call>, Error> {
+        self.validate_tools()?;
         let assistant = input
             .as_slice()
             .iter()
@@ -322,8 +412,6 @@ impl Node<Messages, Messages, Error> for ToolNode {
                     "ToolNode requires an assistant message",
                 )
             })?;
-
-        self.validate_tools()?;
         let calls = assistant
             .content
             .iter()
@@ -336,20 +424,155 @@ impl Node<Messages, Messages, Error> for ToolNode {
                 "assistant message contains no tool_call",
             ));
         }
-        let mut call_ids = std::collections::BTreeSet::new();
+        let mut ids = std::collections::BTreeSet::new();
         for call in &calls {
-            if !call_ids.insert(call.call_id.clone()) {
+            if !ids.insert(&call.call_id) {
                 return Err(Error::new(
                     "INVALID_ARGUMENTS",
                     "assistant message contains duplicate tool call_id",
                 )
-                .with_details(call.call_id.clone()));
+                .with_details(&call.call_id));
             }
             self.entry(&call.name)?;
         }
-        let output = self.execute_calls(calls, cancellation).await?;
-        Ok(Signal::Complete(output))
+        validate_facts(&calls, committed)?;
+        for step in &committed.steps {
+            if step.stage.as_deref() != Some("before") {
+                let call = step.call.as_ref().expect("validated Call");
+                crate::components::tool::validate_call(&self.entry(&call.name)?.definition(), call)
+                    .map_err(|_| invalid_facts())?;
+            }
+        }
+        Ok(calls)
     }
+
+    /// Private Runtime entry: successful call messages from a prior Attempt
+    /// are reused by call_id, while failed or missing calls are executed.
+    pub(crate) async fn call_with_recovery(
+        &self,
+        input: Messages,
+        cancellation: Cancellation,
+        committed: Attempt,
+    ) -> Result<(Signal<Messages>, Vec<Step>), RecoveryError> {
+        let calls = self
+            .validate_recovery(&input, &committed)
+            .map_err(|error| RecoveryError {
+                completed: committed.messages.clone(),
+                steps: committed.steps.clone(),
+                error,
+            })?;
+        let (output, steps) = self
+            .execute_calls_with_recovery(calls, cancellation, committed)
+            .await?;
+        Ok((Signal::Complete(output), steps))
+    }
+}
+
+impl Node<Messages, Messages, Error> for ToolNode {
+    async fn call(
+        &self,
+        input: Messages,
+        cancellation: Cancellation,
+    ) -> Result<Signal<Messages>, Error> {
+        self.call_with_recovery(input, cancellation, Attempt::default())
+            .await
+            .map(|(signal, _)| signal)
+            .map_err(|failure| failure.error)
+    }
+}
+
+fn invalid_facts() -> Error {
+    Error::new("INVALID_STATE", "invalid ToolNode lifecycle facts")
+}
+fn phase(step: &Step) -> Result<Phase, Error> {
+    match step.stage.as_deref() {
+        Some("before") => Ok(Phase::Before),
+        Some("call") => Ok(Phase::Call),
+        Some("after") => Ok(Phase::After),
+        Some("complete") => Ok(Phase::Complete),
+        _ => Err(invalid_facts()),
+    }
+}
+fn validate_facts(calls: &[Call], attempt: &Attempt) -> Result<(), Error> {
+    let mut seen = std::collections::BTreeSet::new();
+    for step in &attempt.steps {
+        let call = step.call.as_ref().ok_or_else(invalid_facts)?;
+        let source = calls
+            .iter()
+            .find(|source| source.call_id == call.call_id)
+            .ok_or_else(invalid_facts)?;
+        let phase = phase(step)?;
+        if step.kind != "tool"
+            || step.id != call.call_id
+            || step.call_id.as_ref() != Some(&call.call_id)
+            || call.name != source.name
+            || !seen.insert(&call.call_id)
+            || (phase == Phase::Before && call != source)
+            || ((phase >= Phase::After) != step.message.is_some())
+            || (phase >= Phase::After
+                && step
+                    .attempts
+                    .last()
+                    .is_none_or(|attempt| attempt.status != AttemptStatus::Succeeded))
+            || (phase == Phase::Before && !step.attempts.is_empty())
+            || (phase == Phase::Complete && (step.status != "succeeded" || step.error.is_some()))
+            || !matches!(
+                step.status.as_str(),
+                "running" | "waiting" | "failed" | "cancelled" | "succeeded"
+            )
+            || (phase != Phase::Complete && step.status == "succeeded")
+        {
+            return Err(invalid_facts());
+        }
+    }
+    let mut messages = std::collections::BTreeSet::new();
+    for message in attempt.messages.as_slice() {
+        let id = message_call_id(message).ok_or_else(invalid_facts)?;
+        if !calls.iter().any(|call| call.call_id == id)
+            || !messages.insert(id.clone())
+            || attempt.steps.iter().any(|step| {
+                step.call_id.as_ref() == Some(&id) && step.stage.as_deref() != Some("complete")
+            })
+        {
+            return Err(invalid_facts());
+        }
+        if let Some(step) = attempt
+            .steps
+            .iter()
+            .find(|step| step.call_id.as_ref() == Some(&id))
+            && *message
+                != success_message(
+                    step.call.as_ref().expect("validated Call"),
+                    step.message.clone().expect("complete Message"),
+                )
+        {
+            return Err(invalid_facts());
+        }
+    }
+    Ok(())
+}
+async fn acknowledge(facts: Facts, step: Step) -> Result<(), Error> {
+    let attempt = {
+        let mut facts = facts.lock().expect("Tool invocation facts poisoned");
+        if step.stage.as_deref() == Some("complete") {
+            let call = step.call.as_ref().expect("complete Call");
+            facts
+                .messages
+                .0
+                .retain(|message| message_call_id(message).as_deref() != Some(&call.call_id));
+            facts.messages.0.push(success_message(
+                call,
+                step.message.clone().expect("complete Message"),
+            ));
+        }
+        if let Some(saved) = facts.steps.iter_mut().find(|saved| saved.id == step.id) {
+            *saved = step;
+        } else {
+            facts.steps.push(step);
+        }
+        facts.clone()
+    };
+    super::events::progress(attempt, None).await
 }
 
 fn message_call_id(message: &Message) -> Option<String> {
@@ -711,7 +934,7 @@ mod tests {
         let first = block_on(node.call_with_recovery(
             input.clone(),
             Cancellation::new(),
-            Messages::default(),
+            Attempt::default(),
         ))
         .expect_err("the second call should fail on the first attempt");
         assert_eq!(first.error.code, "UNAVAILABLE");
@@ -721,9 +944,17 @@ mod tests {
             "call_weather"
         );
 
-        let result = block_on(node.call_with_recovery(input, Cancellation::new(), first.completed))
-            .expect("the failed call should succeed on retry");
-        let Signal::Complete(messages) = result else {
+        let result = block_on(node.call_with_recovery(
+            input,
+            Cancellation::new(),
+            Attempt {
+                messages: first.completed,
+                steps: first.steps,
+                ..Default::default()
+            },
+        ))
+        .expect("the failed call should succeed on retry");
+        let (Signal::Complete(messages), _) = result else {
             panic!("ToolNode unexpectedly returned Wait");
         };
         assert_eq!(messages.as_slice().len(), 2);

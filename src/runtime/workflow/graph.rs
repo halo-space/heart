@@ -31,8 +31,12 @@ pub const END: &str = "END";
 type BoxFuture = Pin<Box<dyn Future<Output = Result<Signal<Value>, Error>> + Send + 'static>>;
 type RecoveryFuture<'a> = Pin<
     Box<
-        dyn Future<Output = Result<Signal<Value>, crate::runtime::workflow::tool::RecoveryError>>
-            + Send
+        dyn Future<
+                Output = Result<
+                    (Signal<Value>, Vec<Step>),
+                    crate::runtime::workflow::tool::RecoveryError,
+                >,
+            > + Send
             + 'a,
     >,
 >;
@@ -280,6 +284,7 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                                     error: None,
                                 }],
                                 error: None,
+                                ..Step::default()
                             });
                             usage = sum_usage(usage, call_usage);
                             if message.role == Role::Assistant {
@@ -395,13 +400,17 @@ fn sum_usage(left: Option<Usage>, right: Option<Usage>) -> Option<Usage> {
 pub(crate) trait ErasedNode: Send + Sync + 'static {
     fn call(&self, input: Value, cancellation: Cancellation) -> BoxFuture;
 
+    fn validate_recovery(&self, _input: Value, _facts: &super::node::Attempt) -> Result<(), Error> {
+        Ok(())
+    }
+
     /// Optional private recovery path for a node that can expose committed
     /// sub-call facts. Ordinary Nodes keep the normal single-call contract.
     fn call_with_recovery<'a>(
         &'a self,
         _input: Value,
         _cancellation: Cancellation,
-        _committed: Messages,
+        _committed: super::node::Attempt,
     ) -> Option<RecoveryFuture<'a>> {
         None
     }
@@ -422,6 +431,16 @@ where
     O: Serialize + Send + 'static,
     E: Into<Error> + Send + 'static,
 {
+    fn validate_recovery(&self, input: Value, facts: &super::node::Attempt) -> Result<(), Error> {
+        if let Some(tool) = (self.node.as_ref() as &dyn Any).downcast_ref::<super::tool::ToolNode>()
+        {
+            let input = serde_json::from_value::<Messages>(input)
+                .map_err(|_| Error::new("INVALID_STATE", "invalid ToolNode recovery input"))?;
+            tool.validate_recovery(&input, facts).map(|_| ())?;
+        }
+        Ok(())
+    }
+
     fn call(&self, input: Value, cancellation: Cancellation) -> BoxFuture {
         // Validate before deserialization and before calling user code; Serde
         // alone does not enforce JSON Schema ranges, lengths or patterns.
@@ -459,7 +478,7 @@ where
         &'a self,
         input: Value,
         cancellation: Cancellation,
-        committed: Messages,
+        committed: super::node::Attempt,
     ) -> Option<RecoveryFuture<'a>> {
         let tool = (self.node.as_ref() as &dyn Any)
             .downcast_ref::<crate::runtime::workflow::tool::ToolNode>()?;
@@ -469,6 +488,7 @@ where
                 return Some(Box::pin(async move {
                     Err(crate::runtime::workflow::tool::RecoveryError {
                         completed: Messages::default(),
+                        steps: committed.steps,
                         error: Error::new("INVALID_ARGUMENTS", error.to_string()),
                     })
                 }));
@@ -477,15 +497,17 @@ where
         let future = tool.call_with_recovery(input, cancellation, committed);
         Some(Box::pin(async move {
             match future.await {
-                Ok(Signal::Complete(messages)) => {
-                    Ok(Signal::Complete(serde_json::to_value(messages).map_err(
-                        |error| crate::runtime::workflow::tool::RecoveryError {
+                Ok((Signal::Complete(messages), steps)) => Ok((
+                    Signal::Complete(serde_json::to_value(messages).map_err(|error| {
+                        crate::runtime::workflow::tool::RecoveryError {
                             completed: Messages::default(),
+                            steps: steps.clone(),
                             error: Error::new("INVALID_OUTPUT", error.to_string()),
-                        },
-                    )?))
-                }
-                Ok(Signal::Wait(wait)) => Ok(Signal::Wait(wait)),
+                        }
+                    })?),
+                    steps,
+                )),
+                Ok((Signal::Wait(wait), steps)) => Ok((Signal::Wait(wait), steps)),
                 Err(failure) => Err(failure),
             }
         }))
@@ -1493,8 +1515,15 @@ impl State {
         }
         let node = self.node_mut(node_id)?;
         let execution = node.execution_mut(exec_id)?;
-        if execution.status != crate::runtime::workflow::node::ExecutionStatus::Running {
-            return Err(Error::new("INVALID_STATE", "execution is not running"));
+        // Native Agent/child progress can mark this execution waiting before
+        // its final Wait signal registers the ordinary wait record. The pause
+        // check above still rejects registering that record twice.
+        if !matches!(
+            execution.status,
+            crate::runtime::workflow::node::ExecutionStatus::Running
+                | crate::runtime::workflow::node::ExecutionStatus::Waiting
+        ) {
+            return Err(Error::new("INVALID_STATE", "execution is not active"));
         }
         if execution.waits.contains_key(&wait_id) {
             return Err(Error::new("CONFLICT", "execution wait already exists"));

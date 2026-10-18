@@ -44,7 +44,10 @@ pub use components::prompt;
 pub use components::reason;
 pub use components::sandbox;
 pub use components::skill;
-pub use components::tool;
+pub mod tool {
+    pub use crate::components::tool::*;
+    pub use crate::core::tool::execute;
+}
 pub use components::workspace;
 pub use core::provider;
 /// Optional compile-time check that a function or component method can be

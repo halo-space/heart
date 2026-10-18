@@ -152,6 +152,19 @@ impl Slot {
 }
 
 pub(crate) enum Change {
+    PermissionStage {
+        call: Call,
+        state: Box<super::permission::State>,
+        ack: oneshot::Sender<Result<(), Error>>,
+    },
+    // Acknowledged in-memory lifecycle facts, never observation Events or
+    // independent persistence requests. None means before completed; Some is
+    // the raw call result to retain before entering after.
+    ToolStage {
+        call: Call,
+        message: Option<Box<Message>>,
+        ack: oneshot::Sender<Result<(), Error>>,
+    },
     Collect {
         call: Call,
         id: i64,
@@ -499,6 +512,56 @@ impl Run {
             .push_back(change);
         self.0.consumer.wake();
     }
+    pub(crate) async fn tool_stage(
+        &self,
+        call: Call,
+        message: Option<Message>,
+        cancellation: &Cancellation,
+    ) -> Result<(), Error> {
+        if self.closed() {
+            return Err(Error::new("CANCELLED", "Tool stage owner ended"));
+        }
+        let (ack, applied) = oneshot::channel();
+        self.push(Change::ToolStage {
+            call,
+            message: message.map(Box::new),
+            ack,
+        });
+        crate::runtime::cancellation::cancellable(
+            async {
+                applied
+                    .await
+                    .map_err(|_| Error::new("CANCELLED", "Tool stage owner ended"))?
+            },
+            cancellation,
+        )
+        .await
+    }
+    pub(crate) async fn permission_stage(
+        &self,
+        call: Call,
+        state: super::permission::State,
+        cancellation: &Cancellation,
+    ) -> Result<(), Error> {
+        if self.closed() {
+            return Err(Error::new("CANCELLED", "permission owner ended"));
+        }
+        let (ack, applied) = oneshot::channel();
+        self.push(Change::PermissionStage {
+            call,
+            state: Box::new(state),
+            ack,
+        });
+        crate::runtime::cancellation::cancellable(
+            async {
+                applied
+                    .await
+                    .map_err(|_| Error::new("CANCELLED", "permission owner ended"))?
+            },
+            cancellation,
+        )
+        .await
+    }
     pub(crate) fn poll_change(&self, cx: &mut Context<'_>) -> Poll<Change> {
         self.0.consumer.register(cx.waker());
         match self
@@ -619,6 +682,50 @@ pub(crate) fn apply(
     owner: &Run,
 ) -> Result<Option<Event>, Error> {
     match change {
+        Change::PermissionStage { call, state, ack } => {
+            let result = (|| {
+                let step = crate::runtime::agent::tool_steps::current(steps, &call.call_id)
+                    .ok_or_else(|| Error::new("INVALID_STATE", "permission has no Tool owner"))?;
+                if !matches!(step.stage.as_deref(), Some("before" | "call"))
+                    || step.call.as_ref() != Some(&call)
+                    || state.call()? != call
+                {
+                    return Err(Error::new(
+                        "INVALID_STATE",
+                        "permission does not match its Tool owner",
+                    ));
+                }
+                step.permission = Some(state);
+                Ok(None)
+            })();
+            let _ = ack.send(result.as_ref().map(|_| ()).map_err(Clone::clone));
+            result
+        }
+        Change::ToolStage { call, message, ack } => {
+            let result = (|| {
+                let step = crate::runtime::agent::tool_steps::current(steps, &call.call_id)
+                    .ok_or_else(|| Error::new("INVALID_STATE", "Tool stage has no current Step"))?;
+                let expected = if message.is_some() { "call" } else { "before" };
+                if step.stage.as_deref() != Some(expected)
+                    || step.call.as_ref().is_none_or(|saved| {
+                        saved.name != call.name || (message.is_some() && saved != &call)
+                    })
+                {
+                    return Err(Error::new(
+                        "INVALID_STATE",
+                        "Tool stage does not match its operation",
+                    ));
+                }
+                if let Some(message) = message {
+                    crate::runtime::agent::tool_steps::returned(steps, &call, &message);
+                } else {
+                    crate::runtime::agent::tool_steps::prepared(steps, &call);
+                }
+                Ok(None)
+            })();
+            let _ = ack.send(result.as_ref().map(|_| ()).map_err(Clone::clone));
+            result
+        }
         change @ (Change::Collect { .. } | Change::Feedback { .. }) => {
             feedback::apply(change, steps, waits, owner)
         }

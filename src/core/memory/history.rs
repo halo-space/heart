@@ -277,14 +277,6 @@ pub(crate) struct Run {
 }
 
 impl Run {
-    pub(crate) async fn fail(&self, error: Error) -> Error {
-        let status = if error.code == "CANCELLED" {
-            chat::Status::Stopped
-        } else {
-            chat::Status::Failed
-        };
-        self.finish(status, None).await.err().unwrap_or(error)
-    }
     pub(crate) fn settle(&self, usage: Option<crate::model::token::Usage>) {
         self.usage.settle(usage);
     }
@@ -297,23 +289,16 @@ impl Run {
         self.usage.refine_last(usage);
     }
 
-    pub(crate) fn usage(&self) -> Option<crate::model::token::Usage> {
-        self.usage.total()
+    pub(crate) fn refine_saved(
+        &self,
+        previous: Option<&crate::model::token::Usage>,
+        updated: &crate::model::token::Usage,
+    ) {
+        self.usage.refine_saved(previous, updated);
     }
 
-    pub(crate) async fn finish(
-        &self,
-        status: chat::Status,
-        message: Option<Message>,
-    ) -> Result<(), Error> {
-        if let (Some(entry), Some(mut record)) = (&self.history.0, self.record.clone()) {
-            record.status = status;
-            record.message = message.filter(|m| m.role == Role::Assistant);
-            record.usage = self.usage.total();
-            record.completed_time = Some(now_ms());
-            entry.save(record, None).await?;
-        }
-        Ok(())
+    pub(crate) fn usage(&self) -> Option<crate::model::token::Usage> {
+        self.usage.total()
     }
 
     pub(crate) async fn close_with_state(

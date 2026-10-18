@@ -163,6 +163,50 @@ impl Relay {
     }
 }
 
+/// Cancellation is cooperative, not an asynchronous Drop. Acknowledge queued
+/// facts first, then poll only immediately ready work. Fresh native scenes may
+/// release another backpressured handoff; arbitrary non-cooperating streams
+/// cannot keep the owner alive merely by emitting more text.
+pub(crate) fn cancel_ready<T>(
+    cx: &mut Context<'_>,
+    relay: &Relay,
+    mut poll: impl FnMut(&mut Context<'_>) -> Poll<Option<T>>,
+    mut commit: impl FnMut(&Observation) -> Result<(), Error>,
+) -> Result<(Vec<T>, Vec<Event>), Error> {
+    let mut completed = Vec::new();
+    let mut events = Vec::new();
+    while let Poll::Ready(mut observation) = relay.poll_event(cx) {
+        commit(&observation)?;
+        events.extend(
+            observation
+                .event
+                .take()
+                .filter(|event| matches!(event, Event::Complete { message, .. } if !message.metadata.contains_key("reply_id"))),
+        );
+    }
+    loop {
+        let result = poll(cx);
+        let mut native = false;
+        while let Poll::Ready(mut observation) = relay.poll_event(cx) {
+            native |= observation.scene.is_some();
+            commit(&observation)?;
+            events.extend(
+                observation
+                    .event
+                    .take()
+                    .filter(|event| matches!(event, Event::Complete { message, .. } if !message.metadata.contains_key("reply_id"))),
+            );
+        }
+        match result {
+            Poll::Ready(Some(result)) => completed.push(result),
+            Poll::Ready(None) => break,
+            Poll::Pending if native => continue,
+            Poll::Pending => break,
+        }
+    }
+    Ok((completed, events))
+}
+
 pub(crate) struct Observer {
     relay: Relay,
     chat_id: Option<i64>,
@@ -264,6 +308,17 @@ impl Observer {
 pub(crate) struct Root(Arc<Mutex<Option<crate::runtime::agent::node::Execution>>>);
 
 impl Root {
+    pub(crate) fn cancel_pending(&self) {
+        if let Some(attempt) = self
+            .0
+            .lock()
+            .expect("root execution lock poisoned")
+            .as_mut()
+            .and_then(|execution| execution.attempts.last_mut())
+        {
+            cancel_pending(&mut attempt.nodes);
+        }
+    }
     pub(crate) fn feedback_waiters(&self) -> usize {
         self.0
             .lock()
@@ -465,6 +520,19 @@ impl Root {
         execution.usage = usage;
         execution.error = error;
         Some(execution.clone())
+    }
+}
+
+/// Stop only unfinished outer child executions; never rewrite a successful
+/// child or invent inner Model facts for an uncooperative custom Agent.
+pub(crate) fn cancel_pending(nodes: &mut BTreeMap<String, State>) {
+    for node in nodes
+        .values_mut()
+        .filter(|node| matches!(node.status, Status::Running | Status::Waiting))
+    {
+        node.status = Status::Cancelled;
+        node.set_attempt_result(Status::Cancelled, node.usage.clone(), None)
+            .expect("active child has an actual Attempt");
     }
 }
 

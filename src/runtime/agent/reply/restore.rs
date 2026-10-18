@@ -269,7 +269,7 @@ fn prepare_input(scene: &Value, input: Option<&Input>) -> Result<Option<Restore>
             .filter(|(_, record)| record.status == "waiting")
             .collect::<Vec<_>>();
         if step.kind != "tool"
-            || step.stage.as_deref() != Some("call")
+            || !matches!(step.stage.as_deref(), Some("before" | "call" | "after"))
             || unresolved.len() != 1
             || !matches!(unresolved[0].1.kind.as_str(), "approval" | "input")
         {
@@ -284,6 +284,14 @@ fn prepare_input(scene: &Value, input: Option<&Input>) -> Result<Option<Restore>
             .filter(|call| step.call_id.as_ref() == Some(&call.call_id))
             .ok_or_else(|| Error::new("INVALID_STATE", "saved approval has no actual Call"))?;
         let (&reply_id, record) = unresolved[0];
+        if (record.kind == "approval" && step.stage.as_deref() == Some("after"))
+            || (record.kind == "input" && step.stage.as_deref() == Some("before"))
+        {
+            return Err(Error::new(
+                "INVALID_STATE",
+                "saved feedback does not match Tool stage",
+            ));
+        }
         if record
             .question
             .metadata
@@ -624,7 +632,7 @@ pub(crate) async fn consume(
             });
         }
     }
-    if step.stage.as_deref() != Some("call")
+    if !matches!(step.stage.as_deref(), Some("before" | "call"))
         || !step
             .waits
             .values()

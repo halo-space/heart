@@ -39,6 +39,8 @@ pub struct Attempt {
     /// evaluation feedback. They need not equal the node's downstream output.
     #[serde(default)]
     pub messages: Messages,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completion: Option<super::completion::State>,
     /// Dynamic child nodes of this Attempt; not members of the static Plan.
     #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub nodes: std::collections::BTreeMap<String, State>,
@@ -165,18 +167,29 @@ pub struct Step {
     #[serde(default)]
     pub attempts: Vec<StepAttempt>,
     pub error: Option<Error>,
-    /// Current Tool lifecycle stage, independent of execution status.
+    /// Current operation lifecycle stage, independent of execution status.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stage: Option<String>,
-    /// Actual arguments after before; retained unchanged while evaluating.
+    /// Successful middleware methods in this Model Step's current before/after stage.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub idx: Option<usize>,
+    /// Selected Call in before; validated effective arguments from call onward.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub call: Option<Call>,
-    /// Completed call/after result, not an event observation copy.
+    /// Last acknowledged Model input; completed middleware transformations are
+    /// retained here before dispatch as well as after a successful call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub request: Option<Box<crate::model::chat::Request>>,
+    /// Raw call result in after; completed after result from eval onward.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<Message>,
     /// Completed business evaluation, including a rejection's feedback.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub eval: Option<Evaluation>,
+    /// Current permission method progress for this exact Tool invocation.
+    /// Completed decisions are observations, not reusable authorization.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub permission: Option<Box<super::permission::State>>,
     /// Actual questions and accumulated feedback. Historical resolved records
     /// remain here; this is not the top-level ordered waiting locator list.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -190,6 +203,10 @@ pub struct StepAttempt {
     pub finished_time: Option<i64>,
     pub usage: Option<Usage>,
     pub finish_reason: Option<String>,
+    /// Received output of an unfinished Model call. This is not a successful
+    /// Complete, downstream output or automatic input to another Model call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<Box<Message>>,
     pub error: Option<Error>,
 }
 
@@ -235,6 +252,7 @@ impl State {
         self.execution = Some(Execution {
             exec_id,
             attempts: vec![Attempt {
+                completion: None,
                 idx: 0,
                 status: Status::Running,
                 created_time: Some(now_millis()),
@@ -268,6 +286,7 @@ impl State {
             .ok_or_else(|| Error::new("INVALID_STATE", "agent node has no current execution"))?;
         let idx = execution.attempts.len();
         execution.attempts.push(Attempt {
+            completion: None,
             idx,
             status: Status::Running,
             created_time: Some(now_millis()),

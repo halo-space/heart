@@ -221,8 +221,11 @@ type ProviderFuture<S> = Pin<Box<dyn Future<Output = Result<S, Error>> + 'static
 type ToolBatch = (Vec<Message>, Option<crate::model::token::Usage>);
 type ToolBatchFuture =
     Pin<Box<dyn Future<Output = Result<ToolBatch, Box<ToolBatchFailure>>> + 'static>>;
-type ProviderFactory<S> =
-    Arc<dyn Fn(Messages, Cancellation, Arc<AtomicU64>) -> ProviderFuture<S> + Send + Sync>;
+type ProviderFactory<S> = Arc<
+    dyn Fn(Messages, Cancellation, Arc<AtomicU64>, Arc<Mutex<Vec<Step>>>) -> ProviderFuture<S>
+        + Send
+        + Sync,
+>;
 type EvaluatorHandle = Arc<dyn Fn(Input, Messages, Cancellation) -> EvaluationFuture + Send + Sync>;
 type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + 'static>>;
 type CheckpointSave = Backend;
@@ -255,8 +258,9 @@ struct ToolExecution {
 }
 
 struct EventsConfig<S> {
+    completion: Option<crate::runtime::agent::completion::State>,
     interaction: Option<crate::runtime::agent::reply::Run>,
-    steps: Vec<Step>,
+    steps: Arc<Mutex<Vec<Step>>>,
     provider_factory: ProviderFactory<S>,
     toolkit: Option<Toolkit>,
     subagents: Vec<SubAgent>,
@@ -288,6 +292,8 @@ struct ToolBatchFailure {
 /// The concrete stream returned by this Chat Agent. Its items remain the
 /// shared Event contract; this type only owns cancellation and partial state.
 pub struct Events<S> {
+    completion: Arc<Mutex<Option<crate::runtime::agent::completion::State>>>,
+    preparation: Option<crate::runtime::agent::preparation::State>,
     _interaction_owner: Option<crate::runtime::agent::reply::Owner>,
     interaction: Option<crate::runtime::agent::reply::Run>,
     waits: Vec<crate::runtime::agent::wait::Wait>,
@@ -301,6 +307,8 @@ pub struct Events<S> {
     partial: Message,
     input_tokens: u64,
     pending_input_tokens: Arc<AtomicU64>,
+    request: Arc<Mutex<Option<Box<Request>>>>,
+    replayed_completion: bool,
     finished: bool,
     hooks: Hooks,
     toolkit: Option<Arc<Toolkit>>,
@@ -345,6 +353,8 @@ impl<S> Events<S> {
 
     fn empty(cancellation: Cancellation, hooks: Hooks) -> Self {
         Self {
+            completion: Default::default(),
+            preparation: None,
             _interaction_owner: None,
             interaction: None,
             waits: Vec::new(),
@@ -358,6 +368,8 @@ impl<S> Events<S> {
             partial: Message::new(Role::Assistant),
             input_tokens: 0,
             pending_input_tokens: Arc::new(AtomicU64::new(0)),
+            request: Default::default(),
+            replayed_completion: false,
             finished: false,
             hooks,
             toolkit: None,
@@ -385,12 +397,13 @@ impl<S> Events<S> {
     }
 
     fn configure_tools(mut self, config: EventsConfig<S>) -> Self {
+        self.completion = Arc::new(Mutex::new(config.completion));
         self._interaction_owner = config
             .interaction
             .as_ref()
             .map(crate::runtime::agent::reply::Run::owner);
         self.interaction = config.interaction;
-        self.steps = Arc::new(Mutex::new(config.steps));
+        self.steps = config.steps;
         self.provider_factory = Some(config.provider_factory);
         self.toolkit = config.toolkit.map(Arc::new);
         self.subagents = config.subagents;
@@ -409,7 +422,32 @@ impl<S> Events<S> {
     }
 
     fn cancelled(&mut self) -> Event {
+        if self.settled
+            && let Some(message) = super::completion::partial(
+                self.completion.lock().expect("completion lock").as_ref(),
+                &self.steps.lock().expect("Agent steps lock"),
+            )
+        {
+            self.partial = message;
+        }
         let message = std::mem::replace(&mut self.partial, Message::new(Role::Assistant));
+        if self
+            .preparation
+            .as_ref()
+            .is_some_and(|state| state.stage != crate::runtime::agent::preparation::Stage::Complete)
+            || crate::runtime::agent::model_steps::pending_input(
+                &self.steps.lock().expect("Model steps lock"),
+            )
+            .is_some_and(|step| step.stage.as_deref() == Some("before"))
+        {
+            // No Model request exists yet: preserve stopped output without
+            // inventing token consumption for a cancelled preparation Hook.
+            return Event::Complete {
+                message,
+                usage: None,
+                finish_reason: Some("cancelled".into()),
+            };
+        }
         let usage = {
             let output = estimate_output_tokens(&message);
             let mut usage = message.usage.clone().unwrap_or_default();
@@ -427,10 +465,26 @@ impl<S> Events<S> {
                     .unwrap_or(0)
                     .saturating_add(usage.output.unwrap_or(0)),
             );
-            if self.settled {
+            if self.replayed_completion && self.settled {
+                self.run.refine_saved(message.usage.as_ref(), &usage);
+            } else if self.settled {
                 self.run.refine_last(Some(usage.clone()));
             } else {
                 self.run.settle(Some(usage.clone()));
+                crate::runtime::agent::model_steps::unfinished(
+                    &mut self.steps.lock().expect("Model steps lock"),
+                    &message,
+                    &usage,
+                );
+            }
+            if self.settled
+                && let Ok(mut steps) = self.steps.lock()
+            {
+                crate::runtime::agent::model_steps::refine(&mut steps, &usage);
+                if let Some(completion) = self.completion.lock().expect("completion lock").as_mut()
+                {
+                    completion.message.usage = Some(usage.clone());
+                }
             }
             self.settled = true;
             Some(usage)
@@ -445,6 +499,18 @@ impl<S> Events<S> {
     }
 
     fn close(&mut self, result: Result<Event, Error>) {
+        if let Err(error) = &result {
+            crate::runtime::agent::model_steps::stopped(
+                &mut self.steps.lock().expect("Model steps lock"),
+                error,
+            );
+        } else if matches!(&result, Ok(Event::Complete { finish_reason:Some(reason), .. }) if reason == "cancelled")
+        {
+            crate::runtime::agent::model_steps::stopped(
+                &mut self.steps.lock().expect("Model steps lock"),
+                &Error::new("CANCELLED", "Agent cancelled"),
+            );
+        }
         if let Some(run) = &self.interaction {
             run.close();
         }
@@ -461,9 +527,11 @@ impl<S> Events<S> {
             tool_steps::cancel_pending(&mut self.steps.lock().expect("Tool steps lock poisoned"));
         }
         if result.is_err() && !self.settled {
-            // Keep already reported consumption, but never estimate an error
-            // stream as though it had delivered a successful Complete.
-            self.run.settle(self.partial.usage.clone());
+            let usage = super::lifecycle::model_unfinished(
+                &mut self.steps.lock().expect("Model steps lock"),
+                &self.partial,
+            );
+            self.run.settle(usage);
             self.settled = true;
         }
         let run = self.run.clone();
@@ -472,7 +540,11 @@ impl<S> Events<S> {
         let mut state = checkpoint_state(
             &self.messages,
             self.run.usage(),
-            self.input.as_ref(),
+            (
+                self.input.as_ref(),
+                self.preparation.as_ref(),
+                self.completion.lock().expect("completion lock").as_ref(),
+            ),
             &result,
             &self.root,
             &self.steps.lock().expect("Tool steps lock poisoned"),
@@ -480,8 +552,9 @@ impl<S> Events<S> {
         );
         state["waits"] = serde_json::to_value(&self.waits).expect("waits serialization");
         self.closing = true;
+        let embedded = crate::runtime::agent::scope::capture(state.clone());
         self.pending = Some(Box::pin(async move {
-            if crate::runtime::agent::scope::capture(state.clone()) {
+            if embedded {
                 // The outer Workflow owns the embedded Agent checkpoint.
             } else if let (Some(checkpoint), Some(id)) = (checkpoint, checkpoint_id) {
                 checkpoint
@@ -524,6 +597,99 @@ where
 }
 
 impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
+    fn postprocess(&self, model: Option<Step>) -> CompletionFuture {
+        let hooks = self.hooks.clone();
+        let steps = self.steps.clone();
+        let completion = self.completion.clone();
+        let cancellation = self.cancellation.clone();
+        let evaluator = self.evaluator.clone();
+        let input = self.input.clone();
+        Box::pin(async move {
+            let event = if let Some(saved) = model {
+                Box::pin(super::completion::model(
+                    &hooks,
+                    saved,
+                    |saved| {
+                        let mut steps = steps.lock().expect("model steps lock");
+                        let step = steps
+                            .iter_mut()
+                            .find(|step| step.id == saved.id)
+                            .ok_or_else(|| {
+                                Error::new("INVALID_STATE", "Model Step owner is missing")
+                            })?;
+                        *step = saved;
+                        Ok(())
+                    },
+                    &cancellation,
+                ))
+                .await?
+            } else {
+                let saved = completion
+                    .lock()
+                    .expect("completion lock")
+                    .clone()
+                    .ok_or_else(|| Error::new("INVALID_STATE", "Agent result is missing"))?;
+                Event::Complete {
+                    usage: saved.message.usage.clone(),
+                    message: saved.message,
+                    finish_reason: saved.finish_reason,
+                }
+            };
+            let Event::Complete {
+                message,
+                finish_reason,
+                ..
+            } = event
+            else {
+                unreachable!()
+            };
+            if super::completion::has_calls(&message) {
+                return Ok(Event::Complete {
+                    usage: message.usage.clone(),
+                    message,
+                    finish_reason,
+                });
+            }
+            let saved = {
+                let mut owner = completion.lock().expect("completion lock");
+                if owner.as_ref().is_none_or(|state| !state.pending()) {
+                    *owner = Some(crate::runtime::agent::completion::State::new(
+                        message,
+                        finish_reason,
+                    ));
+                }
+                owner.clone().expect("actual Agent result")
+            };
+            let result = Box::pin(super::completion::agent(
+                &hooks,
+                saved,
+                |saved| {
+                    *completion.lock().expect("completion lock") = Some(saved);
+                    Ok(())
+                },
+                &cancellation,
+            ))
+            .await?;
+            if let (Some(evaluator), Some(input), Event::Complete { message, .. }) =
+                (evaluator, input, &result)
+            {
+                let evaluation =
+                    evaluator(input, Messages::new([message.clone()]), cancellation).await?;
+                if !evaluation.passed {
+                    let details = evaluation
+                        .feedback
+                        .and_then(|feedback| serde_json::to_string(&feedback).ok())
+                        .unwrap_or_else(|| "final result was rejected".into());
+                    return Err(
+                        Error::new("EVALUATION_FAILED", "agent final result was rejected")
+                            .with_details(details),
+                    );
+                }
+            }
+            Ok(result)
+        })
+    }
+
     fn capture_live(&self) {
         if !crate::runtime::agent::scope::active() {
             return;
@@ -536,7 +702,11 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
             checkpoint_state(
                 &self.messages,
                 self.run.usage(),
-                self.input.as_ref(),
+                (
+                    self.input.as_ref(),
+                    self.preparation.as_ref(),
+                    self.completion.lock().expect("completion lock").as_ref(),
+                ),
                 &Ok(Event::Delta {
                     message: self.partial.clone(),
                 }),
@@ -548,7 +718,11 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
             waiting_checkpoint_state(
                 &self.messages,
                 self.run.usage(),
-                self.input.as_ref(),
+                (
+                    self.input.as_ref(),
+                    self.preparation.as_ref(),
+                    self.completion.lock().expect("completion lock").as_ref(),
+                ),
                 &self.root,
                 &steps,
                 self.stream,
@@ -557,6 +731,40 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
         snapshot["waits"] = serde_json::to_value(&self.waits).expect("waits serialization");
         snapshot
     }
+    // Keep cancellation-only locals out of every normal nested stream poll.
+    #[inline(never)]
+    fn cancel_children(&mut self, cx: &mut Context<'_>) -> Result<Vec<Event>, Error> {
+        let (completed, events) = crate::core::agent::subagent::cancel_ready(
+            cx,
+            &self.child_events,
+            |cx| {
+                let Some(tools) = self.pending_tools.as_mut() else {
+                    return Poll::Ready(None);
+                };
+                match tools.as_mut().poll(cx) {
+                    Poll::Ready(result) => {
+                        self.pending_tools = None;
+                        Poll::Ready(Some(result))
+                    }
+                    Poll::Pending => Poll::Pending,
+                }
+            },
+            |observation| {
+                self.root.observe(observation)?;
+                self.run.settle_child(observation.usage.clone());
+                Ok(())
+            },
+        )?;
+        for result in completed {
+            self.run.settle_child(match result {
+                Ok((_, usage)) => usage,
+                Err(failure) => failure.usage,
+            });
+        }
+        self.root.cancel_pending();
+        Ok(events)
+    }
+
     // Finish state/history mutations before decorating the outgoing copy.
     fn poll_event(&mut self, cx: &mut Context<'_>) -> Poll<Option<Result<Event, Error>>> {
         let this = self;
@@ -567,8 +775,18 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
             this.cancellation.register(cx.waker());
         }
         if this.cancellation.is_cancelled() && !this.closing {
+            let events = match this.cancel_children(cx) {
+                Ok(events) => events,
+                Err(error) => {
+                    this.close(Err(error));
+                    return Pin::new(this).poll_next(cx);
+                }
+            };
             let result = this.cancelled();
             this.close(Ok(result));
+            // Existing transient output queue; these are actual child events,
+            // not synthesized results or another saved state.
+            this.questions.extend(events);
         }
         if let Some(checkpoint) = this.pending_checkpoint.as_mut() {
             match checkpoint.as_mut().poll(cx) {
@@ -598,7 +816,12 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                 }
                 Poll::Ready(Err(error)) => {
                     this.pending_provider = None;
-                    this.close(Err(error));
+                    if this.cancellation.is_cancelled() {
+                        let result = this.cancelled();
+                        this.close(Ok(result));
+                    } else {
+                        this.close(Err(error));
+                    }
                     return Pin::new(this).poll_next(cx);
                 }
             }
@@ -624,7 +847,11 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                 let mut snapshot = waiting_checkpoint_state(
                                     &this.messages,
                                     this.run.usage(),
-                                    this.input.as_ref(),
+                                    (
+                                        this.input.as_ref(),
+                                        this.preparation.as_ref(),
+                                        this.completion.lock().expect("completion lock").as_ref(),
+                                    ),
                                     &this.root,
                                     &this.steps.lock().expect("Tool steps lock poisoned"),
                                     this.stream,
@@ -644,7 +871,14 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                     let mut snapshot = waiting_checkpoint_state(
                                         &this.messages,
                                         this.run.usage(),
-                                        this.input.as_ref(),
+                                        (
+                                            this.input.as_ref(),
+                                            this.preparation.as_ref(),
+                                            this.completion
+                                                .lock()
+                                                .expect("completion lock")
+                                                .as_ref(),
+                                        ),
                                         &this.root,
                                         &this.steps.lock().expect("Tool steps lock poisoned"),
                                         this.stream,
@@ -704,7 +938,11 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                 let mut snapshot = waiting_checkpoint_state(
                                     &this.messages,
                                     this.run.usage(),
-                                    this.input.as_ref(),
+                                    (
+                                        this.input.as_ref(),
+                                        this.preparation.as_ref(),
+                                        this.completion.lock().expect("completion lock").as_ref(),
+                                    ),
                                     &this.root,
                                     &this.steps.lock().expect("Tool steps lock poisoned"),
                                     this.stream,
@@ -739,7 +977,11 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                         checkpoint_state(
                             &this.messages,
                             this.run.usage(),
-                            this.input.as_ref(),
+                            (
+                                this.input.as_ref(),
+                                this.preparation.as_ref(),
+                                this.completion.lock().expect("completion lock").as_ref(),
+                            ),
                             &Ok(Event::Delta {
                                 message: this.partial.clone(),
                             }),
@@ -753,7 +995,12 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                 Poll::Ready(Err(error)) => {
                     this.pending_tools = None;
                     this.run.settle_child(error.usage);
-                    this.close(Err(error.error));
+                    if this.cancellation.is_cancelled() {
+                        let result = this.cancelled();
+                        this.close(Ok(result));
+                    } else {
+                        this.close(Err(error.error));
+                    }
                     return Pin::new(this).poll_next(cx);
                 }
             }
@@ -779,6 +1026,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                     messages,
                     cancellation.clone(),
                     this.pending_input_tokens.clone(),
+                    this.steps.clone(),
                 );
                 let interaction = this.interaction.clone();
                 this.pending_provider = Some(Box::pin(async move {
@@ -825,6 +1073,11 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                 }
                             };
                             this.messages.push(message.clone());
+                            if let Some(completion) =
+                                this.completion.lock().expect("completion lock").as_mut()
+                            {
+                                completion.stage = "committed".into();
+                            }
                             if calls.is_empty() {
                                 this.close(Ok(event));
                                 return Pin::new(this).poll_next(cx);
@@ -879,7 +1132,14 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                         waiting_checkpoint_state(
                                             &this.messages,
                                             this.run.usage(),
-                                            this.input.as_ref(),
+                                            (
+                                                this.input.as_ref(),
+                                                this.preparation.as_ref(),
+                                                this.completion
+                                                    .lock()
+                                                    .expect("completion lock")
+                                                    .as_ref(),
+                                            ),
                                             &this.root,
                                             &this.steps.lock().expect("Tool steps lock poisoned"),
                                             this.stream,
@@ -952,43 +1212,23 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                 message.usage = usage.clone();
                 this.run.settle(usage.clone());
                 this.settled = true;
+                this.replayed_completion = false;
                 this.partial = message.clone();
-                let hooks = this.hooks.clone();
-                let cancellation = this.cancellation.clone();
-                let evaluator = this.evaluator.clone();
-                let input = this.input.clone();
-                this.pending = Some(Box::pin(async move {
-                    let message = hooks.after_model(message, &cancellation).await?;
-                    let message = hooks.after_execute(message, &cancellation).await?;
-                    let has_tool_calls = message
-                        .content
-                        .iter()
-                        .any(|part| part.r#type == "tool_call");
-                    if !has_tool_calls && let (Some(evaluator), Some(input)) = (evaluator, input) {
-                        let evaluation = evaluator(
-                            input,
-                            Messages::new([message.clone()]),
-                            cancellation.clone(),
-                        )
-                        .await?;
-                        if !evaluation.passed {
-                            let details = evaluation
-                                .feedback
-                                .and_then(|feedback| serde_json::to_string(&feedback).ok())
-                                .unwrap_or_else(|| "final result was rejected".into());
-                            return Err(Error::new(
-                                "EVALUATION_FAILED",
-                                "agent final result was rejected",
-                            )
-                            .with_details(details));
-                        }
-                    }
-                    Ok(Event::Complete {
+                let saved = {
+                    let mut steps = this.steps.lock().expect("Tool steps lock poisoned");
+                    crate::runtime::agent::model_steps::returned(
+                        &mut steps,
+                        this.request
+                            .lock()
+                            .expect("Model request lock poisoned")
+                            .take(),
                         message,
                         usage,
                         finish_reason,
-                    })
-                }));
+                    );
+                    steps.last().expect("actual model result").clone()
+                };
+                this.pending = Some(this.postprocess(Some(saved)));
                 // Poll the owned hook future immediately; no extra Delta/Complete.
                 Pin::new(this).poll_next(cx)
             }
@@ -1053,6 +1293,8 @@ where
         let mut restored_waiting = false;
         let mut restored_usage = None;
         let mut restored_query = None;
+        let mut preparation = None;
+        let mut completion: Option<crate::runtime::agent::completion::State> = None;
         let mut restored_steps: Vec<Step> = Vec::new();
         let mut restored_pending_subagents = std::collections::BTreeMap::new();
         let mut restored_root = Root::default();
@@ -1090,6 +1332,14 @@ where
             restored_usage = serde_json::from_value(snapshot["usage"].clone()).ok();
             restored_pending_subagents = checkpoint_pending_subagents(&snapshot)?;
             restored_query = Some(checkpoint_query(&snapshot)?);
+            preparation = crate::runtime::agent::preparation::State::restore(&snapshot)?;
+            completion = snapshot
+                .get("completion")
+                .filter(|value| !value.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::new("INVALID_STATE", "invalid Agent completion"))?;
             restored_steps = checkpoint_steps(&snapshot)?;
             restored_root = Root::restore(&snapshot)?;
         }
@@ -1127,18 +1377,48 @@ where
             restored_usage = serde_json::from_value(snapshot["usage"].clone()).ok();
             restored_pending_subagents = checkpoint_pending_subagents(&snapshot)?;
             restored_query = Some(checkpoint_query(&snapshot)?);
+            preparation = crate::runtime::agent::preparation::State::restore(&snapshot)?;
+            completion = snapshot
+                .get("completion")
+                .filter(|value| !value.is_null())
+                .cloned()
+                .map(serde_json::from_value)
+                .transpose()
+                .map_err(|_| Error::new("INVALID_STATE", "invalid Agent completion"))?;
             restored_steps = checkpoint_steps(&snapshot)?;
             restored_root = Root::restore(&snapshot)?;
         }
+        if let Some(state) = &preparation {
+            state.validate(
+                self.hooks.len(),
+                restored_query.as_ref().expect("restored original query"),
+            )?;
+        }
+        crate::runtime::agent::model_steps::validate_owner(
+            &restored_steps,
+            completion.as_ref(),
+            self.hooks.len(),
+        )?;
+        super::access::require_policy(&restored_steps, self.access.is_configured())?;
+        let pending_model = crate::runtime::agent::model_steps::pending(&restored_steps).cloned();
+        let processing_output = pending_model.is_some()
+            || completion
+                .as_ref()
+                .is_some_and(crate::runtime::agent::completion::State::pending);
+        let processing =
+            processing_output || crate::runtime::agent::model_steps::continuing(&restored_steps);
         let restored_calls = if let Some(messages) = restored_messages.as_mut() {
             restored_root.resume_calls(&restored_steps, messages)?;
             tool_steps::resume_calls(&restored_steps, messages)?
         } else {
             Vec::new()
         };
-        let original = input.clone();
+        let original = restored_query.clone().unwrap_or_else(|| input.clone());
         let interaction = if embedded {
-            crate::runtime::agent::scope::interaction()
+            Some(match crate::runtime::agent::scope::interaction() {
+                Some(run) => run,
+                None => self.replies.start(original.metadata.clone())?,
+            })
         } else {
             Some(self.replies.start(original.metadata.clone())?)
         };
@@ -1151,41 +1431,42 @@ where
             })
             .unwrap_or(embedded_waits);
         let restoring = restored_messages.is_some();
-        let input = if restoring {
-            input
-        } else {
-            self.hooks.before_execute(input, &cancellation).await?
-        };
-        history.check_identity(&original, &input)?;
-        let prompt = if restoring {
-            None
-        } else {
-            self.hooks
-                .prompt(self.system_prompt.clone(), &cancellation)
-                .await?
-        };
-        let recalled = if restoring {
-            Vec::new()
-        } else {
-            history
-                .load(input.metadata.clone(), self.hooks.clone(), &cancellation)
-                .await?
-        };
-        let run = if restored_messages.is_some() {
-            history.resume(original.clone(), &cancellation).await?
-        } else {
-            history.begin(original.clone(), &cancellation).await?
-        };
+        if !restoring {
+            preparation = Some(crate::runtime::agent::preparation::State::new(
+                original.clone(),
+                self.system_prompt.clone(),
+            ));
+        }
+        let preparing = preparation.as_ref().is_some_and(|state| {
+            state.stage != crate::runtime::agent::preparation::Stage::Complete
+        });
+        let mut run = Run::default();
         // Preparation belongs to this run too. Retain its constructed input
         // before Toolkit preparation, model hooks or Provider dispatch stop it.
-        let mut preparation_messages = Messages::default();
+        let mut preparation_messages = restored_messages.clone().unwrap_or_default();
         let mut preparation_input_tokens = 0;
+        let request_scene = Arc::new(Mutex::new(None));
+        let model_steps = Arc::new(Mutex::new(restored_steps.clone()));
         let mut restore_validation_error = false;
         let prepared = async {
-            let mut messages = restored_messages
-                .clone()
-                .unwrap_or_else(|| initial_messages(input.clone(), prompt.as_deref(), recalled));
+            if let Some(state) = preparation.as_mut() {
+                Box::pin(super::preparation::advance(
+                    state,
+                    &original,
+                    &mut preparation_messages,
+                    &mut run,
+                    &history,
+                    &self.hooks,
+                    &cancellation,
+                ))
+                .await?;
+            } else {
+                run = history.resume(original.clone(), &cancellation).await?;
+            }
+            let mut messages = preparation_messages.clone();
             if restored_waiting
+                && !preparing
+                && !processing
                 && restored_pending_subagents.is_empty()
                 && restored_calls.is_empty()
             {
@@ -1196,10 +1477,10 @@ where
                 Some(toolkit) => Some(toolkit.prepared(&cancellation).await?),
                 None => None,
             };
-            for step in restored_steps
-                .iter()
-                .filter(|step| step.stage.as_deref() == Some("eval"))
-            {
+            for step in restored_steps.iter().filter(|step| {
+                step.kind == "tool"
+                    && matches!(step.stage.as_deref(), Some("call" | "after" | "eval"))
+            }) {
                 let checked = toolkit
                     .as_ref()
                     .ok_or_else(|| {
@@ -1228,28 +1509,38 @@ where
             let model = Arc::clone(&self.model);
             // A child-wait checkpoint already contains the exact child Call.
             // Do not invoke the parent model before restoring that hand-off.
-            let (provider, input_tokens) =
-                if restored_pending_subagents.is_empty() && restored_calls.is_empty() {
-                    let request = Request {
-                        messages: messages.clone(),
-                        stream,
-                        tools: tool_definitions.clone(),
-                        ..Request::default()
-                    };
-                    let request = self.hooks.before_model(request, &cancellation).await?;
-                    let input_tokens = estimate_input_tokens(&request);
-                    preparation_input_tokens = input_tokens;
-                    let provider = cancellable(model.stream(request), &cancellation).await?;
-                    (Some(provider), input_tokens)
-                } else {
-                    (None, 0)
+            let (provider, input_tokens) = if restored_pending_subagents.is_empty()
+                && restored_calls.is_empty()
+                && !processing_output
+            {
+                let request = Request {
+                    messages: messages.clone(),
+                    stream,
+                    tools: tool_definitions.clone(),
+                    ..Request::default()
                 };
+                let request =
+                    prepare_model(&self.hooks, &model_steps, request, &cancellation).await?;
+                let input_tokens = estimate_input_tokens(&request);
+                preparation_input_tokens = input_tokens;
+                *request_scene.lock().expect("Model request lock poisoned") =
+                    Some(Box::new(request.clone()));
+                crate::runtime::agent::model_steps::calling(
+                    &mut model_steps.lock().expect("Model steps lock"),
+                );
+                let provider = cancellable(model.stream(request), &cancellation).await?;
+                (Some(provider), input_tokens)
+            } else {
+                (None, 0)
+            };
             let hooks = self.hooks.clone();
+            let factory_request = request_scene.clone();
             let factory: ProviderFactory<M::Stream> =
-                Arc::new(move |messages, cancellation, input_tokens| {
+                Arc::new(move |messages, cancellation, input_tokens, steps| {
                     let model = Arc::clone(&model);
                     let hooks = hooks.clone();
                     let tools = tool_definitions.clone();
+                    let request_scene = factory_request.clone();
                     Box::pin(async move {
                         let request = Request {
                             messages,
@@ -1257,8 +1548,13 @@ where
                             tools,
                             ..Request::default()
                         };
-                        let request = hooks.before_model(request, &cancellation).await?;
+                        let request = prepare_model(&hooks, &steps, request, &cancellation).await?;
                         input_tokens.store(estimate_input_tokens(&request), Ordering::Relaxed);
+                        *request_scene.lock().expect("Model request lock poisoned") =
+                            Some(Box::new(request.clone()));
+                        crate::runtime::agent::model_steps::calling(
+                            &mut steps.lock().expect("Model steps lock"),
+                        );
                         model.stream(request).await
                     })
                 });
@@ -1272,8 +1568,9 @@ where
                 None => Events::empty(cancellation.clone(), self.hooks.clone()),
             }
             .configure_tools(EventsConfig {
+                completion: completion.clone(),
                 interaction: interaction.clone(),
-                steps: restored_steps.clone(),
+                steps: model_steps.clone(),
                 provider_factory: factory,
                 toolkit,
                 subagents: self.subagents.clone(),
@@ -1290,7 +1587,26 @@ where
                 id_fn,
             });
             events.stream = stream;
+            events.request = request_scene.clone();
+            events.preparation = preparation.clone();
             events.waits = restored_waits.clone();
+            if processing_output {
+                events.partial = pending_model
+                    .as_ref()
+                    .and_then(|step| step.message.clone())
+                    .or_else(|| completion.as_ref().map(|state| state.message.clone()))
+                    .expect("validated output");
+                events.settled = true;
+                events.replayed_completion = true;
+                events.input_tokens = restored_steps
+                    .iter()
+                    .rev()
+                    .find(|step| step.kind == "model")
+                    .and_then(|step| step.request.as_deref())
+                    .map(estimate_input_tokens)
+                    .unwrap_or(0);
+                events.pending = Some(events.postprocess(pending_model.clone()));
+            }
             if !restored_pending_subagents.is_empty() || !restored_calls.is_empty() {
                 let calls = restored_pending_subagents
                     .values()
@@ -1340,6 +1656,8 @@ where
                 }
                 let mut events = Events::<M::Stream>::empty(cancellation, self.hooks.clone());
                 events.stream = stream;
+                events.preparation = preparation;
+                events.completion = Arc::new(Mutex::new(completion));
                 events.checkpoint = checkpoint;
                 events.checkpoint_id = checkpoint_id;
                 events.input = Some(restored_query.unwrap_or(original));
@@ -1347,7 +1665,7 @@ where
                 events.messages = preparation_messages;
                 events.pending_subagents = restored_pending_subagents;
                 events.root = restored_root;
-                events.steps = Arc::new(Mutex::new(restored_steps));
+                events.steps = model_steps;
                 events.run = run;
                 events.input_tokens = preparation_input_tokens;
                 if let Some(usage) = restored_usage {
@@ -1380,6 +1698,33 @@ where
             }
         }
     }
+}
+
+async fn prepare_model(
+    hooks: &Hooks,
+    steps: &Arc<Mutex<Vec<Step>>>,
+    request: Request,
+    cancellation: &Cancellation,
+) -> Result<Request, Error> {
+    let saved = crate::runtime::agent::model_steps::input(
+        &mut steps.lock().expect("Model steps lock"),
+        request,
+    );
+    Box::pin(super::lifecycle::model_prepare(
+        hooks,
+        saved,
+        |saved| {
+            let mut steps = steps.lock().expect("Model steps lock");
+            let owner = steps
+                .iter_mut()
+                .find(|step| step.id == saved.id)
+                .expect("actual Model input owner");
+            *owner = saved;
+            Ok(())
+        },
+        cancellation,
+    ))
+    .await
 }
 
 async fn execute_tool_batch(
@@ -1677,12 +2022,17 @@ fn subagent_error_message(call: &Call, error: &Error) -> Message {
 fn checkpoint_state(
     messages: &Messages,
     usage: Option<crate::model::token::Usage>,
-    input: Option<&Input>,
+    scene: (
+        Option<&Input>,
+        Option<&crate::runtime::agent::preparation::State>,
+        Option<&crate::runtime::agent::completion::State>,
+    ),
     result: &Result<Event, Error>,
     root: &Root,
     steps: &[Step],
     stream: bool,
 ) -> Value {
+    let (input, preparation, completion) = scene;
     let status = match result {
         Ok(Event::Complete {
             finish_reason: Some(reason),
@@ -1707,14 +2057,25 @@ fn checkpoint_state(
         "steps": steps,
         "waits": [],
     });
+    if let Some(preparation) = preparation {
+        state["preparation"] =
+            serde_json::to_value(preparation).expect("preparation serialization");
+    }
     crate::runtime::agent::checkpoint::record_result(&mut state, result);
+    if let Some(completion) = completion {
+        state["completion"] = serde_json::to_value(completion).expect("completion serialization");
+    }
     state
 }
 
 fn waiting_checkpoint_state(
     messages: &Messages,
     usage: Option<crate::model::token::Usage>,
-    input: Option<&Input>,
+    scene: (
+        Option<&Input>,
+        Option<&crate::runtime::agent::preparation::State>,
+        Option<&crate::runtime::agent::completion::State>,
+    ),
     root: &Root,
     steps: &[Step],
     stream: bool,
@@ -1722,7 +2083,7 @@ fn waiting_checkpoint_state(
     let mut state = checkpoint_state(
         messages,
         usage.clone(),
-        input,
+        scene,
         &Ok(Event::Delta {
             message: Message::new(Role::Assistant),
         }),
@@ -1826,118 +2187,97 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
     if saved.stage.as_deref() == Some("complete") {
         return step_messages(&call, &saved);
     }
-    let approval =
-        crate::runtime::agent::reply::consume_restore(interaction.as_ref(), &saved, &cancellation)
-            .await;
-    let resumed = if saved.stage.as_deref() == Some("eval") {
-        Some((
-            saved
-                .call
-                .clone()
-                .ok_or_else(|| Error::new("INVALID_STATE", "eval step has no actual Call"))?,
-            saved
-                .message
-                .clone()
-                .ok_or_else(|| Error::new("INVALID_STATE", "eval step has no business result"))?,
-        ))
-    } else {
-        None
-    };
-    let mut permission_hook_failed = false;
-    let result = if let Err(error) = &approval {
-        Err(error.clone())
-    } else if let Some(result) = resumed {
-        Ok(result)
-    } else if access.is_configured() {
-        async {
-            toolkit.validate(&call)?;
-            crate::core::agent::access::check_tool(
-                &access,
-                &hooks,
-                metadata.clone(),
-                &call,
-                &cancellation,
-                interaction.as_ref(),
-                id_fn,
-                approval.as_ref().ok().and_then(Option::as_ref),
-            )
-            .await
-            .map_err(|failure| match failure {
-                crate::core::agent::access::Failure::Policy(error) => error,
-                crate::core::agent::access::Failure::Hook(error) => {
-                    permission_hook_failed = true;
-                    error
+    let mut control_failed = false;
+    let result = async {
+        let effective = Box::pin(super::lifecycle::tool_prepare(
+            &toolkit,
+            &access,
+            &hooks,
+            &metadata,
+            interaction.as_ref(),
+            id_fn,
+            &saved,
+            &call,
+            |effective| {
+                let steps = &steps;
+                let interaction = &interaction;
+                let cancellation = &cancellation;
+                async move {
+                    retain_tool_stage(steps, interaction.as_ref(), &effective, None, cancellation)
+                        .await
                 }
-            })?;
-            let effective = toolkit.prepare_call(call.clone(), &cancellation).await?;
-            if let Some(step) = tool_steps::current(
-                &mut steps.lock().expect("Tool steps lock poisoned"),
-                &call.call_id,
-            ) {
-                step.call = Some(effective.clone());
-            }
-            if effective.arguments != call.arguments {
-                crate::core::agent::access::check_tool(
-                    &access,
-                    &hooks,
-                    metadata.clone(),
-                    &effective,
-                    &cancellation,
-                    interaction.as_ref(),
-                    id_fn,
-                    approval.as_ref().ok().and_then(Option::as_ref),
-                )
-                .await
-                .map_err(|failure| match failure {
-                    crate::core::agent::access::Failure::Policy(error) => error,
-                    crate::core::agent::access::Failure::Hook(error) => {
-                        permission_hook_failed = true;
-                        error
+            },
+            |permission| {
+                let steps = &steps;
+                let interaction = &interaction;
+                let cancellation = &cancellation;
+                async move {
+                    let call = permission.call()?;
+                    if let Some(run) = interaction {
+                        run.permission_stage(call, permission, cancellation).await
+                    } else {
+                        let mut steps = steps.lock().expect("Tool steps lock");
+                        let owner =
+                            tool_steps::current(&mut steps, &call.call_id).ok_or_else(|| {
+                                Error::new("INVALID_STATE", "permission owner missing")
+                            })?;
+                        owner.permission = Some(Box::new(permission));
+                        Ok(())
                     }
+                }
+            },
+            &cancellation,
+        ))
+        .await
+        .map_err(|failure| match failure {
+            super::lifecycle::Failure::Policy(error, _)
+            | super::lifecycle::Failure::Tool(error) => error,
+            super::lifecycle::Failure::Hook(error) => {
+                control_failed = true;
+                error
+            }
+        })?;
+        if matches!(saved.stage.as_deref(), Some("before" | "call"))
+            && let Some(run) = &interaction
+        {
+            run.continue_execution(&cancellation)
+                .await
+                .inspect_err(|_| {
+                    control_failed = true;
                 })?;
-            }
-            if let Some(run) = &interaction {
-                run.continue_execution(&cancellation).await?;
-            }
-            crate::runtime::agent::reply::feedback::during(
-                interaction.clone(),
-                effective.clone(),
-                saved.clone(),
-                id_fn,
-                toolkit.call_prepared(effective, &cancellation),
-            )
-            .await
         }
+        super::lifecycle::tool_call(
+            &toolkit,
+            &saved,
+            effective,
+            interaction.clone(),
+            id_fn,
+            |effective, business| {
+                let steps = &steps;
+                let interaction = &interaction;
+                let cancellation = &cancellation;
+                async move {
+                    retain_tool_stage(
+                        steps,
+                        interaction.as_ref(),
+                        &effective,
+                        Some(&business),
+                        cancellation,
+                    )
+                    .await
+                }
+            },
+            &cancellation,
+        )
         .await
-    } else {
-        async {
-            if let Some(run) = &interaction {
-                run.continue_execution(&cancellation).await?;
-            }
-            let effective = toolkit.prepare_call(call.clone(), &cancellation).await?;
-            if let Some(step) = tool_steps::current(
-                &mut steps.lock().expect("Tool steps lock poisoned"),
-                &call.call_id,
-            ) {
-                step.call = Some(effective.clone());
-            }
-            crate::runtime::agent::reply::feedback::during(
-                interaction.clone(),
-                effective.clone(),
-                saved.clone(),
-                id_fn,
-                toolkit.call_prepared(effective, &cancellation),
-            )
-            .await
-        }
-        .await
-    };
+    }
+    .await;
     let (effective_call, business) = match result {
         Ok(result) => result,
         Err(error) => {
             let mut steps = steps.lock().expect("Tool steps lock poisoned");
             tool_steps::stopped(&mut steps, &call.call_id, &error);
-            if permission_hook_failed || matches!(error.code.as_str(), "CANCELLED" | "WAITING") {
+            if control_failed || matches!(error.code.as_str(), "CANCELLED" | "WAITING") {
                 return Err(error);
             }
             let message = tool_error_message(&call, error);
@@ -1972,16 +2312,40 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
     )
 }
 
+async fn retain_tool_stage(
+    steps: &Arc<Mutex<Vec<Step>>>,
+    interaction: Option<&crate::runtime::agent::reply::Run>,
+    call: &Call,
+    message: Option<&Message>,
+    cancellation: &Cancellation,
+) -> Result<(), Error> {
+    if let Some(run) = interaction {
+        run.tool_stage(call.clone(), message.cloned(), cancellation)
+            .await
+    } else {
+        let mut steps = steps.lock().expect("Tool steps lock poisoned");
+        if let Some(message) = message {
+            tool_steps::returned(&mut steps, call, message);
+        } else {
+            tool_steps::prepared(&mut steps, call);
+        }
+        Ok(())
+    }
+}
+
 fn step_messages(call: &Call, step: &Step) -> Result<Vec<Message>, Error> {
+    if step.status == "failed" {
+        let error = step
+            .error
+            .clone()
+            .ok_or_else(|| Error::new("INVALID_STATE", "failed Tool step has no error"))?;
+        return Ok(vec![tool_error_message(call, error)]);
+    }
     let business = step
         .message
         .clone()
         .ok_or_else(|| Error::new("INVALID_STATE", "Tool step lost its business result"))?;
-    let mut messages = vec![if step.status == "failed" {
-        business
-    } else {
-        tool_success_message(call, business)
-    }];
+    let mut messages = vec![tool_success_message(call, business)];
     if let Some(evaluation) = &step.eval
         && !evaluation.passed
         && let Some(feedback) = &evaluation.feedback
@@ -2135,7 +2499,7 @@ pub(crate) fn estimate_input_tokens(request: &Request) -> u64 {
     estimate_tokens(message_bytes.saturating_add(tool_bytes))
 }
 
-fn estimate_output_tokens(message: &Message) -> u64 {
+pub(super) fn estimate_output_tokens(message: &Message) -> u64 {
     estimate_tokens(message.content.iter().map(part_bytes).sum())
 }
 

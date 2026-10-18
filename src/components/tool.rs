@@ -107,37 +107,6 @@ pub trait Tool: Send + Sync {
     }
 }
 
-/// Run one Tool call through its fixed lifecycle. The returned tuple contains
-/// the final business Message and the optional business evaluation; it is not a
-/// second Tool result type.
-///
-/// This convenience entry does not retain Runtime state or perform retries.
-/// Do not retry this whole function after an evaluation error: a caller that
-/// needs stage retries must retain the result and retry `Tool::eval` only.
-pub async fn execute<T: Tool>(
-    tool: &T,
-    call: Call,
-    cancellation: &Cancellation,
-) -> Result<(Message, Evaluation), Error> {
-    let (call, message) = execute_call(tool, call, cancellation).await?;
-    check_cancelled(cancellation)?;
-    let evaluation = tool.eval(&call, &message, cancellation).await?;
-    check_cancelled(cancellation)?;
-    Ok((message, evaluation))
-}
-
-// Runtime uses this private boundary to retain the effective arguments and
-// successful result before evaluating. A retry of eval must use this pair,
-// not invoke the public whole-lifecycle convenience function again.
-pub(crate) async fn execute_call<T: Tool>(
-    tool: &T,
-    call: Call,
-    cancellation: &Cancellation,
-) -> Result<(Call, Message), Error> {
-    let call = prepare_call(tool, call, cancellation).await?;
-    call_prepared(tool, call, cancellation).await
-}
-
 // Private split lets Agent authorization inspect the effective arguments
 // without repeating before or executing call ahead of that authorization.
 pub(crate) async fn prepare_call<T: Tool>(
@@ -154,35 +123,6 @@ pub(crate) async fn prepare_call<T: Tool>(
     ensure_call_identity(&call, &call_id, &name)?;
     validate_call(tool.definition(), &call)?;
     Ok(call)
-}
-
-pub(crate) async fn call_prepared<T: Tool>(
-    tool: &T,
-    call: Call,
-    cancellation: &Cancellation,
-) -> Result<(Call, Message), Error> {
-    check_cancelled(cancellation)?;
-    // Only private callers holding the result of prepare_call enter here;
-    // that Call has already passed identity and post-before Schema checks.
-    let mut message = tool.call(&call, cancellation).await?;
-    check_cancelled(cancellation)?;
-    tool.after(&call, &mut message, cancellation).await?;
-    check_cancelled(cancellation)?;
-    Ok((call, message))
-}
-
-/// Execute the Tool lifecycle used by an explicit Workflow ToolNode.
-///
-/// Workflow does not enable the optional business `eval` hook in the current
-/// contract. Agent-internal execution retains the call result before eval.
-pub(crate) async fn execute_without_eval<T: Tool>(
-    tool: &T,
-    call: Call,
-    cancellation: &Cancellation,
-) -> Result<Message, Error> {
-    execute_call(tool, call, cancellation)
-        .await
-        .map(|(_, message)| message)
 }
 
 fn ensure_call_identity(call: &Call, call_id: &str, name: &str) -> Result<(), Error> {
@@ -254,6 +194,7 @@ mod tests {
 
     use super::*;
     use crate::components::message::Role;
+    use crate::tool::execute;
 
     #[test]
     fn schema_checks_patterns_references_and_composition_before_hooks() {

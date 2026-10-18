@@ -74,7 +74,7 @@ pub struct Execution {
     pub waits: BTreeMap<String, Wait>,
 }
 
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Step {
     pub id: String,
     pub kind: String,
@@ -84,6 +84,15 @@ pub struct Step {
     pub call_id: Option<String>,
     pub attempts: Vec<StepAttempt>,
     pub error: Option<Error>,
+    /// Native Tool before/call/after/complete progress, not a separate Hook Step.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+    /// Last acknowledged arguments, independent of the original graph input.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<crate::tool::Call>,
+    /// Successful call result in after; successful transformed result in complete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message: Option<crate::Message>,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

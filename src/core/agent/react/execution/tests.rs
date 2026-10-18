@@ -226,7 +226,13 @@ fn planned_eval_wait_resumes_the_same_attempt_and_keeps_feedback_local() {
         assert!(matches!(events.last(), Some(Err(error)) if error.code == "WAITING"));
         let before = checkpoint.load(602, &Cancellation::new()).await.unwrap();
         let attempt = &before["nodes"]["a"]["execution"]["attempts"][0];
-        assert_eq!(attempt["steps"][0]["stage"], "eval");
+        let tool = attempt["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .unwrap();
+        assert_eq!(tool["stage"], "eval");
         assert_eq!(before["nodes"]["b"]["status"], "succeeded");
         let b = before["nodes"]["b"].clone();
         drop(agent);
