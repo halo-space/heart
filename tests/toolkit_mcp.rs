@@ -256,11 +256,10 @@ fn chat_advertises_mcp_without_executing_it_and_refreshes_each_run() {
         .unwrap();
     block_on(async {
         for _ in 0..2 {
-            let events = agent
+            let mut events = agent
                 .run(Input::default(), true, Cancellation::new())
                 .await
                 .unwrap();
-            futures_util::pin_mut!(events);
             assert!(events.next().await.unwrap().is_ok());
         }
     });

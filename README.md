@@ -85,8 +85,7 @@ async fn main() -> Result<(), Error> {
             mime_type: None,
         }],
     };
-    let events = agent.run(input, true, Cancellation::new()).await?;
-    futures_util::pin_mut!(events);
+    let mut events = agent.run(input, true, Cancellation::new()).await?;
     while let Some(event) = events.next().await {
         println!("{:?}", event?);
     }
@@ -151,14 +150,13 @@ async fn main() -> Result<(), Error> {
     let mut runtime = Runtime::new(1, builder.compile().map_err(graph_error)?)?;
     let ids = AtomicI64::new(100);
     {
-        let events = runtime
+        let mut events = runtime
             .run(
                 Messages::default(),
                 Arc::new(move || ids.fetch_add(1, Ordering::SeqCst)),
                 Cancellation::new(),
             )
             .await?;
-        futures_util::pin_mut!(events);
         while let Some(event) = events.next().await {
             println!("{:?}", event?);
         }
@@ -171,6 +169,10 @@ async fn main() -> Result<(), Error> {
 
 示例中的递增 ID 仅用于演示。实际业务由应用提供统一的 i64 执行 ID 生成函数，例如已有的雪花 ID 函数；
 框架不初始化 ID 服务。读取 State 前先消费并释放运行流，不在流存活期间另开运行或复制执行现场。
+
+内置 Chat/ReAct 与 Workflow 返回的流可直接通过 `let mut events` 和 `.next().await` 消费，
+不需要调用方额外固定。自定义 Agent/Chat 的公共契约不要求流实现 `Unpin`；
+泛型代码消费任意实现时仍可能需要固定，不因此收紧公共契约。
 
 ## Workspace 与 Harness
 
@@ -223,6 +225,9 @@ let workspace = core::workspace::Docker::new(core::workspace::docker::Config {
 
 协议回归：`cargo test --offline --test workspace_docker`。真实容器测试需显式设置已有的
 `HEART_WORKSPACE_TEST_IMAGE`，再运行 `cargo test --test workspace_docker docker_workspace_real_ -- --ignored`；不自动拉取镜像。
+单次 Docker Sandbox 的真实测试使用 `HALO_SANDBOX_TEST_IMAGE`，运行
+`cargo test --test sandbox_docker -- --ignored`。已使用本机 Docker 29.7.2 与已有的 `redis:7-alpine`
+验证上述四项真实测试；镜像仅作为隔离命令环境，不启动 Redis 服务。测试只清理自有容器，不删除宿主机挂载数据。
 
 Workspace 的存储模式区分本地文件（Local）与数据库（Server）。Server 直接操作数据库，不模拟文件路径；
 默认只提供 write(data)、read(id)、update(id, data)、delete(id) 四个基础工具，复杂查询由用户实现自己的 Tool，

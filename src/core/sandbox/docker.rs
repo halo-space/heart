@@ -148,12 +148,7 @@ impl Docker {
         }
         let output = cli(
             &self.program,
-            &[
-                "start".into(),
-                "--attach".into(),
-                "--sig-proxy=false".into(),
-                id.into(),
-            ],
+            &["start".into(), "--attach".into(), id.into()],
             self.config.max_output,
         )
         .await?;
@@ -505,6 +500,9 @@ case "$1" in
     if [ "$mode" = bad-id ]; then printf '%s\n' 'bad-id'; else printf '%s\n' "$id"; fi
     ;;
   start)
+    if [ "$#" -ne 3 ] || [ "$2" != --attach ] || [ "$3" != "$id" ]; then
+      printf '%s\n' 'unsupported Docker start arguments' >&2; exit 125
+    fi
     case "$mode" in
       wait) exec sleep 30 ;;
       failed) printf '%s' 'bad command' >&2; exit 2 ;;
@@ -641,6 +639,26 @@ esac
         assert!(!log.contains("--privileged"));
         assert!(!log.contains("--volume\n"));
         assert_eq!(log.matches("create\n").count(), 1);
+    }
+
+    #[tokio::test]
+    async fn start_attaches_using_only_supported_docker_arguments() {
+        let fixture = Fixture::new("success");
+        fixture
+            .docker()
+            .execute(request(), &Cancellation::new())
+            .await
+            .unwrap();
+        let log = fixture.log();
+        let args: Vec<_> = log
+            .lines()
+            .skip_while(|line| *line != "start")
+            .take(3)
+            .collect();
+        let id = "a".repeat(64);
+        assert_eq!(args, ["start", "--attach", id.as_str()]);
+        assert!(!log.contains("--sig-proxy"));
+        assert!(log.contains("rm\n--force\n--volumes"));
     }
 
     #[tokio::test]

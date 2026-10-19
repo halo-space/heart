@@ -1,7 +1,11 @@
+use std::collections::VecDeque;
+use std::marker::PhantomPinned;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
+use std::task::{Context, Poll};
 
 use futures_executor::block_on;
-use futures_util::{StreamExt, stream};
+use futures_util::{Stream, StreamExt, stream};
 use halo_agents::agent::{self, Agent, Input, Payload};
 use halo_agents::event::Event;
 use halo_agents::message::Role;
@@ -12,6 +16,74 @@ use serde_json::{Map, json};
 
 struct Model {
     requests: Arc<Mutex<Vec<Request>>>,
+}
+
+// A Provider may require pinning. The concrete Agent streams own that detail;
+// their callers must not need to pin again or require the Provider to be Unpin.
+struct PinnedModel;
+
+struct PinnedModelStream {
+    events: Mutex<VecDeque<Result<Event, Error>>>,
+    _pinned: PhantomPinned,
+}
+
+impl Stream for PinnedModelStream {
+    type Item = Result<Event, Error>;
+
+    fn poll_next(self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        Poll::Ready(self.as_ref().get_ref().events.lock().unwrap().pop_front())
+    }
+}
+
+impl Chat for PinnedModel {
+    type Stream = PinnedModelStream;
+
+    async fn stream(&self, _: Request) -> Result<Self::Stream, Error> {
+        Ok(PinnedModelStream {
+            events: Mutex::new(VecDeque::from([Ok(Event::Complete {
+                message: Message::new(Role::Assistant),
+                usage: None,
+                finish_reason: Some("stop".into()),
+            })])),
+            _pinned: PhantomPinned,
+        })
+    }
+}
+
+#[test]
+fn concrete_chat_stream_needs_no_caller_pinning_even_for_a_pinned_provider() {
+    block_on(async {
+        let agent = agent::chat().model(PinnedModel).build().unwrap();
+        for stream in [true, false] {
+            let mut events = agent
+                .run(Input::default(), stream, Cancellation::new())
+                .await
+                .unwrap();
+            assert!(matches!(
+                events.next().await,
+                Some(Ok(Event::Complete { .. }))
+            ));
+            assert!(events.next().await.is_none());
+        }
+    });
+}
+
+#[test]
+fn concrete_react_stream_needs_no_caller_pinning_even_for_a_pinned_provider() {
+    block_on(async {
+        let agent = agent::react().model(PinnedModel).build().unwrap();
+        for stream in [true, false] {
+            let mut events = agent
+                .run(Input::default(), stream, Cancellation::new())
+                .await
+                .unwrap();
+            assert!(matches!(
+                events.next().await,
+                Some(Ok(Event::Complete { .. }))
+            ));
+            assert!(events.next().await.is_none());
+        }
+    });
 }
 
 impl Chat for Model {
@@ -40,6 +112,8 @@ async fn check_runs<A: Agent>(agent: &A, requests: &Mutex<Vec<Request>>) {
             }],
         };
         let events = agent.run(input, true, Cancellation::new()).await.unwrap();
+        // Unlike the concrete implementations tested above, an arbitrary A
+        // may return a !Unpin stream. Keep pinning at this generic boundary.
         futures_util::pin_mut!(events);
         let Some(Ok(Event::Complete { message, .. })) = events.next().await else {
             panic!("Agent must forward the shared Complete event");
