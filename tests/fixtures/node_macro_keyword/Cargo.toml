@@ -2,7 +2,7 @@
 name = "heart-node-macro-keyword-fixture"
 version = "0.0.0"
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.99.1"
 publish = false
 
 [workspace]

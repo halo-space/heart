@@ -2,7 +2,7 @@
 name = "heart-node-macros"
 version = "0.1.0"
 edition = "2024"
-rust-version = "1.98"
+rust-version = "1.99.1"
 license = "MIT"
 description = "Compile-time validation for Heart Workflow node registration"
 

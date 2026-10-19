@@ -16,6 +16,162 @@ src/
 
 `components` 只定义契约边界；Agent 与 Workflow 是两类独立能力，各自使用自己的 Runtime，并共同复用 `core` 中适用的能力。基础 Agent 实现与 DeepAgents 式高阶 Harness 都组合 Core 能力。Harness 是面向长任务 Agent 的场景化组装与默认策略层，不承接所有 Agent 和 Workflow 共用的生命周期逻辑，也不另造执行 Runtime。当前 Harness 基于 Core ReAct，提供长任务默认提示词，以及可选 Workspace 的文件工具；迭代上限沿用 Core ReAct 默认值并可单独配置。Memory、Checkpoint、Permission、Middleware、Toolkit 和 SubAgent 仍复用现有能力。
 
+## 快速开始
+
+项目名为 Heart，当前 Cargo 包名为 `halo-agents`，Rust 中使用 `halo_agents`。在调用方项目的
+`Cargo.toml` 中添加以下依赖；两个示例各自完整，可任选一个放入 `src/main.rs` 后执行 `cargo run`。
+示例仅使用内存和固定的演示模型，运行时不需要 API Key、外部服务或数据库，也不调用真实付费模型。
+首次获取依赖仍需网络；依赖已缓存后可以离线构建和运行。
+
+```toml
+[dependencies]
+halo-agents = { git = "https://github.com/halo-space/heart.git" }
+futures-util = "0.3"
+serde_json = "1"
+serde = { version = "1", features = ["derive"] }
+schemars = "0.8"
+tokio = { version = "1", features = ["macros", "rt"] }
+```
+
+### Agent：输入到事件流
+
+演示模型实现现有 `model::chat::Chat` 契约，返回固定的 Complete；实际使用时将 `DemoChat`
+替换成配置好的 Provider Chat 实例即可，Agent 的构造与 `run` 用法不变。
+
+```rust
+use futures_util::{StreamExt, stream};
+use halo_agents::{
+    Cancellation, Error, Message,
+    agent::{self, Agent, Input, Payload},
+    event::Event,
+    message::Role,
+    model::{
+        chat::{Chat, Request},
+        content::part::Part,
+    },
+};
+use serde_json::{Map, json};
+
+struct DemoChat;
+
+impl Chat for DemoChat {
+    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+
+    async fn stream(&self, _: Request) -> Result<Self::Stream, Error> {
+        let mut message = Message::new(Role::Assistant);
+        message.content.push(Part {
+            r#type: "text".into(),
+            data: Map::from_iter([("value".into(), json!("你好，Heart！"))]),
+        });
+        Ok(stream::iter(vec![Ok(Event::Complete {
+            message,
+            usage: None,
+            finish_reason: Some("stop".into()),
+        })]))
+    }
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Error> {
+    let agent = agent::chat()
+        .model(DemoChat)
+        .system_prompt("你是一个助手")
+        .build()?;
+    let input = Input {
+        metadata: Map::new(),
+        payload: vec![Payload {
+            r#type: "text".into(),
+            data: json!({"value": "你好"}),
+            mime_type: None,
+        }],
+    };
+    let events = agent.run(input, true, Cancellation::new()).await?;
+    futures_util::pin_mut!(events);
+    while let Some(event) = events.next().await {
+        println!("{:?}", event?);
+    }
+    Ok(())
+}
+```
+
+这里没有配置 Memory 或 Checkpoint，因此不要求业务身份字段。配置 Memory 后，应用先创建 Session，
+再在 `Input.metadata` 中提供 `tenant_id/user_id/agent_id/session_id/chat_id`。配置 Checkpoint 时需要
+`chat_id`；默认内存 Checkpoint 只在本进程有效，进程重启恢复需要调用方提供持久化后端。
+ReAct 使用同一 `Input` 和事件流入口，通过 `agent::react()` 构造，并按需配置 `.toolkit(...)` 等组件。
+
+`run(input, true, cancellation)` 交付实际产生的 Delta 和 Complete，`false` 仅交付 Complete；
+不会把多次模型或工具调用合成一个 Complete，也不会给只返回 Complete 的模型伪造 Delta。
+
+### Workflow：普通函数到图执行
+
+普通异步函数可以直接加入图。这个示例执行一个节点，再从 Runtime State 读取业务结果；
+事件是观察副本，不能用事件中的 `values` 替代下游读取 Runtime 中的数据。
+普通 Node 的业务输入/输出需要对象根 Schema（`Messages` 是例外）；示例使用具名结构体和
+`Serialize/JsonSchema` 声明输出，构图时会校验，不用无约束的 `Value` 绕过契约。
+
+```rust
+use futures_util::StreamExt;
+use halo_agents::{
+    Cancellation, Error, Messages,
+    runtime::workflow::{
+        GraphError, Runtime, WorkflowBuilder,
+        graph::{END, START},
+    },
+};
+use schemars::JsonSchema;
+use serde::Serialize;
+use std::sync::{
+    Arc,
+    atomic::{AtomicI64, Ordering},
+};
+
+#[derive(Serialize, JsonSchema)]
+struct Answer {
+    answer: i64,
+}
+
+async fn answer(_: Messages, _: Cancellation) -> Result<Answer, Error> {
+    Ok(Answer { answer: 42 })
+}
+
+fn graph_error(error: GraphError) -> Error {
+    Error {
+        code: error.code,
+        message: error.message,
+        details: error.details,
+    }
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Error> {
+    let mut builder = WorkflowBuilder::new("hello-workflow");
+    builder.add_node("answer", answer).map_err(graph_error)?;
+    builder.add_edge(START, "answer").map_err(graph_error)?;
+    builder.add_edge("answer", END).map_err(graph_error)?;
+    let mut runtime = Runtime::new(1, builder.compile().map_err(graph_error)?)?;
+    let ids = AtomicI64::new(100);
+    {
+        let events = runtime
+            .run(
+                Messages::default(),
+                Arc::new(move || ids.fetch_add(1, Ordering::SeqCst)),
+                Cancellation::new(),
+            )
+            .await?;
+        futures_util::pin_mut!(events);
+        while let Some(event) = events.next().await {
+            println!("{:?}", event?);
+        }
+    }
+    let execution = &runtime.state().nodes["answer"].executions[&100];
+    println!("业务结果：{:?}", execution.messages.as_slice()[0].values);
+    Ok(())
+}
+```
+
+示例中的递增 ID 仅用于演示。实际业务由应用提供统一的 i64 执行 ID 生成函数，例如已有的雪花 ID 函数；
+框架不初始化 ID 服务。读取 State 前先消费并释放运行流，不在流存活期间另开运行或复制执行现场。
+
 ## Workspace 与 Harness
 
 工具、MCP 和 Skill 先组装进 Toolkit，再挂载到 Workspace；Harness 接收配置好的 Workspace：
@@ -90,9 +246,9 @@ update 不 upsert，delete 物理删除；仅 `doc_as_upsert=false` 不能阻止
 
 ## 当前状态
 
-项目正在持续开发中，当前已经包含基础 Agent/Workflow 结构、Chat Provider、Tool/MCP/Skill、短期与长期 Memory、消息与事件契约、文档处理组件以及本地 Sandbox 等能力。完整的 runtime::agent 执行图、Workflow 持久化恢复和更多 Provider 仍在逐步完善。
+当前版本已提供 Chat/ReAct、Agent 计划图、Tool/MCP/Skill、短期与长期 Memory、压缩、权限、中间件、Checkpoint、基础文档处理及 Sandbox 能力。Workflow 支持普通/条件关系、Join、动态 Fan-out、Loop 和内嵌子图；实际内嵌 Agent、父子 Agent 与子图的现场保存、反馈路由和恢复已有回归验收。
 
-项目使用 Rust 2024 Edition，最低目标版本为 Rust 1.98。
+项目使用 Rust 2024 Edition，要求 Rust 1.99.1 或更新版本；当前验证工具链为 Rust 1.99.1。
 
 Agent 和 Workflow 的 `run(...)` 均返回统一的 `Event::Delta/Complete` 流。调用方持续消费流来驱动运行；Workflow 中的嵌套子图共用这一条输出流。完整业务结果保留在 Runtime 状态中，事件副本不包含供下游使用的 `values`。
 
@@ -100,13 +256,17 @@ Agent 使用 `agent.run(input, stream, cancellation)`：`stream = true` 对外�
 
 运行中的工具审批通过原对象的 `reply(...)` 提交：Agent 接收 `Input`，Workflow 接收 `Messages`，均附带 `Cancellation`，并通过消息元数据中的 `chat_id`、`reply_id` 关联实际提问。提交成功只表示反馈已接收；继续消费原 `run` 流，才能取得后续执行结果。不需要单独调用子 Agent、取得反馈句柄或另开输出流。
 
-Workflow 的原流独占本次执行现场；释放流后才能直接读写 State，流存活期间重复 `run` 或直接获取快照会返回冲突。运行中审批与原调用结束后的现场恢复是不同路径；后者的待审批消费（含跨进程恢复）仍在完善中。
+Workflow 的原流独占本次执行现场；释放流后才能直接读写 State，流存活期间重复 `run` 或直接获取快照会返回冲突。运行中反馈通过原对象的 `reply` 提交，继续消费同一运行流；原调用已经结束时，才从保存的完整 Checkpoint 重新挂载现场，再从已有等待步骤继续。独立 Agent 由配置的 Checkpoint 接线读取现场；Workflow 使用已有的 `Runtime::from_snapshot(...)` 接入完整快照，再走 `run/reply`，不是仅配置保存后端就能自动重建 Runtime。
 
-独立 Chat/ReAct 的根工具审批、独立 ReAct 计划任务及其子 Agent 的工具审批，已支持在新 `run` 中从对应的顶层 Checkpoint 恢复，按原 `chat_id`、`reply_id` 消费批准/拒绝。恢复沿保存的实际节点层级继续，不重放已完成的模型调用、委派或成功兄弟任务，保留原执行身份和 Usage；其他问题仍可通过新流上的 `reply` 回复。子 Agent 不启动独立存储生命周期。Workflow 内嵌审批的跨调用恢复仍在完善中。
+独立 Chat/ReAct、计划任务、SubAgent 和 Workflow 内嵌 Agent 已支持从顶层完整 Checkpoint 恢复审批及普通反馈等待，包括跨进程 JSON 交接。按原 `chat_id`、`reply_id` 和保存的实际节点层级定向消费，不重放已成功的模型调用、委派或兄弟任务，保留原执行身份和 Usage；子 Agent 不启动独立存储生命周期。反馈严格 FIFO，所需份数由发起等待的步骤固定，收齐后才继续。恢复不代表续传原网络连接、还原任意函数栈或恢复未保存的数据。
 
 普通异步函数可直接交给 Workflow 的 `add_node`，不需要包装类。可选的 `#[node]` 在定义位置校验契约；已有组件可通过 `#[node(call = method)]` 或 `#[node(signal = method)]` 生成同一 Node 契约的调用胶水，原生方法仍可独立使用。
 
 Memory 后台压缩与长期提取的处理现场保存在 Session metadata；使用持久化 Session 后端时，重启后可由下次请求继续未完成阶段，复用已保存结果和写入 ID。默认内存后端不具备落盘能力；这份后台现场不属于 Runtime Checkpoint。
+
+取消后应继续消费原事件流直到收口，以接收实际取消 Complete 和已发生的 Usage。直接丢弃流只释放当前执行，不隐式启动异步写库；恢复只认已经成功保存的 Checkpoint。完整执行数据保存在各自 Runtime State，Trace 是独立的最终审计副本，不能当作恢复来源。
+
+扩展领域 Parser、PDF/Office/OCR 等解析能力留到 V2；Python 函数接入暂缓；TTS 与完整多模态契约留到 V3+。这些范围不作为当前版本已经实现的能力。
 
 ## 构建与测试
 
@@ -114,6 +274,17 @@ Memory 后台压缩与长期提取的处理现场保存在 Session metadata；�
 cargo check
 cargo test
 ```
+
+完整默认验收及静态检查：
+
+```bash
+cargo test --all-targets --all-features
+cargo test --all-features --doc
+cargo clippy --all-targets --all-features -- -D warnings
+cargo fmt --all --check
+```
+
+依赖已缓存时可加 `--offline`。MCP/Provider 协议测试使用本机临时服务；真实 Docker/ES 测试需要应用准备运行环境并显式启用，默认忽略不代表这些真实服务已经在本次验收中运行。
 
 ## 许可证
 
