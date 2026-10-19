@@ -289,7 +289,12 @@ async fn workflow_reply_continues_real_agent_on_the_same_stream() {
                 let scene = &execution["attempts"][0]["agent"];
                 assert_eq!(execution["status"], "waiting");
                 assert_eq!(
-                    scene["steps"][0]["waits"][id.to_string()]["status"],
+                    scene["steps"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|step| step["kind"] == "tool")
+                        .expect("actual Tool Step")["waits"][id.to_string()]["status"],
                     "waiting"
                 );
                 assert_eq!(scene["waits"][0]["nodes"], json!([]));
@@ -328,7 +333,12 @@ async fn workflow_reply_continues_real_agent_on_the_same_stream() {
                 let final_execution = &leaf(&final_state)["nodes"]["a"]["executions"][exec_id];
                 assert_eq!(final_execution["attempts"].as_array().unwrap().len(), 1);
                 assert_eq!(
-                    final_execution["attempts"][0]["agent"]["steps"][0]["waits"][id.to_string()]["status"],
+                    final_execution["attempts"][0]["agent"]["steps"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|step| step["kind"] == "tool")
+                        .expect("actual Tool Step")["waits"][id.to_string()]["status"],
                     "resolved"
                 );
                 assert_eq!(probes[0].calls.lock().unwrap().len(), usize::from(approved));
@@ -385,7 +395,12 @@ async fn workflow_concurrent_questions_are_consumed_in_fifo_order_and_keep_the_j
                     .next()
                     .unwrap();
                 assert_eq!(
-                    exec["attempts"][0]["agent"]["steps"][0]["waits"][id.to_string()]["status"],
+                    exec["attempts"][0]["agent"]["steps"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|step| step["kind"] == "tool")
+                        .expect("actual Tool Step")["waits"][id.to_string()]["status"],
                     "waiting"
                 );
             }
@@ -829,7 +844,12 @@ async fn workflow_reply_reaches_a_delegated_child_without_exposing_internal_coor
             let child_scene = &scene["execution"]["attempts"][0]["nodes"][child_id]["execution"]["attempts"]
                 [0]["agent"];
             assert_eq!(
-                child_scene["steps"][0]["waits"][id.to_string()]["status"],
+                child_scene["steps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|step| step["kind"] == "tool")
+                    .expect("actual Tool Step")["waits"][id.to_string()]["status"],
                 "waiting"
             );
             workflow
@@ -921,7 +941,12 @@ async fn workflow_retains_consumed_feedback_and_successful_tool_when_its_stream_
             let scene = &execution["attempts"][0]["agent"];
             assert_eq!(scene["waits"], json!([]));
             assert_eq!(
-                scene["steps"][0]["waits"][id.to_string()]["status"],
+                scene["steps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|step| step["kind"] == "tool")
+                    .expect("actual Tool Step")["waits"][id.to_string()]["status"],
                 "resolved"
             );
             assert_eq!(probes[0].calls.lock().unwrap().len(), 1);
@@ -1232,7 +1257,12 @@ async fn workflow_reply_targets_actual_agent_plan_tasks_even_when_node_names_rep
             assert_ne!(path[0]["exec_id"], outer["exec_id"]);
             let name = path[0]["node_id"].as_str().unwrap();
             assert_eq!(
-                scene["nodes"][name]["execution"]["attempts"][0]["steps"][0]["call_id"],
+                scene["nodes"][name]["execution"]["attempts"][0]["steps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|step| step["kind"] == "tool")
+                    .expect("actual Tool Step")["call_id"],
                 "same_call"
             );
         }

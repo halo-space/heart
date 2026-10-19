@@ -208,7 +208,12 @@ fn execution<'a>(scene: &'a Value, node: &str) -> &'a Value {
     &scene["nodes"][node]["execution"]
 }
 fn record<'a>(scene: &'a Value, node: &str, id: i64) -> &'a Value {
-    &execution(scene, node)["attempts"][0]["steps"][0]["waits"][id.to_string()]
+    &execution(scene, node)["attempts"][0]["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["kind"] == "tool")
+        .expect("actual Tool Step")["waits"][id.to_string()]
 }
 async fn finish<S: futures_core::Stream<Item = Result<Event, Error>>>(
     events: &mut Pin<Box<S>>,
@@ -721,7 +726,12 @@ async fn planned_feedback_process_worker() {
             .iter()
             .map(|position| {
                 let node = position["nodes"][0]["node_id"].as_str().unwrap().to_owned();
-                let id = execution(&scene, &node)["attempts"][0]["steps"][0]["waits"]
+                let id = execution(&scene, &node)["attempts"][0]["steps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|step| step["kind"] == "tool")
+                    .expect("actual Tool Step")["waits"]
                     .as_object()
                     .unwrap()
                     .keys()

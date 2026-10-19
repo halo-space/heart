@@ -251,9 +251,22 @@ async fn child_reply<A: Agent>(
     for (node, id) in [(&node_a, a), (&node_b, b)] {
         let scene = child_scene(&saved, node);
         assert_eq!(scene["status"], "waiting");
-        assert_eq!(scene["steps"][0]["call_id"], "c1");
         assert_eq!(
-            scene["steps"][0]["waits"][id.to_string()]["status"],
+            scene["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|step| step["kind"] == "tool")
+                .expect("actual Tool Step")["call_id"],
+            "c1"
+        );
+        assert_eq!(
+            scene["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|step| step["kind"] == "tool")
+                .expect("actual Tool Step")["waits"][id.to_string()]["status"],
             "waiting"
         );
         assert_eq!(scene["query"]["metadata"]["session_id"], 2001);
@@ -295,7 +308,12 @@ async fn child_reply<A: Agent>(
             saved["execution"]["attempts"][0]["nodes"][node]["execution"]["exec_id"]
         );
         let scene = child_scene(&final_state, node);
-        let record = &scene["steps"][0]["waits"][id.to_string()];
+        let record = &scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["waits"][id.to_string()];
         assert_eq!(record["status"], "resolved");
         assert_eq!(record["feedback"].as_array().unwrap().len(), 1);
         assert_eq!(scene["usage"]["total"], 26);
@@ -722,7 +740,12 @@ async fn child_plan_reply<A: Agent>(
             assert_eq!(execution["exec_id"], path[1]["exec_id"]);
             assert_eq!(execution["attempts"].as_array().unwrap().len(), 1);
             assert!(
-                execution["attempts"][0]["steps"][0]["waits"]
+                execution["attempts"][0]["steps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|step| step["kind"] == "tool")
+                    .expect("actual Tool Step")["waits"]
                     .as_object()
                     .unwrap()
                     .values()
@@ -885,7 +908,12 @@ async fn planned_delegation_replies_keep_task_and_child_ownership_and_release_ca
                         let task = path[0]["node_id"].as_str().unwrap();
                         let child = path[1]["node_id"].as_str().unwrap();
                         let scene = task_child_scene(&waiting, task, child);
-                        let record = &scene["steps"][0]["waits"];
+                        let record = &scene["steps"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|step| step["kind"] == "tool")
+                            .expect("actual Tool Step")["waits"];
                         let id = record
                             .as_object()
                             .unwrap()
@@ -895,7 +923,15 @@ async fn planned_delegation_replies_keep_task_and_child_ownership_and_release_ca
                             .parse::<i64>()
                             .unwrap();
                         assert_eq!(scene["waits"][0]["nodes"], json!([]));
-                        assert_eq!(scene["steps"][0]["call_id"], "c1");
+                        assert_eq!(
+                            scene["steps"]
+                                .as_array()
+                                .unwrap()
+                                .iter()
+                                .find(|step| step["kind"] == "tool")
+                                .expect("actual Tool Step")["call_id"],
+                            "c1"
+                        );
                         assert!(
                             waiting["nodes"][task]["execution"]["attempts"][0]["steps"]
                                 .as_array()
@@ -954,7 +990,12 @@ async fn planned_delegation_replies_keep_task_and_child_ownership_and_release_ca
                             child_exec
                         );
                         let scene = task_child_scene(&final_state, &task, &child);
-                        let record = &scene["steps"][0]["waits"][id.to_string()];
+                        let record = &scene["steps"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|step| step["kind"] == "tool")
+                            .expect("actual Tool Step")["waits"][id.to_string()];
                         assert_eq!(record["status"], "resolved");
                         assert_eq!(record["feedback"].as_array().unwrap().len(), 1);
                         assert_eq!(scene["usage"]["total"], 26);
@@ -1084,8 +1125,18 @@ async fn planned_children_cancel_or_drop_without_authorizing_saved_questions() {
                     let child = path[1]["node_id"].as_str().unwrap();
                     assert_eq!(stopped["nodes"][task]["status"], "cancelled");
                     assert_eq!(
-                        task_child_scene(&stopped, task, child)["steps"][0]["waits"],
-                        task_child_scene(&saved, task, child)["steps"][0]["waits"]
+                        task_child_scene(&stopped, task, child)["steps"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|step| step["kind"] == "tool")
+                            .expect("actual Tool Step")["waits"],
+                        task_child_scene(&saved, task, child)["steps"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|step| step["kind"] == "tool")
+                            .expect("actual Tool Step")["waits"]
                     );
                 }
             }
@@ -1204,7 +1255,12 @@ async fn planned_child_own_plan_keeps_all_three_native_wait_coordinates() {
                 assert_eq!(execution["exec_id"], path[2]["exec_id"]);
                 assert_eq!(execution["attempts"].as_array().unwrap().len(), 1);
                 assert!(
-                    execution["attempts"][0]["steps"][0]["waits"]
+                    execution["attempts"][0]["steps"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|step| step["kind"] == "tool")
+                        .expect("actual Tool Step")["waits"]
                         .as_object()
                         .unwrap()
                         .values()
@@ -1568,15 +1624,35 @@ async fn planned_questions_keep_native_owners_and_continue_only_the_answered_tas
         assert_eq!(saved["usage"]["total"], 52);
         assert_eq!(saved["waits"][0]["nodes"][0]["node_id"], a);
         assert_eq!(saved["waits"][1]["nodes"][0]["node_id"], b);
-        assert!(saved["steps"].as_array().is_none_or(Vec::is_empty));
+        assert!(
+            saved["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|step| step["kind"] == "model"),
+            "task Tool Steps stay in their actual Attempt"
+        );
         let identities = [&a, &b].map(|node| saved["nodes"][node]["execution"]["exec_id"].clone());
         for (node, id) in [(&a, first), (&b, second)] {
             let attempt = &saved["nodes"][node]["execution"]["attempts"][0];
             assert_eq!(saved["nodes"][node]["status"], "waiting");
             assert_eq!(attempt["status"], "waiting");
-            assert_eq!(attempt["steps"][0]["call_id"], "same_call");
             assert_eq!(
-                attempt["steps"][0]["waits"][id.to_string()]["status"],
+                attempt["steps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|step| step["kind"] == "tool")
+                    .expect("actual Tool Step")["call_id"],
+                "same_call"
+            );
+            assert_eq!(
+                attempt["steps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|step| step["kind"] == "tool")
+                    .expect("actual Tool Step")["waits"][id.to_string()]["status"],
                 "waiting"
             );
             assert!(
@@ -1653,7 +1729,12 @@ async fn planned_questions_keep_native_owners_and_continue_only_the_answered_tas
             assert_eq!(execution["exec_id"], exec);
             assert_eq!(execution["attempts"].as_array().unwrap().len(), 1);
             assert_eq!(
-                execution["attempts"][0]["steps"][0]["waits"][id.to_string()]["status"],
+                execution["attempts"][0]["steps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|step| step["kind"] == "tool")
+                    .expect("actual Tool Step")["waits"][id.to_string()]["status"],
                 "resolved"
             );
         }
@@ -1711,7 +1792,12 @@ async fn planned_waits_release_consumers_on_cancel_or_drop_without_fabricated_fe
             assert_eq!(stopped["usage"]["total"], 52);
             for node in ["a", "b"] {
                 assert_eq!(stopped["nodes"][node]["status"], "cancelled");
-                let step = &stopped["nodes"][node]["execution"]["attempts"][0]["steps"][0];
+                let step = &stopped["nodes"][node]["execution"]["attempts"][0]["steps"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|step| step["kind"] == "tool")
+                    .expect("actual Tool Step");
                 assert_eq!(step["status"], "cancelled");
                 assert!(
                     step["waits"]
@@ -1979,8 +2065,21 @@ async fn restored_plan_save_failure_does_not_rebill_previous_task_usage() {
         scene["nodes"][node]["status"] = json!("running");
         let attempt = &mut scene["nodes"][node]["execution"]["attempts"][0];
         attempt["status"] = json!("running");
-        attempt["steps"][0]["status"] = json!("running");
-        attempt["steps"][0].as_object_mut().unwrap().remove("waits");
+        attempt["steps"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["status"] = json!("running");
+        attempt["steps"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")
+            .as_object_mut()
+            .unwrap()
+            .remove("waits");
     }
     assert_eq!(scene["usage"]["total"], 52);
     let store = Arc::new(FailingStore::default());
@@ -2124,7 +2223,12 @@ async fn exercise<A: Agent>(
     assert_eq!(waiting["status"], "waiting");
     assert_eq!(waiting["waits"].as_array().unwrap().len(), 1);
     assert_eq!(
-        waiting["steps"][0]["waits"][id.to_string()]["status"],
+        waiting["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["waits"][id.to_string()]["status"],
         "waiting"
     );
     let _: halo_agents::runtime::agent::State = serde_json::from_value(waiting.clone()).unwrap();
@@ -2228,11 +2332,21 @@ async fn exercise<A: Agent>(
     assert_eq!(final_state["waits"], json!([]));
     assert_eq!(final_state["usage"]["total"], 26);
     assert_eq!(
-        final_state["steps"][0]["waits"][id.to_string()]["status"],
+        final_state["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["waits"][id.to_string()]["status"],
         "resolved"
     );
     assert_eq!(
-        final_state["steps"][0]["waits"][id.to_string()]["feedback"]
+        final_state["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["waits"][id.to_string()]["feedback"]
             .as_array()
             .unwrap()
             .len(),
@@ -2335,10 +2449,34 @@ async fn changed<A: Agent>(
     );
     assert!(log.calls.lock().unwrap().is_empty());
     let state = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
-    assert_eq!(state["steps"][0]["call"]["arguments"]["city"], "Paris");
-    assert_eq!(state["steps"][0]["waits"].as_object().unwrap().len(), 2);
     assert_eq!(
-        state["steps"][0]["waits"][first.to_string()]["status"],
+        state["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["call"]["arguments"]["city"],
+        "Paris"
+    );
+    assert_eq!(
+        state["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["waits"]
+            .as_object()
+            .unwrap()
+            .len(),
+        2
+    );
+    assert_eq!(
+        state["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["waits"][first.to_string()]["status"],
         "resolved"
     );
     agent
@@ -2537,9 +2675,22 @@ async fn cancelled<A: Agent>(
             "waiting/cancellation must not rebill the completed model call"
         );
         assert_eq!(saved["waits"], json!([]));
-        assert_eq!(saved["steps"][0]["status"], "cancelled");
         assert_eq!(
-            saved["steps"][0]["waits"][id.to_string()]["status"],
+            saved["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|step| step["kind"] == "tool")
+                .expect("actual Tool Step")["status"],
+            "cancelled"
+        );
+        assert_eq!(
+            saved["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|step| step["kind"] == "tool")
+                .expect("actual Tool Step")["waits"][id.to_string()]["status"],
             "waiting",
             "cancellation is not approval"
         );
@@ -4091,7 +4242,12 @@ async fn planned_approval_recovery_worker() {
             old["attempts"][0]["created_time"]
         );
         assert_eq!(
-            new["attempts"][0]["steps"][0]["waits"]
+            new["attempts"][0]["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|step| step["kind"] == "tool")
+                .expect("actual Tool Step")["waits"]
                 .as_object()
                 .unwrap()
                 .len(),
@@ -4307,7 +4463,12 @@ async fn saved_planned_approvals_route_same_call_ids_to_their_actual_tasks() {
                 assert_eq!(new["created_time"], old["created_time"]);
                 assert_eq!(new["attempts"].as_array().unwrap().len(), 1);
                 assert_eq!(
-                    new["attempts"][0]["steps"][0]["waits"][id.to_string()]["status"],
+                    new["attempts"][0]["steps"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .find(|step| step["kind"] == "tool")
+                        .expect("actual Tool Step")["waits"][id.to_string()]["status"],
                     "resolved"
                 );
             }
@@ -4400,14 +4561,25 @@ async fn preserve_old_question_ids<A: Agent>(
     );
     let final_state = store.load(1001, &Cancellation::new()).await.unwrap();
     assert_eq!(
-        final_state["steps"][0]["waits"][old.to_string()]["status"],
+        final_state["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["waits"][old.to_string()]["status"],
         "resolved"
     );
+    let pending_step = final_state["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["kind"] == "tool" && step["waits"].get(pending.to_string()).is_some())
+        .unwrap();
     assert_eq!(
-        final_state["steps"][1]["waits"][pending.to_string()]["status"],
+        pending_step["waits"][pending.to_string()]["status"],
         "resolved"
     );
-    assert_eq!(final_state["steps"][1]["error"]["code"], "CONFLICT");
+    assert_eq!(pending_step["error"]["code"], "CONFLICT");
 }
 
 #[tokio::test]
@@ -4653,14 +4825,23 @@ async fn recover_two_root_approvals<A: Agent>(
     assert_eq!(final_state["usage"]["total"], 26);
     assert_eq!(final_state["query"], saved["query"]);
     assert_eq!(final_state["waits"], json!([]));
-    for (step, id) in [(0, a), (1, b)] {
-        assert_eq!(final_state["steps"][step]["id"], saved["steps"][step]["id"]);
+    for id in [a, b] {
+        let original = saved["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool" && step["waits"].get(id.to_string()).is_some())
+            .unwrap();
+        let step = final_state["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["id"] == original["id"])
+            .unwrap();
+        assert_eq!(step["id"], original["id"]);
+        assert_eq!(step["waits"][id.to_string()]["status"], "resolved");
         assert_eq!(
-            final_state["steps"][step]["waits"][id.to_string()]["status"],
-            "resolved"
-        );
-        assert_eq!(
-            final_state["steps"][step]["waits"][id.to_string()]["feedback"]
+            step["waits"][id.to_string()]["feedback"]
                 .as_array()
                 .unwrap()
                 .len(),
@@ -4847,13 +5028,31 @@ async fn changed_recovered_call<A: Agent>(
     assert!(serde_json::to_string(&message).unwrap().contains("Paris"));
     assert!(log.calls.lock().unwrap().is_empty());
     let state = store.load(1001, &Cancellation::new()).await.unwrap();
-    assert_eq!(state["steps"][0]["call"]["arguments"]["city"], "Paris");
     assert_eq!(
-        state["steps"][0]["waits"][old.to_string()]["status"],
+        state["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["call"]["arguments"]["city"],
+        "Paris"
+    );
+    assert_eq!(
+        state["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["waits"][old.to_string()]["status"],
         "resolved"
     );
     assert_eq!(
-        state["steps"][0]["waits"][new.to_string()]["status"],
+        state["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["waits"][new.to_string()]["status"],
         "waiting"
     );
     restored
@@ -4966,7 +5165,12 @@ async fn finish_root_worker<A: Agent>(
     allow: bool,
 ) {
     let saved = store.load(1001, &Cancellation::new()).await.unwrap();
-    let id: i64 = saved["steps"][0]["waits"]
+    let id: i64 = saved["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["kind"] == "tool")
+        .expect("actual Tool Step")["waits"]
         .as_object()
         .unwrap()
         .keys()
@@ -4991,9 +5195,27 @@ async fn finish_root_worker<A: Agent>(
     assert_eq!(final_state["status"], "succeeded");
     assert_eq!(final_state["usage"]["total"], 26);
     assert_eq!(final_state["query"], saved["query"]);
-    assert_eq!(final_state["steps"][0]["id"], saved["steps"][0]["id"]);
     assert_eq!(
-        final_state["steps"][0]["waits"][id.to_string()]["status"],
+        final_state["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["id"],
+        saved["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["id"]
+    );
+    assert_eq!(
+        final_state["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["waits"][id.to_string()]["status"],
         "resolved"
     );
     let context = serde_json::to_string(&model.0.lock().unwrap()[0].messages).unwrap();
@@ -5189,17 +5411,50 @@ async fn recover_root_approval<A: Agent>(
         final_state["execution"].is_null(),
         saved["execution"].is_null()
     );
-    assert_eq!(final_state["steps"][0]["id"], saved["steps"][0]["id"]);
     assert_eq!(
-        final_state["steps"][0]["call_id"],
-        saved["steps"][0]["call_id"]
+        final_state["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["id"],
+        saved["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["id"]
+    );
+    assert_eq!(
+        final_state["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["call_id"],
+        saved["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["call_id"]
     );
     assert_eq!(final_state["waits"], json!([]));
     assert_eq!(
-        final_state["steps"][0]["waits"][id.to_string()]["status"],
+        final_state["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["waits"][id.to_string()]["status"],
         "resolved"
     );
-    let feedback = &final_state["steps"][0]["waits"][id.to_string()]["feedback"];
+    let feedback = &final_state["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["kind"] == "tool")
+        .expect("actual Tool Step")["waits"][id.to_string()]["feedback"];
     assert_eq!(feedback.as_array().unwrap().len(), 1);
     let requests = model.requests.lock().unwrap();
     let context = serde_json::to_value(&requests.last().unwrap().messages)

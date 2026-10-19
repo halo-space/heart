@@ -194,7 +194,12 @@ fn child_scene<'a>(scene: &'a Value, id: &str) -> &'a Value {
     &node(scene, id)["execution"]["attempts"][0]["agent"]
 }
 fn record<'a>(scene: &'a Value, node_id: &str, id: i64) -> &'a Value {
-    &child_scene(scene, node_id)["steps"][0]["waits"][id.to_string()]
+    &child_scene(scene, node_id)["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["kind"] == "tool")
+        .expect("actual Tool Step")["waits"][id.to_string()]
 }
 async fn finish<S: futures_core::Stream<Item = Result<Event, Error>>>(
     events: &mut Pin<Box<S>>,
@@ -831,7 +836,12 @@ async fn child_feedback_process_worker() {
                     .iter()
                     .map(|position| {
                         let n = position["nodes"][0]["node_id"].as_str().unwrap().to_owned();
-                        let id = child_scene(&state, &n)["steps"][0]["waits"]
+                        let id = child_scene(&state, &n)["steps"]
+                            .as_array()
+                            .unwrap()
+                            .iter()
+                            .find(|step| step["kind"] == "tool")
+                            .expect("actual Tool Step")["waits"]
                             .as_object()
                             .unwrap()
                             .keys()

@@ -1077,17 +1077,44 @@ async fn check_ask<A: Agent>(
     let saved = checkpoint.load(70, &Cancellation::new()).await.unwrap();
     assert_eq!(saved["status"], "waiting");
     assert_eq!(saved["query"], serde_json::to_value(input(70)).unwrap());
-    assert_eq!(saved["steps"][0]["status"], "waiting");
+    assert_eq!(
+        saved["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["status"],
+        "waiting"
+    );
     assert!(
-        saved["steps"][0]["error"].is_null(),
+        saved["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["error"]
+            .is_null(),
         "ask is not a technical Tool error"
     );
     assert_eq!(
-        saved["steps"][0]["call"]["arguments"]["city"],
+        saved["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["call"]["arguments"]["city"],
         if changed { "Paris" } else { "Beijing" },
         "waiting retains the actual checked operation"
     );
-    assert_eq!(saved["steps"][0]["call"]["call_id"], "c1");
+    assert_eq!(
+        saved["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["call"]["call_id"],
+        "c1"
+    );
     assert!(
         !log.lock()
             .unwrap()

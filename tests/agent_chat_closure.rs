@@ -2,10 +2,11 @@
 use chat::Store as _;
 use futures_core::Stream;
 use futures_executor::block_on;
-use futures_util::{StreamExt, stream};
+use futures_util::{StreamExt, poll, stream};
 use halo_agents::{
-    Cancellation, Error, Message,
+    Cancellation, Error, Message, Messages,
     agent::{self, Agent, Input, Payload, toolkit::Toolkit},
+    checkpoint::Checkpoint as _,
     core,
     event::Event,
     memory::{
@@ -19,6 +20,10 @@ use halo_agents::{
         content::part::Part,
         token::{InputDetails, OutputDetails, Usage},
     },
+    runtime::workflow::{
+        Runtime, WorkflowBuilder,
+        graph::{END, START},
+    },
     tool::{Call, Tool, ToolDefinition},
 };
 use serde_json::{Map, Value, json};
@@ -26,7 +31,10 @@ use session::Store as _;
 use std::{
     collections::VecDeque,
     pin::Pin,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
 use trace::Store as _;
 
@@ -36,6 +44,8 @@ struct Chats {
     writes: Mutex<Vec<chat::Status>>,
     fail_create: bool,
     fail_update: bool,
+    fail_after_update: bool,
+    updates: AtomicUsize,
     wait_update: Option<Arc<tokio::sync::Notify>>,
 }
 impl chat::Store for Chats {
@@ -51,6 +61,7 @@ impl chat::Store for Chats {
         self.inner.read(id, c).await
     }
     async fn update(&self, value: chat::Chat, c: &Cancellation) -> Result<chat::Chat, Error> {
+        self.updates.fetch_add(1, Ordering::SeqCst);
         assert!(
             !c.is_cancelled(),
             "Stopped persistence must not use execution cancellation"
@@ -63,6 +74,9 @@ impl chat::Store for Chats {
         }
         let value = self.inner.update(value, c).await?;
         self.writes.lock().unwrap().push(value.status.clone());
+        if self.fail_after_update {
+            return Err(storage_error());
+        }
         Ok(value)
     }
     async fn delete(&self, id: i64, c: &Cancellation) -> Result<(), Error> {
@@ -79,17 +93,53 @@ impl chat::Store for Chats {
 fn storage_error() -> Error {
     Error::new("BACKEND", "original storage failure").with_details("original details")
 }
-type Config = memory::Config<
-    core::memory::short::session::InMemory,
-    Chats,
-    core::memory::short::trace::InMemory,
-    core::memory::InMemory,
->;
+
+#[derive(Default)]
+struct Traces {
+    inner: core::memory::short::trace::InMemory,
+    creates: AtomicUsize,
+    fail_before: bool,
+    fail_after: bool,
+}
+impl trace::Store for Traces {
+    async fn create(&self, value: trace::Trace, c: &Cancellation) -> Result<trace::Trace, Error> {
+        assert!(
+            !c.is_cancelled(),
+            "Trace closeout owns its cancellation scope"
+        );
+        self.creates.fetch_add(1, Ordering::SeqCst);
+        if self.fail_before {
+            return Err(storage_error());
+        }
+        let value = self.inner.create(value, c).await?;
+        if self.fail_after {
+            return Err(storage_error());
+        }
+        Ok(value)
+    }
+    async fn read(&self, id: i64, c: &Cancellation) -> Result<trace::Trace, Error> {
+        self.inner.read(id, c).await
+    }
+    async fn update(&self, value: trace::Trace, c: &Cancellation) -> Result<trace::Trace, Error> {
+        self.inner.update(value, c).await
+    }
+    async fn delete(&self, id: i64, c: &Cancellation) -> Result<(), Error> {
+        self.inner.delete(id, c).await
+    }
+}
+type Config =
+    memory::Config<core::memory::short::session::InMemory, Chats, Traces, core::memory::InMemory>;
 fn config(chats: Chats) -> Config {
+    config_with_trace(chats, Traces::default())
+}
+fn config_with_trace(chats: Chats, traces: Traces) -> Config {
+    config_for(chats, traces, memory::short::Type::Agent)
+}
+fn config_for(chats: Chats, traces: Traces, owner: memory::short::Type) -> Config {
     let config = Config::new(
         core::memory::short::session::InMemory::new(),
         chats,
-        core::memory::short::trace::InMemory::new(),
+        traces,
         core::memory::InMemory::new(),
     );
     block_on(config.session.create(
@@ -97,7 +147,7 @@ fn config(chats: Chats) -> Config {
             id: 10,
             tenant_id: 1,
             user_id: 2,
-            r#type: memory::short::Type::Agent,
+            r#type: owner,
             title: None,
             summary: None,
             usage: None,
@@ -538,7 +588,21 @@ fn stream_failure_does_not_persist_delta_as_a_final_answer() {
     assert!(events[1].is_err());
     let record = saved(&config, 108);
     assert_eq!(record.status, chat::Status::Failed);
-    assert!(record.message.is_none() && record.usage.is_none());
+    assert!(record.message.is_none());
+    let usage = record.usage.unwrap();
+    assert!(usage.input.unwrap() > 0);
+    assert!(usage.output.unwrap() > 0);
+    assert_eq!(
+        usage.total,
+        Some(usage.input.unwrap() + usage.output.unwrap())
+    );
+    let trace = block_on(config.trace.read(108, &Cancellation::new())).unwrap();
+    assert!(trace.state["final_message"].is_null());
+    assert_eq!(trace.state["steps"][0]["status"], "failed");
+    assert_eq!(
+        trace.state["steps"][0]["attempts"][0]["message"]["content"][0]["data"]["value"],
+        "unfinished"
+    );
 }
 
 #[test]
@@ -745,6 +809,352 @@ fn storage_create_and_update_errors_are_direct_and_not_retried() {
     }
 }
 
+fn failing_closeout(stage: usize) -> Config {
+    failing_closeout_for(stage, memory::short::Type::Agent)
+}
+fn failing_closeout_for(stage: usize, owner: memory::short::Type) -> Config {
+    config_for(
+        Chats {
+            fail_update: stage == 0,
+            fail_after_update: stage == 1,
+            ..Default::default()
+        },
+        Traces {
+            fail_before: stage == 2,
+            fail_after: stage == 3,
+            ..Default::default()
+        },
+        owner,
+    )
+}
+
+fn assert_closeout_failure(config: &Config, stage: usize, scene: &Value, status: chat::Status) {
+    assert_eq!(config.chat.updates.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        config.trace.creates.load(Ordering::SeqCst),
+        usize::from(stage >= 2)
+    );
+    let record = saved(config, 130);
+    if stage == 0 {
+        assert_eq!(record.status, chat::Status::Running);
+        assert!(record.message.is_none());
+        assert!(record.completed_time.is_none());
+    } else {
+        assert_eq!(record.status, status);
+        assert_eq!(record.usage.as_ref().unwrap().total, Some(13));
+        assert!(record.completed_time.is_some());
+    }
+    let trace = block_on(config.trace.read(130, &Cancellation::new()));
+    if stage == 3 {
+        assert_eq!(trace.unwrap().state, *scene);
+    } else {
+        assert_eq!(trace.unwrap_err().code, "NOT_FOUND");
+    }
+}
+
+async fn check_agent_closeout_failure<A: Agent>(
+    agent: A,
+    model: Model,
+    config: &Config,
+    checkpoint: &core::checkpoint::InMemory,
+    stage: usize,
+    streaming: bool,
+    cancelled: bool,
+) {
+    let c = Cancellation::new();
+    let mut events = Box::pin(agent.run(input(130), streaming, c.clone()).await.unwrap());
+    if cancelled {
+        if streaming {
+            assert!(matches!(events.next().await, Some(Ok(Event::Delta { .. }))));
+        } else {
+            assert!(poll!(events.next()).is_pending());
+        }
+        c.cancel();
+    }
+    let tail = events.collect::<Vec<_>>().await;
+    assert_eq!(tail.last(), Some(&Err(storage_error())));
+    let scene = checkpoint.load(130, &Cancellation::new()).await.unwrap();
+    assert_eq!(
+        scene["status"],
+        if cancelled { "stopped" } else { "succeeded" }
+    );
+    assert_closeout_failure(
+        config,
+        stage,
+        &scene,
+        if cancelled {
+            chat::Status::Stopped
+        } else {
+            chat::Status::Completed
+        },
+    );
+    if stage != 0 {
+        assert_eq!(
+            saved(config, 130).message.unwrap().content[0].data["value"],
+            if cancelled { "partial" } else { "answer" }
+        );
+    }
+    // The runtime snapshot remains the recovery truth. Terminal restoration
+    // does not repeat business work or silently retry a failed audit write.
+    let _ = agent
+        .run(input(130), streaming, Cancellation::new())
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert_eq!(
+        checkpoint.load(130, &Cancellation::new()).await.unwrap(),
+        scene
+    );
+    assert_eq!(model.requests.lock().unwrap().len(), 1);
+    assert_closeout_failure(
+        config,
+        stage,
+        &scene,
+        if cancelled {
+            chat::Status::Stopped
+        } else {
+            chat::Status::Completed
+        },
+    );
+}
+
+#[tokio::test]
+async fn audit_write_failures_do_not_replace_chat_or_react_checkpoint_facts() {
+    for react in [false, true] {
+        for streaming in [false, true] {
+            for cancelled in [false, true] {
+                for stage in 0..4 {
+                    let config = failing_closeout(stage);
+                    let checkpoint = Arc::new(core::checkpoint::InMemory::new());
+                    let model = Model::new(vec![if cancelled {
+                        let mut partial = text("partial");
+                        partial.usage = Some(usage(10, 3));
+                        Step::pending(partial)
+                    } else {
+                        Step::events(vec![complete(text("answer"), Some(usage(10, 3)))])
+                    }]);
+                    if react {
+                        let agent = agent::react()
+                            .model(model.clone())
+                            .memory(config.clone())
+                            .checkpoint(checkpoint.clone())
+                            .build()
+                            .unwrap();
+                        check_agent_closeout_failure(
+                            agent,
+                            model,
+                            &config,
+                            &checkpoint,
+                            stage,
+                            streaming,
+                            cancelled,
+                        )
+                        .await;
+                    } else {
+                        let agent = agent::chat()
+                            .model(model.clone())
+                            .memory(config.clone())
+                            .checkpoint(checkpoint.clone())
+                            .build()
+                            .unwrap();
+                        check_agent_closeout_failure(
+                            agent,
+                            model,
+                            &config,
+                            &checkpoint,
+                            stage,
+                            streaming,
+                            cancelled,
+                        )
+                        .await;
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct FailingCheckpoint {
+    inner: core::checkpoint::InMemory,
+    saves: AtomicUsize,
+    after_write: bool,
+}
+impl halo_agents::checkpoint::Checkpoint for FailingCheckpoint {
+    async fn save(&self, id: i64, state: Value, c: &Cancellation) -> Result<(), Error> {
+        assert!(!c.is_cancelled());
+        self.saves.fetch_add(1, Ordering::SeqCst);
+        if self.after_write {
+            self.inner.save(id, state, c).await?;
+        }
+        Err(storage_error())
+    }
+    async fn load(&self, id: i64, c: &Cancellation) -> Result<Value, Error> {
+        self.inner.load(id, c).await
+    }
+    async fn delete(&self, id: i64, c: &Cancellation) -> Result<(), Error> {
+        self.inner.delete(id, c).await
+    }
+}
+
+#[tokio::test]
+async fn checkpoint_write_failure_does_not_create_a_false_failed_audit() {
+    for react in [false, true] {
+        for after_write in [false, true] {
+            let config = config(Chats::default());
+            let checkpoint = Arc::new(FailingCheckpoint {
+                inner: core::checkpoint::InMemory::new(),
+                saves: AtomicUsize::new(0),
+                after_write,
+            });
+            let model = Model::new(vec![Step::events(vec![complete(
+                text("answer"),
+                Some(usage(10, 3)),
+            )])]);
+            let mut events: Pin<Box<dyn Stream<Item = Result<Event, Error>>>> = if react {
+                Box::pin(
+                    agent::react()
+                        .model(model.clone())
+                        .memory(config.clone())
+                        .checkpoint(checkpoint.clone())
+                        .build()
+                        .unwrap()
+                        .run(input(130), false, Cancellation::new())
+                        .await
+                        .unwrap(),
+                )
+            } else {
+                Box::pin(
+                    agent::chat()
+                        .model(model.clone())
+                        .memory(config.clone())
+                        .checkpoint(checkpoint.clone())
+                        .build()
+                        .unwrap()
+                        .run(input(130), false, Cancellation::new())
+                        .await
+                        .unwrap(),
+                )
+            };
+            assert_eq!(events.next().await, Some(Err(storage_error())));
+            assert!(events.next().await.is_none());
+            assert_eq!(checkpoint.saves.load(Ordering::SeqCst), 1);
+            assert_eq!(model.requests.lock().unwrap().len(), 1);
+            assert_eq!(config.chat.updates.load(Ordering::SeqCst), 0);
+            assert_eq!(saved(&config, 130).status, chat::Status::Running);
+            assert_eq!(config.trace.creates.load(Ordering::SeqCst), 0);
+            assert_no_trace(&config, 130);
+            let saved = checkpoint.load(130, &Cancellation::new()).await;
+            if after_write {
+                let scene = saved.unwrap();
+                assert_eq!(scene["status"], "succeeded");
+                assert!(scene["error"].is_null());
+                assert_eq!(scene["usage"]["total"], 13);
+            } else {
+                assert_eq!(saved.unwrap_err().code, "NOT_FOUND");
+            }
+        }
+    }
+}
+
+#[tokio::test]
+async fn workflow_audit_failure_preserves_outer_state_without_replaying_nodes() {
+    for nested in [false, true] {
+        for failed in [false, true] {
+            for stage in 0..4 {
+                let config = failing_closeout_for(stage, memory::short::Type::Workflow);
+                let checkpoint = Arc::new(core::checkpoint::InMemory::new());
+                let model = Model::new(vec![if failed {
+                    Step::error()
+                } else {
+                    Step::events(vec![complete(text("answer"), Some(usage(10, 3)))])
+                }]);
+                let mut builder = WorkflowBuilder::new("audit-closeout");
+                builder
+                    .add_agent_node("agent", agent::chat().model(model.clone()).build().unwrap())
+                    .unwrap();
+                builder.add_edge(START, "agent").unwrap();
+                builder.add_edge("agent", END).unwrap();
+                let mut workflow = builder.compile().unwrap();
+                if nested {
+                    let mut parent = WorkflowBuilder::new("outer-audit-closeout");
+                    parent.add_graph_node("child", &workflow).unwrap();
+                    parent.add_edge(START, "child").unwrap();
+                    parent.add_edge("child", END).unwrap();
+                    workflow = parent.compile().unwrap();
+                }
+                let runtime = Runtime::new(130, workflow)
+                    .unwrap()
+                    .memory(config.clone())
+                    .unwrap()
+                    .with_checkpoint(checkpoint.clone());
+                let mut message = Message::new(Role::User);
+                message.metadata = input(130).metadata;
+                let initial = Messages::new([message]);
+                let events = runtime
+                    .run(initial.clone(), Arc::new(|| 1_001), Cancellation::new())
+                    .await
+                    .unwrap()
+                    .collect::<Vec<_>>()
+                    .await;
+                assert_eq!(events.last(), Some(&Err(storage_error())));
+                let scene = checkpoint.load(130, &Cancellation::new()).await.unwrap();
+                assert_eq!(runtime.snapshot().unwrap(), scene);
+                assert_eq!(scene["status"], if failed { "failed" } else { "succeeded" });
+                if failed {
+                    // A storage failure must not replace the model's original
+                    // execution error in the recoverable runtime scene.
+                    assert_eq!(
+                        saved(&config, 130).status,
+                        if stage == 0 {
+                            chat::Status::Running
+                        } else {
+                            chat::Status::Failed
+                        }
+                    );
+                    assert_eq!(config.chat.updates.load(Ordering::SeqCst), 1);
+                    assert_eq!(
+                        config.trace.creates.load(Ordering::SeqCst),
+                        usize::from(stage >= 2)
+                    );
+                    let saved_trace = config.trace.read(130, &Cancellation::new()).await;
+                    if stage == 3 {
+                        assert_eq!(saved_trace.unwrap().state, scene);
+                    } else {
+                        assert_eq!(saved_trace.unwrap_err().code, "NOT_FOUND");
+                    }
+                } else {
+                    assert_closeout_failure(&config, stage, &scene, chat::Status::Completed);
+                }
+                let restored = runtime
+                    .run(
+                        initial,
+                        Arc::new(|| panic!("no new execution")),
+                        Cancellation::new(),
+                    )
+                    .await
+                    .unwrap()
+                    .collect::<Vec<_>>()
+                    .await;
+                if failed {
+                    assert!(
+                        matches!(restored.last(), Some(Err(error)) if error.code == "TRANSPORT")
+                    );
+                } else {
+                    assert!(restored.iter().all(Result::is_ok));
+                }
+                assert_eq!(model.requests.lock().unwrap().len(), 1);
+                assert_eq!(config.chat.updates.load(Ordering::SeqCst), 1);
+                assert_eq!(
+                    config.trace.creates.load(Ordering::SeqCst),
+                    usize::from(stage >= 2)
+                );
+                assert_eq!(runtime.snapshot().unwrap(), scene);
+            }
+        }
+    }
+}
+
 #[test]
 fn abandoned_stream_does_not_spawn_background_closure() {
     let config = config(Chats::default());
@@ -883,7 +1293,7 @@ fn max_iters_and_missing_complete_are_failed_not_successful_closure() {
 }
 
 #[test]
-fn known_usage_on_a_failed_stream_is_retained_without_estimating_missing_fields() {
+fn known_usage_on_a_failed_stream_is_retained_and_missing_consumption_is_estimated() {
     for react in [false, true] {
         let config = config(Chats::default());
         let mut delta = text("unfinished");
@@ -922,7 +1332,17 @@ fn known_usage_on_a_failed_stream_is_retained_without_estimating_missing_fields(
         assert_eq!(record.status, chat::Status::Failed);
         let usage = record.usage.unwrap();
         assert_eq!(usage.input, Some(77));
-        assert!(usage.output.is_none() && usage.total.is_none());
+        assert!(usage.output.unwrap() > 0);
+        assert_eq!(usage.total, Some(77 + usage.output.unwrap()));
+        let trace = block_on(config.trace.read(124, &Cancellation::new())).unwrap();
+        let attempt = &trace.state["steps"][0]["attempts"][0];
+        assert_eq!(attempt["usage"]["input"], 77);
+        assert_eq!(attempt["usage"]["total"], usage.total.unwrap());
+        assert_eq!(
+            attempt["message"]["content"][0]["data"]["value"],
+            "unfinished"
+        );
+        assert!(trace.state["final_message"].is_null());
     }
 }
 

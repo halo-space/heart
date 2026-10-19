@@ -460,22 +460,22 @@ async fn reject_wait<A: Agent>(agent: A, checkpoint: Arc<core::checkpoint::InMem
     assert!(events.iter().all(Result::is_ok));
     let mut snapshot = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
     snapshot["status"] = json!("waiting");
-    snapshot["steps"] = serde_json::to_value(vec![halo_agents::runtime::agent::node::Step {
-        id: "model_0".into(),
-        kind: "model".into(),
-        status: "waiting".into(),
-        waits: std::collections::BTreeMap::from([(
-            5001,
-            halo_agents::runtime::agent::node::Wait {
-                count: 1,
-                kind: "ask".into(),
-                status: "received".into(),
-                question: text("question"),
-                feedback: Default::default(),
-            },
-        )]),
-        ..Default::default()
-    }])
+    // Corrupt only the waiting record, not the independently validated native
+    // model lifecycle facts, so this still tests the intended error boundary.
+    snapshot["steps"]
+        .as_array_mut()
+        .unwrap()
+        .last_mut()
+        .unwrap()["waits"] = serde_json::to_value(std::collections::BTreeMap::from([(
+        5001,
+        halo_agents::runtime::agent::node::Wait {
+            count: 1,
+            kind: "ask".into(),
+            status: "received".into(),
+            question: text("question"),
+            feedback: Default::default(),
+        },
+    )]))
     .unwrap();
     checkpoint
         .save(1001, snapshot.clone(), &Cancellation::new())

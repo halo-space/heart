@@ -967,7 +967,10 @@ async fn pending_memory_reads_are_cancellable_at_every_stage() {
         )
         .await
         .unwrap();
-        assert_eq!(result.err().unwrap().code, "CANCELLED");
+        let events = result.unwrap().collect::<Vec<_>>().await;
+        assert!(
+            matches!(events.last(), Some(Ok(Event::Complete { usage: None, finish_reason: Some(reason), .. })) if reason == "cancelled")
+        );
         assert!(model.requests.lock().unwrap().is_empty());
     }
 }
@@ -985,12 +988,16 @@ fn synchronous_backend_cancellation_stops_later_reads_and_model() {
             .memory(config(session(), &state).with_scopes(["user"]))
             .build()
             .unwrap();
-        assert_eq!(
-            block_on(agent.run(input(), true, Cancellation::new()))
-                .err()
+        let events = block_on(async {
+            agent
+                .run(input(), true, Cancellation::new())
+                .await
                 .unwrap()
-                .code,
-            "CANCELLED"
+                .collect::<Vec<_>>()
+                .await
+        });
+        assert!(
+            matches!(events.last(), Some(Ok(Event::Complete { usage: None, finish_reason: Some(reason), .. })) if reason == "cancelled")
         );
         assert_eq!(
             state

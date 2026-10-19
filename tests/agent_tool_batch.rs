@@ -27,6 +27,7 @@ struct Probe {
     peak: usize,
     calls: BTreeMap<usize, oneshot::Receiver<()>>,
     evals: BTreeMap<usize, oneshot::Receiver<()>>,
+    started_signal: Option<oneshot::Sender<()>>,
 }
 type Shared = Arc<Mutex<Probe>>;
 
@@ -50,14 +51,22 @@ impl Tool for BatchTool {
     }
     async fn call(&self, call: &Call, _: &Cancellation) -> Result<Message, Error> {
         let index = call.arguments["index"].as_u64().unwrap() as usize;
-        let receiver = {
+        let (receiver, signal) = {
             let mut probe = self.probe.lock().unwrap();
             probe.started.push(index);
             probe.active += 1;
             probe.peak = probe.peak.max(probe.active);
-            probe.calls.remove(&index)
+            let signal = if index == 1 {
+                probe.started_signal.take()
+            } else {
+                None
+            };
+            (probe.calls.remove(&index), signal)
         };
         let _active = Active(self.probe.clone());
+        if let Some(signal) = signal {
+            let _ = signal.send(());
+        }
         if let Some(receiver) = receiver {
             receiver.await.unwrap();
         }
@@ -474,7 +483,7 @@ impl halo_agents::permission::Permission for Allow {
         })
     }
 }
-struct HookFailure;
+struct HookFailure(Mutex<Option<oneshot::Receiver<()>>>);
 impl halo_agents::middleware::Middleware for HookFailure {
     async fn before_permission(
         &self,
@@ -482,6 +491,12 @@ impl halo_agents::middleware::Middleware for HookFailure {
         _: &Cancellation,
     ) -> Result<(), Error> {
         if value["metadata"]["call"]["arguments"]["index"] == json!(2) {
+            // Exercise release of an actually running sibling rather than
+            // assuming how many internal handoff polls precede admission.
+            let started = self.0.lock().unwrap().take();
+            if let Some(started) = started {
+                started.await.unwrap();
+            }
             return Err(Error::new("BACKEND", "permission hook failed"));
         }
         Ok(())
@@ -493,12 +508,14 @@ fn permission_hook_failure_releases_siblings_and_never_enters_model_context() {
     block_on(async {
         let (model, tool, probe) = setup(3);
         let _releases = gates(&probe, 3);
+        let (started, receive_started) = oneshot::channel();
+        probe.lock().unwrap().started_signal = Some(started);
         let requests = model.requests.clone();
         let agent = agent::react()
             .model(model)
             .toolkit(Toolkit::new().tool(tool))
             .permission(Allow)
-            .middleware(HookFailure)
+            .middleware(HookFailure(Mutex::new(Some(receive_started))))
             .with_max_concurrency(2)
             .build()
             .unwrap();

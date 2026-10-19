@@ -890,11 +890,15 @@ async fn next_react_progress<M: Chat + 'static>(
         if let Some(run) = &state.interaction {
             run.close();
         }
-        let mut terminal = result;
-        if let Err(error) = save_checkpoint(&state, checkpoint_snapshot(&state, &terminal)).await {
-            terminal = Err(error);
-        }
-        let (graph, state_json) = closeout_state(&state, &terminal);
+        // Serialize the actual terminal scene once for both independent
+        // persistence destinations. An I/O failure is not an execution failure
+        // and must not produce a second, rewritten runtime scene for Trace.
+        let snapshot = checkpoint_snapshot(&state, &result);
+        let saved = save_checkpoint(&state, snapshot.clone()).await;
+        let graph = state
+            .graph
+            .as_ref()
+            .and_then(|graph| serde_json::to_value(&graph.plan).ok());
         // Drop all pending futures even if the consumer retains the terminal
         // stream. Local resources are released; external effects are not undone.
         state.active_tools.clear();
@@ -904,10 +908,15 @@ async fn next_react_progress<M: Chat + 'static>(
         state.pending_plans.clear();
         state.pending_replan = None;
         state.provider = None;
-        state
-            .run
-            .close_with_state(terminal, graph, state_json)
-            .await
+        match saved {
+            Err(error) => Err(error),
+            Ok(()) => {
+                state
+                    .run
+                    .close_with_state(result, graph, Some(snapshot))
+                    .await
+            }
+        }
     } else {
         result
     };
@@ -931,73 +940,6 @@ fn emitted<T>(
     Some((Some(event), state))
 }
 
-/// Build the single final Agent state projection used by Chat.graph and
-/// Trace.state. This is a closeout snapshot, not a second runtime model;
-/// the values are serialized from the live execution graph and node states.
-fn closeout_state<M: Chat>(
-    state: &ReActState<M>,
-    result: &Result<Event, Error>,
-) -> (Option<Value>, Option<Value>) {
-    let status = match result {
-        Ok(Event::Complete {
-            finish_reason: Some(reason),
-            ..
-        }) if reason == "cancelled" => "stopped",
-        Ok(Event::Complete { .. }) => "succeeded",
-        Err(error) if error.code == "CANCELLED" => "stopped",
-        Err(error) if error.code == "WAITING" => "waiting",
-        Err(_) => "failed",
-        Ok(Event::Delta { .. }) => "running",
-    };
-    let graph_value = state
-        .graph
-        .as_ref()
-        .and_then(|graph| serde_json::to_value(&graph.plan).ok());
-    let (graph_state, nodes, history) = state
-        .graph
-        .as_ref()
-        .map(|graph| {
-            (
-                Some(GraphState {
-                    plan: graph.plan.clone(),
-                }),
-                graph.nodes.clone(),
-                graph.history.clone(),
-            )
-        })
-        .unwrap_or((None, BTreeMap::new(), Vec::new()));
-    let state_json = serde_json::to_value(AgentState {
-        completion: state.completion.clone(),
-        preparation: state.preparation.clone(),
-        chat_id: state.query.metadata.get("chat_id").and_then(Value::as_i64),
-        r#type: "agent".into(),
-        status: status.into(),
-        stream: state.stream,
-        usage: execution::usage(state),
-        execution: state.root.snapshot(
-            status,
-            execution::usage(state),
-            result.as_ref().err().cloned(),
-        ),
-        graph: graph_state,
-        nodes,
-        history,
-        messages: state.messages.clone(),
-        steps: state.steps.clone(),
-        waits: state.waits.clone(),
-        error: result.as_ref().err().cloned(),
-        final_message: match result {
-            Ok(Event::Complete { message, .. }) => {
-                Some(crate::runtime::observation::original_message(message))
-            }
-            _ => None,
-        },
-        metadata: state.metadata.clone().into_iter().collect(),
-    })
-    .unwrap_or_else(|_| json!({}));
-    (graph_value, Some(state_json))
-}
-
 fn result_status(result: &Result<Event, Error>) -> &'static str {
     match result {
         Ok(Event::Complete {
@@ -1012,9 +954,8 @@ fn result_status(result: &Result<Event, Error>) -> &'static str {
     }
 }
 
-/// Build the Agent Runtime checkpoint independently from Chat.graph and
-/// Trace.state. A graph enriches the snapshot when present, but it is not
-/// a precondition for checkpointing an Agent run.
+/// Serialize the canonical Agent Runtime scene. Checkpoint and Trace store
+/// independent copies; neither a graph nor configured storage is required.
 fn checkpoint_snapshot<M: Chat>(state: &ReActState<M>, result: &Result<Event, Error>) -> Value {
     let (graph, nodes, history) = state
         .graph
@@ -1032,7 +973,7 @@ fn checkpoint_snapshot<M: Chat>(state: &ReActState<M>, result: &Result<Event, Er
     let mut snapshot = serde_json::to_value(AgentState {
         completion: state.completion.clone(),
         preparation: state.preparation.clone(),
-        chat_id: state.checkpoint_id,
+        chat_id: state.query.metadata.get("chat_id").and_then(Value::as_i64),
         r#type: "agent".into(),
         status: result_status(result).into(),
         stream: state.stream,

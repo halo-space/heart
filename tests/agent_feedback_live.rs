@@ -163,7 +163,12 @@ async fn question<A: Agent>(agent: &A, stream: bool) -> (std::pin::Pin<Box<A::St
 }
 
 fn record(state: &Value) -> &Value {
-    state["steps"][0]["waits"]
+    state["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|step| step["kind"] == "tool")
+        .expect("actual Tool Step")["waits"]
         .as_object()
         .unwrap()
         .values()
@@ -206,7 +211,12 @@ async fn approved_saved<A: Agent>(
     assert!(poll!(events.next()).is_pending());
     let scene = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
     assert_eq!(
-        scene["steps"][0]["waits"][approval.to_string()]["status"],
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["waits"][approval.to_string()]["status"],
         "resolved"
     );
     assert_eq!(record(&scene)["feedback"].as_array().unwrap().len(), 1);
@@ -355,7 +365,12 @@ async fn fifo<A: Agent>(agent: A, checkpoint: Arc<core::checkpoint::InMemory>, l
     let state = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
     assert_eq!(state["status"], "succeeded");
     assert_eq!(state["waits"], json!([]));
-    for step in state["steps"].as_array().unwrap() {
+    for step in state["steps"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|step| step["kind"] == "tool")
+    {
         for wait in step["waits"].as_object().unwrap().values() {
             assert_eq!(wait["status"], "resolved");
             assert_eq!(wait["feedback"].as_array().unwrap().len(), 3);

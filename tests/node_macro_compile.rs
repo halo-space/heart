@@ -49,7 +49,13 @@ fn node_declarations_compile_or_fail_at_the_definition_site() {
             "tests/fixtures/node_macro/Cargo.toml"
         };
         let output = Command::new(env!("CARGO"))
-            .args(["check", "--offline", "--quiet", "--manifest-path"])
+            .args([
+                "check",
+                "--offline",
+                "--locked",
+                "--quiet",
+                "--manifest-path",
+            ])
             .arg(root.join(manifest))
             .args(["--bin", case])
             .arg("--target-dir")

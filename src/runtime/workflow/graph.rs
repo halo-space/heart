@@ -123,6 +123,7 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                 };
                 futures_util::pin_mut!(stream);
                 let mut final_assistant = None;
+                let mut cancelled_run = false;
                 let mut published: Option<Arc<Value>> = None;
                 enum Update {
                     Event(Box<Result<Event, Error>>),
@@ -306,13 +307,17 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                                 };
                             }
                             if cancelled {
-                                return AgentRun {
-                                    result: Err(Error::new("CANCELLED", "agent run cancelled")),
-                                    messages,
-                                    steps,
-                                    usage,
-                                    scene: None,
-                                };
+                                // A child invocation has its own Complete.
+                                // Drain the owning Agent's closeout too, so
+                                // its final scene and observations reach this
+                                // Workflow before the invocation ends.
+                                cancelled_run = true;
+                                if observed.latest_shared().is_none() {
+                                    // Opaque custom Agents expose no nested
+                                    // native owner to finish. Their cancelled
+                                    // Complete retains its terminal meaning.
+                                    break;
+                                }
                             }
                         }
                         Err(error) => {
@@ -327,14 +332,18 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                     }
                 }
                 AgentRun {
-                    result: final_assistant
-                        .map(|message| Messages::new([message]))
-                        .ok_or_else(|| {
-                            Error::new(
-                                "INVALID_RESPONSE",
-                                "agent produced no final Assistant Complete",
-                            )
-                        }),
+                    result: if cancelled_run {
+                        Err(Error::new("CANCELLED", "agent run cancelled"))
+                    } else {
+                        final_assistant
+                            .map(|message| Messages::new([message]))
+                            .ok_or_else(|| {
+                                Error::new(
+                                    "INVALID_RESPONSE",
+                                    "agent produced no final Assistant Complete",
+                                )
+                            })
+                    },
                     messages,
                     steps,
                     usage,

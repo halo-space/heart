@@ -20,7 +20,6 @@ use std::{
     path::PathBuf,
     process::Command,
     sync::{Arc, Mutex},
-    time::{SystemTime, UNIX_EPOCH},
 };
 
 fn embedded_workflow<A: Agent + 'static>(
@@ -288,7 +287,12 @@ async fn graphless_roots_keep_canonical_child_identity_and_do_not_duplicate_pare
         let execution = &child["execution"];
         assert_ne!(root["exec_id"], execution["exec_id"]);
         assert_eq!(
-            root_child_scene(&waiting, "delegate_1")["steps"][0]["stage"],
+            root_child_scene(&waiting, "delegate_1")["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|step| step["kind"] == "tool")
+                .expect("actual Tool Step")["stage"],
             "eval"
         );
 
@@ -569,8 +573,24 @@ async fn planned_pending_eval_cancellation_keeps_attempt_result_and_never_admits
     assert_eq!(scene["nodes"]["a"]["status"], "cancelled");
     let attempt = &scene["nodes"]["a"]["execution"]["attempts"][0];
     assert_eq!(attempt["status"], "cancelled");
-    assert_eq!(attempt["steps"][0]["status"], "cancelled");
-    assert_eq!(attempt["steps"][0]["message"]["values"]["temperature"], 23);
+    assert_eq!(
+        attempt["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["status"],
+        "cancelled"
+    );
+    assert_eq!(
+        attempt["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["message"]["values"]["temperature"],
+        23
+    );
     assert!(scene["nodes"]["b"]["execution"].is_null());
     assert!(scene["nodes"]["c"]["execution"].is_null());
     assert_eq!(runtime.state().usage.as_ref().unwrap().total, Some(9));
@@ -995,9 +1015,22 @@ async fn planned_subagent_wait_must_not_replay_child_tool_after_checkpoint_resto
     let child_execution = child.execution.as_ref().unwrap();
     assert_ne!(child_id, &child_execution.exec_id.to_string());
     let child_scene = child_execution.attempts[0].agent.as_ref().unwrap();
-    assert_eq!(child_scene["steps"][0]["stage"], "eval");
     assert_eq!(
-        child_scene["steps"][0]["message"]["values"]["temperature"],
+        child_scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["stage"],
+        "eval"
+    );
+    assert_eq!(
+        child_scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["message"]["values"]["temperature"],
         23
     );
     assert!(
@@ -1463,7 +1496,15 @@ async fn real_subagent_eval_wait_retains_child_consumption_and_does_not_reselect
             .unwrap();
         let child = root_child_scene(scene, "delegate_1");
         assert_eq!(child["status"], "waiting");
-        assert_eq!(child["steps"][0]["stage"], "eval");
+        assert_eq!(
+            child["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|step| step["kind"] == "tool")
+                .expect("actual Tool Step")["stage"],
+            "eval"
+        );
         assert_eq!(child["query"]["metadata"]["depth"], 2);
         assert_eq!(child["query"]["metadata"]["chat_id"], 1001);
         assert_eq!(child["query"]["metadata"]["session_id"], 4);
@@ -1591,7 +1632,12 @@ async fn planned_eval_in_nested_workflow_keeps_successful_sibling_and_current_at
     assert_eq!(scene["nodes"]["a"]["status"], "waiting");
     assert_eq!(scene["nodes"]["b"]["status"], "succeeded");
     assert_eq!(
-        scene["nodes"]["a"]["execution"]["attempts"][0]["steps"][0]["stage"],
+        scene["nodes"]["a"]["execution"]["attempts"][0]["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["stage"],
         "eval"
     );
     let sibling = scene["nodes"]["b"].clone();
@@ -1897,8 +1943,24 @@ async fn embedded_chat_and_react_resume_eval_in_the_original_workflow_attempt() 
         assert_eq!(execution.usage.as_ref().unwrap().total, Some(3));
         let created_time = execution.attempts[0].created_time;
         let scene = execution.attempts[0].agent.as_ref().unwrap();
-        assert_eq!(scene["steps"][1]["stage"], "eval");
-        assert_eq!(scene["steps"][1]["message"]["values"]["temperature"], 23);
+        assert_eq!(
+            scene["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|step| step["kind"] == "tool" && step["call_id"] == "weather_001")
+                .expect("waiting weather_001 Tool Step")["stage"],
+            "eval"
+        );
+        assert_eq!(
+            scene["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|step| step["kind"] == "tool" && step["call_id"] == "weather_001")
+                .expect("waiting weather_001 Tool Step")["message"]["values"]["temperature"],
+            23
+        );
         assert_eq!(scene["query"]["payload"][0]["data"]["value"], "weather?");
         assert_eq!(
             child_checkpoint
@@ -2241,11 +2303,52 @@ async fn react_waiting_eval_resumes_eval_without_repeating_before_or_call() {
     assert!(matches!(events.last(), Some(Err(error)) if error.code == "WAITING"));
     let scene = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
     assert_eq!(scene["status"], "waiting");
-    assert_eq!(scene["steps"][0]["stage"], "eval");
-    assert_eq!(scene["steps"][0]["status"], "waiting");
-    assert_eq!(scene["steps"][0]["call"]["arguments"]["city"], "Beijing");
-    assert_eq!(scene["steps"][0]["message"]["values"]["temperature"], 23);
-    assert!(scene["steps"][0].get("eval").is_none());
+    assert_eq!(
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["stage"],
+        "eval"
+    );
+    assert_eq!(
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["status"],
+        "waiting"
+    );
+    assert_eq!(
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["call"]["arguments"]["city"],
+        "Beijing"
+    );
+    assert_eq!(
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["message"]["values"]["temperature"],
+        23
+    );
+    assert!(
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")
+            .get("eval")
+            .is_none()
+    );
     drop(first);
 
     let model = Model::new(Message::new(Role::Assistant));
@@ -2287,8 +2390,24 @@ async fn react_waiting_eval_resumes_eval_without_repeating_before_or_call() {
         }));
     }
     let scene = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
-    assert_eq!(scene["steps"][0]["stage"], "committed");
-    assert_eq!(scene["steps"][0]["eval"]["passed"], true);
+    assert_eq!(
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["stage"],
+        "committed"
+    );
+    assert_eq!(
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["eval"]["passed"],
+        true
+    );
 }
 
 fn calls(ids: &[&str]) -> Message {
@@ -2324,8 +2443,24 @@ async fn completed_sibling_eval_is_reused_and_context_keeps_selection_order() {
         .await;
     assert!(matches!(events.last(), Some(Err(error)) if error.code == "WAITING"));
     let scene = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
-    assert_eq!(scene["steps"][0]["stage"], "complete");
-    assert_eq!(scene["steps"][1]["stage"], "eval");
+    assert_eq!(
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["stage"],
+        "complete"
+    );
+    assert_eq!(
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool" && step["call_id"] == "weather_001")
+            .expect("waiting weather_001 Tool Step")["stage"],
+        "eval"
+    );
     drop(first);
     let model = Model::new(Message::new(Role::Assistant));
     let restored = agent::react()
@@ -2382,8 +2517,24 @@ async fn chat_batch_restores_results_and_evals_without_parent_model_reselection(
         "failed batch has not delivered Tool Complete yet"
     );
     let scene = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
-    assert_eq!(scene["steps"][0]["stage"], "complete");
-    assert_eq!(scene["steps"][1]["stage"], "eval");
+    assert_eq!(
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["stage"],
+        "complete"
+    );
+    assert_eq!(
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool" && step["call_id"] == "weather_001")
+            .expect("waiting weather_001 Tool Step")["stage"],
+        "eval"
+    );
     drop(first);
     let model = Model::new(Message::new(Role::Assistant));
     let restored = agent::chat()
@@ -2457,7 +2608,15 @@ async fn chat_invalid_eval_scene_is_not_overwritten_or_given_to_model() {
         .collect::<Vec<_>>()
         .await;
     let mut scene = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
-    scene["steps"][0].as_object_mut().unwrap().remove("message");
+    scene["steps"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|step| step["kind"] == "tool")
+        .expect("actual Tool Step")
+        .as_object_mut()
+        .unwrap()
+        .remove("message");
     checkpoint
         .save(1001, scene.clone(), &Cancellation::new())
         .await
@@ -2500,7 +2659,15 @@ async fn chat_running_batch_checkpoint_reuses_success_and_retains_usage() {
     assert!(first_stream.next().await.unwrap().is_ok());
     let scene = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
     assert_eq!(scene["status"], "running");
-    assert_eq!(scene["steps"][0]["stage"], "complete");
+    assert_eq!(
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["stage"],
+        "complete"
+    );
     assert_eq!(scene["usage"]["total"], 3);
     drop(first_stream);
     drop(first);
@@ -2586,7 +2753,15 @@ async fn chat_cancellation_drops_pending_followup_provider_and_keeps_previous_us
     let scene = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
     assert_eq!(scene["status"], "stopped");
     assert_eq!(scene["usage"]["total"], 3 + usage.total.unwrap());
-    assert_eq!(scene["steps"][0]["stage"], "committed");
+    assert_eq!(
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["stage"],
+        "committed"
+    );
 }
 
 #[tokio::test]
@@ -2622,9 +2797,33 @@ async fn cancelling_pending_chat_eval_keeps_call_result_and_marks_only_unfinishe
         matches!(event, Event::Complete { finish_reason:Some(reason), .. } if reason=="cancelled")
     );
     let scene = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
-    assert_eq!(scene["steps"][0]["status"], "cancelled");
-    assert_eq!(scene["steps"][0]["stage"], "eval");
-    assert_eq!(scene["steps"][0]["message"]["values"]["temperature"], 23);
+    assert_eq!(
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["status"],
+        "cancelled"
+    );
+    assert_eq!(
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["stage"],
+        "eval"
+    );
+    assert_eq!(
+        scene["steps"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|step| step["kind"] == "tool")
+            .expect("actual Tool Step")["message"]["values"]["temperature"],
+        23
+    );
     assert_eq!(scene["usage"]["total"], 3);
     let counts = counts.lock().unwrap();
     assert_eq!((counts.before, counts.call, counts.after), (1, 1, 1));
@@ -2647,7 +2846,15 @@ async fn missing_eval_result_is_rejected_before_model_or_state_writes() {
         .collect::<Vec<_>>()
         .await;
     let mut scene = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
-    scene["steps"][0].as_object_mut().unwrap().remove("message");
+    scene["steps"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|step| step["kind"] == "tool")
+        .expect("actual Tool Step")
+        .as_object_mut()
+        .unwrap()
+        .remove("message");
     checkpoint
         .save(1001, scene.clone(), &Cancellation::new())
         .await
@@ -2761,7 +2968,12 @@ async fn eval_worker() {
             );
         }
         assert_eq!(
-            checkpoint.load(1001, &Cancellation::new()).await.unwrap()["steps"][0]["stage"],
+            checkpoint.load(1001, &Cancellation::new()).await.unwrap()["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|step| step["kind"] == "tool")
+                .expect("actual Tool Step")["stage"],
             "committed"
         );
     }
@@ -3044,7 +3256,15 @@ async fn embedded_eval_worker() {
         assert_eq!(execution.usage.as_ref().unwrap().total, Some(8));
         assert_eq!(state.usage.as_ref().unwrap().total, Some(8));
         let scene = execution.attempts[0].agent.as_ref().unwrap();
-        assert_eq!(scene["steps"][0]["stage"], "committed");
+        assert_eq!(
+            scene["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|step| step["kind"] == "tool")
+                .expect("actual Tool Step")["stage"],
+            "committed"
+        );
         assert_eq!(scene["query"]["payload"][0]["data"]["value"], "weather?");
         assert_eq!(scene["query"]["metadata"]["chat_id"], 1001);
         let saved = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
@@ -3133,9 +3353,33 @@ async fn embedded_chat_and_react_cancel_pending_eval_preserving_the_agent_scene(
         let execution = &runtime.state().nodes["agent"].executions[&9001];
         assert_eq!(execution.status, node::ExecutionStatus::Cancelled);
         let scene = execution.attempts[0].agent.as_ref().unwrap();
-        assert_eq!(scene["steps"][0]["status"], "cancelled");
-        assert_eq!(scene["steps"][0]["stage"], "eval");
-        assert_eq!(scene["steps"][0]["message"]["values"]["temperature"], 23);
+        assert_eq!(
+            scene["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|step| step["kind"] == "tool")
+                .expect("actual Tool Step")["status"],
+            "cancelled"
+        );
+        assert_eq!(
+            scene["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|step| step["kind"] == "tool")
+                .expect("actual Tool Step")["stage"],
+            "eval"
+        );
+        assert_eq!(
+            scene["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|step| step["kind"] == "tool")
+                .expect("actual Tool Step")["message"]["values"]["temperature"],
+            23
+        );
         assert_eq!(scene["usage"]["total"], 3);
         assert_eq!(runtime.state().usage.as_ref().unwrap().total, Some(3));
         assert_eq!(
@@ -3259,7 +3503,12 @@ async fn planned_child_worker() {
     if wait {
         assert!(matches!(events.last(), Some(Err(error)) if error.code == "WAITING"));
         assert_eq!(
-            child_attempt.agent.as_ref().unwrap()["steps"][0]["stage"],
+            child_attempt.agent.as_ref().unwrap()["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|step| step["kind"] == "tool")
+                .expect("actual Tool Step")["stage"],
             "eval"
         );
         std::fs::write(
@@ -3296,15 +3545,23 @@ async fn planned_child_worker() {
 }
 
 fn recover_process(kind: &str) {
-    let root = std::env::temp_dir().join(format!(
-        "heart-eval-{}-{}",
-        std::process::id(),
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-    ));
-    std::fs::create_dir(&root).unwrap();
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let root = loop {
+        // Concurrent tests can observe the same clock value even when its
+        // unit is nanoseconds. Reserve a unique directory atomically; leave
+        // any pre-existing directory untouched, including failed-run data.
+        let candidate = std::env::temp_dir().join(format!(
+            "heart-eval-{}-{}-{}",
+            std::process::id(),
+            kind,
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        ));
+        match std::fs::create_dir(&candidate) {
+            Ok(()) => break candidate,
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => panic!("cannot reserve recovery test directory: {error}"),
+        }
+    };
     for phase in ["wait", "restore"] {
         let result = Command::new(std::env::current_exe().unwrap())
             .args([

@@ -167,7 +167,12 @@ async fn both_agents_exclude_reply_identity_from_reused_tool_results() {
         assert_eq!(tool.metadata["label"], "business metadata");
         assert_eq!(tool.values["reply_id"], 99);
         assert!(
-            state["steps"][0]["message"]["metadata"]
+            state["steps"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|step| step["kind"] == "tool")
+                .expect("actual Tool Step")["message"]["metadata"]
                 .get("reply_id")
                 .is_none()
         );

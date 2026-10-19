@@ -24,11 +24,11 @@ impl Active {
 }
 
 pub(super) struct TaskProgress<M: Chat> {
-    task: Task<M>,
+    task: Box<Task<M>>,
     result: Option<Result<Event, Error>>,
 }
 
-async fn advance<M: Chat + 'static>(mut task: Task<M>) -> TaskProgress<M> {
+async fn advance<M: Chat + 'static>(mut task: Box<Task<M>>) -> TaskProgress<M> {
     let (result, state) = next_react_progress(task.state)
         .await
         .expect("live plan task");
@@ -349,7 +349,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 slot,
             },
         );
-        state.active_tasks.push(Box::pin(advance(task)));
+        state.active_tasks.push(Box::pin(advance(Box::new(task))));
     }
     Ok(())
 }

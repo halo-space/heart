@@ -167,7 +167,26 @@ impl Relay {
 /// facts first, then poll only immediately ready work. Fresh native scenes may
 /// release another backpressured handoff; arbitrary non-cooperating streams
 /// cannot keep the owner alive merely by emitting more text.
+#[inline(never)]
 pub(crate) fn cancel_ready<T>(
+    cx: &mut Context<'_>,
+    relay: &Relay,
+    mut poll: impl FnMut(&mut Context<'_>) -> Poll<Option<T>>,
+    mut commit: impl FnMut(&Observation) -> Result<(), Error>,
+) -> Result<(Vec<T>, Vec<Event>), Error> {
+    // A ready Tokio channel can otherwise yield Pending solely because an
+    // enclosing poll spent its cooperative budget. Disable that artificial
+    // yield for this synchronous drain only; actual Pending still stops it.
+    let mut drain = Box::pin(tokio::task::unconstrained(std::future::poll_fn(|cx| {
+        Poll::Ready(drain_ready(cx, relay, &mut poll, &mut commit))
+    })));
+    match drain.as_mut().poll(cx) {
+        Poll::Ready(result) => result,
+        Poll::Pending => unreachable!("synchronous cancellation drain"),
+    }
+}
+
+fn drain_ready<T>(
     cx: &mut Context<'_>,
     relay: &Relay,
     mut poll: impl FnMut(&mut Context<'_>) -> Poll<Option<T>>,
