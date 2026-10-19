@@ -381,7 +381,7 @@ where
             Some(snapshot) => crate::runtime::agent::preparation::State::restore(snapshot)?,
             None => Some(crate::runtime::agent::preparation::State::new(
                 original.clone(),
-                self.system_prompt.clone(),
+                self.toolkit.system_prompt(self.system_prompt.clone()),
             )),
         };
         if let Some(state) = &preparation {

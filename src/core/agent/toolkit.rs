@@ -6,7 +6,7 @@ use std::sync::Arc;
 use crate::Cancellation;
 use crate::components::agent::Error;
 use crate::components::mcp::Server;
-use crate::components::message::{Message, Messages};
+use crate::components::message::Message;
 use crate::components::skill::{Definition as SkillDefinition, Skill};
 use crate::components::tool::{
     Call, Evaluation, Tool, ToolDefinition, prepare_call, validate_call,
@@ -17,11 +17,11 @@ type PrepareFuture = Pin<Box<dyn Future<Output = Result<Call, Error>> + Send + '
 type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + Send + 'static>>;
 type DiscoveryFuture =
     Pin<Box<dyn Future<Output = Result<Vec<Arc<dyn Entry>>, Error>> + Send + 'static>>;
-type SkillFuture = Pin<Box<dyn Future<Output = Result<Messages, Error>> + Send + 'static>>;
+type SkillFuture = Pin<Box<dyn Future<Output = Result<String, Error>> + Send + 'static>>;
 
 trait SkillEntry: Send + Sync {
     fn definition(&self) -> &SkillDefinition;
-    fn run(&self, input: Messages, cancellation: Cancellation) -> SkillFuture;
+    fn read(&self, cancellation: Cancellation) -> SkillFuture;
 }
 
 struct TypedSkill<S> {
@@ -34,9 +34,64 @@ impl<S: Skill + 'static> SkillEntry for TypedSkill<S> {
         &self.definition
     }
 
-    fn run(&self, input: Messages, cancellation: Cancellation) -> SkillFuture {
+    fn read(&self, cancellation: Cancellation) -> SkillFuture {
         let skill = Arc::clone(&self.skill);
-        Box::pin(async move { skill.run(input, &cancellation).await })
+        Box::pin(async move { skill.read(&cancellation).await })
+    }
+}
+
+const SKILL_TOOL_NAME: &str = "skill";
+
+struct SkillReader {
+    skills: Vec<Arc<dyn SkillEntry>>,
+    definition: ToolDefinition,
+}
+
+impl SkillReader {
+    fn new(skills: Vec<Arc<dyn SkillEntry>>) -> Self {
+        Self {
+            skills,
+            definition: ToolDefinition {
+                name: SKILL_TOOL_NAME.into(),
+                description: "Read the full instructions for a registered Skill by its exact name. Skills explain how to use available Tools and MCP capabilities; reading a Skill does not execute those capabilities.".into(),
+                parameters: serde_json::from_value(serde_json::json!({
+                    "type": "object",
+                    "properties": {
+                        "skill": {
+                            "type": "string",
+                            "description": "The exact name of the registered Skill to read."
+                        }
+                    },
+                    "required": ["skill"],
+                    "additionalProperties": false
+                }))
+                .expect("static Skill parameters are an object"),
+            },
+        }
+    }
+}
+
+impl Tool for SkillReader {
+    fn definition(&self) -> &ToolDefinition {
+        &self.definition
+    }
+
+    async fn call(&self, call: &Call, cancellation: &Cancellation) -> Result<Message, Error> {
+        let name = call
+            .arguments
+            .get("skill")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "skill name is required"))?;
+        let skill = self
+            .skills
+            .iter()
+            .find(|skill| skill.definition().name == name)
+            .ok_or_else(|| Error::new("NOT_FOUND", "skill is not registered"))?;
+        let instructions = await_stage(skill.read(cancellation.clone()), cancellation).await?;
+        Ok(Message::function(serde_json::json!({
+            "name": name,
+            "instructions": instructions
+        })))
     }
 }
 
@@ -164,12 +219,15 @@ where
 
 /// Agent assembly-level collection of heterogeneous Tools, MCP servers and Skills.
 ///
-/// A Toolkit exposes Tool definitions and delegates explicitly selected calls. It does
-/// not become a Workflow Node and does not own Runtime execution state.
+/// A Toolkit prepares all model-visible Tool and MCP definitions together with
+/// a Skill catalog. One shared `skill` Tool can return a selected Skill's full
+/// instructions; the other Tools and MCP capabilities remain independently
+/// defined and executable.
 pub struct Toolkit {
     entries: Vec<Arc<dyn Entry>>,
     mcps: Vec<Arc<dyn Mcp>>,
     skills: Vec<Arc<dyn SkillEntry>>,
+    skill_reader: bool,
 }
 
 impl Default for Toolkit {
@@ -184,6 +242,7 @@ impl Toolkit {
             entries: Vec::new(),
             mcps: Vec::new(),
             skills: Vec::new(),
+            skill_reader: false,
         }
     }
 
@@ -194,7 +253,9 @@ impl Toolkit {
         self.entries.extend(other.entries);
         self.mcps.extend(other.mcps);
         self.skills.extend(other.skills);
+        self.skill_reader |= other.skill_reader;
         self.validate_names(&self.entries)?;
+        self.validate_skill_names()?;
         Ok(self)
     }
 
@@ -237,9 +298,8 @@ impl Toolkit {
     }
 
     /// Add Skills without executing them. Repeated calls may add different
-    /// concrete types. Skill names and local Tool names must be unique;
-    /// collisions with discovered MCP Tools are checked during preparation.
-    /// Skills retain their own Messages -> Messages contract, not a Tool schema.
+    /// concrete types. Skill names are unique within the Skill catalog and do
+    /// not share the Tool namespace; `skill` is reserved for the shared reader.
     pub fn skills<S>(mut self, skills: impl IntoIterator<Item = S>) -> Result<Self, Error>
     where
         S: Skill + 'static,
@@ -257,42 +317,62 @@ impl Toolkit {
                 definition,
             }));
         }
-        self.validate_names(&self.entries)?;
+        self.validate_skill_names()?;
         Ok(self)
     }
 
-    /// Run one explicitly selected Skill. Preserve its complete Messages and
-    /// original Error; do not discover unrelated MCP servers or retry it.
-    /// This does not enable automatic model selection of Skills.
-    pub async fn run(
-        &self,
-        name: &str,
-        input: Messages,
-        cancellation: &Cancellation,
-    ) -> Result<Messages, Error> {
-        if cancellation.is_cancelled() {
-            return Err(Error::new("CANCELLED", "skill call cancelled"));
+    /// Add the Skill catalog to the Agent system prompt. Tool and MCP schemas
+    /// are passed separately through the model's ordinary `tools` parameter.
+    pub(crate) fn system_prompt(&self, prompt: Option<String>) -> Option<String> {
+        if self.skills.is_empty() {
+            return prompt;
         }
-        self.validate_names(&self.entries)?;
-        let skill = self
-            .skills
-            .iter()
-            .find(|skill| skill.definition().name == name)
-            .ok_or_else(|| Error::new("NOT_FOUND", "skill is not registered"))?;
-        await_stage(skill.run(input, cancellation.clone()), cancellation).await
+        let mut catalog = String::from(
+            "Available Skills are instruction sets. Read a Skill with the `skill` tool when its description is relevant, then follow its instructions using the available Tools and MCP capabilities. A Skill does not execute those capabilities.\n<skills>\n",
+        );
+        for skill in &self.skills {
+            let definition = skill.definition();
+            catalog.push_str("<skill><name>");
+            catalog.push_str(&escape_prompt_text(&definition.name));
+            catalog.push_str("</name><description>");
+            catalog.push_str(&escape_prompt_text(
+                definition.description.as_deref().unwrap_or(""),
+            ));
+            catalog.push_str("</description></skill>\n");
+        }
+        catalog.push_str("</skills>");
+        Some(match prompt {
+            Some(prompt) if !prompt.is_empty() => format!("{prompt}\n\n{catalog}"),
+            _ => catalog,
+        })
     }
 
     fn validate_names(&self, entries: &[Arc<dyn Entry>]) -> Result<(), Error> {
         let mut names = BTreeSet::new();
-        for name in entries.iter().map(|entry| entry.definition().name).chain(
-            self.skills
-                .iter()
-                .map(|skill| skill.definition().name.clone()),
-        ) {
+        for name in entries.iter().map(|entry| entry.definition().name) {
             if !names.insert(name) {
                 return Err(Error::new(
                     "INVALID_ARGUMENTS",
-                    "names must be unique across Toolkit capabilities",
+                    "Tool names must be unique across Toolkit capabilities",
+                ));
+            }
+        }
+        if !self.skills.is_empty() && !self.skill_reader && names.contains(SKILL_TOOL_NAME) {
+            return Err(Error::new(
+                "INVALID_ARGUMENTS",
+                "the skill Tool name is reserved when Skills are configured",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_skill_names(&self) -> Result<(), Error> {
+        let mut names = BTreeSet::new();
+        for skill in &self.skills {
+            if !names.insert(skill.definition().name.as_str()) {
+                return Err(Error::new(
+                    "INVALID_ARGUMENTS",
+                    "Skill names must be unique",
                 ));
             }
         }
@@ -311,7 +391,14 @@ impl Toolkit {
             let definition = entry.definition();
             definition.validate()?;
         }
+        self.validate_skill_names()?;
         self.validate_names(&entries)?;
+        let skill_reader = !self.skills.is_empty();
+        if skill_reader && !self.skill_reader {
+            entries.push(Arc::new(TypedEntry {
+                tool: Arc::new(SkillReader::new(self.skills.clone())),
+            }));
+        }
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "tool discovery cancelled"));
         }
@@ -319,6 +406,7 @@ impl Toolkit {
             entries,
             mcps: Vec::new(),
             skills: self.skills.clone(),
+            skill_reader,
         })
     }
 
@@ -337,11 +425,6 @@ impl Toolkit {
         self.entries
             .iter()
             .map(|entry| entry.definition().name)
-            .chain(
-                self.skills
-                    .iter()
-                    .map(|skill| skill.definition().name.clone()),
-            )
             .collect()
     }
 
@@ -473,12 +556,13 @@ impl Toolkit {
         .await
     }
 
-    /// Whether the local/prepared Tool view is empty. Skills are not Tools.
+    /// Whether the local/prepared Tool view is empty.
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
 
-    /// Count local/prepared Tools, not Skills or undiscovered MCP Tools.
+    /// Count local/prepared Tools, including the shared Skill reader when
+    /// configured, but not undiscovered MCP Tools.
     pub fn len(&self) -> usize {
         self.entries.len()
     }
@@ -505,6 +589,15 @@ async fn await_stage<T>(
         }
     })
     .await
+}
+
+fn escape_prompt_text(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
+        .replace('\'', "&#39;")
 }
 
 /// Construct an empty Agent Toolkit.
@@ -600,32 +693,45 @@ mod tests {
     }
 
     #[test]
-    fn prepared_view_retains_skills_without_executing_them() {
-        let called = Arc::new(AtomicBool::new(false));
-        let flag = called.clone();
+    fn prepared_view_exposes_tools_and_skills_together() {
         let skill = crate::core::skill::Skill::new(
             SkillDefinition {
                 name: "research".into(),
+                description: Some("Research a topic and cite sources.".into()),
                 ..Default::default()
             },
             "Use sources.".into(),
-            move |input: Messages, _: Cancellation| {
-                flag.store(true, Ordering::SeqCst);
-                std::future::ready(Ok::<_, Error>(input))
-            },
         )
         .unwrap();
-        let toolkit = new().skills(vec![skill]).unwrap();
+        let toolkit = new()
+            .tool(weather(Arc::new(AtomicBool::new(false))))
+            .skills(vec![skill])
+            .unwrap();
         let cancellation = Cancellation::new();
         let prepared = block_on(toolkit.prepared(&cancellation)).unwrap();
-        assert!(!called.load(Ordering::SeqCst));
-        assert!(prepared.definitions().is_empty());
-        let output =
-            block_on(prepared.run("research", Messages::default(), &cancellation)).unwrap();
-        assert_eq!(output.0[0].role, Role::System);
-        assert!(called.load(Ordering::SeqCst));
-        // Reusable assembly is not consumed by preparation.
-        assert!(block_on(toolkit.run("research", Messages::default(), &cancellation)).is_ok());
+        let definitions = prepared.definitions();
+        assert_eq!(definitions.len(), 2);
+        assert_eq!(definitions[0].name, "weather");
+        assert_eq!(definitions[1].name, SKILL_TOOL_NAME);
+        let prompt = prepared.system_prompt(None).unwrap();
+        assert!(prompt.contains("research"));
+        assert!(prompt.contains("Research a topic and cite sources."));
+
+        let (call, output) = block_on(prepared.call(
+            Call {
+                call_id: "call_skill".into(),
+                name: SKILL_TOOL_NAME.into(),
+                arguments: Map::from_iter([("skill".into(), json!("research"))]),
+            },
+            &cancellation,
+        ))
+        .unwrap();
+        assert_eq!(call.name, SKILL_TOOL_NAME);
+        assert_eq!(output.values["instructions"], "Use sources.");
+
+        // Preparing an already prepared view remains idempotent.
+        let prepared_again = block_on(prepared.prepared(&cancellation)).unwrap();
+        assert_eq!(prepared_again.definitions().len(), 2);
     }
 
     struct RetryingEval {

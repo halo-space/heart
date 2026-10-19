@@ -10,7 +10,7 @@ use std::{
 use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
 use halo_agents::{
-    Cancellation, Error, Message, Messages,
+    Cancellation, Error, Message,
     agent::{Agent, Input, Payload, toolkit::Toolkit},
     core,
     event::Event,
@@ -106,8 +106,8 @@ impl Skill for Research {
         &self.0
     }
 
-    async fn run(&self, input: Messages, _: &Cancellation) -> Result<Messages, Error> {
-        Ok(input)
+    async fn read(&self, _: &Cancellation) -> Result<String, Error> {
+        Ok("Research instructions.".into())
     }
 }
 
@@ -226,13 +226,13 @@ async fn workspace_preserves_tools_mcps_and_skills_without_eager_discovery() {
         ]
     );
     let cancellation = Cancellation::new();
-    let original = Messages(vec![message(Role::User, "skill input")]);
-    assert_eq!(
+    // Skill metadata stays in the Toolkit catalog and does not become a
+    // separate executable definition before the model view is prepared.
+    assert!(
         toolkit
-            .run("research", original.clone(), &cancellation)
-            .await
-            .unwrap(),
-        original
+            .definitions()
+            .iter()
+            .all(|definition| definition.name != "research")
     );
     assert_eq!(discoveries.load(Ordering::SeqCst), 0);
     let (result, _) = toolkit

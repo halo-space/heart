@@ -1,28 +1,12 @@
-use std::{
-    future::pending,
-    sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    },
-    time::Duration,
-};
-
 use futures_executor::block_on;
-use halo_agents::{Cancellation, Error, Message, Messages, core, message::Role, skill::Skill as _};
+use halo_agents::{Cancellation, core, skill::Skill as _};
 use serde_json::json;
 
 const MARKDOWN: &str = "---\nname: research\ndescription: >-\n  Research the requested topic\n  and report its sources.\nmetadata:\n  author: user\nallowed-tools: search\n---\n# Instructions\nUse explicit sources.\n";
 
-fn echo(
-    input: Messages,
-    _: Cancellation,
-) -> impl std::future::Future<Output = Result<Messages, Error>> {
-    std::future::ready(Ok(input))
-}
-
 #[test]
 fn skill_parses_yaml_and_retains_definition_metadata() {
-    let skill = core::skill::Skill::from_markdown(MARKDOWN, echo).unwrap();
+    let skill = core::skill::Skill::from_markdown(MARKDOWN).unwrap();
     assert_eq!(skill.definition().name, "research");
     assert_eq!(
         skill.definition().description.as_deref(),
@@ -33,34 +17,14 @@ fn skill_parses_yaml_and_retains_definition_metadata() {
         skill.definition().metadata["allowed-tools"],
         json!("search")
     );
-}
-
-#[test]
-fn selected_skill_passes_instructions_and_input_to_explicit_executor() {
-    let skill = core::skill::Skill::from_markdown(MARKDOWN, echo).unwrap();
-    let mut user = Message::new(Role::User);
-    user.values.insert("query".into(), json!("weather"));
-    user.metadata.insert("chat_id".into(), json!(1));
-    let output = block_on(skill.run(Messages::new([user.clone()]), &Cancellation::new())).unwrap();
-    assert_eq!(output.0.len(), 2);
-    assert_eq!(output.0[0].role, Role::System);
     assert_eq!(
-        output.0[0].content[0].data["value"],
-        json!("# Instructions\nUse explicit sources.\n")
+        block_on(skill.read(&Cancellation::new())).unwrap(),
+        "# Instructions\nUse explicit sources.\n"
     );
-    assert_eq!(output.0[1], user);
 }
 
 #[test]
-fn skill_rejects_invalid_headers_and_does_not_execute_while_loading() {
-    let count = Arc::new(AtomicUsize::new(0));
-    let calls = count.clone();
-    let executor = move |input: Messages, _: Cancellation| {
-        calls.fetch_add(1, Ordering::SeqCst);
-        std::future::ready(Ok::<Messages, Error>(input))
-    };
-    core::skill::Skill::from_markdown(MARKDOWN, executor).unwrap();
-    assert_eq!(count.load(Ordering::SeqCst), 0);
+fn skill_rejects_invalid_headers_and_empty_instructions() {
     for markdown in [
         "no header",
         "---\nname: research\n",
@@ -70,7 +34,7 @@ fn skill_rejects_invalid_headers_and_does_not_execute_while_loading() {
         "---\nname: research\ndescription: test\n---\n",
     ] {
         assert!(
-            core::skill::Skill::from_markdown(markdown, echo).is_err(),
+            core::skill::Skill::from_markdown(markdown).is_err(),
             "{markdown}"
         );
     }
@@ -79,12 +43,11 @@ fn skill_rejects_invalid_headers_and_does_not_execute_while_loading() {
 #[test]
 fn skill_accepts_crlf_and_bom_without_changing_instructions() {
     let markdown = format!("\u{feff}{}", MARKDOWN.replace('\n', "\r\n"));
-    let skill = core::skill::Skill::from_markdown(&markdown, echo).unwrap();
+    let skill = core::skill::Skill::from_markdown(&markdown).unwrap();
     assert_eq!(skill.definition().name, "research");
-    let output = block_on(skill.run(Messages::default(), &Cancellation::new())).unwrap();
     assert_eq!(
-        output.0[0].content[0].data["value"],
-        json!("# Instructions\r\nUse explicit sources.\r\n")
+        block_on(skill.read(&Cancellation::new())).unwrap(),
+        "# Instructions\r\nUse explicit sources.\r\n"
     );
 }
 
@@ -108,7 +71,7 @@ async fn skill_loads_from_local_workspace_and_checks_directory_name() {
         .write("research/SKILL.md", MARKDOWN.as_bytes().to_vec(), &cancel)
         .await
         .unwrap();
-    let skill = core::skill::Skill::load(&workspace, "research/SKILL.md", echo, &cancel)
+    let skill = core::skill::Skill::load(&workspace, "research/SKILL.md", &cancel)
         .await
         .unwrap();
     assert_eq!(skill.definition().name, "research");
@@ -117,7 +80,7 @@ async fn skill_loads_from_local_workspace_and_checks_directory_name() {
         .await
         .unwrap();
     assert_eq!(
-        core::skill::Skill::load(&workspace, "other/SKILL.md", echo, &cancel)
+        core::skill::Skill::load(&workspace, "other/SKILL.md", &cancel)
             .await
             .err()
             .unwrap()
@@ -125,7 +88,7 @@ async fn skill_loads_from_local_workspace_and_checks_directory_name() {
         "INVALID_ARGUMENTS"
     );
     assert_eq!(
-        core::skill::Skill::load(&workspace, "missing/SKILL.md", echo, &cancel)
+        core::skill::Skill::load(&workspace, "missing/SKILL.md", &cancel)
             .await
             .err()
             .unwrap()
@@ -135,39 +98,12 @@ async fn skill_loads_from_local_workspace_and_checks_directory_name() {
 }
 
 #[test]
-fn skill_returns_executor_error_without_wrapping() {
-    let skill = core::skill::Skill::from_markdown(MARKDOWN, |_: Messages, _: Cancellation| async {
-        Err(Error::new("BUSINESS_ERROR", "original").with_details("detail"))
-    })
-    .unwrap();
+fn skill_read_observes_cancellation() {
+    let skill = core::skill::Skill::from_markdown(MARKDOWN).unwrap();
+    let cancellation = Cancellation::new();
+    cancellation.cancel();
     assert_eq!(
-        block_on(skill.run(Messages::default(), &Cancellation::new())).unwrap_err(),
-        Error::new("BUSINESS_ERROR", "original").with_details("detail")
-    );
-}
-
-#[tokio::test]
-async fn skill_cancellation_wakes_executor_and_does_not_return_partial_messages() {
-    let skill = core::skill::Skill::from_markdown(MARKDOWN, |_: Messages, _: Cancellation| {
-        pending::<Result<Messages, Error>>()
-    })
-    .unwrap();
-    let cancel = Cancellation::new();
-    let token = cancel.clone();
-    let task = tokio::spawn(async move {
-        tokio::task::yield_now().await;
-        token.cancel();
-    });
-    assert_eq!(
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            skill.run(Messages::default(), &cancel)
-        )
-        .await
-        .unwrap()
-        .unwrap_err()
-        .code,
+        block_on(skill.read(&cancellation)).unwrap_err().code,
         "CANCELLED"
     );
-    task.await.unwrap();
 }

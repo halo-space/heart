@@ -1,24 +1,20 @@
 use serde::Deserialize;
-use serde_json::{Map, Value, json};
+use serde_json::{Map, Value};
 
 use crate::{
-    Cancellation, Error, Message, Messages,
-    function::Function,
-    message::Role,
-    model::content::part::{Part, object as part_data},
+    Cancellation, Error,
     skill::{Definition, Skill as Contract},
 };
 
-/// A selected Skill's instructions and explicit executor. Loading a Skill does
+/// A Skill's instructions and resource references. Loading or reading it does
 /// not execute scripts, fetch references, or grant tool/permission access.
-pub struct Skill<F> {
+pub struct Skill {
     definition: Definition,
     instructions: String,
-    executor: F,
 }
 
-impl<F> Skill<F> {
-    pub fn new(definition: Definition, instructions: String, executor: F) -> Result<Self, Error> {
+impl Skill {
+    pub fn new(definition: Definition, instructions: String) -> Result<Self, Error> {
         if definition.name.trim().is_empty() || instructions.trim().is_empty() {
             return Err(Error::new(
                 "INVALID_ARGUMENTS",
@@ -28,13 +24,12 @@ impl<F> Skill<F> {
         Ok(Self {
             definition,
             instructions,
-            executor,
         })
     }
 
     /// Parses standard SKILL.md YAML frontmatter followed by Markdown. The
-    /// instructions stay private; metadata remains metadata, not an executor.
-    pub fn from_markdown(markdown: &str, executor: F) -> Result<Self, Error> {
+    /// body remains readable Markdown; metadata does not grant permissions.
+    pub fn from_markdown(markdown: &str) -> Result<Self, Error> {
         if markdown.len() > 4 * 1024 * 1024 {
             return Err(Error::new(
                 "INVALID_ARGUMENTS",
@@ -103,7 +98,6 @@ impl<F> Skill<F> {
                 metadata,
             },
             lines.collect(),
-            executor,
         )
     }
 
@@ -113,7 +107,6 @@ impl<F> Skill<F> {
     pub async fn load(
         workspace: &super::workspace::Local,
         path: &str,
-        executor: F,
         cancellation: &Cancellation,
     ) -> Result<Self, Error> {
         super::operation::check(cancellation)?;
@@ -121,7 +114,7 @@ impl<F> Skill<F> {
             super::operation::cancellable(workspace.read(path, cancellation), cancellation).await?;
         let markdown = std::str::from_utf8(&data)
             .map_err(|_| Error::new("INVALID_ARGUMENTS", "skill document must be UTF-8"))?;
-        let skill = Self::from_markdown(markdown, executor)?;
+        let skill = Self::from_markdown(markdown)?;
         // Standard directory skills must match their parent directory. A
         // single explicitly named resource may also be used independently.
         if path.ends_with("/SKILL.md") {
@@ -138,23 +131,15 @@ impl<F> Skill<F> {
     }
 }
 
-impl<F: Function<Messages, Messages>> Contract for Skill<F> {
+impl Contract for Skill {
     fn definition(&self) -> &Definition {
         &self.definition
     }
 
-    async fn run(
-        &self,
-        mut input: Messages,
-        cancellation: &Cancellation,
-    ) -> Result<Messages, Error> {
+    async fn read(&self, cancellation: &Cancellation) -> Result<String, Error> {
         super::operation::check(cancellation)?;
-        let mut instructions = Message::new(Role::System);
-        instructions.content.push(Part {
-            r#type: "text".into(),
-            data: part_data(json!({"value":self.instructions})),
-        });
-        input.0.insert(0, instructions);
-        super::operation::cancellable(self.executor.call(input, cancellation), cancellation).await
+        let instructions = self.instructions.clone();
+        super::operation::check(cancellation)?;
+        Ok(instructions)
     }
 }

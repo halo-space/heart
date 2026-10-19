@@ -129,12 +129,11 @@ fn integration_components_are_implementable_without_runtime_state() {
             })
         }
 
-        async fn run(
+        async fn read(
             &self,
-            input: Messages,
             _cancellation: &Cancellation,
-        ) -> Result<Messages, halo_agents::skill::Error> {
-            Ok(input)
+        ) -> Result<String, halo_agents::skill::Error> {
+            Ok("skill instructions".into())
         }
     }
 
@@ -198,13 +197,8 @@ fn integration_components_are_implementable_without_runtime_state() {
     let cancellation = Cancellation::new();
     let input = Messages::new([Message::new(Role::User)]);
     assert_eq!(
-        block_on(halo_agents::skill::Skill::run(
-            &Skill,
-            input.clone(),
-            &cancellation
-        ))
-        .unwrap(),
-        input
+        block_on(halo_agents::skill::Skill::read(&Skill, &cancellation)).unwrap(),
+        "skill instructions"
     );
     assert!(
         block_on(halo_agents::permission::Permission::check(

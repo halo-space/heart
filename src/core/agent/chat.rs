@@ -1432,9 +1432,13 @@ where
             .unwrap_or(embedded_waits);
         let restoring = restored_messages.is_some();
         if !restoring {
+            let system_prompt = self.toolkit.as_ref().map_or_else(
+                || self.system_prompt.clone(),
+                |toolkit| toolkit.system_prompt(self.system_prompt.clone()),
+            );
             preparation = Some(crate::runtime::agent::preparation::State::new(
                 original.clone(),
-                self.system_prompt.clone(),
+                system_prompt,
             ));
         }
         let preparing = preparation.as_ref().is_some_and(|state| {

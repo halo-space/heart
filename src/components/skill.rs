@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 use crate::Cancellation;
-use crate::components::message::Messages;
 
 pub type Error = crate::Error;
 
@@ -14,15 +13,13 @@ pub struct Definition {
     pub metadata: Map<String, Value>,
 }
 
-/// A Skill is an agent-facing capability bundle. It may internally compose
-/// Prompt, Tool, Agent, MCP, or ordinary functions, but exposes one message
-/// input/output contract and does not own Runtime state.
+/// Instructions and resource information for an Agent, not an executable
+/// function. Reading a Skill never grants access to tools or owns Runtime state.
 pub trait Skill: Send + Sync {
     fn definition(&self) -> &Definition;
 
-    fn run(
+    fn read(
         &self,
-        input: Messages,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Messages, Error>> + Send;
+    ) -> impl std::future::Future<Output = Result<String, Error>> + Send;
 }
