@@ -173,7 +173,7 @@ async fn run(
         cancel: cancel.then(|| c.clone()),
         padding,
     };
-    let tools = Toolkit::new().tool(Lookup(
+    let tools = Toolkit::new().tools(Lookup(
         log.clone(),
         ToolDefinition {
             name: "lookup".into(),

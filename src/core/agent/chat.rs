@@ -1431,11 +1431,18 @@ where
             })
             .unwrap_or(embedded_waits);
         let restoring = restored_messages.is_some();
+        let discovered_toolkit = match &self.toolkit {
+            Some(toolkit) => Some(toolkit.with_discovered_skills(&cancellation).await),
+            None => None,
+        };
         if !restoring {
-            let system_prompt = self.toolkit.as_ref().map_or_else(
-                || self.system_prompt.clone(),
-                |toolkit| toolkit.system_prompt(self.system_prompt.clone()),
-            );
+            let system_prompt = discovered_toolkit
+                .as_ref()
+                .and_then(|result| result.as_ref().ok())
+                .map_or_else(
+                    || self.system_prompt.clone(),
+                    |toolkit| toolkit.system_prompt(self.system_prompt.clone()),
+                );
             preparation = Some(crate::runtime::agent::preparation::State::new(
                 original.clone(),
                 system_prompt,
@@ -1477,8 +1484,9 @@ where
                 messages.push(user_message(input.clone()));
             }
             preparation_messages = messages.clone();
-            let toolkit = match &self.toolkit {
-                Some(toolkit) => Some(toolkit.prepared(&cancellation).await?),
+            let toolkit = match &discovered_toolkit {
+                Some(Ok(toolkit)) => Some(toolkit.prepared(&cancellation).await?),
+                Some(Err(error)) => return Err(error.clone()),
                 None => None,
             };
             for step in restored_steps.iter().filter(|step| {
@@ -3039,7 +3047,7 @@ mod tests {
             .model(SequenceChat {
                 calls: Arc::clone(&model_calls),
             })
-            .toolkit(Toolkit::new().tool(echo_tool(Arc::clone(&tool_called))))
+            .toolkit(Toolkit::new().tools(echo_tool(Arc::clone(&tool_called))))
             .build()
             .expect("agent build");
         let mut stream =
@@ -3289,7 +3297,7 @@ mod tests {
             .model(SequenceChat {
                 calls: Arc::clone(&model_calls),
             })
-            .toolkit(Toolkit::new().tool(echo_tool(Arc::clone(&tool_called))))
+            .toolkit(Toolkit::new().tools(echo_tool(Arc::clone(&tool_called))))
             .permission(DenyPermission)
             .build()
             .expect("agent build");

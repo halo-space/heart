@@ -134,7 +134,7 @@ fn graph(react: bool, tool: SharedTool) -> CompiledWorkflow {
     let mut builder = WorkflowBuilder::new("shared-lifecycle-owners");
     let model = SharedModel(tool.0.counts.clone());
     for (id, owner) in [("a", "A"), ("b", "B")] {
-        let toolkit = Toolkit::new().tool(tool.clone());
+        let toolkit = Toolkit::new().tools(tool.clone());
         if react {
             builder
                 .add_agent_node(
@@ -325,7 +325,7 @@ async fn absent_hooks_pass_through_direct_tool_toolkit_and_workflow() {
         .unwrap();
     assert!(eval.passed);
     let (toolkit, eval) = Toolkit::new()
-        .tool(tool.clone())
+        .tools(tool.clone())
         .execute(call.clone(), &c)
         .await
         .unwrap();

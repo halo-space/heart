@@ -272,7 +272,7 @@ fn input(chat_id: i64) -> Input {
     }
 }
 fn toolkit(log: &Log) -> Toolkit {
-    Toolkit::new().tool(Lookup {
+    Toolkit::new().tools(Lookup {
         definition: definition(),
         log: log.clone(),
     })
@@ -769,7 +769,7 @@ impl Tool for RewritingLookup {
 }
 
 fn rewriting_toolkit(log: &Log, city: Value, before: Before) -> Toolkit {
-    Toolkit::new().tool(RewritingLookup {
+    Toolkit::new().tools(RewritingLookup {
         inner: Lookup {
             definition: definition(),
             log: log.clone(),

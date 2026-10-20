@@ -186,7 +186,7 @@ async fn run(
     pause: Option<Phase>,
     mode: bool,
 ) -> Vec<Result<Event, Error>> {
-    let toolkit = Toolkit::new().tool(Operation::new(log.clone(), pause, false));
+    let toolkit = Toolkit::new().tools(Operation::new(log.clone(), pause, false));
     if react {
         agent::react()
             .model(Model(log))
@@ -411,7 +411,7 @@ async fn after_feedback_restores_partial_collection_and_the_raw_call_result() {
         for react in [false, true] {
             let store = Arc::new(core::checkpoint::InMemory::new());
             let log = Arc::new(Mutex::new(Log::default()));
-            let toolkit = || Toolkit::new().tool(Operation::new(log.clone(), None, true));
+            let toolkit = || Toolkit::new().tools(Operation::new(log.clone(), None, true));
             if react {
                 human_recovery(
                     || {
@@ -506,7 +506,7 @@ fn graph(
     human: bool,
     log: Arc<Mutex<Log>>,
 ) -> halo_agents::runtime::workflow::CompiledWorkflow {
-    let toolkit = Toolkit::new().tool(Operation::new(log.clone(), pause, human));
+    let toolkit = Toolkit::new().tools(Operation::new(log.clone(), pause, human));
     if react {
         embedded(
             agent::react()
@@ -724,7 +724,7 @@ impl Chat for ParentModel {
     }
 }
 fn child(react: bool, pause: Option<Phase>, log: Arc<Mutex<Log>>) -> agent::SubAgent {
-    let toolkit = Toolkit::new().tool(Operation::new(log.clone(), pause, false));
+    let toolkit = Toolkit::new().tools(Operation::new(log.clone(), pause, false));
     if react {
         agent::SubAgent::new(
             "worker",
@@ -847,7 +847,7 @@ async fn inconsistent_phase_results_fail_before_any_component_is_invoked() {
                 .save(1001, invalid.clone(), &Cancellation::new())
                 .await
                 .unwrap();
-            let toolkit = Toolkit::new().tool(Operation::new(log.clone(), None, false));
+            let toolkit = Toolkit::new().tools(Operation::new(log.clone(), None, false));
             let result = if react {
                 agent::react()
                     .model(Model(log.clone()))
@@ -949,7 +949,7 @@ async fn after_technical_failure_preserves_raw_success_and_delivers_only_the_ori
     for react in [false, true] {
         let store = Arc::new(core::checkpoint::InMemory::new());
         let log = Arc::new(Mutex::new(Log::default()));
-        let toolkit = Toolkit::new().tool(FailingAfter(Operation::new(log.clone(), None, false)));
+        let toolkit = Toolkit::new().tools(FailingAfter(Operation::new(log.clone(), None, false)));
         let events = if react {
             agent::react()
                 .model(Model(log.clone()))
@@ -1140,7 +1140,7 @@ async fn a_failed_after_is_reused_as_error_context_while_a_sibling_after_resumes
         let log = Arc::new(Mutex::new(Log::default()));
         for waiting in [true, false] {
             let (sent, received) = tokio::sync::oneshot::channel();
-            let toolkit = Toolkit::new().tool(MixedAfter {
+            let toolkit = Toolkit::new().tools(MixedAfter {
                 inner: Operation::new(log.clone(), waiting.then_some(Phase::After), false),
                 sent: Mutex::new(Some(sent)),
                 received: Mutex::new(Some(received)),
@@ -1288,7 +1288,7 @@ async fn cancellation_keeps_raw_success_without_new_phase_checkpoint_writes() {
         let store = Arc::new(CountingStore::default());
         let log = Arc::new(Mutex::new(Log::default()));
         let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let toolkit = Toolkit::new().tool(PendingAfter(
+        let toolkit = Toolkit::new().tools(PendingAfter(
             Operation::new(log.clone(), None, false),
             entered.clone(),
         ));
@@ -1370,7 +1370,7 @@ async fn planned_tasks_restore_phases_in_the_same_attempt_independently_and_insi
             for pause in [Some(phase), None] {
                 let agent = agent::react()
                     .model(PlanModel(log.clone()))
-                    .toolkit(Toolkit::new().tool(Operation::new(log.clone(), pause, false)))
+                    .toolkit(Toolkit::new().tools(Operation::new(log.clone(), pause, false)))
                     .checkpoint(store.clone())
                     .with_id_fn(next_id)
                     .with_max_concurrency(1)

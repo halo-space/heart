@@ -9,6 +9,7 @@ pub mod agent;
 pub mod cancellation;
 mod components;
 pub mod core;
+pub(crate) mod pkg;
 pub mod runtime;
 
 pub use components::checkpoint;

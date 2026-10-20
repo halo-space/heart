@@ -176,7 +176,11 @@ async fn main() -> Result<(), Error> {
 
 ## Workspace 与 Harness
 
-工具、MCP 和 Skill 先组装进 Toolkit，再挂载到 Workspace；Harness 接收配置好的 Workspace：
+自定义 Tool、MCP 和 Skill 可先组装进 Toolkit，再挂载到 Workspace；Harness 接收配置好的 Workspace。
+Local Workspace 会在运行时自动发现 `skills/<name>/SKILL.md`；Docker Workspace 可通过
+`.with_skill_discovery()` 显式开启容器内发现，避免默认在工具权限检查前启动容器。
+Toolkit 将名称和描述提供给模型，并通过共用的 `skill` 工具按需读取说明或该 Skill 的相对文本资源。
+Server Workspace 可通过 `.skill_source(source)` 接入应用提供的数据库 Skill 来源，不要求本地文件路径：
 
 ```rust
 let workspace = core::workspace::Local::new("./workspace")?

@@ -186,7 +186,7 @@ impl Drop for Directory {
 async fn workspace_preserves_tools_mcps_and_skills_without_eager_discovery() {
     let discoveries = Arc::new(AtomicUsize::new(0));
     let toolkit = Toolkit::new()
-        .tool(Echo(definition("echo")))
+        .tools(Echo(definition("echo")))
         .mcps([Remote {
             definition: McpDefinition {
                 name: "remote_server".into(),
@@ -330,7 +330,7 @@ async fn harness_uses_workspace_mounted_tools_in_the_existing_model_loop() {
     ]);
     let workspace = core::workspace::Local::new(&directory.0)
         .unwrap()
-        .toolkit(Toolkit::new().tool(Echo(definition("echo"))));
+        .toolkit(Toolkit::new().tools(Echo(definition("echo"))));
     let agent = harness::builder()
         .model(model)
         .workspace(workspace)
@@ -445,7 +445,7 @@ fn conflicting_workspace_tool_names_are_rejected_before_model_execution() {
     let directory = Directory::new();
     let workspace = core::workspace::Local::new(&directory.0)
         .unwrap()
-        .toolkit(Toolkit::new().tool(Echo(definition("workspace_read"))));
+        .toolkit(Toolkit::new().tools(Echo(definition("workspace_read"))));
     let result = harness::builder().model(model).workspace(workspace).build();
     let Err(error) = result else {
         panic!("duplicate tool name was accepted")
@@ -522,7 +522,7 @@ fn database_workspace(calls: Arc<AtomicUsize>) -> DatabaseWorkspace {
             path: None,
             metadata: Default::default(),
         },
-        toolkit: Toolkit::new().tool(Query {
+        toolkit: Toolkit::new().tools(Query {
             definition: ToolDefinition {
                 name: "records_read".into(),
                 description: "Read a bound database record using a filter, not a path".into(),
@@ -800,7 +800,7 @@ fn automatically_bound_operations_still_reject_custom_name_collisions() {
         let workspace = core::workspace::Local::new(&directory.0)
             .unwrap()
             .sandbox(halo_agents::sandbox::Local::default())
-            .toolkit(Toolkit::new().tool(Echo(definition(name))));
+            .toolkit(Toolkit::new().tools(Echo(definition(name))));
         let Err(error) = harness::builder().model(model).workspace(workspace).build() else {
             panic!("built-in operation collision was accepted");
         };

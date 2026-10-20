@@ -124,7 +124,7 @@ impl Tool for Lookup {
     }
 }
 fn toolkit(log: Arc<Log>) -> Toolkit {
-    Toolkit::new().tool(Lookup(
+    Toolkit::new().tools(Lookup(
         log,
         ToolDefinition {
             name: "lookup".into(),

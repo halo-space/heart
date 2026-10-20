@@ -61,7 +61,7 @@ impl Middleware for BrokenPermissionHook {
 
 fn fixture(fail: bool) -> (Toolkit, Access, Log, Step, Call) {
     let log: Log = Default::default();
-    let toolkit = Toolkit::new().tool(Lookup {
+    let toolkit = Toolkit::new().tools(Lookup {
         definition: ToolDefinition {
             name: "lookup".into(),
             description: "find weather".into(),

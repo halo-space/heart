@@ -7,7 +7,7 @@ use crate::Cancellation;
 use crate::components::agent::Error;
 use crate::components::mcp::Server;
 use crate::components::message::Message;
-use crate::components::skill::{Definition as SkillDefinition, Skill};
+use crate::components::skill::{Definition as SkillDefinition, Skill, Source};
 use crate::components::tool::{
     Call, Evaluation, Tool, ToolDefinition, prepare_call, validate_call,
 };
@@ -18,10 +18,70 @@ type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> +
 type DiscoveryFuture =
     Pin<Box<dyn Future<Output = Result<Vec<Arc<dyn Entry>>, Error>> + Send + 'static>>;
 type SkillFuture = Pin<Box<dyn Future<Output = Result<String, Error>> + Send + 'static>>;
+type ResourceFuture = Pin<Box<dyn Future<Output = Result<Vec<u8>, Error>> + Send + 'static>>;
+type SkillDiscoveryFuture =
+    Pin<Box<dyn Future<Output = Result<Vec<Arc<dyn SkillEntry>>, Error>> + Send + 'static>>;
 
 trait SkillEntry: Send + Sync {
     fn definition(&self) -> &SkillDefinition;
     fn read(&self, cancellation: Cancellation) -> SkillFuture;
+    fn read_resource(&self, _path: String, _cancellation: Cancellation) -> ResourceFuture {
+        Box::pin(async {
+            Err(Error::new(
+                "NOT_FOUND",
+                "Skill has no Workspace resource source",
+            ))
+        })
+    }
+}
+
+trait SkillSource: Send + Sync {
+    fn discover(&self, cancellation: Cancellation) -> SkillDiscoveryFuture;
+}
+
+struct TypedSource<S> {
+    source: Arc<S>,
+}
+
+impl<S: Source + 'static> SkillSource for TypedSource<S> {
+    fn discover(&self, cancellation: Cancellation) -> SkillDiscoveryFuture {
+        let source = Arc::clone(&self.source);
+        Box::pin(async move {
+            let definitions = source.list(&cancellation).await?;
+            Ok(definitions
+                .into_iter()
+                .map(|definition| {
+                    Arc::new(SourcedSkill {
+                        source: Arc::clone(&source),
+                        definition,
+                    }) as Arc<dyn SkillEntry>
+                })
+                .collect())
+        })
+    }
+}
+
+struct SourcedSkill<S> {
+    source: Arc<S>,
+    definition: SkillDefinition,
+}
+
+impl<S: Source + 'static> SkillEntry for SourcedSkill<S> {
+    fn definition(&self) -> &SkillDefinition {
+        &self.definition
+    }
+
+    fn read(&self, cancellation: Cancellation) -> SkillFuture {
+        let source = Arc::clone(&self.source);
+        let name = self.definition.name.clone();
+        Box::pin(async move { source.read(&name, &cancellation).await })
+    }
+
+    fn read_resource(&self, path: String, cancellation: Cancellation) -> ResourceFuture {
+        let source = Arc::clone(&self.source);
+        let name = self.definition.name.clone();
+        Box::pin(async move { source.read_resource(&name, &path, &cancellation).await })
+    }
 }
 
 struct TypedSkill<S> {
@@ -53,13 +113,17 @@ impl SkillReader {
             skills,
             definition: ToolDefinition {
                 name: SKILL_TOOL_NAME.into(),
-                description: "Read the full instructions for a registered Skill by its exact name. Skills explain how to use available Tools and MCP capabilities; reading a Skill does not execute those capabilities.".into(),
+                description: "Read a Skill's full instructions by exact name, or a text resource relative to that Skill with `resource`. Skills explain how to use available capabilities; reading does not execute them.".into(),
                 parameters: serde_json::from_value(serde_json::json!({
                     "type": "object",
                     "properties": {
                         "skill": {
                             "type": "string",
                             "description": "The exact name of the registered Skill to read."
+                        },
+                        "resource": {
+                            "type": "string",
+                            "description": "Optional path to a text resource inside that Skill."
                         }
                     },
                     "required": ["skill"],
@@ -87,11 +151,39 @@ impl Tool for SkillReader {
             .iter()
             .find(|skill| skill.definition().name == name)
             .ok_or_else(|| Error::new("NOT_FOUND", "skill is not registered"))?;
-        let instructions = await_stage(skill.read(cancellation.clone()), cancellation).await?;
-        Ok(Message::function(serde_json::json!({
-            "name": name,
-            "instructions": instructions
-        })))
+        if let Some(path) = call
+            .arguments
+            .get("resource")
+            .and_then(serde_json::Value::as_str)
+        {
+            if path.is_empty()
+                || path.contains(['\\', '\0'])
+                || path
+                    .split('/')
+                    .any(|part| part.is_empty() || part == "." || part == "..")
+            {
+                return Err(Error::new(
+                    "INVALID_ARGUMENTS",
+                    "Skill resource requires a normalized relative path",
+                ));
+            }
+            let data = await_stage(
+                skill.read_resource(path.to_owned(), cancellation.clone()),
+                cancellation,
+            )
+            .await?;
+            let content = String::from_utf8(data).map_err(|_| {
+                Error::new("INVALID_ARGUMENTS", "Skill resource must be UTF-8 text")
+            })?;
+            Ok(Message::function(serde_json::json!({
+                "name": name, "resource": path, "content": content
+            })))
+        } else {
+            let instructions = await_stage(skill.read(cancellation.clone()), cancellation).await?;
+            Ok(Message::function(serde_json::json!({
+                "name": name, "instructions": instructions
+            })))
+        }
     }
 }
 
@@ -227,7 +319,53 @@ pub struct Toolkit {
     entries: Vec<Arc<dyn Entry>>,
     mcps: Vec<Arc<dyn Mcp>>,
     skills: Vec<Arc<dyn SkillEntry>>,
+    skill_sources: Vec<Arc<dyn SkillSource>>,
     skill_reader: bool,
+}
+
+/// Inputs accepted by [`Toolkit::tools`].  The public entry point is plural
+/// even when one concrete Tool is mounted; this keeps the assembly API
+/// consistent for one or many Tools.
+#[doc(hidden)]
+pub trait ToolInputs {
+    fn append_to(self, toolkit: &mut Toolkit);
+}
+
+impl<T> ToolInputs for T
+where
+    T: Tool + 'static,
+{
+    fn append_to(self, toolkit: &mut Toolkit) {
+        toolkit.entries.push(Arc::new(TypedEntry {
+            tool: Arc::new(self),
+        }));
+    }
+}
+
+impl<T, const N: usize> ToolInputs for [T; N]
+where
+    T: Tool + 'static,
+{
+    fn append_to(self, toolkit: &mut Toolkit) {
+        for tool in self {
+            toolkit.entries.push(Arc::new(TypedEntry {
+                tool: Arc::new(tool),
+            }));
+        }
+    }
+}
+
+impl<T> ToolInputs for Vec<T>
+where
+    T: Tool + 'static,
+{
+    fn append_to(self, toolkit: &mut Toolkit) {
+        for tool in self {
+            toolkit.entries.push(Arc::new(TypedEntry {
+                tool: Arc::new(tool),
+            }));
+        }
+    }
 }
 
 impl Default for Toolkit {
@@ -242,6 +380,7 @@ impl Toolkit {
             entries: Vec::new(),
             mcps: Vec::new(),
             skills: Vec::new(),
+            skill_sources: Vec::new(),
             skill_reader: false,
         }
     }
@@ -253,31 +392,20 @@ impl Toolkit {
         self.entries.extend(other.entries);
         self.mcps.extend(other.mcps);
         self.skills.extend(other.skills);
+        self.skill_sources.extend(other.skill_sources);
         self.skill_reader |= other.skill_reader;
         self.validate_names(&self.entries)?;
         self.validate_skill_names()?;
         Ok(self)
     }
 
-    /// Add one Tool. Repeated calls may add different concrete Tool types.
-    pub fn tool<T>(mut self, tool: T) -> Self
+    /// Add one or more Tools. Repeated calls may add different concrete Tool
+    /// types; a single Tool is accepted as well.
+    pub fn tools<I>(mut self, tools: I) -> Self
     where
-        T: Tool + 'static,
+        I: ToolInputs,
     {
-        self.entries.push(Arc::new(TypedEntry {
-            tool: Arc::new(tool),
-        }));
-        self
-    }
-
-    /// Add several Tools of one concrete type.
-    pub fn tools<T>(mut self, tools: impl IntoIterator<Item = T>) -> Self
-    where
-        T: Tool + 'static,
-    {
-        for tool in tools {
-            self = self.tool(tool);
-        }
+        tools.append_to(&mut self);
         self
     }
 
@@ -319,6 +447,40 @@ impl Toolkit {
         }
         self.validate_skill_names()?;
         Ok(self)
+    }
+
+    /// Bind a Workspace-owned Skill source. Discovery and reading happen
+    /// asynchronously for each run; Toolkit never assumes local file paths.
+    pub(crate) fn skill_source<S: Source + 'static>(mut self, source: S) -> Self {
+        self.skill_sources.push(Arc::new(TypedSource {
+            source: Arc::new(source),
+        }));
+        self
+    }
+
+    pub(crate) fn retain_skill_sources(mut self, other: &Self) -> Self {
+        self.skill_sources
+            .extend(other.skill_sources.iter().cloned());
+        self
+    }
+
+    pub(crate) async fn with_discovered_skills(
+        &self,
+        cancellation: &Cancellation,
+    ) -> Result<Self, Error> {
+        let mut skills = self.skills.clone();
+        for source in &self.skill_sources {
+            skills.extend(await_stage(source.discover(cancellation.clone()), cancellation).await?);
+        }
+        let view = Self {
+            entries: self.entries.clone(),
+            mcps: self.mcps.clone(),
+            skills,
+            skill_sources: Vec::new(),
+            skill_reader: self.skill_reader,
+        };
+        view.validate_skill_names()?;
+        Ok(view)
     }
 
     /// Add the Skill catalog to the Agent system prompt. Tool and MCP schemas
@@ -369,6 +531,12 @@ impl Toolkit {
     fn validate_skill_names(&self) -> Result<(), Error> {
         let mut names = BTreeSet::new();
         for skill in &self.skills {
+            if skill.definition().name.trim().is_empty() {
+                return Err(Error::new(
+                    "INVALID_ARGUMENTS",
+                    "Skill name must not be empty",
+                ));
+            }
             if !names.insert(skill.definition().name.as_str()) {
                 return Err(Error::new(
                     "INVALID_ARGUMENTS",
@@ -383,20 +551,20 @@ impl Toolkit {
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "tool discovery cancelled"));
         }
-        let mut entries = self.entries.clone();
-        for server in &self.mcps {
+        let discovered = self.with_discovered_skills(cancellation).await?;
+        let mut entries = discovered.entries.clone();
+        for server in &discovered.mcps {
             entries.extend(await_stage(server.discover(cancellation.clone()), cancellation).await?);
         }
         for entry in &entries {
             let definition = entry.definition();
             definition.validate()?;
         }
-        self.validate_skill_names()?;
-        self.validate_names(&entries)?;
-        let skill_reader = !self.skills.is_empty();
-        if skill_reader && !self.skill_reader {
+        discovered.validate_names(&entries)?;
+        let skill_reader = !discovered.skills.is_empty();
+        if skill_reader && !discovered.skill_reader {
             entries.push(Arc::new(TypedEntry {
-                tool: Arc::new(SkillReader::new(self.skills.clone())),
+                tool: Arc::new(SkillReader::new(discovered.skills.clone())),
             }));
         }
         if cancellation.is_cancelled() {
@@ -405,7 +573,8 @@ impl Toolkit {
         Ok(Self {
             entries,
             mcps: Vec::new(),
-            skills: self.skills.clone(),
+            skills: discovered.skills,
+            skill_sources: Vec::new(),
             skill_reader,
         })
     }
@@ -658,7 +827,7 @@ mod tests {
     #[test]
     fn toolkit_exports_definitions_and_executes_by_name() {
         let called = Arc::new(AtomicBool::new(false));
-        let toolkit = new().tool(weather(called.clone()));
+        let toolkit = new().tools(weather(called.clone()));
         assert_eq!(toolkit.len(), 1);
         assert_eq!(toolkit.definitions()[0].name, "weather");
         let (message, evaluation) = block_on(toolkit.execute(
@@ -678,7 +847,7 @@ mod tests {
     #[test]
     fn toolkit_rejects_unknown_tools_without_invoking_registered_tools() {
         let called = Arc::new(AtomicBool::new(false));
-        let toolkit = new().tool(weather(called.clone()));
+        let toolkit = new().tools(weather(called.clone()));
         let error = block_on(toolkit.execute(
             Call {
                 call_id: "call_1".into(),
@@ -704,7 +873,7 @@ mod tests {
         )
         .unwrap();
         let toolkit = new()
-            .tool(weather(Arc::new(AtomicBool::new(false))))
+            .tools(weather(Arc::new(AtomicBool::new(false))))
             .skills(vec![skill])
             .unwrap();
         let cancellation = Cancellation::new();
@@ -774,7 +943,7 @@ mod tests {
     fn caller_can_retry_only_eval_using_the_retained_call_and_result() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let evaluations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let toolkit = new().tool(RetryingEval {
+        let toolkit = new().tools(RetryingEval {
             definition: weather(Arc::new(AtomicBool::new(false))).definition,
             calls: calls.clone(),
             evaluations: evaluations.clone(),

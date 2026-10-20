@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 use super::{Docker, Local};
 use crate::components::message::{Message, Role};
 use crate::components::model::content::part::{Part, object as part_data};
+use crate::components::skill::{Definition as SkillDefinition, Skill as _, Source as SkillSource};
 use crate::components::tool::{Call, Tool, ToolDefinition};
 use crate::core::agent::toolkit::Toolkit;
 use crate::{Cancellation, Error};
@@ -111,40 +112,125 @@ impl Files {
 /// Bind the default file tools to one shared backend and the existing Toolkit.
 pub(super) fn attach(workspace: Files, toolkit: Toolkit) -> Toolkit {
     let command_enabled = workspace.command_enabled();
+    let discover_skills = match &workspace {
+        Files::Local(_) => true,
+        Files::Docker(docker) => docker.discover_skills,
+    };
     let workspace = Arc::new(workspace);
     let access = Arc::new(RwLock::new(()));
+    let toolkit = if discover_skills {
+        toolkit.skill_source(DirectorySkills {
+            workspace: Arc::clone(&workspace),
+        })
+    } else {
+        toolkit
+    };
     let toolkit = toolkit
-        .tool(Read {
+        .tools(Read {
             workspace: Arc::clone(&workspace),
             access: Arc::clone(&access),
             definition: read_definition(),
         })
-        .tool(Write {
+        .tools(Write {
             workspace: Arc::clone(&workspace),
             access: Arc::clone(&access),
             definition: write_definition(),
         })
-        .tool(search::List::new(
+        .tools(search::List::new(
             Arc::clone(&workspace),
             Arc::clone(&access),
         ))
-        .tool(edit::Edit::new(Arc::clone(&workspace), Arc::clone(&access)))
-        .tool(search::Glob::new(
+        .tools(edit::Edit::new(Arc::clone(&workspace), Arc::clone(&access)))
+        .tools(search::Glob::new(
             Arc::clone(&workspace),
             Arc::clone(&access),
         ))
-        .tool(search::Grep::new(
+        .tools(search::Grep::new(
             Arc::clone(&workspace),
             Arc::clone(&access),
         ))
-        .tool(operations::Delete::new(
+        .tools(operations::Delete::new(
             Arc::clone(&workspace),
             Arc::clone(&access),
         ));
     if command_enabled {
-        toolkit.tool(operations::Command::new(workspace, access))
+        toolkit.tools(operations::Command::new(workspace, access))
     } else {
         toolkit
+    }
+}
+
+/// Discover standard `skills/<name>/SKILL.md` directories in the same file
+/// environment as the Workspace tools. No second host path is introduced for
+/// Docker, and resource reads remain confined by the Workspace path checks.
+struct DirectorySkills {
+    workspace: Arc<Files>,
+}
+
+impl DirectorySkills {
+    async fn load(
+        &self,
+        name: &str,
+        cancellation: &Cancellation,
+    ) -> Result<super::super::skill::Skill, Error> {
+        let path = format!("skills/{name}/SKILL.md");
+        let bytes = self.workspace.read(&path, cancellation).await?;
+        let markdown = std::str::from_utf8(&bytes)
+            .map_err(|_| Error::new("INVALID_ARGUMENTS", "Skill document must be UTF-8"))?;
+        let skill = super::super::skill::Skill::from_markdown(markdown)?;
+        if skill.definition().name != name {
+            return Err(Error::new(
+                "INVALID_ARGUMENTS",
+                "Skill name must match its directory",
+            ));
+        }
+        Ok(skill)
+    }
+}
+
+impl SkillSource for DirectorySkills {
+    async fn list(&self, cancellation: &Cancellation) -> Result<Vec<SkillDefinition>, Error> {
+        let paths = match self.workspace.list("skills", false, cancellation).await {
+            Ok(paths) => paths,
+            Err(error) if error.code == "NOT_FOUND" => return Ok(Vec::new()),
+            Err(error) => return Err(error),
+        };
+        let mut definitions = Vec::new();
+        for path in paths {
+            let Some(name) = path.strip_prefix("skills/") else {
+                continue;
+            };
+            if name.is_empty() || name.contains('/') {
+                continue;
+            }
+            match self.load(name, cancellation).await {
+                Ok(skill) => definitions.push(skill.definition().clone()),
+                Err(error) if error.code == "NOT_FOUND" => continue,
+                Err(error) => return Err(error),
+            }
+        }
+        Ok(definitions)
+    }
+
+    async fn read(&self, name: &str, cancellation: &Cancellation) -> Result<String, Error> {
+        self.load(name, cancellation)
+            .await?
+            .read(cancellation)
+            .await
+    }
+
+    async fn read_resource(
+        &self,
+        name: &str,
+        path: &str,
+        cancellation: &Cancellation,
+    ) -> Result<Vec<u8>, Error> {
+        super::validate_path(path)?;
+        // Validate the Skill directory before reading a related resource.
+        self.load(name, cancellation).await?;
+        self.workspace
+            .read(&format!("skills/{name}/{path}"), cancellation)
+            .await
     }
 }
 

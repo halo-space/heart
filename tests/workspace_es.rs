@@ -824,7 +824,7 @@ async fn es_harness_uses_existing_model_loop_permission_and_custom_toolkit() {
         );
         let agent = harness::builder()
             .model(model)
-            .workspace(fixture.workspace().toolkit(Toolkit::new().tool(custom)))
+            .workspace(fixture.workspace().toolkit(Toolkit::new().tools(custom)))
             .permission(permission)
             .build()
             .unwrap();

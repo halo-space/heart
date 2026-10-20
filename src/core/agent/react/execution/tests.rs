@@ -205,8 +205,8 @@ fn planned_eval_wait_resumes_the_same_attempt_and_keeps_feedback_local() {
             .model(Model(probe.clone()))
             .toolkit(
                 Toolkit::new()
-                    .tool(CheckedTool::new("lookup", probe.clone()))
-                    .tool(CheckedTool::new("clock", probe.clone())),
+                    .tools(CheckedTool::new("lookup", probe.clone()))
+                    .tools(CheckedTool::new("clock", probe.clone())),
             )
             .with_id_fn(next_id)
             .with_max_concurrency(2)
@@ -240,8 +240,8 @@ fn planned_eval_wait_resumes_the_same_attempt_and_keeps_feedback_local() {
             .model(Model(probe.clone()))
             .toolkit(
                 Toolkit::new()
-                    .tool(CheckedTool::new("lookup", probe.clone()))
-                    .tool(CheckedTool::new("clock", probe.clone())),
+                    .tools(CheckedTool::new("lookup", probe.clone()))
+                    .tools(CheckedTool::new("clock", probe.clone())),
             )
             .with_id_fn(next_id)
             .with_max_concurrency(2)
@@ -321,8 +321,8 @@ fn tool_business_feedback_repairs_only_its_plan_node_and_keeps_successful_calls(
             .model(Model(probe.clone()))
             .toolkit(
                 Toolkit::new()
-                    .tool(CheckedTool::new("lookup", probe.clone()))
-                    .tool(CheckedTool::new("clock", probe.clone())),
+                    .tools(CheckedTool::new("lookup", probe.clone()))
+                    .tools(CheckedTool::new("clock", probe.clone())),
             )
             .with_id_fn(next_id)
             .with_max_concurrency(2)
@@ -405,8 +405,8 @@ fn tool_eval_technical_failure_keeps_call_results_and_finishes_independent_nodes
             .model(Model(probe.clone()))
             .toolkit(
                 Toolkit::new()
-                    .tool(CheckedTool::new("lookup", probe.clone()))
-                    .tool(CheckedTool::new("clock", probe.clone())),
+                    .tools(CheckedTool::new("lookup", probe.clone()))
+                    .tools(CheckedTool::new("clock", probe.clone())),
             )
             .with_id_fn(next_id)
             .with_max_concurrency(2)

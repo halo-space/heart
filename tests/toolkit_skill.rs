@@ -3,6 +3,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+use elasticsearch::{Elasticsearch, http::transport::Transport};
 use futures_util::{StreamExt, stream};
 use halo_agents::{
     Cancellation, Error, Message,
@@ -10,7 +11,7 @@ use halo_agents::{
     event::Event,
     mcp::{Definition as McpDefinition, Server},
     model::chat::{Chat, Request},
-    skill::{Definition, Skill},
+    skill::{Definition, Skill, Source},
     tool::{Call, Tool, ToolDefinition},
 };
 use serde_json::json;
@@ -115,7 +116,7 @@ async fn toolkit_provides_skill_catalog_and_all_tool_mcp_definitions_to_model() 
     let discoveries = Arc::new(AtomicUsize::new(0));
     let requests = Arc::new(Mutex::new(Vec::new()));
     let toolkit = Toolkit::new()
-        .tool(LocalTool(definition("weather", "Look up current weather.")))
+        .tools(LocalTool(definition("weather", "Look up current weather.")))
         .mcps([Remote {
             definition: McpDefinition {
                 name: "remote_server".into(),
@@ -164,7 +165,7 @@ async fn toolkit_provides_skill_catalog_and_all_tool_mcp_definitions_to_model() 
 #[test]
 fn skill_names_do_not_replace_tool_names() {
     let toolkit = Toolkit::new()
-        .tool(LocalTool(definition("research", "A normal business tool.")))
+        .tools(LocalTool(definition("research", "A normal business tool.")))
         .skills([research()])
         .unwrap();
     assert!(
@@ -173,4 +174,149 @@ fn skill_names_do_not_replace_tool_names() {
             .iter()
             .any(|tool| tool.name == "research")
     );
+}
+
+struct Directory(std::path::PathBuf);
+
+impl Directory {
+    fn new() -> Self {
+        let path = std::env::temp_dir().join(format!(
+            "heart-toolkit-skills-{}-{}",
+            std::process::id(),
+            rand::random::<u64>()
+        ));
+        std::fs::create_dir(&path).unwrap();
+        Self(path)
+    }
+}
+
+impl Drop for Directory {
+    fn drop(&mut self) {
+        std::fs::remove_dir_all(&self.0).unwrap();
+    }
+}
+
+fn skill_call(resource: Option<&str>) -> Call {
+    let mut arguments = serde_json::Map::from_iter([("skill".into(), json!("research"))]);
+    if let Some(resource) = resource {
+        arguments.insert("resource".into(), json!(resource));
+    }
+    Call {
+        call_id: "call_skill".into(),
+        name: "skill".into(),
+        arguments,
+    }
+}
+
+#[tokio::test]
+async fn local_workspace_discovers_skills_and_reads_adjacent_resources() {
+    let directory = Directory::new();
+    let workspace = halo_agents::core::workspace::Local::new(&directory.0).unwrap();
+    let cancellation = Cancellation::new();
+    workspace
+        .write(
+            "skills/research/SKILL.md",
+            b"---\nname: research\ndescription: Research with sources.\n---\nRead references/guide.md.\n"
+                .to_vec(),
+            &cancellation,
+        )
+        .await
+        .unwrap();
+    workspace
+        .write(
+            "skills/research/references/guide.md",
+            b"Use primary sources.".to_vec(),
+            &cancellation,
+        )
+        .await
+        .unwrap();
+    let toolkit = Toolkit::from(workspace);
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let agent = agent::chat()
+        .model(Model {
+            requests: Arc::clone(&requests),
+        })
+        .toolkit(toolkit)
+        .build()
+        .unwrap();
+    let events = agent
+        .run(Input::default(), true, Cancellation::new())
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.iter().all(Result::is_ok));
+    let requests = requests.lock().await;
+    let prompt = requests[0].messages.0[0].content[0].data["value"]
+        .as_str()
+        .unwrap();
+    assert!(prompt.contains("research"));
+    assert!(requests[0].tools.iter().any(|tool| tool.name == "skill"));
+    drop(requests);
+
+    let toolkit = Toolkit::from(halo_agents::core::workspace::Local::new(&directory.0).unwrap());
+    let (instructions, _) = toolkit
+        .execute(skill_call(None), &cancellation)
+        .await
+        .unwrap();
+    assert_eq!(
+        instructions.values["instructions"],
+        "Read references/guide.md.\n"
+    );
+    let (resource, _) = toolkit
+        .execute(skill_call(Some("references/guide.md")), &cancellation)
+        .await
+        .unwrap();
+    assert_eq!(resource.values["content"], "Use primary sources.");
+    let error = toolkit
+        .execute(skill_call(Some("../other/SKILL.md")), &cancellation)
+        .await
+        .unwrap_err();
+    assert_eq!(error.code, "INVALID_ARGUMENTS");
+}
+
+struct DatabaseSkills;
+
+impl Source for DatabaseSkills {
+    async fn list(&self, _: &Cancellation) -> Result<Vec<Definition>, Error> {
+        Ok(vec![research().definition])
+    }
+
+    async fn read(&self, name: &str, _: &Cancellation) -> Result<String, Error> {
+        assert_eq!(name, "research");
+        Ok("Use the database skill.".into())
+    }
+
+    async fn read_resource(
+        &self,
+        name: &str,
+        path: &str,
+        _: &Cancellation,
+    ) -> Result<Vec<u8>, Error> {
+        assert_eq!((name, path), ("research", "guide.md"));
+        Ok(b"Database reference".to_vec())
+    }
+}
+
+#[tokio::test]
+async fn server_workspace_uses_database_skill_source_without_file_paths() {
+    let client = Elasticsearch::new(Transport::single_node("http://127.0.0.1:9200").unwrap());
+    let workspace = halo_agents::core::workspace::es::new(client, "workspace")
+        .unwrap()
+        .skill_source(DatabaseSkills)
+        .toolkit(Toolkit::new());
+    let toolkit = Toolkit::from(workspace);
+    let (instructions, _) = toolkit
+        .execute(skill_call(None), &Cancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(
+        instructions.values["instructions"],
+        "Use the database skill."
+    );
+    let (resource, _) = toolkit
+        .execute(skill_call(Some("guide.md")), &Cancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(resource.values["content"], "Database reference");
 }

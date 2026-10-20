@@ -216,7 +216,7 @@ async fn run(
         let mut builder = agent::react()
             .model(model)
             .system_prompt("system")
-            .toolkit(Toolkit::new().tool(Lookup));
+            .toolkit(Toolkit::new().tools(Lookup));
         for hook in hooks {
             builder = builder.middleware(hook);
         }

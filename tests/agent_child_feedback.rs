@@ -153,7 +153,7 @@ fn child(
             "worker",
             agent::react()
                 .model(model)
-                .toolkit(Toolkit::new().tool(tool))
+                .toolkit(Toolkit::new().tools(tool))
                 .checkpoint(checkpoint)
                 .build()
                 .unwrap(),
@@ -164,7 +164,7 @@ fn child(
             "worker",
             agent::chat()
                 .model(model)
-                .toolkit(Toolkit::new().tool(tool))
+                .toolkit(Toolkit::new().tools(tool))
                 .checkpoint(checkpoint)
                 .build()
                 .unwrap(),

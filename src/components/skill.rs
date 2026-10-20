@@ -23,3 +23,27 @@ pub trait Skill: Send + Sync {
         cancellation: &Cancellation,
     ) -> impl std::future::Future<Output = Result<String, Error>> + Send;
 }
+
+/// A Workspace-owned Skill source. Local workspaces may discover directories;
+/// server workspaces can implement the same contract using database records.
+/// Names returned by `list` identify the exact instructions and resources
+/// subsequently read during this Agent run.
+pub trait Source: Send + Sync {
+    fn list(
+        &self,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Vec<Definition>, Error>> + Send;
+
+    fn read(
+        &self,
+        name: &str,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<String, Error>> + Send;
+
+    fn read_resource(
+        &self,
+        name: &str,
+        path: &str,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<Vec<u8>, Error>> + Send;
+}

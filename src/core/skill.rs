@@ -101,8 +101,8 @@ impl Skill {
         )
     }
 
-    /// Load one file from an explicit Local workspace. Database-backed skills
-    /// can use `new` or `from_markdown` with the data retrieved by their backend;
+    /// Load one file from an explicit Local workspace. Automatic Workspace
+    /// discovery and database-backed sources use `skill::Source` separately;
     /// the common Workspace contract does not prescribe a file loading API.
     pub async fn load(
         workspace: &super::workspace::Local,

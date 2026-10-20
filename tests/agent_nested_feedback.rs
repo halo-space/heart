@@ -198,7 +198,7 @@ fn children(
             "worker",
             agent::react()
                 .model(model)
-                .toolkit(Toolkit::new().tool(tool))
+                .toolkit(Toolkit::new().tools(tool))
                 .checkpoint(own)
                 .with_max_concurrency(1)
                 .build()
@@ -210,7 +210,7 @@ fn children(
             "worker",
             agent::chat()
                 .model(model)
-                .toolkit(Toolkit::new().tool(tool))
+                .toolkit(Toolkit::new().tools(tool))
                 .checkpoint(own)
                 .build()
                 .unwrap(),

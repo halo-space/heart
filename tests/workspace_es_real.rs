@@ -326,7 +326,7 @@ async fn real_harness_crud_and_permission_use_the_existing_tool_chain() {
             .workspace(
                 core::workspace::es::new(client.clone(), &index)
                     .unwrap()
-                    .toolkit(Toolkit::new().tool(Custom(ToolDefinition {
+                    .toolkit(Toolkit::new().tools(Custom(ToolDefinition {
                         name: "custom_query".into(),
                         description: "application query".into(),
                         parameters: json!({"type":"object"}).as_object().unwrap().clone(),

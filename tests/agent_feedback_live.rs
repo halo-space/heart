@@ -234,7 +234,7 @@ async fn restoring_tool_input_after_approval_preserves_the_exact_approved_operat
                     requests: Default::default(),
                     select: true,
                 })
-                .toolkit(Toolkit::new().tool(Collect::new(3, Default::default())))
+                .toolkit(Toolkit::new().tools(Collect::new(3, Default::default())))
                 .permission(Ask)
                 .checkpoint(checkpoint.clone())
                 .with_id_fn(next_id)
@@ -248,7 +248,7 @@ async fn restoring_tool_input_after_approval_preserves_the_exact_approved_operat
                     requests: requests.clone(),
                     select: false,
                 })
-                .toolkit(Toolkit::new().tool(Collect::new(3, log.clone())))
+                .toolkit(Toolkit::new().tools(Collect::new(3, log.clone())))
                 .permission(Ask)
                 .checkpoint(checkpoint.clone())
                 .with_id_fn(no_new_id)
@@ -387,7 +387,7 @@ async fn concurrent_questions_accept_only_the_fifo_head_and_queue_each_part_once
             requests: Default::default(),
             select: true,
         }))
-        .toolkit(Toolkit::new().tool(Collect::new(3, log.clone())))
+        .toolkit(Toolkit::new().tools(Collect::new(3, log.clone())))
         .with_max_concurrency(1)
         .checkpoint(checkpoint.clone())
         .with_id_fn(next_id)
@@ -406,7 +406,7 @@ async fn concurrent_questions_accept_only_the_fifo_head_and_queue_each_part_once
             requests: Default::default(),
             select: true,
         }))
-        .toolkit(Toolkit::new().tool(Collect::new(3, log.clone())))
+        .toolkit(Toolkit::new().tools(Collect::new(3, log.clone())))
         .with_max_concurrency(1)
         .checkpoint(checkpoint.clone())
         .with_id_fn(next_id)
@@ -494,7 +494,7 @@ async fn cancellation_keeps_partial_feedback_without_completing_the_tool_or_acce
             requests: Default::default(),
             select: true,
         })
-        .toolkit(Toolkit::new().tool(Collect::new(3, log.clone())))
+        .toolkit(Toolkit::new().tools(Collect::new(3, log.clone())))
         .checkpoint(checkpoint.clone())
         .with_id_fn(next_id)
         .build()
@@ -507,7 +507,7 @@ async fn cancellation_keeps_partial_feedback_without_completing_the_tool_or_acce
             requests: Default::default(),
             select: true,
         })
-        .toolkit(Toolkit::new().tool(Collect::new(3, log.clone())))
+        .toolkit(Toolkit::new().tools(Collect::new(3, log.clone())))
         .checkpoint(checkpoint.clone())
         .with_id_fn(next_id)
         .build()
@@ -596,7 +596,7 @@ async fn partial_save_failure_stops_the_original_run_before_tool_completion() {
             requests: Default::default(),
             select: true,
         })
-        .toolkit(Toolkit::new().tool(Collect::new(3, log.clone())))
+        .toolkit(Toolkit::new().tools(Collect::new(3, log.clone())))
         .checkpoint(FailPartial(checkpoint.clone()))
         .with_id_fn(next_id)
         .build()
@@ -609,7 +609,7 @@ async fn partial_save_failure_stops_the_original_run_before_tool_completion() {
             requests: Default::default(),
             select: true,
         })
-        .toolkit(Toolkit::new().tool(Collect::new(3, log.clone())))
+        .toolkit(Toolkit::new().tools(Collect::new(3, log.clone())))
         .checkpoint(FailPartial(checkpoint.clone()))
         .with_id_fn(next_id)
         .build()
@@ -632,7 +632,7 @@ async fn ordinary_feedback_recovery_worker() {
                     requests: Default::default(),
                     select: true,
                 })
-                .toolkit(Toolkit::new().tool(Collect::new(3, Default::default())))
+                .toolkit(Toolkit::new().tools(Collect::new(3, Default::default())))
                 .checkpoint(checkpoint.clone())
                 .with_id_fn(next_id)
                 .build()
@@ -644,7 +644,7 @@ async fn ordinary_feedback_recovery_worker() {
                     requests: Default::default(),
                     select: true,
                 })
-                .toolkit(Toolkit::new().tool(Collect::new(3, Default::default())))
+                .toolkit(Toolkit::new().tools(Collect::new(3, Default::default())))
                 .checkpoint(checkpoint.clone())
                 .with_id_fn(next_id)
                 .build()
@@ -669,7 +669,7 @@ async fn ordinary_feedback_recovery_worker() {
                     requests: requests.clone(),
                     select: false,
                 })
-                .toolkit(Toolkit::new().tool(Collect::new(3, log.clone())))
+                .toolkit(Toolkit::new().tools(Collect::new(3, log.clone())))
                 .checkpoint(checkpoint.clone())
                 .with_id_fn(no_new_id)
                 .build()
@@ -681,7 +681,7 @@ async fn ordinary_feedback_recovery_worker() {
                     requests: requests.clone(),
                     select: false,
                 })
-                .toolkit(Toolkit::new().tool(Collect::new(3, log.clone())))
+                .toolkit(Toolkit::new().tools(Collect::new(3, log.clone())))
                 .checkpoint(checkpoint.clone())
                 .with_id_fn(no_new_id)
                 .build()
@@ -810,7 +810,7 @@ async fn chat_and_react_collect_one_or_three_parts_on_the_original_stream_in_bot
                     requests: requests.clone(),
                     select: true,
                 })
-                .toolkit(Toolkit::new().tool(Collect::new(count, log.clone())))
+                .toolkit(Toolkit::new().tools(Collect::new(count, log.clone())))
                 .checkpoint(checkpoint.clone())
                 .with_id_fn(next_id)
                 .build()
@@ -824,7 +824,7 @@ async fn chat_and_react_collect_one_or_three_parts_on_the_original_stream_in_bot
                     requests: requests.clone(),
                     select: true,
                 })
-                .toolkit(Toolkit::new().tool(Collect::new(count, log.clone())))
+                .toolkit(Toolkit::new().tools(Collect::new(count, log.clone())))
                 .checkpoint(checkpoint.clone())
                 .with_id_fn(next_id)
                 .build()
@@ -935,7 +935,7 @@ async fn fresh_chat_and_react_restore_partial_feedback_without_model_replay_or_n
                 requests: Default::default(),
                 select: true,
             })
-            .toolkit(Toolkit::new().tool(Collect::new(3, Default::default())))
+            .toolkit(Toolkit::new().tools(Collect::new(3, Default::default())))
             .checkpoint(checkpoint.clone())
             .with_id_fn(next_id)
             .build()
@@ -948,7 +948,7 @@ async fn fresh_chat_and_react_restore_partial_feedback_without_model_replay_or_n
                 requests: requests.clone(),
                 select: false,
             })
-            .toolkit(Toolkit::new().tool(Collect::new(3, log.clone())))
+            .toolkit(Toolkit::new().tools(Collect::new(3, log.clone())))
             .checkpoint(checkpoint.clone())
             .with_id_fn(no_new_id)
             .build()
@@ -961,7 +961,7 @@ async fn fresh_chat_and_react_restore_partial_feedback_without_model_replay_or_n
                 requests: Default::default(),
                 select: true,
             })
-            .toolkit(Toolkit::new().tool(Collect::new(3, Default::default())))
+            .toolkit(Toolkit::new().tools(Collect::new(3, Default::default())))
             .checkpoint(checkpoint.clone())
             .with_id_fn(next_id)
             .build()
@@ -974,7 +974,7 @@ async fn fresh_chat_and_react_restore_partial_feedback_without_model_replay_or_n
                 requests: requests.clone(),
                 select: false,
             })
-            .toolkit(Toolkit::new().tool(Collect::new(3, log.clone())))
+            .toolkit(Toolkit::new().tools(Collect::new(3, log.clone())))
             .checkpoint(checkpoint.clone())
             .with_id_fn(no_new_id)
             .build()

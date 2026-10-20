@@ -55,7 +55,15 @@ impl Workspace {
     /// Stores the application's existing capabilities. Tools are bound when
     /// assembling the Toolkit, without discovery or database access.
     pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
-        self.toolkit = toolkit;
+        self.toolkit = toolkit.retain_skill_sources(&self.toolkit);
+        self
+    }
+
+    /// Use an application-backed Skill source (for example, records in a
+    /// database). The source reads instructions and associated resources by
+    /// Skill name; Server Workspace does not expose fictional file paths.
+    pub fn skill_source<S: crate::skill::Source + 'static>(mut self, source: S) -> Self {
+        self.toolkit = self.toolkit.skill_source(source);
         self
     }
 }
@@ -70,7 +78,7 @@ impl From<Workspace> for Toolkit {
     fn from(workspace: Workspace) -> Self {
         let mut toolkit = workspace.toolkit;
         for kind in [Kind::Write, Kind::Read, Kind::Update, Kind::Delete] {
-            toolkit = toolkit.tool(Operation {
+            toolkit = toolkit.tools(Operation {
                 backend: Arc::clone(&workspace.backend),
                 kind,
                 definition: kind.definition(),

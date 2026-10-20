@@ -573,7 +573,7 @@ fn trigger_streams_planner_events_and_returns_validated_plan_without_running_too
         let calls = search.calls.clone();
         let agent = agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tool(search))
+            .toolkit(Toolkit::new().tools(search))
             .build()
             .unwrap();
         let events: Vec<_> = agent
@@ -721,7 +721,7 @@ fn repeated_trigger_passes_current_plan_without_inferring_capabilities_or_changi
         let requests = model.requests.clone();
         let agent = agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tool(Search::new("search")))
+            .toolkit(Toolkit::new().tools(Search::new("search")))
             .build()
             .unwrap();
         let events: Vec<_> = agent
@@ -790,7 +790,7 @@ fn invalid_complete_plan_is_terminal_and_never_acknowledged_as_a_plan() {
             let requests = model.requests.clone();
             let agent = agent::react()
                 .model(model)
-                .toolkit(Toolkit::new().tool(Search::new("search")))
+                .toolkit(Toolkit::new().tools(Search::new("search")))
                 .build()
                 .unwrap();
             let events: Vec<_> = agent
@@ -859,7 +859,7 @@ fn builtin_name_cannot_be_shadowed_by_a_registered_tool() {
     assert_eq!(
         agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tool(Search::new("plan")))
+            .toolkit(Toolkit::new().tools(Search::new("plan")))
             .build()
             .err()
             .unwrap()
@@ -909,7 +909,7 @@ fn mixed_batch_finishes_business_calls_before_starting_planner() {
         let calls = search.calls.clone();
         let agent = agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tool(search))
+            .toolkit(Toolkit::new().tools(search))
             .with_max_concurrency(1)
             .build()
             .unwrap();
@@ -939,7 +939,7 @@ fn cancelled_planner_complete_does_not_acknowledge_or_commit_its_plan() {
         let model = Model::new(vec![vec![complete(trigger(json!({})))], vec![cancelled]]);
         let agent = agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tool(Search::new("search")))
+            .toolkit(Toolkit::new().tools(Search::new("search")))
             .build()
             .unwrap();
         let events: Vec<_> = agent
@@ -972,7 +972,7 @@ fn missing_planner_complete_cannot_be_reconstructed_from_delta() {
         ]);
         let agent = agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tool(Search::new("search")))
+            .toolkit(Toolkit::new().tools(Search::new("search")))
             .build()
             .unwrap();
         let events: Vec<_> = agent
@@ -1042,7 +1042,7 @@ fn planner_usage_is_in_chat_total_but_control_ack_has_no_double_charge() {
             let agent = agent::react()
                 .model(model)
                 .memory(memory.clone())
-                .toolkit(Toolkit::new().tool(Search::new("search")))
+                .toolkit(Toolkit::new().tools(Search::new("search")))
                 .build()
                 .unwrap();
             let mut query = input();

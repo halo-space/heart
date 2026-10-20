@@ -47,6 +47,7 @@ pub struct Docker {
     backend: Box<Backend>,
     definition: Definition,
     toolkit: Toolkit,
+    pub(super) discover_skills: bool,
 }
 
 impl Docker {
@@ -93,7 +94,16 @@ impl Docker {
                 state: Mutex::new(State::New),
             }),
             toolkit: Toolkit::new(),
+            discover_skills: false,
         })
+    }
+
+    /// Discover `skills/<name>/SKILL.md` inside this container for each run.
+    /// Opt-in because discovery starts the container before model dispatch or
+    /// Tool permission checks; the default preserves no-I/O construction.
+    pub fn with_skill_discovery(mut self) -> Self {
+        self.discover_skills = true;
+        self
     }
 
     pub fn toolkit(mut self, toolkit: Toolkit) -> Self {

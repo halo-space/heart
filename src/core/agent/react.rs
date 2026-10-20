@@ -377,11 +377,15 @@ where
             })
             .transpose()?
             .unwrap_or_else(|| input.clone());
+        let discovered_toolkit = self.toolkit.with_discovered_skills(&cancellation).await;
         let mut preparation = match &restored {
             Some(snapshot) => crate::runtime::agent::preparation::State::restore(snapshot)?,
             None => Some(crate::runtime::agent::preparation::State::new(
                 original.clone(),
-                self.toolkit.system_prompt(self.system_prompt.clone()),
+                discovered_toolkit.as_ref().map_or_else(
+                    |_| self.system_prompt.clone(),
+                    |toolkit| toolkit.system_prompt(self.system_prompt.clone()),
+                ),
             )),
         };
         if let Some(state) = &preparation {
@@ -422,7 +426,11 @@ where
             } else {
                 run = history.resume(original.clone(), &cancellation).await?;
             }
-            let toolkit = self.toolkit.prepared(&cancellation).await?;
+            let toolkit = discovered_toolkit
+                .as_ref()
+                .map_err(Clone::clone)?
+                .prepared(&cancellation)
+                .await?;
             if toolkit.capability_names().contains("plan") {
                 return Err(Error::new(
                     "INVALID_ARGUMENTS",
@@ -3911,7 +3919,7 @@ mod tests {
                 calls: model_calls.clone(),
                 require_tool_error: false,
             })
-            .toolkit(Toolkit::new().tool(EvalFailingTool {
+            .toolkit(Toolkit::new().tools(EvalFailingTool {
                 inner: WeatherTool {
                     calls: tool_calls.clone(),
                     definition: ToolDefinition {
@@ -3987,7 +3995,7 @@ mod tests {
                 calls: model_calls.clone(),
             })
             .toolkit(
-                Toolkit::new().tool(EvalRejectingTool {
+                Toolkit::new().tools(EvalRejectingTool {
                     inner: WeatherTool {
                         calls: tool_calls.clone(),
                         definition: ToolDefinition {
@@ -4036,7 +4044,7 @@ mod tests {
     fn public_react_entry_runs_tool_then_final_model_call() {
         let model_calls = Arc::new(Mutex::new(0));
         let tool_calls = Arc::new(Mutex::new(0));
-        let toolkit = Toolkit::new().tool(WeatherTool {
+        let toolkit = Toolkit::new().tools(WeatherTool {
             calls: tool_calls.clone(),
             definition: ToolDefinition {
                 name: "weather".into(),
@@ -4095,7 +4103,7 @@ mod tests {
             })
             .with_max_iters(1)
             .toolkit(
-                Toolkit::new().tool(WeatherTool {
+                Toolkit::new().tools(WeatherTool {
                     calls: Arc::new(Mutex::new(0)),
                     definition: ToolDefinition {
                         name: "weather".into(),
@@ -4130,7 +4138,7 @@ mod tests {
                 require_tool_error: true,
             })
             .toolkit(
-                Toolkit::new().tool(FailingTool {
+                Toolkit::new().tools(FailingTool {
                     definition: ToolDefinition {
                         name: "weather".into(),
                         description: "lookup weather".into(),

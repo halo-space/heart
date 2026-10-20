@@ -183,7 +183,7 @@ impl Tool for Weather {
     }
 }
 fn toolkit() -> Toolkit {
-    Toolkit::new().tool(Weather(ToolDefinition {
+    Toolkit::new().tools(Weather(ToolDefinition {
         name: "weather".into(),
         description: "weather".into(),
         parameters: json!({"type":"object","properties":{}})

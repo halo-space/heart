@@ -182,7 +182,7 @@ fn build<C: Checkpoint + 'static>(
 ) -> impl Agent {
     agent::react()
         .model(model)
-        .toolkit(Toolkit::new().tool(Collect::new(log, count)))
+        .toolkit(Toolkit::new().tools(Collect::new(log, count)))
         .checkpoint(checkpoint)
         .with_id_fn(ids)
         .with_max_concurrency(capacity)

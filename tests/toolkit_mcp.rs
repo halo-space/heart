@@ -174,7 +174,7 @@ impl Tool for LocalTool {
 #[test]
 fn duplicate_names_across_local_tools_or_mcp_servers_fail_without_dispatch() {
     let (first, _, calls) = server(Mode::Normal);
-    let toolkit = Toolkit::new().tool(LocalTool).mcps(vec![first]);
+    let toolkit = Toolkit::new().tools(LocalTool).mcps(vec![first]);
     assert_eq!(
         block_on(toolkit.execute(call(), &Cancellation::new()))
             .unwrap_err()

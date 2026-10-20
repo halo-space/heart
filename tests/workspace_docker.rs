@@ -649,7 +649,7 @@ async fn custom_tool_and_harness_permission() {
     });
     let workspace = Docker::new(config())
         .unwrap()
-        .toolkit(Toolkit::new().tool(echo));
+        .toolkit(Toolkit::new().tools(echo));
     let agent = halo_agents::harness::builder()
         .model(Model(Arc::clone(&calls)))
         .workspace(workspace)

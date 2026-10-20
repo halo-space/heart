@@ -421,7 +421,7 @@ impl Tool for Collect {
     }
 }
 fn toolkit(log: Arc<Log>, count: usize) -> Toolkit {
-    Toolkit::new().tool(Collect{log,count,definition:ToolDefinition{name:"collect".into(),description:"collect feedback".into(),parameters:json!({"type":"object","properties":{"item":{"type":"string"}},"required":["item"],"additionalProperties":false}).as_object().unwrap().clone()}})
+    Toolkit::new().tools(Collect{log,count,definition:ToolDefinition{name:"collect".into(),description:"collect feedback".into(),parameters:json!({"type":"object","properties":{"item":{"type":"string"}},"required":["item"],"additionalProperties":false}).as_object().unwrap().clone()}})
 }
 #[derive(Clone, Copy, Debug)]
 enum Kind {
