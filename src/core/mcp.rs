@@ -16,6 +16,7 @@ use crate::{
 pub struct Server {
     definition: Definition,
     client: pkg::mcp::Client,
+    tools: Vec<ToolDefinition>,
 }
 
 impl Server {
@@ -27,7 +28,12 @@ impl Server {
     ) -> Result<Self, Error> {
         validate_definition(&definition)?;
         let client = pkg::mcp::Client::http(endpoint, headers, cancellation).await?;
-        Ok(Self { definition, client })
+        let tools = discover_tools(&client, cancellation).await?;
+        Ok(Self {
+            definition,
+            client,
+            tools,
+        })
     }
 
     pub async fn stdio(
@@ -37,7 +43,12 @@ impl Server {
     ) -> Result<Self, Error> {
         validate_definition(&definition)?;
         let client = pkg::mcp::Client::stdio(command, cancellation).await?;
-        Ok(Self { definition, client })
+        let tools = discover_tools(&client, cancellation).await?;
+        Ok(Self {
+            definition,
+            client,
+            tools,
+        })
     }
 
     pub async fn close(self) -> Result<(), Error> {
@@ -50,27 +61,8 @@ impl Contract for Server {
         &self.definition
     }
 
-    async fn list_tools(&self, cancellation: &Cancellation) -> Result<Vec<ToolDefinition>, Error> {
-        self.client
-            .list_tools(cancellation)
-            .await?
-            .into_iter()
-            .map(|tool| {
-                let name = tool.name;
-                let definition = ToolDefinition {
-                    description: tool
-                        .description
-                        .filter(|text| !text.trim().is_empty())
-                        .unwrap_or_else(|| name.clone()),
-                    name,
-                    parameters: tool.input_schema,
-                };
-                definition
-                    .validate()
-                    .map_err(|_| Error::new("INVALID_RESPONSE", "invalid MCP tool schema"))?;
-                Ok(definition)
-            })
-            .collect()
+    fn tools(&self) -> &[ToolDefinition] {
+        &self.tools
     }
 
     async fn call(&self, call: Call, cancellation: &Cancellation) -> Result<Message, Error> {
@@ -134,6 +126,32 @@ impl Contract for Server {
         }
         Ok(message)
     }
+}
+
+async fn discover_tools(
+    client: &pkg::mcp::Client,
+    cancellation: &Cancellation,
+) -> Result<Vec<ToolDefinition>, Error> {
+    client
+        .list_tools(cancellation)
+        .await?
+        .into_iter()
+        .map(|tool| {
+            let name = tool.name;
+            let definition = ToolDefinition {
+                description: tool
+                    .description
+                    .filter(|text| !text.trim().is_empty())
+                    .unwrap_or_else(|| name.clone()),
+                name,
+                parameters: tool.input_schema,
+            };
+            definition
+                .validate()
+                .map_err(|_| Error::new("INVALID_RESPONSE", "invalid MCP tool schema"))?;
+            Ok(definition)
+        })
+        .collect()
 }
 
 fn validate_definition(definition: &Definition) -> Result<(), Error> {

@@ -143,7 +143,7 @@ async fn mcp_http_initializes_discovers_pages_and_returns_direct_message() {
     )
     .await
     .unwrap();
-    let tools = server.list_tools(&cancel).await.unwrap();
+    let tools = server.tools();
     assert_eq!(
         tools
             .iter()
@@ -234,14 +234,12 @@ async fn mcp_rpc_error_does_not_leak_remote_protocol_body() {
 async fn mcp_repeated_cursor_fails_without_partial_discovery() {
     let fixture = Fixture::new(Mode::Cycle).await;
     let cancel = Cancellation::new();
-    let server = core::mcp::Server::http(definition(), &fixture.url, Map::new(), &cancel)
-        .await
-        .unwrap();
-    assert_eq!(
-        server.list_tools(&cancel).await.unwrap_err().code,
-        "INVALID_RESPONSE"
-    );
-    server.close().await.unwrap();
+    let error = match core::mcp::Server::http(definition(), &fixture.url, Map::new(), &cancel).await
+    {
+        Ok(_) => panic!("cyclic discovery must prevent server construction"),
+        Err(error) => error,
+    };
+    assert_eq!(error.code, "INVALID_RESPONSE");
 }
 #[tokio::test]
 async fn mcp_media_requires_v3_contract_instead_of_silent_drop() {
@@ -360,7 +358,7 @@ done"#;
     let server = core::mcp::Server::stdio(definition(), command, &cancel)
         .await
         .unwrap();
-    assert_eq!(server.list_tools(&cancel).await.unwrap().len(), 1);
+    assert_eq!(server.tools().len(), 1);
     assert_eq!(
         server.call(call(), &cancel).await.unwrap().values["temperature"],
         json!(22)

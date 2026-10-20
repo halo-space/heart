@@ -15,8 +15,6 @@ use crate::components::tool::{
 type CallFuture = Pin<Box<dyn Future<Output = Result<(Call, Message), Error>> + Send + 'static>>;
 type PrepareFuture = Pin<Box<dyn Future<Output = Result<Call, Error>> + Send + 'static>>;
 type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + Send + 'static>>;
-type DiscoveryFuture =
-    Pin<Box<dyn Future<Output = Result<Vec<Arc<dyn Entry>>, Error>> + Send + 'static>>;
 type SkillFuture = Pin<Box<dyn Future<Output = Result<String, Error>> + Send + 'static>>;
 type ResourceFuture = Pin<Box<dyn Future<Output = Result<Vec<u8>, Error>> + Send + 'static>>;
 type SkillDiscoveryFuture =
@@ -187,29 +185,24 @@ impl Tool for SkillReader {
     }
 }
 
-trait Mcp: Send + Sync {
-    fn discover(&self, cancellation: Cancellation) -> DiscoveryFuture;
-}
-
 struct TypedMcp<S> {
     server: Arc<S>,
 }
 
-impl<S: Server + 'static> Mcp for TypedMcp<S> {
-    fn discover(&self, cancellation: Cancellation) -> DiscoveryFuture {
+impl<S: Server + 'static> TypedMcp<S> {
+    fn entries(&self) -> Vec<Arc<dyn Entry>> {
         let server = Arc::clone(&self.server);
-        Box::pin(async move {
-            let definitions = server.list_tools(&cancellation).await?;
-            Ok(definitions
-                .into_iter()
-                .map(|definition| {
-                    Arc::new(McpTool {
-                        server: Arc::clone(&server),
-                        definition,
-                    }) as Arc<dyn Entry>
-                })
-                .collect())
-        })
+        server
+            .tools()
+            .iter()
+            .cloned()
+            .map(|definition| {
+                Arc::new(McpTool {
+                    server: Arc::clone(&server),
+                    definition,
+                }) as Arc<dyn Entry>
+            })
+            .collect()
     }
 }
 
@@ -317,7 +310,6 @@ where
 /// defined and executable.
 pub struct Toolkit {
     entries: Vec<Arc<dyn Entry>>,
-    mcps: Vec<Arc<dyn Mcp>>,
     skills: Vec<Arc<dyn SkillEntry>>,
     skill_sources: Vec<Arc<dyn SkillSource>>,
     skill_reader: bool,
@@ -378,7 +370,6 @@ impl Toolkit {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
-            mcps: Vec::new(),
             skills: Vec::new(),
             skill_sources: Vec::new(),
             skill_reader: false,
@@ -386,11 +377,10 @@ impl Toolkit {
     }
 
     /// Combine two independently assembled capability sets. Local Tool and
-    /// Skill names must remain unique; names discovered from MCP servers are
-    /// checked when the Toolkit is prepared for a run.
+    /// Skill names and already-discovered MCP Tool names are checked when the
+    /// Toolkit is prepared for a run.
     pub fn merge(mut self, other: Self) -> Result<Self, Error> {
         self.entries.extend(other.entries);
-        self.mcps.extend(other.mcps);
         self.skills.extend(other.skills);
         self.skill_sources.extend(other.skill_sources);
         self.skill_reader |= other.skill_reader;
@@ -409,18 +399,18 @@ impl Toolkit {
         self
     }
 
-    /// Register already initialized MCP servers; no connection or discovery
-    /// occurs during fluent configuration. Different server types can be
-    /// supplied through repeated calls. Discovery happens once per Agent run
-    /// or standalone execute, not on each ReAct model iteration.
+    /// Register MCP servers that have already connected and discovered their
+    /// tools. `Server::http`/`Server::stdio` perform that work before this
+    /// method can be called; Agent runs never perform MCP discovery.
     pub fn mcps<S>(mut self, servers: impl IntoIterator<Item = S>) -> Self
     where
         S: Server + 'static,
     {
         for server in servers {
-            self.mcps.push(Arc::new(TypedMcp {
+            let mounted = TypedMcp {
                 server: Arc::new(server),
-            }));
+            };
+            self.entries.extend(mounted.entries());
         }
         self
     }
@@ -474,7 +464,6 @@ impl Toolkit {
         }
         let view = Self {
             entries: self.entries.clone(),
-            mcps: self.mcps.clone(),
             skills,
             skill_sources: Vec::new(),
             skill_reader: self.skill_reader,
@@ -553,9 +542,6 @@ impl Toolkit {
         }
         let discovered = self.with_discovered_skills(cancellation).await?;
         let mut entries = discovered.entries.clone();
-        for server in &discovered.mcps {
-            entries.extend(await_stage(server.discover(cancellation.clone()), cancellation).await?);
-        }
         for entry in &entries {
             let definition = entry.definition();
             definition.validate()?;
@@ -572,16 +558,16 @@ impl Toolkit {
         }
         Ok(Self {
             entries,
-            mcps: Vec::new(),
             skills: discovered.skills,
             skill_sources: Vec::new(),
             skill_reader,
         })
     }
 
-    /// Return locally registered Tool definitions synchronously. MCP discovery
-    /// is asynchronous: Agent run obtains a private prepared view including
-    /// discovered definitions, without mutating the reusable configuration.
+    /// Return currently prepared Tool definitions synchronously. MCP
+    /// definitions are available as soon as the server is attached; Skill
+    /// sources are still loaded when an Agent obtains its private prepared
+    /// view.
     pub fn definitions(&self) -> Vec<ToolDefinition> {
         self.entries
             .iter()
@@ -730,8 +716,7 @@ impl Toolkit {
         self.entries.is_empty()
     }
 
-    /// Count local/prepared Tools, including the shared Skill reader when
-    /// configured, but not undiscovered MCP Tools.
+    /// Count currently prepared Tools, including the shared Skill reader.
     pub fn len(&self) -> usize {
         self.entries.len()
     }

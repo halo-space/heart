@@ -23,9 +23,6 @@ use serde_json::{Map, json};
 enum Mode {
     Normal,
     CallError,
-    DiscoveryError,
-    Pending,
-    Cancel,
     InvalidSchema,
     Dynamic,
 }
@@ -33,8 +30,8 @@ enum Mode {
 struct Mcp {
     definition: Definition,
     mode: Mode,
-    lists: Arc<AtomicUsize>,
     calls: Arc<AtomicUsize>,
+    tools: Vec<ToolDefinition>,
 }
 
 fn definition(name: &str) -> ToolDefinition {
@@ -49,23 +46,8 @@ impl Server for Mcp {
         &self.definition
     }
 
-    async fn list_tools(&self, cancellation: &Cancellation) -> Result<Vec<ToolDefinition>, Error> {
-        let index = self.lists.fetch_add(1, Ordering::SeqCst) + 1;
-        match self.mode {
-            Mode::DiscoveryError => return Err(Error::new("UNAVAILABLE", "discovery failed")),
-            Mode::Pending => std::future::pending::<()>().await,
-            Mode::Cancel => cancellation.cancel(),
-            _ => {}
-        }
-        let mut tool = definition(&if matches!(self.mode, Mode::Dynamic) {
-            format!("weather_{index}")
-        } else {
-            "weather".into()
-        });
-        if matches!(self.mode, Mode::InvalidSchema) {
-            tool.parameters = Map::from_iter([("type".into(), json!("array"))]);
-        }
-        Ok(vec![tool])
+    fn tools(&self) -> &[ToolDefinition] {
+        &self.tools
     }
 
     async fn call(&self, call: Call, _cancellation: &Cancellation) -> Result<Message, Error> {
@@ -84,6 +66,10 @@ impl Server for Mcp {
 fn server(mode: Mode) -> (Mcp, Arc<AtomicUsize>, Arc<AtomicUsize>) {
     let lists = Arc::new(AtomicUsize::new(0));
     let calls = Arc::new(AtomicUsize::new(0));
+    let mut tools = vec![definition("weather")];
+    if matches!(mode, Mode::InvalidSchema) {
+        tools[0].parameters = Map::from_iter([("type".into(), json!("array"))]);
+    }
     (
         Mcp {
             definition: Definition {
@@ -91,8 +77,8 @@ fn server(mode: Mode) -> (Mcp, Arc<AtomicUsize>, Arc<AtomicUsize>) {
                 ..Default::default()
             },
             mode,
-            lists: Arc::clone(&lists),
             calls: Arc::clone(&calls),
+            tools,
         },
         lists,
         calls,
@@ -108,19 +94,19 @@ fn call() -> Call {
 }
 
 #[test]
-fn registration_is_deferred_and_standalone_execution_preserves_direct_message() {
+fn registration_uses_ready_definitions_and_standalone_execution_preserves_direct_message() {
     let (server, lists, calls) = server(Mode::Normal);
     let toolkit = Toolkit::new().mcps(vec![server]);
     assert_eq!(lists.load(Ordering::SeqCst), 0);
-    assert!(toolkit.definitions().is_empty());
+    assert_eq!(toolkit.definitions()[0].name, "weather");
     let (message, evaluation) = block_on(toolkit.execute(call(), &Cancellation::new())).unwrap();
-    assert_eq!(lists.load(Ordering::SeqCst), 1);
+    assert_eq!(lists.load(Ordering::SeqCst), 0);
     assert_eq!(calls.load(Ordering::SeqCst), 1);
     assert_eq!(message.values["temperature"], 22);
     assert_eq!(message.metadata["origin"], "mcp");
     assert!(!message.values.contains_key("tool_result"));
     assert!(evaluation.passed);
-    assert!(toolkit.definitions().is_empty()); // Per-use view, no shared mutation.
+    assert_eq!(toolkit.definitions()[0].name, "weather");
 }
 
 #[test]
@@ -242,7 +228,7 @@ impl Chat for Model {
 }
 
 #[test]
-fn chat_advertises_mcp_without_executing_it_and_refreshes_each_run() {
+fn chat_uses_prepared_mcp_definitions_without_rediscovery() {
     let (server, lists, calls) = server(Mode::Dynamic);
     let requests = Arc::new(Mutex::new(Vec::new()));
     let agent = agent::chat()
@@ -263,15 +249,15 @@ fn chat_advertises_mcp_without_executing_it_and_refreshes_each_run() {
             assert!(events.next().await.unwrap().is_ok());
         }
     });
-    assert_eq!(lists.load(Ordering::SeqCst), 2);
+    assert_eq!(lists.load(Ordering::SeqCst), 0);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
     let requests = requests.lock().unwrap();
-    assert_eq!(requests[0].tools[0].name, "weather_1");
-    assert_eq!(requests[1].tools[0].name, "weather_2");
+    assert_eq!(requests[0].tools[0].name, "weather");
+    assert_eq!(requests[1].tools[0].name, "weather");
 }
 
 #[test]
-fn react_discovers_once_and_preserves_mcp_success_or_direct_error_context() {
+fn react_uses_ready_mcp_tools_and_preserves_success_or_direct_error_context() {
     for (mode, expect_error) in [(Mode::Normal, false), (Mode::CallError, true)] {
         let (server, lists, calls) = server(mode);
         let requests = Arc::new(Mutex::new(Vec::new()));
@@ -293,62 +279,18 @@ fn react_discovers_once_and_preserves_mcp_success_or_direct_error_context() {
         });
         assert!(events.iter().all(Result::is_ok));
         assert_eq!(events.len(), 3);
-        assert_eq!(lists.load(Ordering::SeqCst), 1);
+        assert_eq!(lists.load(Ordering::SeqCst), 0);
         assert_eq!(calls.load(Ordering::SeqCst), 1);
         assert_eq!(requests.lock().unwrap().len(), 2);
     }
 }
 
 #[test]
-fn discovery_failure_invalid_schema_or_cancellation_prevents_model_work() {
-    for (mode, code) in [
-        (Mode::DiscoveryError, "UNAVAILABLE"),
-        (Mode::InvalidSchema, "INVALID_ARGUMENTS"),
-        (Mode::Cancel, "CANCELLED"),
-    ] {
-        let (server, lists, calls) = server(mode);
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let agent = agent::chat()
-            .model(Model {
-                requests: Arc::clone(&requests),
-                tools: false,
-                expect_error: false,
-            })
-            .toolkit(Toolkit::new().mcps(vec![server]))
-            .build()
-            .unwrap();
-        let result = block_on(agent.run(Input::default(), true, Cancellation::new()));
-        if code == "CANCELLED" {
-            // Agent cancellation closes the constructed run with Complete;
-            // the standalone Toolkit API still returns its direct error.
-            let events = block_on(result.unwrap().collect::<Vec<_>>());
-            assert!(
-                matches!(events.as_slice(), [Ok(Event::Complete { message, finish_reason: Some(reason), .. })]
-                if reason == "cancelled" && message.content.is_empty())
-            );
-        } else {
-            assert!(matches!(result, Err(ref error) if error.code == code));
-        }
-        assert_eq!(lists.load(Ordering::SeqCst), 1);
-        assert_eq!(calls.load(Ordering::SeqCst), 0);
-        assert!(requests.lock().unwrap().is_empty());
-    }
-}
-
-#[test]
-fn waiting_discovery_is_cancellable_and_precancellation_does_not_discover() {
-    let (server, lists, calls) = server(Mode::Pending);
+fn invalid_ready_tool_schema_is_rejected_before_dispatch() {
+    let (server, lists, calls) = server(Mode::InvalidSchema);
     let toolkit = Toolkit::new().mcps(vec![server]);
-    let cancellation = Cancellation::new();
-    let (result, ()) = block_on(async {
-        futures_util::join!(toolkit.execute(call(), &cancellation), async {
-            cancellation.cancel();
-        })
-    });
-    assert_eq!(result.unwrap_err().code, "CANCELLED");
-    assert_eq!(lists.load(Ordering::SeqCst), 1);
+    let error = block_on(toolkit.execute(call(), &Cancellation::new())).unwrap_err();
+    assert_eq!(error.code, "INVALID_ARGUMENTS");
+    assert_eq!(lists.load(Ordering::SeqCst), 0);
     assert_eq!(calls.load(Ordering::SeqCst), 0);
-    let result = block_on(toolkit.execute(call(), &cancellation));
-    assert_eq!(result.unwrap_err().code, "CANCELLED");
-    assert_eq!(lists.load(Ordering::SeqCst), 1);
 }

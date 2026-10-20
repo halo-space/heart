@@ -517,8 +517,9 @@ impl Server for Remote {
     fn definition(&self) -> &McpDefinition {
         &self.definition
     }
-    async fn list_tools(&self, _: &Cancellation) -> Result<Vec<ToolDefinition>, Error> {
-        Ok(vec![definition()])
+    fn tools(&self) -> &[ToolDefinition] {
+        static TOOLS: std::sync::OnceLock<Vec<ToolDefinition>> = std::sync::OnceLock::new();
+        TOOLS.get_or_init(|| vec![definition()])
     }
     async fn call(&self, _: Call, _: &Cancellation) -> Result<Message, Error> {
         self.log.lock().unwrap().push("mcp:call".into());

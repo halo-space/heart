@@ -1,7 +1,4 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicUsize, Ordering},
-};
+use std::sync::Arc;
 
 use elasticsearch::{Elasticsearch, http::transport::Transport};
 use futures_util::{StreamExt, stream};
@@ -73,7 +70,7 @@ impl Tool for LocalTool {
 
 struct Remote {
     definition: McpDefinition,
-    discoveries: Arc<AtomicUsize>,
+    tools: Vec<ToolDefinition>,
 }
 
 impl Server for Remote {
@@ -81,12 +78,8 @@ impl Server for Remote {
         &self.definition
     }
 
-    async fn list_tools(&self, _: &Cancellation) -> Result<Vec<ToolDefinition>, Error> {
-        self.discoveries.fetch_add(1, Ordering::SeqCst);
-        Ok(vec![definition(
-            "remote_search",
-            "Search the remote index.",
-        )])
+    fn tools(&self) -> &[ToolDefinition] {
+        &self.tools
     }
 
     async fn call(&self, _: Call, _: &Cancellation) -> Result<Message, Error> {
@@ -113,7 +106,6 @@ impl Chat for Model {
 
 #[tokio::test]
 async fn toolkit_provides_skill_catalog_and_all_tool_mcp_definitions_to_model() {
-    let discoveries = Arc::new(AtomicUsize::new(0));
     let requests = Arc::new(Mutex::new(Vec::new()));
     let toolkit = Toolkit::new()
         .tools(LocalTool(definition("weather", "Look up current weather.")))
@@ -122,7 +114,7 @@ async fn toolkit_provides_skill_catalog_and_all_tool_mcp_definitions_to_model() 
                 name: "remote_server".into(),
                 ..Default::default()
             },
-            discoveries: Arc::clone(&discoveries),
+            tools: vec![definition("remote_search", "Search the remote index.")],
         }])
         .skills([research()])
         .unwrap();
@@ -159,7 +151,6 @@ async fn toolkit_provides_skill_catalog_and_all_tool_mcp_definitions_to_model() 
     assert!(prompt.contains("research"));
     assert!(prompt.contains("Find and cite reliable sources."));
     assert!(prompt.contains("available Tools and MCP capabilities"));
-    assert_eq!(discoveries.load(Ordering::SeqCst), 1);
 }
 
 #[test]

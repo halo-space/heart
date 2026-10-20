@@ -111,7 +111,8 @@ where
 {
     pub fn build(self) -> Result<Agent<M>, Error> {
         // Reuse Toolkit's existing uniqueness validation before exposing any
-        // mounted capability. MCP discovery still happens in the Agent run.
+        // mounted capability. MCP servers are already connected and
+        // discovered before they reach the Toolkit.
         let toolkit = Toolkit::new().merge(self.workspace.unwrap_or_default())?;
         let inner = self.inner.toolkit(toolkit).build()?;
         Ok(Agent { inner })

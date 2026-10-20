@@ -81,7 +81,7 @@ impl Tool for Echo {
 
 struct Remote {
     definition: McpDefinition,
-    discoveries: Arc<AtomicUsize>,
+    tools: Vec<ToolDefinition>,
 }
 
 impl Server for Remote {
@@ -89,9 +89,8 @@ impl Server for Remote {
         &self.definition
     }
 
-    async fn list_tools(&self, _: &Cancellation) -> Result<Vec<ToolDefinition>, Error> {
-        self.discoveries.fetch_add(1, Ordering::SeqCst);
-        Ok(vec![definition("remote")])
+    fn tools(&self) -> &[ToolDefinition] {
+        &self.tools
     }
 
     async fn call(&self, _: Call, _: &Cancellation) -> Result<Message, Error> {
@@ -183,8 +182,7 @@ impl Drop for Directory {
 }
 
 #[tokio::test]
-async fn workspace_preserves_tools_mcps_and_skills_without_eager_discovery() {
-    let discoveries = Arc::new(AtomicUsize::new(0));
+async fn workspace_preserves_ready_tools_mcps_and_skills() {
     let toolkit = Toolkit::new()
         .tools(Echo(definition("echo")))
         .mcps([Remote {
@@ -192,7 +190,7 @@ async fn workspace_preserves_tools_mcps_and_skills_without_eager_discovery() {
                 name: "remote_server".into(),
                 ..Default::default()
             },
-            discoveries: Arc::clone(&discoveries),
+            tools: vec![definition("remote")],
         }])
         .skills([Research(SkillDefinition {
             name: "research".into(),
@@ -206,7 +204,6 @@ async fn workspace_preserves_tools_mcps_and_skills_without_eager_discovery() {
     assert_eq!(workspace.definition().mode, Mode::Local);
     assert!(workspace.definition().path.is_some());
     let toolkit = Toolkit::from(workspace);
-    assert_eq!(discoveries.load(Ordering::SeqCst), 0);
     let names: Vec<_> = toolkit
         .definitions()
         .into_iter()
@@ -216,6 +213,7 @@ async fn workspace_preserves_tools_mcps_and_skills_without_eager_discovery() {
         names,
         [
             "echo",
+            "remote",
             "workspace_read",
             "workspace_write",
             "workspace_list",
@@ -234,13 +232,11 @@ async fn workspace_preserves_tools_mcps_and_skills_without_eager_discovery() {
             .iter()
             .all(|definition| definition.name != "research")
     );
-    assert_eq!(discoveries.load(Ordering::SeqCst), 0);
     let (result, _) = toolkit
         .execute(call("remote", json!({})), &cancellation)
         .await
         .unwrap();
     assert_eq!(result.content[0].data["value"], "remote result");
-    assert_eq!(discoveries.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

@@ -262,15 +262,16 @@ fn mcp_and_workspace_are_explicit_adapters() {
             })
         }
 
-        async fn list_tools(
-            &self,
-            _cancellation: &Cancellation,
-        ) -> Result<Vec<halo_agents::tool::ToolDefinition>, halo_agents::mcp::Error> {
-            Ok(vec![halo_agents::tool::ToolDefinition {
-                name: "current_weather".into(),
-                description: "Read weather".into(),
-                parameters: serde_json::Map::from_iter([("type".into(), json!("object"))]),
-            }])
+        fn tools(&self) -> &[halo_agents::tool::ToolDefinition] {
+            static TOOLS: std::sync::OnceLock<Vec<halo_agents::tool::ToolDefinition>> =
+                std::sync::OnceLock::new();
+            TOOLS.get_or_init(|| {
+                vec![halo_agents::tool::ToolDefinition {
+                    name: "current_weather".into(),
+                    description: "Read weather".into(),
+                    parameters: serde_json::Map::from_iter([("type".into(), json!("object"))]),
+                }]
+            })
         }
 
         async fn call(
@@ -297,12 +298,7 @@ fn mcp_and_workspace_are_explicit_adapters() {
 
     let cancellation = Cancellation::new();
     assert_eq!(halo_agents::mcp::Server::definition(&Mcp).name, "weather");
-    assert_eq!(
-        block_on(halo_agents::mcp::Server::list_tools(&Mcp, &cancellation))
-            .unwrap()
-            .len(),
-        1
-    );
+    assert_eq!(halo_agents::mcp::Server::tools(&Mcp).len(), 1);
     assert_eq!(
         block_on(halo_agents::mcp::Server::call(
             &Mcp,

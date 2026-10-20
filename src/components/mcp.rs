@@ -22,10 +22,13 @@ pub struct Definition {
 pub trait Server: Send + Sync {
     fn definition(&self) -> &Definition;
 
-    fn list_tools(
-        &self,
-        cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Vec<ToolDefinition>, Error>> + Send;
+    /// Return the tools discovered during MCP server initialization.
+    ///
+    /// MCP discovery is deliberately synchronous at this boundary: an MCP
+    /// server is only attachable to a Toolkit after its connection and tool
+    /// listing have succeeded. Agents therefore never rediscover tools while
+    /// running.
+    fn tools(&self) -> &[ToolDefinition];
 
     fn call(
         &self,
