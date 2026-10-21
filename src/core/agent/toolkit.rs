@@ -7,7 +7,7 @@ use crate::Cancellation;
 use crate::components::agent::Error;
 use crate::components::mcp::Server;
 use crate::components::message::Message;
-use crate::components::skill::{Definition as SkillDefinition, Skill, Source};
+use crate::components::skill::{Definition as SkillDefinition, Loader, Skill};
 use crate::components::tool::{
     Call, Evaluation, Tool, ToolDefinition, prepare_call, validate_call,
 };
@@ -33,24 +33,24 @@ trait SkillEntry: Send + Sync {
     }
 }
 
-trait SkillSource: Send + Sync {
+trait SkillLoader: Send + Sync {
     fn discover(&self, cancellation: Cancellation) -> SkillDiscoveryFuture;
 }
 
-struct TypedSource<S> {
-    source: Arc<S>,
+struct TypedLoader<S> {
+    loader: Arc<S>,
 }
 
-impl<S: Source + 'static> SkillSource for TypedSource<S> {
+impl<S: Loader + 'static> SkillLoader for TypedLoader<S> {
     fn discover(&self, cancellation: Cancellation) -> SkillDiscoveryFuture {
-        let source = Arc::clone(&self.source);
+        let loader = Arc::clone(&self.loader);
         Box::pin(async move {
-            let definitions = source.list(&cancellation).await?;
+            let definitions = loader.list(&cancellation).await?;
             Ok(definitions
                 .into_iter()
                 .map(|definition| {
                     Arc::new(SourcedSkill {
-                        source: Arc::clone(&source),
+                        loader: Arc::clone(&loader),
                         definition,
                     }) as Arc<dyn SkillEntry>
                 })
@@ -60,25 +60,25 @@ impl<S: Source + 'static> SkillSource for TypedSource<S> {
 }
 
 struct SourcedSkill<S> {
-    source: Arc<S>,
+    loader: Arc<S>,
     definition: SkillDefinition,
 }
 
-impl<S: Source + 'static> SkillEntry for SourcedSkill<S> {
+impl<S: Loader + 'static> SkillEntry for SourcedSkill<S> {
     fn definition(&self) -> &SkillDefinition {
         &self.definition
     }
 
     fn read(&self, cancellation: Cancellation) -> SkillFuture {
-        let source = Arc::clone(&self.source);
+        let loader = Arc::clone(&self.loader);
         let name = self.definition.name.clone();
-        Box::pin(async move { source.read(&name, &cancellation).await })
+        Box::pin(async move { loader.read(&name, &cancellation).await })
     }
 
     fn read_resource(&self, path: String, cancellation: Cancellation) -> ResourceFuture {
-        let source = Arc::clone(&self.source);
+        let loader = Arc::clone(&self.loader);
         let name = self.definition.name.clone();
-        Box::pin(async move { source.read_resource(&name, &path, &cancellation).await })
+        Box::pin(async move { loader.read_resource(&name, &path, &cancellation).await })
     }
 }
 
@@ -307,11 +307,13 @@ where
 /// A Toolkit prepares all model-visible Tool and MCP definitions together with
 /// a Skill catalog. One shared `skill` Tool can return a selected Skill's full
 /// instructions; the other Tools and MCP capabilities remain independently
-/// defined and executable.
+/// defined and executable. Cloning a Toolkit shares mounted capabilities and
+/// Workspace-owned Skill loader caches; it does not copy or materialize files.
+#[derive(Clone)]
 pub struct Toolkit {
     entries: Vec<Arc<dyn Entry>>,
     skills: Vec<Arc<dyn SkillEntry>>,
-    skill_sources: Vec<Arc<dyn SkillSource>>,
+    skill_loaders: Vec<Arc<dyn SkillLoader>>,
     skill_reader: bool,
 }
 
@@ -371,7 +373,7 @@ impl Toolkit {
         Self {
             entries: Vec::new(),
             skills: Vec::new(),
-            skill_sources: Vec::new(),
+            skill_loaders: Vec::new(),
             skill_reader: false,
         }
     }
@@ -382,7 +384,7 @@ impl Toolkit {
     pub fn merge(mut self, other: Self) -> Result<Self, Error> {
         self.entries.extend(other.entries);
         self.skills.extend(other.skills);
-        self.skill_sources.extend(other.skill_sources);
+        self.skill_loaders.extend(other.skill_loaders);
         self.skill_reader |= other.skill_reader;
         self.validate_names(&self.entries)?;
         self.validate_skill_names()?;
@@ -439,18 +441,18 @@ impl Toolkit {
         Ok(self)
     }
 
-    /// Bind a Workspace-owned Skill source. Discovery and reading happen
+    /// Bind a Workspace-owned Skill loader. Discovery and reading happen
     /// asynchronously for each run; Toolkit never assumes local file paths.
-    pub(crate) fn skill_source<S: Source + 'static>(mut self, source: S) -> Self {
-        self.skill_sources.push(Arc::new(TypedSource {
-            source: Arc::new(source),
+    pub(crate) fn skill<S: Loader + 'static>(mut self, loader: S) -> Self {
+        self.skill_loaders.push(Arc::new(TypedLoader {
+            loader: Arc::new(loader),
         }));
         self
     }
 
-    pub(crate) fn retain_skill_sources(mut self, other: &Self) -> Self {
-        self.skill_sources
-            .extend(other.skill_sources.iter().cloned());
+    pub(crate) fn retain_skill_loaders(mut self, other: &Self) -> Self {
+        self.skill_loaders
+            .extend(other.skill_loaders.iter().cloned());
         self
     }
 
@@ -459,13 +461,13 @@ impl Toolkit {
         cancellation: &Cancellation,
     ) -> Result<Self, Error> {
         let mut skills = self.skills.clone();
-        for source in &self.skill_sources {
-            skills.extend(await_stage(source.discover(cancellation.clone()), cancellation).await?);
+        for loader in &self.skill_loaders {
+            skills.extend(await_stage(loader.discover(cancellation.clone()), cancellation).await?);
         }
         let view = Self {
             entries: self.entries.clone(),
             skills,
-            skill_sources: Vec::new(),
+            skill_loaders: Vec::new(),
             skill_reader: self.skill_reader,
         };
         view.validate_skill_names()?;
@@ -559,7 +561,7 @@ impl Toolkit {
         Ok(Self {
             entries,
             skills: discovered.skills,
-            skill_sources: Vec::new(),
+            skill_loaders: Vec::new(),
             skill_reader,
         })
     }

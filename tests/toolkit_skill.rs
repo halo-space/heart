@@ -8,7 +8,7 @@ use halo_agents::{
     event::Event,
     mcp::{Definition as McpDefinition, Server},
     model::chat::{Chat, Request},
-    skill::{Definition, Skill, Source},
+    skill::{Definition, Loader, Skill},
     tool::{Call, Tool, ToolDefinition},
 };
 use serde_json::json;
@@ -266,9 +266,46 @@ async fn local_workspace_discovers_skills_and_reads_adjacent_resources() {
     assert_eq!(error.code, "INVALID_ARGUMENTS");
 }
 
+#[tokio::test]
+async fn local_workspace_refreshes_shared_skill_snapshot_when_files_change() {
+    let directory = Directory::new();
+    let workspace = halo_agents::core::workspace::Local::new(&directory.0).unwrap();
+    let cancellation = Cancellation::new();
+    workspace
+        .write(
+            "skills/research/SKILL.md",
+            b"---\nname: research\ndescription: Research with sources.\n---\nVersion one.\n"
+                .to_vec(),
+            &cancellation,
+        )
+        .await
+        .unwrap();
+    let toolkit = Toolkit::from(workspace);
+
+    let (first, _) = toolkit
+        .execute(skill_call(None), &cancellation)
+        .await
+        .unwrap();
+    assert_eq!(first.values["instructions"], "Version one.\n");
+
+    // Simulate an application/editor update in the same Workspace. The
+    // loader keeps the previous parsed snapshot until its directory
+    // fingerprint changes, then atomically replaces it for later Agents.
+    std::fs::write(
+        directory.0.join("skills/research/SKILL.md"),
+        b"---\nname: research\ndescription: Research with sources.\n---\nVersion two.\n",
+    )
+    .unwrap();
+    let (second, _) = toolkit
+        .execute(skill_call(None), &cancellation)
+        .await
+        .unwrap();
+    assert_eq!(second.values["instructions"], "Version two.\n");
+}
+
 struct DatabaseSkills;
 
-impl Source for DatabaseSkills {
+impl Loader for DatabaseSkills {
     async fn list(&self, _: &Cancellation) -> Result<Vec<Definition>, Error> {
         Ok(vec![research().definition])
     }
@@ -290,11 +327,11 @@ impl Source for DatabaseSkills {
 }
 
 #[tokio::test]
-async fn server_workspace_uses_database_skill_source_without_file_paths() {
+async fn server_workspace_uses_database_skill_loader_without_file_paths() {
     let client = Elasticsearch::new(Transport::single_node("http://127.0.0.1:9200").unwrap());
     let workspace = halo_agents::core::workspace::es::new(client, "workspace")
         .unwrap()
-        .skill_source(DatabaseSkills)
+        .skill(DatabaseSkills)
         .toolkit(Toolkit::new());
     let toolkit = Toolkit::from(workspace);
     let (instructions, _) = toolkit

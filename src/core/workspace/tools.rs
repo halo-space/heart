@@ -6,17 +6,19 @@
 //! commands require an explicitly selected execution environment (configured
 //! Local Sandbox or Docker Workspace).
 
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 use tokio::sync::{RwLock, RwLockReadGuard};
 
 use serde_json::{Map, Value, json};
+use sha2::{Digest, Sha256};
 
 use super::{Docker, Local};
 use crate::components::message::{Message, Role};
 use crate::components::model::content::part::{Part, object as part_data};
-use crate::components::skill::{Definition as SkillDefinition, Skill as _, Source as SkillSource};
+use crate::components::skill::{Definition as SkillDefinition, Loader as SkillLoader, Skill as _};
 use crate::components::tool::{Call, Tool, ToolDefinition};
 use crate::core::agent::toolkit::Toolkit;
+use crate::core::operation::check;
 use crate::{Cancellation, Error};
 
 mod edit;
@@ -107,6 +109,35 @@ impl Files {
             Self::Docker(docker) => docker.command(input, cancellation).await,
         }
     }
+
+    /// Build a deterministic fingerprint for the complete Skills directory.
+    ///
+    /// The fingerprint is intentionally computed in the same Local/Docker
+    /// environment that owns the Workspace. It includes relative paths and
+    /// bytes (or Local file metadata), so a changed SKILL.md or resource
+    /// invalidates the shared cache, while an unchanged Workspace can reuse
+    /// its parsed Skill snapshot without rereading Local file contents.
+    async fn skill_fingerprint(&self, cancellation: &Cancellation) -> Result<String, Error> {
+        if let Self::Local(local) = self {
+            return local.skill_fingerprint(cancellation).await;
+        }
+        let mut paths = match self.list("skills", true, cancellation).await {
+            Ok(paths) => paths,
+            Err(error) if error.code == "NOT_FOUND" => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        paths.sort();
+        let mut hasher = Sha256::new();
+        for path in paths {
+            let bytes = self.read(&path, cancellation).await?;
+            hasher.update(path.as_bytes());
+            hasher.update([0]);
+            hasher.update((bytes.len() as u64).to_le_bytes());
+            hasher.update(bytes);
+            check(cancellation)?;
+        }
+        Ok(format!("sha256:{:x}", hasher.finalize()))
+    }
 }
 
 /// Bind the default file tools to one shared backend and the existing Toolkit.
@@ -119,8 +150,9 @@ pub(super) fn attach(workspace: Files, toolkit: Toolkit) -> Toolkit {
     let workspace = Arc::new(workspace);
     let access = Arc::new(RwLock::new(()));
     let toolkit = if discover_skills {
-        toolkit.skill_source(DirectorySkills {
+        toolkit.skill(DirectoryLoader {
             workspace: Arc::clone(&workspace),
+            cache: Arc::new(RwLock::new(None)),
         })
     } else {
         toolkit
@@ -160,63 +192,102 @@ pub(super) fn attach(workspace: Files, toolkit: Toolkit) -> Toolkit {
     }
 }
 
-/// Discover standard `skills/<name>/SKILL.md` directories in the same file
+/// Load standard `skills/<name>/SKILL.md` directories in the same file
 /// environment as the Workspace tools. No second host path is introduced for
 /// Docker, and resource reads remain confined by the Workspace path checks.
-struct DirectorySkills {
+struct DirectoryLoader {
     workspace: Arc<Files>,
+    /// Shared by every Agent assembled from this Workspace. A new Agent gets
+    /// an immutable prepared view, while subsequent Agents reuse the same
+    /// parsed snapshot until the backend fingerprint changes.
+    cache: Arc<RwLock<Option<DirectorySnapshot>>>,
 }
 
-impl DirectorySkills {
-    async fn load(
-        &self,
-        name: &str,
-        cancellation: &Cancellation,
-    ) -> Result<super::super::skill::Skill, Error> {
-        let path = format!("skills/{name}/SKILL.md");
-        let bytes = self.workspace.read(&path, cancellation).await?;
-        let markdown = std::str::from_utf8(&bytes)
-            .map_err(|_| Error::new("INVALID_ARGUMENTS", "Skill document must be UTF-8"))?;
-        let skill = super::super::skill::Skill::from_markdown(markdown)?;
-        if skill.definition().name != name {
-            return Err(Error::new(
-                "INVALID_ARGUMENTS",
-                "Skill name must match its directory",
-            ));
+impl DirectoryLoader {
+    async fn snapshot(&self, cancellation: &Cancellation) -> Result<DirectorySnapshot, Error> {
+        let fingerprint = self.workspace.skill_fingerprint(cancellation).await?;
+        let mut cache = self.cache.write().await;
+        if let Some(snapshot) = cache.as_ref()
+            && snapshot.fingerprint == fingerprint
+        {
+            return Ok(snapshot.clone());
         }
-        Ok(skill)
-    }
-}
 
-impl SkillSource for DirectorySkills {
-    async fn list(&self, cancellation: &Cancellation) -> Result<Vec<SkillDefinition>, Error> {
-        let paths = match self.workspace.list("skills", false, cancellation).await {
+        let mut paths = match self.workspace.list("skills", true, cancellation).await {
             Ok(paths) => paths,
-            Err(error) if error.code == "NOT_FOUND" => return Ok(Vec::new()),
+            Err(error) if error.code == "NOT_FOUND" => Vec::new(),
             Err(error) => return Err(error),
         };
-        let mut definitions = Vec::new();
+        paths.sort();
+        let mut skills = BTreeMap::new();
         for path in paths {
-            let Some(name) = path.strip_prefix("skills/") else {
+            let Some(name) = path
+                .strip_prefix("skills/")
+                .and_then(|path| path.strip_suffix("/SKILL.md"))
+            else {
                 continue;
             };
             if name.is_empty() || name.contains('/') {
                 continue;
             }
-            match self.load(name, cancellation).await {
-                Ok(skill) => definitions.push(skill.definition().clone()),
-                Err(error) if error.code == "NOT_FOUND" => continue,
-                Err(error) => return Err(error),
+            let bytes = self.workspace.read(&path, cancellation).await?;
+            let markdown = std::str::from_utf8(&bytes)
+                .map_err(|_| Error::new("INVALID_ARGUMENTS", "Skill document must be UTF-8"))?;
+            let skill = super::super::skill::Skill::from_markdown(markdown)?;
+            if skill.definition().name != name {
+                return Err(Error::new(
+                    "INVALID_ARGUMENTS",
+                    "Skill name must match its directory",
+                ));
             }
+            let instructions = skill.read(cancellation).await?;
+            skills.insert(
+                name.to_owned(),
+                CachedSkill {
+                    definition: skill.definition().clone(),
+                    instructions,
+                },
+            );
         }
-        Ok(definitions)
+        let snapshot = DirectorySnapshot {
+            fingerprint,
+            skills,
+        };
+        *cache = Some(snapshot.clone());
+        Ok(snapshot)
+    }
+}
+
+#[derive(Clone)]
+struct CachedSkill {
+    definition: SkillDefinition,
+    instructions: String,
+}
+
+#[derive(Clone)]
+struct DirectorySnapshot {
+    fingerprint: String,
+    skills: BTreeMap<String, CachedSkill>,
+}
+
+impl SkillLoader for DirectoryLoader {
+    async fn list(&self, cancellation: &Cancellation) -> Result<Vec<SkillDefinition>, Error> {
+        Ok(self
+            .snapshot(cancellation)
+            .await?
+            .skills
+            .values()
+            .map(|skill| skill.definition.clone())
+            .collect())
     }
 
     async fn read(&self, name: &str, cancellation: &Cancellation) -> Result<String, Error> {
-        self.load(name, cancellation)
+        self.snapshot(cancellation)
             .await?
-            .read(cancellation)
-            .await
+            .skills
+            .get(name)
+            .map(|skill| skill.instructions.clone())
+            .ok_or_else(|| Error::new("NOT_FOUND", "skill is not registered"))
     }
 
     async fn read_resource(
@@ -226,8 +297,11 @@ impl SkillSource for DirectorySkills {
         cancellation: &Cancellation,
     ) -> Result<Vec<u8>, Error> {
         super::validate_path(path)?;
-        // Validate the Skill directory before reading a related resource.
-        self.load(name, cancellation).await?;
+        // Validate the Skill directory before reading a related resource and
+        // refresh the shared snapshot if the directory fingerprint changed.
+        if !self.snapshot(cancellation).await?.skills.contains_key(name) {
+            return Err(Error::new("NOT_FOUND", "skill is not registered"));
+        }
         self.workspace
             .read(&format!("skills/{name}/{path}"), cancellation)
             .await

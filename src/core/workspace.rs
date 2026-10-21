@@ -1,6 +1,7 @@
 //! Resource persistence, not hostile-process isolation. A local root must be
 //! trusted against concurrent symlink/path replacement by other processes.
 
+use sha2::{Digest, Sha256};
 use std::{
     path::{Component, Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
@@ -103,6 +104,42 @@ impl Local {
             }
         }
         Ok(target)
+    }
+
+    /// Return a cheap Workspace-local fingerprint for Skill files. It uses
+    /// path, size and modification time rather than rereading every byte on
+    /// every Agent run; a changed file still invalidates the shared Skill
+    /// snapshot before it is parsed again.
+    pub(super) async fn skill_fingerprint(
+        &self,
+        cancellation: &Cancellation,
+    ) -> Result<String, Error> {
+        let mut paths = match self.list("skills", true, cancellation).await {
+            Ok(paths) => paths,
+            Err(error) if error.code == "NOT_FOUND" => Vec::new(),
+            Err(error) => return Err(error),
+        };
+        paths.sort();
+        let mut hasher = Sha256::new();
+        for path in paths {
+            let target = self.resolve(&path, cancellation).await?;
+            let metadata = tokio::fs::metadata(target).await.map_err(io_error)?;
+            let modified = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
+            hasher.update(path.as_bytes());
+            hasher.update([0]);
+            hasher.update(metadata.len().to_le_bytes());
+            hasher.update(modified.map_or(0, |time| time.as_secs()).to_le_bytes());
+            hasher.update(
+                modified
+                    .map_or(0, |time| u64::from(time.subsec_nanos()))
+                    .to_le_bytes(),
+            );
+            crate::core::operation::check(cancellation)?;
+        }
+        Ok(format!("metadata-sha256:{:x}", hasher.finalize()))
     }
 }
 

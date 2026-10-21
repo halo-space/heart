@@ -55,15 +55,15 @@ impl Workspace {
     /// Stores the application's existing capabilities. Tools are bound when
     /// assembling the Toolkit, without discovery or database access.
     pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
-        self.toolkit = toolkit.retain_skill_sources(&self.toolkit);
+        self.toolkit = toolkit.retain_skill_loaders(&self.toolkit);
         self
     }
 
-    /// Use an application-backed Skill source (for example, records in a
-    /// database). The source reads instructions and associated resources by
+    /// Use an application-backed Skill loader (for example, records in a
+    /// database). The loader reads instructions and associated resources by
     /// Skill name; Server Workspace does not expose fictional file paths.
-    pub fn skill_source<S: crate::skill::Source + 'static>(mut self, source: S) -> Self {
-        self.toolkit = self.toolkit.skill_source(source);
+    pub fn skill<S: crate::skill::Loader + 'static>(mut self, loader: S) -> Self {
+        self.toolkit = self.toolkit.skill(loader);
         self
     }
 }

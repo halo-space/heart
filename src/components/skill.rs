@@ -24,11 +24,11 @@ pub trait Skill: Send + Sync {
     ) -> impl std::future::Future<Output = Result<String, Error>> + Send;
 }
 
-/// A Workspace-owned Skill source. Local workspaces may discover directories;
-/// server workspaces can implement the same contract using database records.
-/// Names returned by `list` identify the exact instructions and resources
-/// subsequently read during this Agent run.
-pub trait Source: Send + Sync {
+/// A Skill loader owned by a Workspace or another application backend. Local
+/// loaders may discover directories; server loaders can implement the same
+/// contract using database records. Names returned by `list` identify the
+/// exact instructions and resources subsequently read during this Agent run.
+pub trait Loader: Send + Sync {
     fn list(
         &self,
         cancellation: &Cancellation,
