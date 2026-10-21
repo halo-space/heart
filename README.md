@@ -180,7 +180,7 @@ async fn main() -> Result<(), Error> {
 Local Workspace 会在运行时自动发现 `skills/<name>/SKILL.md`；Docker Workspace 可通过
 `.with_skill_discovery()` 显式开启容器内发现，避免默认在工具权限检查前启动容器。
 Toolkit 将名称和描述提供给模型，并通过共用的 `skill` 工具按需读取说明或该 Skill 的相对文本资源。
-Server Workspace 可通过 `.skill_source(source)` 接入应用提供的数据库 Skill 来源，不要求本地文件路径：
+Server Workspace 可通过 `.skills(loader)` 接入应用提供的数据库 Skill Loader，不要求本地文件路径：
 
 ```rust
 let workspace = core::workspace::Local::new("./workspace")?
@@ -238,7 +238,7 @@ Workspace 的存储模式区分本地文件（Local）与数据库（Server）�
 继续复用 Toolkit、Permission 和 Message/Error。公共 Workspace 只保留 definition()，文件方法归具体 Local；
 不再提供公开的 Workspace InMemory 实现或兼容别名；文件测试使用临时 Local 目录。
 这不影响 Memory、Checkpoint 等其他组件的内存实现。
-ES 后端已提供 `core::workspace::es::new(client, index)?.toolkit(toolkit)`，client 为应用初始化的官方 `elasticsearch::Elasticsearch`。
+ES 后端已提供 `core::workspace::es::new(client, index)?.skills(loader).toolkit(toolkit)`，client 为应用初始化的官方 `elasticsearch::Elasticsearch`。
 当前接入官方 9.1.0-alpha.1 客户端，已在单节点 Elasticsearch 9.5.4 上完成真实基础操作验收；其他主版本、TLS/鉴权及多节点故障场景不在这次验收范围。
 不增加 config.filter/config.schema，不内置固定字段补齐策略。参数校验沿工具 Schema，业务校验和补齐可用用户 Hook。
 索引和 mapping 由应用准备；四个工具及 Toolkit/Harness 接线均经过协议与真实集群回归。

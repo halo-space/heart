@@ -331,7 +331,7 @@ async fn server_workspace_uses_database_skill_loader_without_file_paths() {
     let client = Elasticsearch::new(Transport::single_node("http://127.0.0.1:9200").unwrap());
     let workspace = halo_agents::core::workspace::es::new(client, "workspace")
         .unwrap()
-        .skill(DatabaseSkills)
+        .skills(DatabaseSkills)
         .toolkit(Toolkit::new());
     let toolkit = Toolkit::from(workspace);
     let (instructions, _) = toolkit

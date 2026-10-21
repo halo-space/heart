@@ -62,7 +62,7 @@ impl Workspace {
     /// Use an application-backed Skill loader (for example, records in a
     /// database). The loader reads instructions and associated resources by
     /// Skill name; Server Workspace does not expose fictional file paths.
-    pub fn skill<S: crate::skill::Loader + 'static>(mut self, loader: S) -> Self {
+    pub fn skills<S: crate::skill::Loader + 'static>(mut self, loader: S) -> Self {
         self.toolkit = self.toolkit.skill(loader);
         self
     }
