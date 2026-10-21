@@ -6,7 +6,7 @@ use crate::core::lifecycle::{Methods, Phase, advance};
 use crate::runtime::agent::{node::Step, reply};
 use crate::{Cancellation, Error, Message, tool::Call};
 
-use super::toolkit::Toolkit;
+use super::mounts::Capabilities;
 use super::{
     access::{self, Access},
     hooks::Hooks,
@@ -112,7 +112,7 @@ impl From<Error> for Failure {
 /// storage, slots, retry loop or public Context.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn tool_prepare<K, KF, P, PF>(
-    toolkit: &Toolkit,
+    capabilities: &Capabilities,
     access: &Access,
     hooks: &Hooks,
     metadata: &Map<String, Value>,
@@ -148,7 +148,7 @@ where
     let approval = reply::consume_restore(interaction, saved, cancellation)
         .await
         .map_err(|error| Failure::Policy(error, Box::new(call.clone())))?;
-    toolkit.validate(call).map_err(Failure::Tool)?;
+    capabilities.validate(call).map_err(Failure::Tool)?;
     let approval = approval.as_ref();
     authorize(
         access,
@@ -167,7 +167,7 @@ where
         phase,
         call.clone(),
         |call| async {
-            toolkit
+            capabilities
                 .prepare_call(call, cancellation)
                 .await
                 .map_err(Failure::Tool)
@@ -237,7 +237,7 @@ where
 }
 
 pub(super) async fn tool_call<K, KF>(
-    toolkit: &Toolkit,
+    capabilities: &Capabilities,
     saved: &Step,
     input: Call,
     interaction: Option<reply::Run>,
@@ -278,7 +278,7 @@ where
                         call.clone(),
                         step,
                         id_fn,
-                        toolkit.invoke(call, cancellation),
+                        capabilities.invoke(call, cancellation),
                     )
                     .await
                     .map(|(_, message)| message)
@@ -296,7 +296,7 @@ where
                         call.clone(),
                         step,
                         id_fn,
-                        toolkit.finish(call, message, cancellation),
+                        capabilities.finish(call, message, cancellation),
                     )
                     .await
                     .map(|(_, message)| message)

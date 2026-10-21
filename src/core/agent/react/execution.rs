@@ -1,5 +1,6 @@
 //! Private task dispatch for ReAct. The graph remains runtime::agent state;
-//! tasks reuse the Agent's model/Toolkit loop rather than looking up names.
+//! tasks reuse the Agent's model and mounted Tool/MCP/Skill loop rather than
+//! looking up names.
 use super::*;
 use crate::components::model::content::part::object as part_data;
 use crate::runtime::agent::{graph::Start, node::Status};
@@ -279,7 +280,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 waits,
                 stream: state.stream,
                 model: state.model.clone(),
-                toolkit: state.toolkit.clone(),
+                capabilities: state.capabilities.clone(),
                 subagents: state.subagents.clone(),
                 max_iters: state.max_iters,
                 max_concurrency: state.max_concurrency,

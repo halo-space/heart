@@ -113,7 +113,7 @@ impl Plan {
         self.validate_structure()
     }
 
-    /// Validate task fields and DAG structure only. Task names are not Toolkit
+    /// Validate task fields and DAG structure only. Task names are not Capabilities
     /// dispatch instructions; tool selection belongs to Agent execution.
     pub(crate) fn validate_structure(&self) -> Result<(), Error> {
         if self.version == 0 {

@@ -10,8 +10,9 @@ use tokio::sync::Mutex;
 use super::tools;
 use crate::{
     Cancellation, Error,
+    components::{mcp::Server, skill::Skill},
     core::{
-        agent::toolkit::Toolkit,
+        agent::mounts::{Capabilities, ToolInputs},
         operation::{cancellable, check},
         sandbox::docker as sandbox,
     },
@@ -46,7 +47,7 @@ impl Default for Config {
 pub struct Docker {
     backend: Box<Backend>,
     definition: Definition,
-    toolkit: Toolkit,
+    capabilities: Capabilities,
     pub(super) discover_skills: bool,
 }
 
@@ -93,7 +94,7 @@ impl Docker {
                 config,
                 state: Mutex::new(State::New),
             }),
-            toolkit: Toolkit::new(),
+            capabilities: Capabilities::new(),
             discover_skills: false,
         })
     }
@@ -106,9 +107,40 @@ impl Docker {
         self
     }
 
-    pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
-        self.toolkit = toolkit;
+    #[doc(hidden)]
+    pub fn capabilities(mut self, capabilities: Capabilities) -> Self {
+        self.capabilities = capabilities;
         self
+    }
+
+    /// Mount application Tools on this Workspace.
+    #[allow(private_bounds)]
+    pub fn tools<I>(mut self, tools: I) -> Self
+    where
+        I: ToolInputs,
+    {
+        self.capabilities = self.capabilities.tools(tools);
+        self
+    }
+
+    /// Mount already connected and discovered MCP servers on this Workspace.
+    #[allow(private_bounds)]
+    pub fn mcps<S>(mut self, servers: impl IntoIterator<Item = S>) -> Self
+    where
+        S: Server + 'static,
+    {
+        self.capabilities = self.capabilities.mcps(servers);
+        self
+    }
+
+    /// Mount in-process Skills on this Workspace.
+    #[allow(private_bounds)]
+    pub fn skills<S>(mut self, skills: impl IntoIterator<Item = S>) -> Result<Self, Error>
+    where
+        S: Skill + 'static,
+    {
+        self.capabilities = self.capabilities.skills(skills)?;
+        Ok(self)
     }
 
     pub async fn list(
@@ -195,10 +227,10 @@ impl Workspace for Docker {
     }
 }
 
-impl From<Docker> for Toolkit {
+impl From<Docker> for Capabilities {
     fn from(mut workspace: Docker) -> Self {
-        let toolkit = std::mem::take(&mut workspace.toolkit);
-        tools::attach(tools::Files::Docker(workspace), toolkit)
+        let capabilities = std::mem::take(&mut workspace.capabilities);
+        tools::attach(tools::Files::Docker(workspace), capabilities)
     }
 }
 

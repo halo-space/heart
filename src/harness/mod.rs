@@ -1,4 +1,4 @@
-//! Opinionated high-level Agent assembly built from Core capabilities.
+//! Opinionated high-level Agent assembly built from Core mounts.
 //!
 //! Harness supplies long-task defaults and uses a configured Workspace. It
 //! delegates execution to the Core ReAct Agent and the Agent Runtime; it does
@@ -9,7 +9,7 @@ use crate::components::agent::{Agent as AgentContract, Error, Input};
 use crate::components::evaluation::Evaluator;
 use crate::components::model::chat::Chat;
 use crate::components::workspace::Workspace;
-use crate::core::agent::{react, subagent::SubAgent, toolkit::Toolkit};
+use crate::core::agent::{mounts::Capabilities, react, subagent::SubAgent};
 
 const LONG_TASK_PROMPT: &str = "You are a capable agent for multi-step tasks. Break substantial work into clear steps, use the available tools to gather evidence and make changes, verify important results, and report what is complete and what remains. Do not claim that an action succeeded unless its result confirms it.";
 
@@ -25,7 +25,7 @@ pub fn builder() -> Builder {
 /// configurable; the Harness only adds its long-task defaults and composition.
 pub struct Builder<M = ()> {
     inner: react::Builder<M>,
-    workspace: Option<Toolkit>,
+    workspace: Option<Capabilities>,
 }
 
 impl<M> Builder<M> {
@@ -42,12 +42,13 @@ impl<M> Builder<M> {
         self
     }
 
-    /// Use a Workspace with its mounted Toolkit and backend-specific tools.
+    /// Use a Workspace with its mounted capabilities and backend-specific tools.
     /// Local file adapters and Server database tools keep their own schemas;
     /// Harness does not require file methods or construct a second dispatcher.
+    #[allow(private_bounds)]
     pub fn workspace<W>(mut self, workspace: W) -> Self
     where
-        W: Workspace + Into<Toolkit> + 'static,
+        W: Workspace + Into<Capabilities> + 'static,
     {
         self.workspace = Some(workspace.into());
         self
@@ -110,11 +111,8 @@ where
     M: Chat + 'static,
 {
     pub fn build(self) -> Result<Agent<M>, Error> {
-        // Reuse Toolkit's existing uniqueness validation before exposing any
-        // mounted capability. MCP servers are already connected and
-        // discovered before they reach the Toolkit.
-        let toolkit = Toolkit::new().merge(self.workspace.unwrap_or_default())?;
-        let inner = self.inner.toolkit(toolkit).build()?;
+        let capabilities = Capabilities::new().merge(self.workspace.unwrap_or_default())?;
+        let inner = self.inner.capabilities(capabilities).build()?;
         Ok(Agent { inner })
     }
 }

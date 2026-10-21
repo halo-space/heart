@@ -25,9 +25,9 @@ pub trait Server: Send + Sync {
     /// Return the tools discovered during MCP server initialization.
     ///
     /// MCP discovery is deliberately synchronous at this boundary: an MCP
-    /// server is only attachable to a Toolkit after its connection and tool
-    /// listing have succeeded. Agents therefore never rediscover tools while
-    /// running.
+    /// server is only attachable to an Agent or Workspace after its connection
+    /// and tool listing have succeeded. Agents therefore never rediscover
+    /// tools while running.
     fn tools(&self) -> &[ToolDefinition];
 
     fn call(

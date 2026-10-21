@@ -12,7 +12,9 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::tools::{definition, tool_message};
-use crate::core::{agent::toolkit::Toolkit, operation::cancellable};
+use crate::components::mcp::Server;
+use crate::core::agent::mounts::ToolInputs;
+use crate::core::{agent::mounts::Capabilities, operation::cancellable};
 use crate::tool::{Call, Tool, ToolDefinition};
 use crate::workspace::{Definition, Mode, Workspace as Contract};
 use crate::{Cancellation, Error, Message};
@@ -41,21 +43,43 @@ pub fn new(client: Elasticsearch, index: impl Into<String>) -> Result<Workspace,
             path: None,
             metadata: Map::new(),
         },
-        toolkit: Toolkit::new(),
+        capabilities: Capabilities::new(),
     })
 }
 
 pub struct Workspace {
     backend: Arc<Backend>,
     definition: Definition,
-    toolkit: Toolkit,
+    capabilities: Capabilities,
 }
 
 impl Workspace {
-    /// Stores the application's existing capabilities. Tools are bound when
-    /// assembling the Toolkit, without discovery or database access.
-    pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
-        self.toolkit = toolkit.retain_skill_loaders(&self.toolkit);
+    /// Stores the application's existing capabilities without discovery or
+    /// database access. Public callers normally use the Workspace `tools`,
+    /// `mcps` and `skills` methods.
+    #[doc(hidden)]
+    pub fn capabilities(mut self, capabilities: Capabilities) -> Self {
+        self.capabilities = capabilities.retain_skill_loaders(&self.capabilities);
+        self
+    }
+
+    /// Mount application Tools on this Server Workspace.
+    #[allow(private_bounds)]
+    pub fn tools<I>(mut self, tools: I) -> Self
+    where
+        I: ToolInputs,
+    {
+        self.capabilities = self.capabilities.tools(tools);
+        self
+    }
+
+    /// Mount already connected and discovered MCP servers on this Workspace.
+    #[allow(private_bounds)]
+    pub fn mcps<S>(mut self, servers: impl IntoIterator<Item = S>) -> Self
+    where
+        S: Server + 'static,
+    {
+        self.capabilities = self.capabilities.mcps(servers);
         self
     }
 
@@ -63,7 +87,7 @@ impl Workspace {
     /// database). The loader reads instructions and associated resources by
     /// Skill name; Server Workspace does not expose fictional file paths.
     pub fn skills<S: crate::skill::Loader + 'static>(mut self, loader: S) -> Self {
-        self.toolkit = self.toolkit.skill(loader);
+        self.capabilities = self.capabilities.skill(loader);
         self
     }
 }
@@ -74,17 +98,17 @@ impl Contract for Workspace {
     }
 }
 
-impl From<Workspace> for Toolkit {
+impl From<Workspace> for Capabilities {
     fn from(workspace: Workspace) -> Self {
-        let mut toolkit = workspace.toolkit;
+        let mut capabilities = workspace.capabilities;
         for kind in [Kind::Write, Kind::Read, Kind::Update, Kind::Delete] {
-            toolkit = toolkit.tools(Operation {
+            capabilities = capabilities.tools(Operation {
                 backend: Arc::clone(&workspace.backend),
                 kind,
                 definition: kind.definition(),
             });
         }
-        toolkit
+        capabilities
     }
 }
 

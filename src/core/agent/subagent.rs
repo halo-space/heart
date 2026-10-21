@@ -42,7 +42,8 @@ where
 
 /// One explicitly registered Agent that another Agent may delegate to.
 ///
-/// SubAgents are distinct from [`crate::agent::toolkit::Toolkit`]: Toolkit
+/// SubAgents are distinct from the internal Agent mount dispatcher: the
+/// dispatcher contains Tool/MCP/Skill entries, while this retains a complete Agent
 /// contains Tool/MCP/Skill capabilities, while this retains a complete Agent
 /// run boundary and its event stream.
 #[derive(Clone)]

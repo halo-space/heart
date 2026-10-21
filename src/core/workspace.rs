@@ -11,10 +11,11 @@ use tokio::io::AsyncWriteExt;
 
 use crate::{
     Cancellation, Error,
+    components::{mcp::Server, skill::Skill},
     workspace::{Definition, Mode, Workspace},
 };
 
-use super::agent::toolkit::Toolkit;
+use super::agent::mounts::{Capabilities, ToolInputs};
 use super::operation::{cancellable, check};
 
 pub mod docker;
@@ -36,7 +37,7 @@ impl Drop for Temporary {
 pub struct Local {
     root: PathBuf,
     definition: Definition,
-    toolkit: Toolkit,
+    capabilities: Capabilities,
     sandbox: Option<crate::sandbox::Local>,
 }
 
@@ -62,16 +63,49 @@ impl Local {
                 path: Some(path),
                 metadata: Default::default(),
             },
-            toolkit: Toolkit::new(),
+            capabilities: Capabilities::new(),
             sandbox: None,
         })
     }
 
     /// Mount the application's Tools, MCP servers and Skills in this workspace.
     /// This only stores configuration; it performs no tool calls or discovery.
-    pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
-        self.toolkit = toolkit;
+    #[doc(hidden)]
+    pub fn capabilities(mut self, capabilities: Capabilities) -> Self {
+        self.capabilities = capabilities;
         self
+    }
+
+    /// Mount application Tools on this Workspace. Standard local file tools
+    /// are added when the Workspace is consumed by an Agent or Harness.
+    #[allow(private_bounds)]
+    pub fn tools<I>(mut self, tools: I) -> Self
+    where
+        I: ToolInputs,
+    {
+        self.capabilities = self.capabilities.tools(tools);
+        self
+    }
+
+    /// Mount already connected and discovered MCP servers on this Workspace.
+    #[allow(private_bounds)]
+    pub fn mcps<S>(mut self, servers: impl IntoIterator<Item = S>) -> Self
+    where
+        S: Server + 'static,
+    {
+        self.capabilities = self.capabilities.mcps(servers);
+        self
+    }
+
+    /// Mount in-process Skills on this Workspace. Local directory discovery
+    /// remains owned by the Workspace backend and is cached there.
+    #[allow(private_bounds)]
+    pub fn skills<S>(mut self, skills: impl IntoIterator<Item = S>) -> Result<Self, Error>
+    where
+        S: Skill + 'static,
+    {
+        self.capabilities = self.capabilities.skills(skills)?;
+        Ok(self)
     }
 
     /// Explicitly select host command execution, automatically binding its
@@ -143,10 +177,10 @@ impl Local {
     }
 }
 
-impl From<Local> for Toolkit {
+impl From<Local> for Capabilities {
     fn from(mut workspace: Local) -> Self {
-        let toolkit = std::mem::take(&mut workspace.toolkit);
-        tools::attach(workspace.into(), toolkit)
+        let capabilities = std::mem::take(&mut workspace.capabilities);
+        tools::attach(workspace.into(), capabilities)
     }
 }
 

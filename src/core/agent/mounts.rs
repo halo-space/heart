@@ -1,3 +1,8 @@
+//! Internal mounted Tool/MCP/Skill dispatch used by the concrete Agent
+//! implementations. This module is deliberately hidden from the public
+//! component contract; callers use the Agent and Workspace `.tools(...)`,
+//! `.mcps(...)` and `.skills(...)` methods.
+
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
@@ -302,35 +307,40 @@ where
     }
 }
 
-/// Agent assembly-level collection of heterogeneous Tools, MCP servers and Skills.
+/// Internal Agent mount table for heterogeneous Tools, MCP servers and Skills.
 ///
-/// A Toolkit prepares all model-visible Tool and MCP definitions together with
-/// a Skill catalog. One shared `skill` Tool can return a selected Skill's full
-/// instructions; the other Tools and MCP capabilities remain independently
-/// defined and executable. Cloning a Toolkit shares mounted capabilities and
-/// Workspace-owned Skill loader caches; it does not copy or materialize files.
+/// This type is an implementation detail. It is never the public way to
+/// configure an Agent or Workspace. Public callers mount each concrete kind
+/// with `.tools(...)`, `.mcps(...)` and `.skills(...)`; this table only keeps
+/// their dispatch entries together while an Agent runs. One shared `skill`
+/// Tool can return a selected Skill's full instructions; the other Tools and
+/// MCP servers remain independently defined and executable. Cloning the table
+/// shares mounted entries and Workspace-owned Skill loader caches; it does not
+/// copy or materialize files.
 #[derive(Clone)]
-pub struct Toolkit {
+#[doc(hidden)]
+pub struct Capabilities {
     entries: Vec<Arc<dyn Entry>>,
     skills: Vec<Arc<dyn SkillEntry>>,
     skill_loaders: Vec<Arc<dyn SkillLoader>>,
     skill_reader: bool,
 }
 
-/// Inputs accepted by [`Toolkit::tools`].  The public entry point is plural
+/// Internal inputs accepted by the public Agent/Workspace `.tools(...)`
+/// methods. The public entry point is plural
 /// even when one concrete Tool is mounted; this keeps the assembly API
 /// consistent for one or many Tools.
 #[doc(hidden)]
 pub trait ToolInputs {
-    fn append_to(self, toolkit: &mut Toolkit);
+    fn append_to(self, capabilities: &mut Capabilities);
 }
 
 impl<T> ToolInputs for T
 where
     T: Tool + 'static,
 {
-    fn append_to(self, toolkit: &mut Toolkit) {
-        toolkit.entries.push(Arc::new(TypedEntry {
+    fn append_to(self, capabilities: &mut Capabilities) {
+        capabilities.entries.push(Arc::new(TypedEntry {
             tool: Arc::new(self),
         }));
     }
@@ -340,9 +350,9 @@ impl<T, const N: usize> ToolInputs for [T; N]
 where
     T: Tool + 'static,
 {
-    fn append_to(self, toolkit: &mut Toolkit) {
+    fn append_to(self, capabilities: &mut Capabilities) {
         for tool in self {
-            toolkit.entries.push(Arc::new(TypedEntry {
+            capabilities.entries.push(Arc::new(TypedEntry {
                 tool: Arc::new(tool),
             }));
         }
@@ -353,22 +363,22 @@ impl<T> ToolInputs for Vec<T>
 where
     T: Tool + 'static,
 {
-    fn append_to(self, toolkit: &mut Toolkit) {
+    fn append_to(self, capabilities: &mut Capabilities) {
         for tool in self {
-            toolkit.entries.push(Arc::new(TypedEntry {
+            capabilities.entries.push(Arc::new(TypedEntry {
                 tool: Arc::new(tool),
             }));
         }
     }
 }
 
-impl Default for Toolkit {
+impl Default for Capabilities {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Toolkit {
+impl Capabilities {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
@@ -380,7 +390,7 @@ impl Toolkit {
 
     /// Combine two independently assembled capability sets. Local Tool and
     /// Skill names and already-discovered MCP Tool names are checked when the
-    /// Toolkit is prepared for a run.
+    /// The capability set is prepared for a run.
     pub fn merge(mut self, other: Self) -> Result<Self, Error> {
         self.entries.extend(other.entries);
         self.skills.extend(other.skills);
@@ -442,7 +452,8 @@ impl Toolkit {
     }
 
     /// Bind a Workspace-owned Skill loader. Discovery and reading happen
-    /// asynchronously for each run; Toolkit never assumes local file paths.
+    /// asynchronously for each run; the capability set never assumes local
+    /// file paths.
     pub(crate) fn skill<S: Loader + 'static>(mut self, loader: S) -> Self {
         self.skill_loaders.push(Arc::new(TypedLoader {
             loader: Arc::new(loader),
@@ -506,7 +517,7 @@ impl Toolkit {
             if !names.insert(name) {
                 return Err(Error::new(
                     "INVALID_ARGUMENTS",
-                    "Tool names must be unique across Toolkit capabilities",
+                    "Tool names must be unique across mounted Tools and MCP servers",
                 ));
             }
         }
@@ -642,7 +653,7 @@ impl Toolkit {
                         .await
                         .map(|(_, message)| message)
                 },
-                // Standalone Toolkit convenience calls have no Runtime owner.
+                // Standalone capability calls have no Runtime owner.
                 // They do not persist recovery facts or attempt stage retries.
                 commit: |_: Phase, _: &Call, _: Option<&Message>| async { Ok(()) },
             },
@@ -734,13 +745,13 @@ async fn await_stage<T>(
         if cancellation.is_cancelled() {
             return std::task::Poll::Ready(Err(Error::new(
                 "CANCELLED",
-                "Toolkit operation cancelled",
+                "Capability operation cancelled",
             )));
         }
         match future.as_mut().poll(context) {
-            std::task::Poll::Ready(_) if cancellation.is_cancelled() => {
-                std::task::Poll::Ready(Err(Error::new("CANCELLED", "Toolkit operation cancelled")))
-            }
+            std::task::Poll::Ready(_) if cancellation.is_cancelled() => std::task::Poll::Ready(
+                Err(Error::new("CANCELLED", "Capability operation cancelled")),
+            ),
             result => result,
         }
     })
@@ -754,11 +765,6 @@ fn escape_prompt_text(value: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
         .replace('\'', "&#39;")
-}
-
-/// Construct an empty Agent Toolkit.
-pub fn new() -> Toolkit {
-    Toolkit::new()
 }
 
 #[cfg(test)]
@@ -812,12 +818,12 @@ mod tests {
     }
 
     #[test]
-    fn toolkit_exports_definitions_and_executes_by_name() {
+    fn mounted_capabilities_exports_definitions_and_executes_by_name() {
         let called = Arc::new(AtomicBool::new(false));
-        let toolkit = new().tools(weather(called.clone()));
-        assert_eq!(toolkit.len(), 1);
-        assert_eq!(toolkit.definitions()[0].name, "weather");
-        let (message, evaluation) = block_on(toolkit.execute(
+        let capabilities = Capabilities::new().tools(weather(called.clone()));
+        assert_eq!(capabilities.len(), 1);
+        assert_eq!(capabilities.definitions()[0].name, "weather");
+        let (message, evaluation) = block_on(capabilities.execute(
             Call {
                 call_id: "call_1".into(),
                 name: "weather".into(),
@@ -832,10 +838,10 @@ mod tests {
     }
 
     #[test]
-    fn toolkit_rejects_unknown_tools_without_invoking_registered_tools() {
+    fn mounted_capabilities_rejects_unknown_tools_without_invoking_registered_tools() {
         let called = Arc::new(AtomicBool::new(false));
-        let toolkit = new().tools(weather(called.clone()));
-        let error = block_on(toolkit.execute(
+        let capabilities = Capabilities::new().tools(weather(called.clone()));
+        let error = block_on(capabilities.execute(
             Call {
                 call_id: "call_1".into(),
                 name: "unknown".into(),
@@ -859,12 +865,12 @@ mod tests {
             "Use sources.".into(),
         )
         .unwrap();
-        let toolkit = new()
+        let capabilities = Capabilities::new()
             .tools(weather(Arc::new(AtomicBool::new(false))))
             .skills(vec![skill])
             .unwrap();
         let cancellation = Cancellation::new();
-        let prepared = block_on(toolkit.prepared(&cancellation)).unwrap();
+        let prepared = block_on(capabilities.prepared(&cancellation)).unwrap();
         let definitions = prepared.definitions();
         assert_eq!(definitions.len(), 2);
         assert_eq!(definitions[0].name, "weather");
@@ -930,13 +936,13 @@ mod tests {
     fn caller_can_retry_only_eval_using_the_retained_call_and_result() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let evaluations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let toolkit = new().tools(RetryingEval {
+        let capabilities = Capabilities::new().tools(RetryingEval {
             definition: weather(Arc::new(AtomicBool::new(false))).definition,
             calls: calls.clone(),
             evaluations: evaluations.clone(),
         });
         let cancellation = Cancellation::new();
-        let (call, message) = block_on(toolkit.call(
+        let (call, message) = block_on(capabilities.call(
             Call {
                 call_id: "call_1".into(),
                 name: "weather".into(),
@@ -946,12 +952,12 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(
-            block_on(toolkit.evaluate(&call, &message, &cancellation))
+            block_on(capabilities.evaluate(&call, &message, &cancellation))
                 .unwrap_err()
                 .code,
             "TIMEOUT"
         );
-        let result = block_on(toolkit.evaluate(&call, &message, &cancellation)).unwrap();
+        let result = block_on(capabilities.evaluate(&call, &message, &cancellation)).unwrap();
         assert!(!result.passed);
         assert!(result.feedback.is_some());
         assert_eq!(calls.load(Ordering::SeqCst), 1);

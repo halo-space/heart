@@ -14,7 +14,7 @@ src/
 └── harness/      DeepAgents 式的高阶 Agent 组装能力，不是 Agent/Workflow 的通用中间层
 ```
 
-`components` 只定义契约边界；Agent 与 Workflow 是两类独立能力，各自使用自己的 Runtime，并共同复用 `core` 中适用的能力。基础 Agent 实现与 DeepAgents 式高阶 Harness 都组合 Core 能力。Harness 是面向长任务 Agent 的场景化组装与默认策略层，不承接所有 Agent 和 Workflow 共用的生命周期逻辑，也不另造执行 Runtime。当前 Harness 基于 Core ReAct，提供长任务默认提示词，以及可选 Workspace 的文件工具；迭代上限沿用 Core ReAct 默认值并可单独配置。Memory、Checkpoint、Permission、Middleware、Toolkit 和 SubAgent 仍复用现有能力。
+`components` 只定义契约边界；Agent 与 Workflow 是两类独立能力，各自使用自己的 Runtime，并共同复用 `core` 中适用的能力。基础 Agent 实现与 DeepAgents 式高阶 Harness 都组合 Core 能力。Harness 是面向长任务 Agent 的场景化组装与默认策略层，不承接所有 Agent 和 Workflow 共用的生命周期逻辑，也不另造执行 Runtime。当前 Harness 基于 Core ReAct，提供长任务默认提示词，以及可选 Workspace 的文件工具；迭代上限沿用 Core ReAct 默认值并可单独配置。Memory、Checkpoint、Permission、Middleware 和 SubAgent 仍复用现有能力。
 
 ## 快速开始
 
@@ -96,7 +96,7 @@ async fn main() -> Result<(), Error> {
 这里没有配置 Memory 或 Checkpoint，因此不要求业务身份字段。配置 Memory 后，应用先创建 Session，
 再在 `Input.metadata` 中提供 `tenant_id/user_id/agent_id/session_id/chat_id`。配置 Checkpoint 时需要
 `chat_id`；默认内存 Checkpoint 只在本进程有效，进程重启恢复需要调用方提供持久化后端。
-ReAct 使用同一 `Input` 和事件流入口，通过 `agent::react()` 构造，并按需配置 `.toolkit(...)` 等组件。
+ReAct 使用同一 `Input` 和事件流入口，通过 `agent::react()` 构造，并按需配置 `.tools(...)`、`.mcps(...)`、`.skills(...)` 等能力。
 
 `run(input, true, cancellation)` 交付实际产生的 Delta 和 Complete，`false` 仅交付 Complete；
 不会把多次模型或工具调用合成一个 Complete，也不会给只返回 Complete 的模型伪造 Delta。
@@ -176,15 +176,17 @@ async fn main() -> Result<(), Error> {
 
 ## Workspace 与 Harness
 
-自定义 Tool、MCP 和 Skill 可先组装进 Toolkit，再挂载到 Workspace；Harness 接收配置好的 Workspace。
+自定义 Tool、MCP 和 Skill 直接挂载到 Workspace；Harness 接收配置好的 Workspace。Agent 也可以直接用 `.tools(...)`、`.mcps(...)`、`.skills(...)` 挂载能力。
 Local Workspace 会在运行时自动发现 `skills/<name>/SKILL.md`；Docker Workspace 可通过
 `.with_skill_discovery()` 显式开启容器内发现，避免默认在工具权限检查前启动容器。
-Toolkit 将名称和描述提供给模型，并通过共用的 `skill` 工具按需读取说明或该 Skill 的相对文本资源。
+Workspace 将名称和描述提供给模型，并通过共用的 `skill` 工具按需读取说明或该 Skill 的相对文本资源。
 Server Workspace 可通过 `.skills(loader)` 接入应用提供的数据库 Skill Loader，不要求本地文件路径：
 
 ```rust
 let workspace = core::workspace::Local::new("./workspace")?
-    .toolkit(toolkit);
+    .tools(custom_tool)
+    .mcps(servers)
+    .skills(skills)?;
 
 let agent = harness::builder()
     .model(chat)
@@ -192,14 +194,16 @@ let agent = harness::builder()
     .build()?;
 ```
 
-`./workspace` 是应用准备的已有目录，`toolkit` 和 `chat` 是已经配置的实例。
+`./workspace` 是应用准备的已有目录，`custom_tool`、`servers`、`skills` 和 `chat` 是应用已经配置的实例。
 Local 默认自带列目录、读取、写入、精确编辑、Glob、Grep 和单文件删除七种基础工具，无需逐个挂载。
-命令能力只有显式配置执行环境后才自动提供；与自定义工具共用同一个 Toolkit、权限和执行机制：
+命令能力只有显式配置执行环境后才自动提供；与自定义工具共用同一个 Workspace、权限和执行机制：
 
 ```rust
 let workspace = core::workspace::Local::new("./workspace")?
     .sandbox(halo_agents::sandbox::Local::default()) // 可选；不配置则没有命令工具
-    .toolkit(toolkit); // 可选的自定义 Tool、MCP、Skill
+    .tools(custom_tool)
+    .mcps(servers)
+    .skills(skills)?;
 ```
 
 命令与文件工具使用同一目录，默认文件工具的删除不递归删除目录。Local 命令具有宿主机权限，不是隔离沙箱；
@@ -216,7 +220,10 @@ let workspace = core::workspace::Docker::new(core::workspace::docker::Config {
     workdir: "/workspace".into(),
     host_workdir: None, // 需要挂载时显式提供已有宿主机目录
     env: Default::default(),
-})?.toolkit(toolkit);
+})?
+    .tools(custom_tool)
+    .mcps(servers)
+    .skills(skills)?;
 ```
 
 同样交给 Harness 的 `.workspace(workspace)`，自动提供七种文件工具与命令工具，不逐个挂载。
@@ -235,13 +242,13 @@ let workspace = core::workspace::Docker::new(core::workspace::docker::Config {
 
 Workspace 的存储模式区分本地文件（Local）与数据库（Server）。Server 直接操作数据库，不模拟文件路径；
 默认只提供 write(data)、read(id)、update(id, data)、delete(id) 四个基础工具，复杂查询由用户实现自己的 Tool，
-继续复用 Toolkit、Permission 和 Message/Error。公共 Workspace 只保留 definition()，文件方法归具体 Local；
+继续复用 Permission 和 Message/Error。公共 Workspace 只保留 definition()，文件方法归具体 Local；
 不再提供公开的 Workspace InMemory 实现或兼容别名；文件测试使用临时 Local 目录。
 这不影响 Memory、Checkpoint 等其他组件的内存实现。
-ES 后端已提供 `core::workspace::es::new(client, index)?.skills(loader).toolkit(toolkit)`，client 为应用初始化的官方 `elasticsearch::Elasticsearch`。
+ES 后端已提供 `core::workspace::es::new(client, index)?.skills(loader).tools(custom_tool).mcps(servers)`，client 为应用初始化的官方 `elasticsearch::Elasticsearch`。
 当前接入官方 9.1.0-alpha.1 客户端，已在单节点 Elasticsearch 9.5.4 上完成真实基础操作验收；其他主版本、TLS/鉴权及多节点故障场景不在这次验收范围。
 不增加 config.filter/config.schema，不内置固定字段补齐策略。参数校验沿工具 Schema，业务校验和补齐可用用户 Hook。
-索引和 mapping 由应用准备；四个工具及 Toolkit/Harness 接线均经过协议与真实集群回归。
+索引和 mapping 由应用准备；四个工具及 Workspace/Harness 接线均经过协议与真实集群回归。
 write/update 先检查索引存在；write 使用 `_create` 防覆盖，再通过实时 GET 返回实际落库记录。
 update 不 upsert，delete 物理删除；仅 `doc_as_upsert=false` 不能阻止 ES 为缺失索引自动建空索引，因此更新同样保留存在检查。
 工具内部不自动重试；请求发出后的取消/连接中断不代表写入回滚。若需严格禁止并发删索引后的自动重建，应由应用配置 ES 权限/自动创建策略。

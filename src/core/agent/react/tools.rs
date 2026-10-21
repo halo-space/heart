@@ -10,7 +10,7 @@ pub(super) fn restore<M: Chat>(state: &mut ReActState<M>) -> Result<(), Error> {
             && matches!(step.stage.as_deref(), Some("call" | "after" | "eval"))
             && let Some(call) = &step.call
         {
-            state.toolkit.validate(call)?;
+            state.capabilities.validate(call)?;
         }
     }
     let pending =
@@ -82,7 +82,7 @@ pub(super) fn continue_step<M: Chat + 'static>(
             } else {
                 step.status = "running".into();
                 step.error = None;
-                let toolkit = state.toolkit.clone();
+                let capabilities = state.capabilities.clone();
                 let cancellation = state.cancellation.clone();
                 let slots = state.tool_slots.clone();
                 state.active_tools.push(Box::pin(async move {
@@ -92,7 +92,9 @@ pub(super) fn continue_step<M: Chat + 'static>(
                                 .acquire_owned()
                                 .await
                                 .map_err(|_| Error::new("CANCELLED", "tool capacity closed"))?;
-                            toolkit.evaluate(&effective, &business, &cancellation).await
+                            capabilities
+                                .evaluate(&effective, &business, &cancellation)
+                                .await
                         },
                         &cancellation,
                     )

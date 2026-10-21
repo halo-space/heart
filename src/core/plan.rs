@@ -7,7 +7,7 @@ use crate::{Cancellation, Messages, agent::Input, message::Role};
 
 const INSTRUCTION: &str = "Return only a complete JSON Agent plan with version, nodes and edges. \
 nodes is an object keyed by unique logical node IDs; each value has only name and objective. \
-Here name is the task name, not a direct Tool/MCP/Skill invocation. The Agent decides whether and how to use its Toolkit while completing the task. \
+Here name is the task name, not a direct Tool/MCP/Skill invocation. The Agent decides whether and how to use its mounted Tools, MCP servers and Skills while completing the task. \
 edges contains only {from,to} references to existing logical nodes. \
 Return a valid DAG: no self-edges, duplicate edges or cycles. \
 An initial plan and a replanned plan both use this full structure, never a patch. \
@@ -63,7 +63,7 @@ pub(crate) fn decode_plan(message: &crate::Message) -> Result<Plan, Error> {
 }
 
 impl<C: Chat> Planner<C> {
-    /// Construction performs no I/O. Toolkit selection belongs to the Agent
+    /// Construction performs no I/O. Tool, MCP and Skill selection belongs to the Agent
     /// loop that executes each planned task.
     pub fn new(chat: C, request: Request) -> Result<Self, Error> {
         let request = super::structured::prepare(request, INSTRUCTION)?;

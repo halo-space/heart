@@ -17,7 +17,7 @@ use crate::components::message::{Message, Role};
 use crate::components::model::content::part::{Part, object as part_data};
 use crate::components::skill::{Definition as SkillDefinition, Loader as SkillLoader, Skill as _};
 use crate::components::tool::{Call, Tool, ToolDefinition};
-use crate::core::agent::toolkit::Toolkit;
+use crate::core::agent::mounts::Capabilities;
 use crate::core::operation::check;
 use crate::{Cancellation, Error};
 
@@ -140,8 +140,8 @@ impl Files {
     }
 }
 
-/// Bind the default file tools to one shared backend and the existing Toolkit.
-pub(super) fn attach(workspace: Files, toolkit: Toolkit) -> Toolkit {
+/// Bind the default file tools to one shared backend and the existing capability set.
+pub(super) fn attach(workspace: Files, capabilities: Capabilities) -> Capabilities {
     let command_enabled = workspace.command_enabled();
     let discover_skills = match &workspace {
         Files::Local(_) => true,
@@ -149,15 +149,15 @@ pub(super) fn attach(workspace: Files, toolkit: Toolkit) -> Toolkit {
     };
     let workspace = Arc::new(workspace);
     let access = Arc::new(RwLock::new(()));
-    let toolkit = if discover_skills {
-        toolkit.skill(DirectoryLoader {
+    let capabilities = if discover_skills {
+        capabilities.skill(DirectoryLoader {
             workspace: Arc::clone(&workspace),
             cache: Arc::new(RwLock::new(None)),
         })
     } else {
-        toolkit
+        capabilities
     };
-    let toolkit = toolkit
+    let capabilities = capabilities
         .tools(Read {
             workspace: Arc::clone(&workspace),
             access: Arc::clone(&access),
@@ -186,9 +186,9 @@ pub(super) fn attach(workspace: Files, toolkit: Toolkit) -> Toolkit {
             Arc::clone(&access),
         ));
     if command_enabled {
-        toolkit.tools(operations::Command::new(workspace, access))
+        capabilities.tools(operations::Command::new(workspace, access))
     } else {
-        toolkit
+        capabilities
     }
 }
 

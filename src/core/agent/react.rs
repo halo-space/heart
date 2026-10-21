@@ -24,11 +24,12 @@ use crate::components::message::{Message, Messages, Role};
 use crate::components::model::chat::{Chat, Request, ToolChoice};
 use crate::components::model::content::part::{Part, object as part_data};
 use crate::components::tool::{Call, Evaluation as ToolEvaluation, ToolDefinition, validate_call};
+use crate::components::{mcp::Server, skill::Skill};
 use crate::core::agent::access::Access;
 use crate::core::agent::hooks::{Hooks, cancellable};
+use crate::core::agent::mounts::{Capabilities, ToolInputs};
 use crate::core::agent::subagent::SubAgent;
 use crate::core::agent::subagent::{Failure as SubAgentFailure, Progress as SubAgentProgress};
-use crate::core::agent::toolkit::Toolkit;
 use crate::core::memory::history::{History, Run};
 use crate::runtime::agent::checkpoint::{Backend, invalid as invalid_checkpoint};
 use crate::runtime::agent::graph::Graph;
@@ -48,7 +49,7 @@ type CheckpointSave = Backend;
 fn plan_definition() -> ToolDefinition {
     ToolDefinition {
         name: "plan".into(),
-        description: "Create or update a complete task plan for the original user query. Choose this when the task or system instructions call for planning. The plan describes tasks; the Agent decides how to use its Toolkit while executing them. This creates a plan, not execution results.".into(),
+        description: "Create or update a complete task plan for the original user query. Choose this when the task or system instructions call for planning. The plan describes tasks; the Agent decides how to use its mounted capabilities while executing them. This creates a plan, not execution results.".into(),
         parameters: serde_json::from_value(json!({"type":"object","properties":{},"additionalProperties":false})).expect("static plan Schema is an object"),
     }
 }
@@ -57,7 +58,7 @@ fn plan_definition() -> ToolDefinition {
 pub struct Builder<M = ()> {
     model: Option<M>,
     system_prompt: Option<String>,
-    toolkit: Toolkit,
+    capabilities: Capabilities,
     subagents: Vec<SubAgent>,
     max_iters: usize,
     max_concurrency: usize,
@@ -73,7 +74,7 @@ pub fn builder() -> Builder {
     Builder {
         model: None,
         system_prompt: None,
-        toolkit: Toolkit::new(),
+        capabilities: Capabilities::new(),
         subagents: Vec::new(),
         max_iters: 20,
         max_concurrency: 100,
@@ -91,7 +92,7 @@ impl<M> Builder<M> {
         Builder {
             model: Some(model),
             system_prompt: self.system_prompt,
-            toolkit: self.toolkit,
+            capabilities: self.capabilities,
             subagents: self.subagents,
             max_iters: self.max_iters,
             max_concurrency: self.max_concurrency,
@@ -109,13 +110,44 @@ impl<M> Builder<M> {
         self
     }
 
-    pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
-        self.toolkit = toolkit;
+    #[doc(hidden)]
+    pub fn capabilities(mut self, capabilities: Capabilities) -> Self {
+        self.capabilities = capabilities;
         self
     }
 
+    /// Mount application Tools directly on this Agent.
+    #[allow(private_bounds)]
+    pub fn tools<I>(mut self, tools: I) -> Self
+    where
+        I: ToolInputs,
+    {
+        self.capabilities = self.capabilities.tools(tools);
+        self
+    }
+
+    /// Mount already connected and discovered MCP servers on this Agent.
+    #[allow(private_bounds)]
+    pub fn mcps<S>(mut self, servers: impl IntoIterator<Item = S>) -> Self
+    where
+        S: Server + 'static,
+    {
+        self.capabilities = self.capabilities.mcps(servers);
+        self
+    }
+
+    /// Mount in-process Skills on this Agent.
+    #[allow(private_bounds)]
+    pub fn skills<S>(mut self, skills: impl IntoIterator<Item = S>) -> Result<Self, Error>
+    where
+        S: Skill + 'static,
+    {
+        self.capabilities = self.capabilities.skills(skills)?;
+        Ok(self)
+    }
+
     /// Register the heterogeneous Agent set available to the built-in
-    /// `agent_spawn` delegation path. SubAgents are not Toolkit entries.
+    /// `agent_spawn` delegation path. SubAgents are not Capabilities entries.
     pub fn subagents(mut self, subagents: impl IntoIterator<Item = SubAgent>) -> Self {
         self.subagents.extend(subagents);
         self
@@ -216,7 +248,7 @@ where
             ));
         }
         self.history.validate()?;
-        if self.toolkit.capability_names().contains("plan") {
+        if self.capabilities.capability_names().contains("plan") {
             return Err(Error::new(
                 "INVALID_ARGUMENTS",
                 "plan is reserved for the built-in Planner",
@@ -227,7 +259,7 @@ where
             replies: Default::default(),
             model: std::sync::Arc::new(model),
             system_prompt: self.system_prompt,
-            toolkit: std::sync::Arc::new(self.toolkit),
+            capabilities: std::sync::Arc::new(self.capabilities),
             subagents: std::sync::Arc::new(self.subagents),
             max_iters: self.max_iters,
             max_concurrency: self.max_concurrency,
@@ -245,7 +277,7 @@ pub struct Agent<M> {
     replies: crate::runtime::agent::reply::Hub,
     model: std::sync::Arc<M>,
     system_prompt: Option<String>,
-    toolkit: std::sync::Arc<Toolkit>,
+    capabilities: std::sync::Arc<Capabilities>,
     subagents: std::sync::Arc<Vec<SubAgent>>,
     max_iters: usize,
     max_concurrency: usize,
@@ -377,14 +409,17 @@ where
             })
             .transpose()?
             .unwrap_or_else(|| input.clone());
-        let discovered_toolkit = self.toolkit.with_discovered_skills(&cancellation).await;
+        let discovered_mounted_capabilities = self
+            .capabilities
+            .with_discovered_skills(&cancellation)
+            .await;
         let mut preparation = match &restored {
             Some(snapshot) => crate::runtime::agent::preparation::State::restore(snapshot)?,
             None => Some(crate::runtime::agent::preparation::State::new(
                 original.clone(),
-                discovered_toolkit.as_ref().map_or_else(
+                discovered_mounted_capabilities.as_ref().map_or_else(
                     |_| self.system_prompt.clone(),
-                    |toolkit| toolkit.system_prompt(self.system_prompt.clone()),
+                    |capabilities| capabilities.system_prompt(self.system_prompt.clone()),
                 ),
             )),
         };
@@ -426,23 +461,23 @@ where
             } else {
                 run = history.resume(original.clone(), &cancellation).await?;
             }
-            let toolkit = discovered_toolkit
+            let capabilities = discovered_mounted_capabilities
                 .as_ref()
                 .map_err(Clone::clone)?
                 .prepared(&cancellation)
                 .await?;
-            if toolkit.capability_names().contains("plan") {
+            if capabilities.capability_names().contains("plan") {
                 return Err(Error::new(
                     "INVALID_ARGUMENTS",
                     "plan is reserved for the built-in Planner",
                 ));
             }
-            Ok::<_, Error>(toolkit)
+            Ok::<_, Error>(capabilities)
         }
         .await;
-        let (toolkit, preparation_error) = match prepared {
-            Ok(toolkit) => (toolkit, None),
-            Err(error) => (Toolkit::new(), Some(error)),
+        let (capabilities, preparation_error) = match prepared {
+            Ok(capabilities) => (capabilities, None),
+            Err(error) => (Capabilities::new(), Some(error)),
         };
         let prepared_messages = messages.clone();
         let metadata = preparation
@@ -461,7 +496,7 @@ where
             waits: Vec::new(),
             stream,
             model: std::sync::Arc::clone(&self.model),
-            toolkit: std::sync::Arc::new(toolkit),
+            capabilities: std::sync::Arc::new(capabilities),
             subagents: self.subagents.clone(),
             max_iters: self.max_iters,
             max_concurrency: self.max_concurrency,
@@ -611,7 +646,7 @@ struct ReActState<M: Chat> {
     waits: Vec<crate::runtime::agent::wait::Wait>,
     stream: bool,
     model: std::sync::Arc<M>,
-    toolkit: std::sync::Arc<Toolkit>,
+    capabilities: std::sync::Arc<Capabilities>,
     subagents: std::sync::Arc<Vec<SubAgent>>,
     max_iters: usize,
     max_concurrency: usize,
@@ -715,7 +750,7 @@ struct PendingSubAgent {
 struct ToolExecution {
     interaction: Option<crate::runtime::agent::reply::Run>,
     id_fn: Option<fn() -> i64>,
-    toolkit: std::sync::Arc<Toolkit>,
+    capabilities: std::sync::Arc<Capabilities>,
     hooks: Hooks,
     access: Access,
     metadata: Map<String, Value>,
@@ -724,7 +759,7 @@ struct ToolExecution {
 
 async fn prepare_tool(state: &ToolExecution, call: &Call, saved: &Step) -> Result<Call, Failure> {
     Box::pin(super::lifecycle::tool_prepare(
-        &state.toolkit,
+        &state.capabilities,
         &state.access,
         &state.hooks,
         &state.metadata,
@@ -757,7 +792,7 @@ async fn execute_prepared_tool(
     saved: Step,
 ) -> Result<(Call, Message), Error> {
     super::lifecycle::tool_call(
-        &state.toolkit,
+        &state.capabilities,
         &saved,
         call,
         state.interaction.clone(),
@@ -1604,7 +1639,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
             let execution = ToolExecution {
                 interaction: state.interaction.clone(),
                 id_fn: state.id_fn,
-                toolkit: state.toolkit.clone(),
+                capabilities: state.capabilities.clone(),
                 hooks: state.hooks.clone(),
                 access: state.access.clone(),
                 metadata: state.metadata.clone(),
@@ -1854,13 +1889,13 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     let message = match *result {
                         Ok((effective_call, business)) => {
                             tools::called(&mut state.steps, &effective_call, &business);
-                            let toolkit = state.toolkit.clone();
+                            let capabilities = state.capabilities.clone();
                             let cancellation = state.cancellation.clone();
                             let evaluation_message = business.clone();
                             // Keep this lifecycle's slot occupied through eval,
                             // but publish the real call/after result first.
                             state.active_tools.push(Box::pin(async move {
-                                let result = toolkit
+                                let result = capabilities
                                     .evaluate(&effective_call, &evaluation_message, &cancellation)
                                     .await;
                                 drop(permit);
@@ -2465,9 +2500,9 @@ async fn next_react_event_inner<M: Chat + 'static>(
             request
         } else {
             let mut tools = if state.is_plan_task {
-                state.toolkit.definitions()
+                state.capabilities.definitions()
             } else {
-                let mut tools = state.toolkit.definitions();
+                let mut tools = state.capabilities.definitions();
                 tools.push(plan_definition());
                 if !state.subagents.is_empty() {
                     tools.push(state.subagents[0].definition());
@@ -3919,7 +3954,7 @@ mod tests {
                 calls: model_calls.clone(),
                 require_tool_error: false,
             })
-            .toolkit(Toolkit::new().tools(EvalFailingTool {
+            .capabilities(Capabilities::new().tools(EvalFailingTool {
                 inner: WeatherTool {
                     calls: tool_calls.clone(),
                     definition: ToolDefinition {
@@ -3994,8 +4029,8 @@ mod tests {
             .model(EvalFeedbackChat {
                 calls: model_calls.clone(),
             })
-            .toolkit(
-                Toolkit::new().tools(EvalRejectingTool {
+            .capabilities(
+                Capabilities::new().tools(EvalRejectingTool {
                     inner: WeatherTool {
                         calls: tool_calls.clone(),
                         definition: ToolDefinition {
@@ -4044,7 +4079,7 @@ mod tests {
     fn public_react_entry_runs_tool_then_final_model_call() {
         let model_calls = Arc::new(Mutex::new(0));
         let tool_calls = Arc::new(Mutex::new(0));
-        let toolkit = Toolkit::new().tools(WeatherTool {
+        let capabilities = Capabilities::new().tools(WeatherTool {
             calls: tool_calls.clone(),
             definition: ToolDefinition {
                 name: "weather".into(),
@@ -4061,7 +4096,7 @@ mod tests {
                 calls: model_calls.clone(),
                 require_tool_error: false,
             })
-            .toolkit(toolkit)
+            .capabilities(capabilities)
             .with_max_iters(2)
             .build()
             .expect("react agent build");
@@ -4102,8 +4137,8 @@ mod tests {
                 require_tool_error: false,
             })
             .with_max_iters(1)
-            .toolkit(
-                Toolkit::new().tools(WeatherTool {
+            .capabilities(
+                Capabilities::new().tools(WeatherTool {
                     calls: Arc::new(Mutex::new(0)),
                     definition: ToolDefinition {
                         name: "weather".into(),
@@ -4137,8 +4172,8 @@ mod tests {
                 calls: Arc::new(Mutex::new(0)),
                 require_tool_error: true,
             })
-            .toolkit(
-                Toolkit::new().tools(FailingTool {
+            .capabilities(
+                Capabilities::new().tools(FailingTool {
                     definition: ToolDefinition {
                         name: "weather".into(),
                         description: "lookup weather".into(),
