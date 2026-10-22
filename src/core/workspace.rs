@@ -140,10 +140,13 @@ impl Local {
         Ok(target)
     }
 
-    /// Return a cheap Workspace-local fingerprint for Skill files. It uses
-    /// path, size and modification time rather than rereading every byte on
-    /// every Agent run; a changed file still invalidates the shared Skill
-    /// snapshot before it is parsed again.
+    /// Return a content fingerprint for the complete local Skill tree.
+    ///
+    /// Skill files can be replaced without changing their size or the
+    /// filesystem timestamp resolution available to the process. Hashing the
+    /// bytes makes cache invalidation depend on the actual Workspace content,
+    /// matching the Docker-backed loader and preventing an Agent from using a
+    /// stale Skill after an in-place update.
     pub(super) async fn skill_fingerprint(
         &self,
         cancellation: &Cancellation,
@@ -156,24 +159,14 @@ impl Local {
         paths.sort();
         let mut hasher = Sha256::new();
         for path in paths {
-            let target = self.resolve(&path, cancellation).await?;
-            let metadata = tokio::fs::metadata(target).await.map_err(io_error)?;
-            let modified = metadata
-                .modified()
-                .ok()
-                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok());
+            let bytes = self.read(&path, cancellation).await?;
             hasher.update(path.as_bytes());
             hasher.update([0]);
-            hasher.update(metadata.len().to_le_bytes());
-            hasher.update(modified.map_or(0, |time| time.as_secs()).to_le_bytes());
-            hasher.update(
-                modified
-                    .map_or(0, |time| u64::from(time.subsec_nanos()))
-                    .to_le_bytes(),
-            );
+            hasher.update((bytes.len() as u64).to_le_bytes());
+            hasher.update(bytes);
             crate::core::operation::check(cancellation)?;
         }
-        Ok(format!("metadata-sha256:{:x}", hasher.finalize()))
+        Ok(format!("sha256:{:x}", hasher.finalize()))
     }
 }
 
