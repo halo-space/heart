@@ -392,13 +392,18 @@ impl Toolkit {
     /// Skill names and already-discovered MCP Tool names are checked when the
     /// The capability set is prepared for a run.
     pub fn merge(mut self, other: Self) -> Result<Self, Error> {
+        self = self.append(other);
+        self.validate_names(&self.entries)?;
+        self.validate_skill_names()?;
+        Ok(self)
+    }
+
+    pub(crate) fn append(mut self, other: Self) -> Self {
         self.entries.extend(other.entries);
         self.skills.extend(other.skills);
         self.skill_loaders.extend(other.skill_loaders);
         self.skill_reader |= other.skill_reader;
-        self.validate_names(&self.entries)?;
-        self.validate_skill_names()?;
-        Ok(self)
+        self
     }
 
     /// Add one or more Tools. Repeated calls may add different concrete Tool
@@ -458,12 +463,6 @@ impl Toolkit {
         self.skill_loaders.push(Arc::new(TypedLoader {
             loader: Arc::new(loader),
         }));
-        self
-    }
-
-    pub(crate) fn retain_skill_loaders(mut self, other: &Self) -> Self {
-        self.skill_loaders
-            .extend(other.skill_loaders.iter().cloned());
         self
     }
 

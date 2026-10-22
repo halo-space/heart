@@ -72,7 +72,7 @@ impl Local {
     /// This only stores configuration; it performs no tool calls or discovery.
     #[doc(hidden)]
     pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
-        self.capabilities = toolkit;
+        self.capabilities = self.capabilities.append(toolkit);
         self
     }
 

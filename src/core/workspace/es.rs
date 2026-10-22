@@ -59,7 +59,7 @@ impl Workspace {
     /// `mcps` and `skills` methods.
     #[doc(hidden)]
     pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
-        self.capabilities = self.capabilities.retain_skill_loaders(&toolkit);
+        self.capabilities = self.capabilities.append(toolkit);
         self
     }
 
