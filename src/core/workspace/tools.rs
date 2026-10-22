@@ -17,7 +17,7 @@ use crate::components::message::{Message, Role};
 use crate::components::model::content::part::{Part, object as part_data};
 use crate::components::skill::{Definition as SkillDefinition, Loader as SkillLoader, Skill as _};
 use crate::components::tool::{Call, Tool, ToolDefinition};
-use crate::core::agent::mounts::Capabilities;
+use crate::core::agent::mounts::Toolkit;
 use crate::core::operation::check;
 use crate::{Cancellation, Error};
 
@@ -141,7 +141,7 @@ impl Files {
 }
 
 /// Bind the default file tools to one shared backend and the existing capability set.
-pub(super) fn attach(workspace: Files, capabilities: Capabilities) -> Capabilities {
+pub(super) fn attach(workspace: Files, capabilities: Toolkit) -> Toolkit {
     let command_enabled = workspace.command_enabled();
     let discover_skills = match &workspace {
         Files::Local(_) => true,

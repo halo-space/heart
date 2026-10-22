@@ -12,7 +12,7 @@ use crate::{
     Cancellation, Error,
     components::{mcp::Server, skill::Skill},
     core::{
-        agent::mounts::{Capabilities, ToolInputs},
+        agent::mounts::{ToolInputs, Toolkit},
         operation::{cancellable, check},
         sandbox::docker as sandbox,
     },
@@ -47,7 +47,7 @@ impl Default for Config {
 pub struct Docker {
     backend: Box<Backend>,
     definition: Definition,
-    capabilities: Capabilities,
+    capabilities: Toolkit,
     pub(super) discover_skills: bool,
 }
 
@@ -94,7 +94,7 @@ impl Docker {
                 config,
                 state: Mutex::new(State::New),
             }),
-            capabilities: Capabilities::new(),
+            capabilities: Toolkit::new(),
             discover_skills: false,
         })
     }
@@ -108,8 +108,8 @@ impl Docker {
     }
 
     #[doc(hidden)]
-    pub fn capabilities(mut self, capabilities: Capabilities) -> Self {
-        self.capabilities = capabilities;
+    pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
+        self.capabilities = toolkit;
         self
     }
 
@@ -227,7 +227,7 @@ impl Workspace for Docker {
     }
 }
 
-impl From<Docker> for Capabilities {
+impl From<Docker> for Toolkit {
     fn from(mut workspace: Docker) -> Self {
         let capabilities = std::mem::take(&mut workspace.capabilities);
         tools::attach(tools::Files::Docker(workspace), capabilities)

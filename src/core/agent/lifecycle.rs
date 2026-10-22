@@ -6,7 +6,7 @@ use crate::core::lifecycle::{Methods, Phase, advance};
 use crate::runtime::agent::{node::Step, reply};
 use crate::{Cancellation, Error, Message, tool::Call};
 
-use super::mounts::Capabilities;
+use super::mounts::Toolkit;
 use super::{
     access::{self, Access},
     hooks::Hooks,
@@ -112,7 +112,7 @@ impl From<Error> for Failure {
 /// storage, slots, retry loop or public Context.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn tool_prepare<K, KF, P, PF>(
-    capabilities: &Capabilities,
+    capabilities: &Toolkit,
     access: &Access,
     hooks: &Hooks,
     metadata: &Map<String, Value>,
@@ -237,7 +237,7 @@ where
 }
 
 pub(super) async fn tool_call<K, KF>(
-    capabilities: &Capabilities,
+    capabilities: &Toolkit,
     saved: &Step,
     input: Call,
     interaction: Option<reply::Run>,

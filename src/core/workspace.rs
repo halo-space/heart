@@ -15,7 +15,7 @@ use crate::{
     workspace::{Definition, Mode, Workspace},
 };
 
-use super::agent::mounts::{Capabilities, ToolInputs};
+use super::agent::mounts::{ToolInputs, Toolkit};
 use super::operation::{cancellable, check};
 
 pub mod docker;
@@ -37,7 +37,7 @@ impl Drop for Temporary {
 pub struct Local {
     root: PathBuf,
     definition: Definition,
-    capabilities: Capabilities,
+    capabilities: Toolkit,
     sandbox: Option<crate::sandbox::Local>,
 }
 
@@ -63,7 +63,7 @@ impl Local {
                 path: Some(path),
                 metadata: Default::default(),
             },
-            capabilities: Capabilities::new(),
+            capabilities: Toolkit::new(),
             sandbox: None,
         })
     }
@@ -71,8 +71,8 @@ impl Local {
     /// Mount the application's Tools, MCP servers and Skills in this workspace.
     /// This only stores configuration; it performs no tool calls or discovery.
     #[doc(hidden)]
-    pub fn capabilities(mut self, capabilities: Capabilities) -> Self {
-        self.capabilities = capabilities;
+    pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
+        self.capabilities = toolkit;
         self
     }
 
@@ -170,7 +170,7 @@ impl Local {
     }
 }
 
-impl From<Local> for Capabilities {
+impl From<Local> for Toolkit {
     fn from(mut workspace: Local) -> Self {
         let capabilities = std::mem::take(&mut workspace.capabilities);
         tools::attach(workspace.into(), capabilities)

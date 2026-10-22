@@ -4,12 +4,10 @@
 //! live in core and use the same Agent contract. Runtime owns per-run state.
 
 pub use crate::components::agent::{Agent, Error, Input, Payload};
-// Kept only for in-repository compatibility tests while the implementation
-// module remains private to the public Agent API. Applications mount concrete
-// Tools, MCP servers and Skills with the methods below; they do not construct
-// this internal dispatcher.
+// Internal heterogeneous Tool/MCP/Skill dispatch. Applications use the
+// concrete `.tools(...)`, `.mcps(...)` and `.skills(...)` methods below.
 #[doc(hidden)]
-pub use crate::core::agent::mounts as capabilities;
+pub use crate::core::agent::mounts as toolkit;
 pub use crate::core::agent::subagent::SubAgent;
 pub use crate::core::agent::{chat, react};
 

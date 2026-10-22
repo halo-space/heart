@@ -27,7 +27,7 @@ use crate::components::tool::{Call, Evaluation as ToolEvaluation, ToolDefinition
 use crate::components::{mcp::Server, skill::Skill};
 use crate::core::agent::access::Access;
 use crate::core::agent::hooks::{Hooks, cancellable};
-use crate::core::agent::mounts::{Capabilities, ToolInputs};
+use crate::core::agent::mounts::{ToolInputs, Toolkit};
 use crate::core::agent::subagent::SubAgent;
 use crate::core::agent::subagent::{Failure as SubAgentFailure, Progress as SubAgentProgress};
 use crate::core::memory::history::{History, Run};
@@ -58,7 +58,7 @@ fn plan_definition() -> ToolDefinition {
 pub struct Builder<M = ()> {
     model: Option<M>,
     system_prompt: Option<String>,
-    capabilities: Capabilities,
+    capabilities: Toolkit,
     subagents: Vec<SubAgent>,
     max_iters: usize,
     max_concurrency: usize,
@@ -74,7 +74,7 @@ pub fn builder() -> Builder {
     Builder {
         model: None,
         system_prompt: None,
-        capabilities: Capabilities::new(),
+        capabilities: Toolkit::new(),
         subagents: Vec::new(),
         max_iters: 20,
         max_concurrency: 100,
@@ -111,8 +111,8 @@ impl<M> Builder<M> {
     }
 
     #[doc(hidden)]
-    pub fn capabilities(mut self, capabilities: Capabilities) -> Self {
-        self.capabilities = capabilities;
+    pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
+        self.capabilities = toolkit;
         self
     }
 
@@ -147,7 +147,7 @@ impl<M> Builder<M> {
     }
 
     /// Register the heterogeneous Agent set available to the built-in
-    /// `agent_spawn` delegation path. SubAgents are not Capabilities entries.
+    /// `agent_spawn` delegation path. SubAgents are not Toolkit entries.
     pub fn subagents(mut self, subagents: impl IntoIterator<Item = SubAgent>) -> Self {
         self.subagents.extend(subagents);
         self
@@ -277,7 +277,7 @@ pub struct Agent<M> {
     replies: crate::runtime::agent::reply::Hub,
     model: std::sync::Arc<M>,
     system_prompt: Option<String>,
-    capabilities: std::sync::Arc<Capabilities>,
+    capabilities: std::sync::Arc<Toolkit>,
     subagents: std::sync::Arc<Vec<SubAgent>>,
     max_iters: usize,
     max_concurrency: usize,
@@ -477,7 +477,7 @@ where
         .await;
         let (capabilities, preparation_error) = match prepared {
             Ok(capabilities) => (capabilities, None),
-            Err(error) => (Capabilities::new(), Some(error)),
+            Err(error) => (Toolkit::new(), Some(error)),
         };
         let prepared_messages = messages.clone();
         let metadata = preparation
@@ -646,7 +646,7 @@ struct ReActState<M: Chat> {
     waits: Vec<crate::runtime::agent::wait::Wait>,
     stream: bool,
     model: std::sync::Arc<M>,
-    capabilities: std::sync::Arc<Capabilities>,
+    capabilities: std::sync::Arc<Toolkit>,
     subagents: std::sync::Arc<Vec<SubAgent>>,
     max_iters: usize,
     max_concurrency: usize,
@@ -750,7 +750,7 @@ struct PendingSubAgent {
 struct ToolExecution {
     interaction: Option<crate::runtime::agent::reply::Run>,
     id_fn: Option<fn() -> i64>,
-    capabilities: std::sync::Arc<Capabilities>,
+    capabilities: std::sync::Arc<Toolkit>,
     hooks: Hooks,
     access: Access,
     metadata: Map<String, Value>,
@@ -3954,7 +3954,7 @@ mod tests {
                 calls: model_calls.clone(),
                 require_tool_error: false,
             })
-            .capabilities(Capabilities::new().tools(EvalFailingTool {
+            .toolkit(Toolkit::new().tools(EvalFailingTool {
                 inner: WeatherTool {
                     calls: tool_calls.clone(),
                     definition: ToolDefinition {
@@ -4029,8 +4029,8 @@ mod tests {
             .model(EvalFeedbackChat {
                 calls: model_calls.clone(),
             })
-            .capabilities(
-                Capabilities::new().tools(EvalRejectingTool {
+            .toolkit(
+                Toolkit::new().tools(EvalRejectingTool {
                     inner: WeatherTool {
                         calls: tool_calls.clone(),
                         definition: ToolDefinition {
@@ -4079,7 +4079,7 @@ mod tests {
     fn public_react_entry_runs_tool_then_final_model_call() {
         let model_calls = Arc::new(Mutex::new(0));
         let tool_calls = Arc::new(Mutex::new(0));
-        let capabilities = Capabilities::new().tools(WeatherTool {
+        let capabilities = Toolkit::new().tools(WeatherTool {
             calls: tool_calls.clone(),
             definition: ToolDefinition {
                 name: "weather".into(),
@@ -4096,7 +4096,7 @@ mod tests {
                 calls: model_calls.clone(),
                 require_tool_error: false,
             })
-            .capabilities(capabilities)
+            .toolkit(capabilities)
             .with_max_iters(2)
             .build()
             .expect("react agent build");
@@ -4137,8 +4137,8 @@ mod tests {
                 require_tool_error: false,
             })
             .with_max_iters(1)
-            .capabilities(
-                Capabilities::new().tools(WeatherTool {
+            .toolkit(
+                Toolkit::new().tools(WeatherTool {
                     calls: Arc::new(Mutex::new(0)),
                     definition: ToolDefinition {
                         name: "weather".into(),
@@ -4172,8 +4172,8 @@ mod tests {
                 calls: Arc::new(Mutex::new(0)),
                 require_tool_error: true,
             })
-            .capabilities(
-                Capabilities::new().tools(FailingTool {
+            .toolkit(
+                Toolkit::new().tools(FailingTool {
                     definition: ToolDefinition {
                         name: "weather".into(),
                         description: "lookup weather".into(),

@@ -24,7 +24,7 @@ use crate::components::{mcp::Server, skill::Skill};
 use crate::core::agent::access::Access;
 use crate::core::agent::hooks::{Hooks, cancellable};
 use crate::core::agent::input::user_message;
-use crate::core::agent::mounts::{Capabilities, ToolInputs};
+use crate::core::agent::mounts::{ToolInputs, Toolkit};
 use crate::core::agent::subagent::SubAgent;
 use crate::core::agent::subagent::{
     Failure as SubAgentFailure, Progress as SubAgentProgress, Root,
@@ -37,7 +37,7 @@ use crate::runtime::agent::tool_steps;
 pub struct Builder<M = ()> {
     model: Option<M>,
     system_prompt: Option<String>,
-    capabilities: Option<Capabilities>,
+    capabilities: Option<Toolkit>,
     subagents: Vec<SubAgent>,
     hooks: Hooks,
     access: Access,
@@ -87,8 +87,8 @@ impl<M> Builder<M> {
     }
 
     #[doc(hidden)]
-    pub fn capabilities(mut self, capabilities: Capabilities) -> Self {
-        self.capabilities = Some(capabilities);
+    pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
+        self.capabilities = Some(toolkit);
         self
     }
 
@@ -126,7 +126,7 @@ impl<M> Builder<M> {
     }
 
     /// Register the heterogeneous Agent set available to the built-in
-    /// `agent_spawn` delegation path. SubAgents are not Capabilities entries.
+    /// `agent_spawn` delegation path. SubAgents are not Toolkit entries.
     pub fn subagents(mut self, subagents: impl IntoIterator<Item = SubAgent>) -> Self {
         self.subagents.extend(subagents);
         self
@@ -226,7 +226,7 @@ pub struct Agent<M> {
     replies: crate::runtime::agent::reply::Hub,
     model: Arc<M>,
     system_prompt: Option<String>,
-    capabilities: Option<Capabilities>,
+    capabilities: Option<Toolkit>,
     subagents: Vec<SubAgent>,
     hooks: Hooks,
     access: Access,
@@ -269,7 +269,7 @@ struct ToolBatchConfig {
     interaction: Option<crate::runtime::agent::reply::Run>,
     relay: Option<crate::core::agent::subagent::Relay>,
     steps: Arc<Mutex<Vec<Step>>>,
-    capabilities: Arc<Capabilities>,
+    capabilities: Arc<Toolkit>,
     subagents: Vec<SubAgent>,
     access: Access,
     hooks: Hooks,
@@ -282,7 +282,7 @@ struct ToolBatchConfig {
 
 // Private per-call dependencies; not a public Tool context or saved state.
 struct ToolExecution {
-    capabilities: Arc<Capabilities>,
+    capabilities: Arc<Toolkit>,
     access: Access,
     hooks: Hooks,
     metadata: Map<String, Value>,
@@ -297,7 +297,7 @@ struct EventsConfig<S> {
     interaction: Option<crate::runtime::agent::reply::Run>,
     steps: Arc<Mutex<Vec<Step>>>,
     provider_factory: ProviderFactory<S>,
-    capabilities: Option<Capabilities>,
+    capabilities: Option<Toolkit>,
     subagents: Vec<SubAgent>,
     access: Access,
     evaluator: Option<EvaluatorHandle>,
@@ -346,7 +346,7 @@ pub struct Events<S> {
     replayed_completion: bool,
     finished: bool,
     hooks: Hooks,
-    capabilities: Option<Arc<Capabilities>>,
+    capabilities: Option<Arc<Toolkit>>,
     subagents: Vec<SubAgent>,
     access: Access,
     evaluator: Option<EvaluatorHandle>,
@@ -1184,7 +1184,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                 let capabilities = this
                                     .capabilities
                                     .clone()
-                                    .unwrap_or_else(|| Arc::new(Capabilities::new()));
+                                    .unwrap_or_else(|| Arc::new(Toolkit::new()));
                                 let access = this.access.clone();
                                 let hooks = this.hooks.clone();
                                 let metadata = this.metadata.clone();
@@ -1212,7 +1212,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                             }
                             this.close(Err(Error::new(
                                 "INVALID_STATE",
-                                "model returned tool calls without a configured Capabilities",
+                                "model returned tool calls without a configured Toolkit",
                             )));
                             Pin::new(this).poll_next(cx)
                         }
@@ -1488,7 +1488,7 @@ where
         });
         let mut run = Run::default();
         // Preparation belongs to this run too. Retain its constructed input
-        // before Capabilities preparation, model hooks or Provider dispatch stop it.
+        // before Toolkit preparation, model hooks or Provider dispatch stop it.
         let mut preparation_messages = restored_messages.clone().unwrap_or_default();
         let mut preparation_input_tokens = 0;
         let request_scene = Arc::new(Mutex::new(None));
@@ -1531,10 +1531,7 @@ where
                 let checked = capabilities
                     .as_ref()
                     .ok_or_else(|| {
-                        Error::new(
-                            "INVALID_STATE",
-                            "saved eval requires a configured Capabilities",
-                        )
+                        Error::new("INVALID_STATE", "saved eval requires a configured Toolkit")
                     })
                     .and_then(|capabilities| {
                         capabilities
@@ -1551,7 +1548,7 @@ where
             }
             let tool_definitions = capabilities
                 .as_ref()
-                .map(Capabilities::definitions)
+                .map(Toolkit::definitions)
                 .unwrap_or_default();
             let mut tool_definitions = tool_definitions;
             if !self.subagents.is_empty() {
@@ -1670,7 +1667,7 @@ where
                 let capabilities = events
                     .capabilities
                     .clone()
-                    .unwrap_or_else(|| Arc::new(Capabilities::new()));
+                    .unwrap_or_else(|| Arc::new(Toolkit::new()));
                 events.provider = None;
                 events.pending_tools = Some(Box::pin(execute_tool_batch(
                     ToolBatchConfig {
@@ -3086,7 +3083,7 @@ mod tests {
             .model(SequenceChat {
                 calls: Arc::clone(&model_calls),
             })
-            .capabilities(Capabilities::new().tools(echo_tool(Arc::clone(&tool_called))))
+            .toolkit(Toolkit::new().tools(echo_tool(Arc::clone(&tool_called))))
             .build()
             .expect("agent build");
         let mut stream =
@@ -3287,7 +3284,7 @@ mod tests {
                 ToolBatchConfig {
                     interaction: None,
                     relay: None,
-                    capabilities: Arc::new(Capabilities::new()),
+                    capabilities: Arc::new(Toolkit::new()),
                     steps: steps.clone(),
                     subagents: subagents.clone(),
                     access: Access::default(),
@@ -3308,7 +3305,7 @@ mod tests {
                 ToolBatchConfig {
                     interaction: None,
                     relay: None,
-                    capabilities: Arc::new(Capabilities::new()),
+                    capabilities: Arc::new(Toolkit::new()),
                     steps,
                     subagents,
                     access: Access::default(),
@@ -3336,7 +3333,7 @@ mod tests {
             .model(SequenceChat {
                 calls: Arc::clone(&model_calls),
             })
-            .capabilities(Capabilities::new().tools(echo_tool(Arc::clone(&tool_called))))
+            .toolkit(Toolkit::new().tools(echo_tool(Arc::clone(&tool_called))))
             .permission(DenyPermission)
             .build()
             .expect("agent build");

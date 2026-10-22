@@ -9,7 +9,7 @@ use crate::components::agent::{Agent as AgentContract, Error, Input};
 use crate::components::evaluation::Evaluator;
 use crate::components::model::chat::Chat;
 use crate::components::workspace::Workspace;
-use crate::core::agent::{mounts::Capabilities, react, subagent::SubAgent};
+use crate::core::agent::{mounts::Toolkit, react, subagent::SubAgent};
 
 const LONG_TASK_PROMPT: &str = "You are a capable agent for multi-step tasks. Break substantial work into clear steps, use the available tools to gather evidence and make changes, verify important results, and report what is complete and what remains. Do not claim that an action succeeded unless its result confirms it.";
 
@@ -25,7 +25,7 @@ pub fn builder() -> Builder {
 /// configurable; the Harness only adds its long-task defaults and composition.
 pub struct Builder<M = ()> {
     inner: react::Builder<M>,
-    workspace: Option<Capabilities>,
+    workspace: Option<Toolkit>,
 }
 
 impl<M> Builder<M> {
@@ -48,7 +48,7 @@ impl<M> Builder<M> {
     #[allow(private_bounds)]
     pub fn workspace<W>(mut self, workspace: W) -> Self
     where
-        W: Workspace + Into<Capabilities> + 'static,
+        W: Workspace + Into<Toolkit> + 'static,
     {
         self.workspace = Some(workspace.into());
         self
@@ -111,8 +111,8 @@ where
     M: Chat + 'static,
 {
     pub fn build(self) -> Result<Agent<M>, Error> {
-        let capabilities = Capabilities::new().merge(self.workspace.unwrap_or_default())?;
-        let inner = self.inner.capabilities(capabilities).build()?;
+        let toolkit = Toolkit::new().merge(self.workspace.unwrap_or_default())?;
+        let inner = self.inner.toolkit(toolkit).build()?;
         Ok(Agent { inner })
     }
 }

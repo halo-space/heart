@@ -14,7 +14,7 @@ use serde_json::{Map, Value, json};
 use super::tools::{definition, tool_message};
 use crate::components::mcp::Server;
 use crate::core::agent::mounts::ToolInputs;
-use crate::core::{agent::mounts::Capabilities, operation::cancellable};
+use crate::core::{agent::mounts::Toolkit, operation::cancellable};
 use crate::tool::{Call, Tool, ToolDefinition};
 use crate::workspace::{Definition, Mode, Workspace as Contract};
 use crate::{Cancellation, Error, Message};
@@ -43,14 +43,14 @@ pub fn new(client: Elasticsearch, index: impl Into<String>) -> Result<Workspace,
             path: None,
             metadata: Map::new(),
         },
-        capabilities: Capabilities::new(),
+        capabilities: Toolkit::new(),
     })
 }
 
 pub struct Workspace {
     backend: Arc<Backend>,
     definition: Definition,
-    capabilities: Capabilities,
+    capabilities: Toolkit,
 }
 
 impl Workspace {
@@ -58,8 +58,8 @@ impl Workspace {
     /// database access. Public callers normally use the Workspace `tools`,
     /// `mcps` and `skills` methods.
     #[doc(hidden)]
-    pub fn capabilities(mut self, capabilities: Capabilities) -> Self {
-        self.capabilities = capabilities.retain_skill_loaders(&self.capabilities);
+    pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
+        self.capabilities = self.capabilities.retain_skill_loaders(&toolkit);
         self
     }
 
@@ -98,7 +98,7 @@ impl Contract for Workspace {
     }
 }
 
-impl From<Workspace> for Capabilities {
+impl From<Workspace> for Toolkit {
     fn from(workspace: Workspace) -> Self {
         let mut capabilities = workspace.capabilities;
         for kind in [Kind::Write, Kind::Read, Kind::Update, Kind::Delete] {
