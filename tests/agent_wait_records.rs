@@ -1,7 +1,7 @@
 //! Frozen Step-owned question data; this does not claim live reply routing.
 use std::collections::BTreeMap;
 
-use halo_agents::{
+use halo::{
     Message, Messages,
     message::Role,
     runtime::agent::{

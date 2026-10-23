@@ -1,5 +1,5 @@
 use futures_util::StreamExt;
-use halo_agents::{
+use halo::{
     event::Event,
     message::{Message, Messages, Role},
     model::{

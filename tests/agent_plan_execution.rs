@@ -9,7 +9,7 @@ use std::sync::{
 
 use futures_executor::block_on;
 use futures_util::{StreamExt, poll, stream::FuturesUnordered};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     function::Function,
     plan::Plan,

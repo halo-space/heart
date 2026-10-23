@@ -8,7 +8,7 @@ This guide shows how to use Heart from a Rust application to build Agents and Wo
 
 ```toml
 [dependencies]
-halo-agents = { git = "https://github.com/halo-space/heart.git" }
+halo = { git = "https://github.com/halo-space/heart.git" }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -16,7 +16,7 @@ schemars = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-The package is `halo-agents`, the Rust crate is `halo_agents`, and Rust 1.99.1 or newer is required.
+The package and Rust crate are `halo`, and Rust 1.99.1 or newer is required.
 
 ```text
 components/   Public contracts: Agent, Model, Message, Event, Tool, Memory, Checkpoint
@@ -33,7 +33,7 @@ backend there is no cross-process recovery.
 Chat and ReAct use the same `agent::Input`:
 
 ```rust
-use halo_agents::agent::{Input, Payload};
+use halo::agent::{Input, Payload};
 use serde_json::{Map, json};
 
 let input = Input {
@@ -76,7 +76,7 @@ planning or replanning.
 
 ```rust
 use futures_util::StreamExt;
-use halo_agents::{agent, Cancellation};
+use halo::{agent, Cancellation};
 
 let agent = agent::chat()
     .model(chat)
@@ -167,7 +167,7 @@ Ordinary functions can be passed directly to `WorkflowBuilder::add_node`; no wra
 schemas, with `Messages` as the message-oriented exception:
 
 ```rust
-use halo_agents::{Cancellation, Error};
+use halo::{Cancellation, Error};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -188,8 +188,8 @@ Runtime builds each node's business input from upstream State according to `attr
 
 ```rust
 use futures_util::StreamExt;
-use halo_agents::{Cancellation, Error, Messages};
-use halo_agents::runtime::workflow::{graph::{END, START, GraphError}, Runtime, WorkflowBuilder};
+use halo::{Cancellation, Error, Messages};
+use halo::agent::workflow::{graph::{END, START, GraphError}, Runtime, WorkflowBuilder};
 use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
 
 fn graph_error(error: GraphError) -> Error {
@@ -259,14 +259,12 @@ Provider initialization is separate from per-request options. OpenAI, DeepSeek a
 is not implemented.
 
 ```rust
-let provider = halo_agents::provider::vllm::Vllm::builder()
-    .provider_id(1)
-    .name("vllm")
+let provider = halo::agent::core::provider::vllm::Vllm::builder()
     .base_url("http://127.0.0.1:8000/v1")
     .api_key(std::env::var("HEART_VLLM_API_KEY")?)
     .build()?;
 let chat = provider.chat(
-    halo_agents::model::chat::Config::new("deepseek-flash").options(serde_json::Map::from_iter([(
+    halo::agent::model::chat::Config::new("Qwen3.5-122B-A10B").options(serde_json::Map::from_iter([(
         "chat_template_kwargs".into(),
         serde_json::json!({"enable_thinking": true}),
     )])),
@@ -276,14 +274,26 @@ let chat = provider.chat(
 VLLM `delta.reasoning` becomes the shared `think` Part and ordinary output becomes `text`. Provider-specific options stay in
 `model::chat::Config.options` or `chat::Request.options`.
 
+DeepSeek uses its own Provider type, and its model name is configured in the DeepSeek Chat binding:
+
+```rust
+let provider = halo::agent::core::provider::deepseek::DeepSeek::builder()
+    .base_url("https://api.deepseek.com")
+    .api_key(std::env::var("DEEPSEEK_API_KEY")?)
+    .build()?;
+let chat = provider.chat(halo::agent::model::chat::Config::new("deepseek-flash"))?;
+```
+
+The Qwen model in the VLLM example belongs to the VLLM server and is not mixed with the DeepSeek Provider.
+
 ## 7. Workspace, Skill and MCP
 
 Workspace selects local-file or server-database behavior. Local Workspace provides basic file operations; shell execution requires an explicit Sandbox.
 Skills are loaded with `.skills(loader)`. MCP servers must be connected and discovered before they are mounted.
 
 ```rust
-let workspace = halo_agents::core::workspace::Local::new("./workspace")?
-    .sandbox(halo_agents::sandbox::Local::default())
+let workspace = halo::agent::core::workspace::Local::new("./workspace")?
+    .sandbox(halo::agent::sandbox::Local::default())
     .tools(custom_tool)
     .mcps(servers)
     .skills(skills)?;
@@ -325,7 +335,7 @@ Agent input and model `Messages`, and the fixed `Delta`/`Complete` event stream.
 
 ```rust
 use futures_util::{StreamExt, stream};
-use halo_agents::{agent, event::Event, message::{Message, Role}, model::{chat::{Chat, Request}, content::part::Part}, Cancellation, Error};
+use halo::{agent, event::Event, message::{Message, Role}, model::{chat::{Chat, Request}, content::part::Part}, Cancellation, Error};
 use serde_json::json;
 
 struct DemoChat;
@@ -358,7 +368,7 @@ table, not an application API.
 ```rust
 use std::sync::{LazyLock, atomic::{AtomicUsize, Ordering}};
 use futures_util::{StreamExt, stream};
-use halo_agents::{agent, event::Event, message::{Message, Role}, model::{chat::{Chat, Request}, content::part::Part}, permission::{Behavior, Decision, Request as PermissionRequest}, tool::{Call, Tool, ToolDefinition}, Cancellation, Error};
+use halo::{agent, event::Event, message::{Message, Role}, model::{chat::{Chat, Request}, content::part::Part}, permission::{Behavior, Decision, Request as PermissionRequest}, tool::{Call, Tool, ToolDefinition}, Cancellation, Error};
 use serde_json::json;
 struct Lookup;
 impl Tool for Lookup {
@@ -377,7 +387,7 @@ impl Chat for DemoModel {
 }
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let permission = halo_agents::core::permission::Permission::new(|r: PermissionRequest, _: Cancellation| async move { Ok(if r.action == "call" && r.resource == "lookup" { Decision { behavior: Behavior::Allow, reason: None } } else { Decision { behavior: Behavior::Deny, reason: Some("not allowed".into()) } }) });
+    let permission = halo::agent::core::permission::Permission::new(|r: PermissionRequest, _: Cancellation| async move { Ok(if r.action == "call" && r.resource == "lookup" { Decision { behavior: Behavior::Allow, reason: None } } else { Decision { behavior: Behavior::Deny, reason: Some("not allowed".into()) } }) });
     let agent = agent::react().model(DemoModel(AtomicUsize::new(0))).tools(Lookup).permission(permission).with_max_iters(20).build()?;
     let mut events = agent.run(agent::Input::default(), true, Cancellation::new()).await?;
     while let Some(event) = events.next().await { println!("{:?}", event?); }
@@ -393,7 +403,7 @@ ReAct Agent into a failed run.
 ```rust
 use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
 use futures_util::StreamExt;
-use halo_agents::{Cancellation, Error, Messages, event::Event, runtime::workflow::{GraphError, Runtime, WorkflowBuilder, graph::{START, END}}};
+use halo::agent::{Cancellation, Error, Messages, event::Event, workflow::{GraphError, Runtime, WorkflowBuilder, graph::{START, END}}};
 use schemars::JsonSchema; use serde::Serialize;
 #[derive(Serialize, JsonSchema)] struct Output { value: i64 }
 fn ge(e: GraphError) -> Error { Error { code: e.code, message: e.message, details: e.details } }
@@ -416,7 +426,7 @@ This complete compile-time example declares conditional routing, Join and Fan-ou
 model or a database:
 
 ```rust
-use halo_agents::{Cancellation, Error, Messages, runtime::workflow::{GraphError, WorkflowBuilder, graph::{START, END}}};
+use halo::agent::{Cancellation, Error, Messages, workflow::{GraphError, WorkflowBuilder, graph::{START, END}}};
 fn ge(e: GraphError) -> Error { Error { code: e.code, message: e.message, details: e.details } }
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -439,7 +449,7 @@ plain function node.
 
 ```rust
 use std::sync::{Arc, atomic::{AtomicI64, Ordering}}; use futures_util::StreamExt;
-use halo_agents::{Cancellation, Error, Messages, core, runtime::workflow::{GraphError, Runtime, WorkflowBuilder, graph::{START, END}}};
+use halo::agent::{Cancellation, Error, Messages, core, workflow::{GraphError, Runtime, WorkflowBuilder, graph::{START, END}}};
 use schemars::JsonSchema; use serde::Serialize;
 #[derive(Serialize, JsonSchema)] struct Output { value: String }
 fn ge(e: GraphError) -> Error { Error { code:e.code, message:e.message, details:e.details } }
@@ -460,7 +470,7 @@ Create an ignored `.env` file and load it before running:
 ```dotenv
 HEART_VLLM_BASE_URL=http://127.0.0.1:8000/v1
 HEART_VLLM_API_KEY=replace-me
-HEART_VLLM_MODEL=deepseek-flash
+HEART_VLLM_MODEL=Qwen3.5-122B-A10B
 ```
 
 ```bash
@@ -471,12 +481,12 @@ Save this complete provider program as `src/main.rs`:
 
 ```rust
 use futures_util::StreamExt;
-use halo_agents::{event::Event, message::{Message, Messages, Role}, model::{chat, chat::Chat, content::part::Part}, provider::vllm::Vllm};
+use halo::agent::{event::Event, message::{Message, Messages, Role}, model::{chat, chat::Chat, content::part::Part}, core::provider::vllm::Vllm};
 use serde_json::json;
 #[tokio::main]
-async fn main() -> Result<(), halo_agents::model::Error> {
-    let provider = Vllm::builder().base_url(std::env::var("HEART_VLLM_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000/v1".into())).api_key(std::env::var("HEART_VLLM_API_KEY").map_err(|_| halo_agents::model::Error::new("AUTHENTICATION", "HEART_VLLM_API_KEY is required"))?).build()?;
-    let chat = provider.chat(chat::Config::new(std::env::var("HEART_VLLM_MODEL").map_err(|_| halo_agents::model::Error::new("INVALID_ARGUMENTS", "HEART_VLLM_MODEL is required"))?).options(serde_json::Map::from_iter([("chat_template_kwargs".into(), json!({"enable_thinking": true}))])))?;
+async fn main() -> Result<(), halo::agent::model::Error> {
+    let provider = Vllm::builder().base_url(std::env::var("HEART_VLLM_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000/v1".into())).api_key(std::env::var("HEART_VLLM_API_KEY").map_err(|_| halo::agent::model::Error::new("AUTHENTICATION", "HEART_VLLM_API_KEY is required"))?).build()?;
+    let chat = provider.chat(chat::Config::new(std::env::var("HEART_VLLM_MODEL").map_err(|_| halo::agent::model::Error::new("INVALID_ARGUMENTS", "HEART_VLLM_MODEL is required"))?).options(serde_json::Map::from_iter([("chat_template_kwargs".into(), json!({"enable_thinking": true}))])))?;
     let mut user = Message::new(Role::User); user.content.push(Part { r#type: "text".into(), data: json!({"value":"Introduce Pinglu Canal"}).as_object().unwrap().clone() });
     let mut events = chat.stream(chat::Request { messages: Messages::new([user]), stream: true, max_tokens: Some(512), ..Default::default() }).await?;
     while let Some(event) = events.next().await { match event? { Event::Delta { message } => for p in message.content { print!("{}", p.data["value"].as_str().unwrap_or_default()); }, Event::Complete { usage, finish_reason, .. } => println!("\nusage={usage:?}, finish_reason={finish_reason:?}") } }
@@ -495,7 +505,7 @@ or long-memory capability. This complete offline program writes a Session and on
 
 ```rust
 use futures_util::{StreamExt, stream};
-use halo_agents::{Cancellation, Error, Message, agent::{self, Agent, Input}, core, event::Event, memory::{self, Memory}, memory::short::{self, session}, message::Role, model::{chat::{Chat, Request}, content::part::Part}};
+use halo::{Cancellation, Error, Message, agent::{self, Agent, Input}, core, event::Event, memory::{self, Memory}, memory::short::{self, session}, message::Role, model::{chat::{Chat, Request}, content::part::Part}};
 use serde_json::{Map, json};
 use memory::short::session::Store as _;
 struct Model;
@@ -514,7 +524,7 @@ explicitly checks the threshold; the current request is never switched to a newl
 ### 10.8 Local Workspace and Skill
 
 ```rust
-use halo_agents::{Cancellation, Error, core, skill::Skill as _, workspace::Workspace};
+use halo::agent::{Cancellation, Error, core, skill::Skill as _, workspace::Workspace};
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let root=std::env::temp_dir().join(format!("heart-guide-{}",std::process::id())); std::fs::create_dir_all(&root).map_err(|e|Error::new("IO_ERROR",e.to_string()))?;
@@ -534,10 +544,10 @@ MCP connection and tool discovery happen before Agent construction. A failed end
 treated as an optional capability:
 
 ```rust
-use halo_agents::{Cancellation, Error, mcp::{Definition, Server as _}}; use serde_json::Map;
+use halo::{Cancellation, Error, mcp::{Definition, Server as _}}; use serde_json::Map;
 #[tokio::main] async fn main() -> Result<(), Error> {
     let endpoint=std::env::var("HEART_MCP_SSE_URL").map_err(|_|Error::new("INVALID_ARGUMENTS","HEART_MCP_SSE_URL is required"))?;
-    let server=halo_agents::core::mcp::Server::http(Definition{name:"weather".into(),description:Some("weather MCP".into()),metadata:Map::new()},&endpoint,Map::new(),&Cancellation::new()).await?;
+    let server=halo::agent::core::mcp::Server::http(Definition{name:"weather".into(),description:Some("weather MCP".into()),metadata:Map::new()},&endpoint,Map::new(),&Cancellation::new()).await?;
     println!("tools={:?}",server.tools().iter().map(|t|&t.name).collect::<Vec<_>>()); Ok(())
 }
 ```

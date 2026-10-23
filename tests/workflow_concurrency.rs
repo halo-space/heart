@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 use futures_util::{StreamExt, poll};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     runtime::workflow::{
         CompiledWorkflow, Runtime, WorkflowBuilder,

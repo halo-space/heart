@@ -1,6 +1,6 @@
 //! I01/I02: confirmed Tool phases and real Agent continuation under parent scenes.
 use futures_util::{StreamExt, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{self, Agent, Input, Payload, toolkit::Toolkit},
     checkpoint::Checkpoint as _,
@@ -24,8 +24,8 @@ use std::{
 
 fn embedded_workflow<A: Agent + 'static>(
     agent: A,
-) -> halo_agents::runtime::workflow::CompiledWorkflow {
-    use halo_agents::runtime::workflow::{
+) -> halo::runtime::workflow::CompiledWorkflow {
+    use halo::runtime::workflow::{
         WorkflowBuilder,
         graph::{END, START},
     };
@@ -37,10 +37,10 @@ fn embedded_workflow<A: Agent + 'static>(
 }
 
 fn wrap_workflow(
-    mut compiled: halo_agents::runtime::workflow::CompiledWorkflow,
+    mut compiled: halo::runtime::workflow::CompiledWorkflow,
     depth: usize,
-) -> halo_agents::runtime::workflow::CompiledWorkflow {
-    use halo_agents::runtime::workflow::{
+) -> halo::runtime::workflow::CompiledWorkflow {
+    use halo::runtime::workflow::{
         WorkflowBuilder,
         graph::{END, START},
     };
@@ -55,8 +55,8 @@ fn wrap_workflow(
 }
 
 fn agent_execution(
-    state: &halo_agents::runtime::workflow::State,
-) -> &halo_agents::runtime::workflow::node::Execution {
+    state: &halo::runtime::workflow::State,
+) -> &halo::runtime::workflow::node::Execution {
     if let Some(child) = state.nodes.get("child") {
         agent_execution(
             child
@@ -88,7 +88,7 @@ impl Chat for WaitingModel {
                 .unwrap()
                 .clone(),
         });
-        message.usage = Some(halo_agents::model::token::Usage {
+        message.usage = Some(halo::model::token::Usage {
             input: Some(3),
             output: Some(0),
             total: Some(3),
@@ -167,7 +167,7 @@ impl Chat for PlannedModel {
         self.0.lock().unwrap().push(request);
         Ok(stream::iter(vec![Ok(Event::Complete {
             message,
-            usage: Some(halo_agents::model::token::Usage {
+            usage: Some(halo::model::token::Usage {
                 input: Some(2),
                 output: Some(1),
                 total: Some(3),
@@ -417,12 +417,12 @@ async fn cached_root_child_and_waiting_tool_restore_in_original_call_order() {
             .build()
             .unwrap();
         let child = agent::SubAgent::new("reviewer", child).unwrap();
-        let toolkit = Toolkit::new().tools(Weather::new(counts.clone()));
+        let capabilities = Toolkit::new().tools(Weather::new(counts.clone()));
         let model = Metered(Model::new(selection), 3);
         let events = if react {
             agent::react()
                 .model(model)
-                .toolkit(toolkit)
+                .toolkit(capabilities)
                 .subagents([child])
                 .with_id_fn(next_plan_id)
                 .checkpoint(checkpoint.clone())
@@ -436,7 +436,7 @@ async fn cached_root_child_and_waiting_tool_restore_in_original_call_order() {
         } else {
             agent::chat()
                 .model(model)
-                .toolkit(toolkit)
+                .toolkit(capabilities)
                 .subagents([child])
                 .with_id_fn(next_plan_id)
                 .checkpoint(checkpoint.clone())
@@ -460,11 +460,11 @@ async fn cached_root_child_and_waiting_tool_restore_in_original_call_order() {
         .unwrap();
         let model = Model::new(Message::new(Role::Assistant));
         let requests = model.requests.clone();
-        let toolkit = Toolkit::new().tools(Weather::new(counts.clone()));
+        let capabilities = Toolkit::new().tools(Weather::new(counts.clone()));
         let events = if react {
             agent::react()
                 .model(model)
-                .toolkit(toolkit)
+                .toolkit(capabilities)
                 .subagents([child])
                 .with_id_fn(|| panic!("cached child must not allocate IDs"))
                 .checkpoint(checkpoint.clone())
@@ -478,7 +478,7 @@ async fn cached_root_child_and_waiting_tool_restore_in_original_call_order() {
         } else {
             agent::chat()
                 .model(model)
-                .toolkit(toolkit)
+                .toolkit(capabilities)
                 .subagents([child])
                 .with_id_fn(|| panic!("cached child must not allocate IDs"))
                 .checkpoint(checkpoint.clone())
@@ -516,7 +516,7 @@ async fn cached_root_child_and_waiting_tool_restore_in_original_call_order() {
 
 #[tokio::test]
 async fn planned_pending_eval_cancellation_keeps_attempt_result_and_never_admits_queued_nodes() {
-    use halo_agents::runtime::workflow::{Runtime, Status};
+    use halo::runtime::workflow::{Runtime, Status};
     let counts = Arc::new(Mutex::new(Counts::default()));
     let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let compiled = wrap_workflow(
@@ -550,7 +550,7 @@ async fn planned_pending_eval_cancellation_keeps_attempt_result_and_never_admits
     let events = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         runtime
             .run(
-                halo_agents::Messages::default(),
+                halo::Messages::default(),
                 Arc::new(move || next.fetch_add(1, std::sync::atomic::Ordering::Relaxed)),
                 token,
             )
@@ -623,7 +623,7 @@ async fn cancel_after_child<A: Agent>(agent: A, token: Cancellation) {
 
 #[tokio::test]
 async fn terminal_child_scene_delivery_is_not_billed_as_another_model_call() {
-    use halo_agents::agent::SubAgent;
+    use halo::agent::SubAgent;
     for react in [false, true] {
         let checkpoint = Arc::new(core::checkpoint::InMemory::new());
         let counts = Arc::new(Mutex::new(Counts::default()));
@@ -775,7 +775,7 @@ async fn terminal_child_scene_delivery_is_not_billed_as_another_model_call() {
 #[tokio::test]
 async fn cancelling_parent_after_successful_child_keeps_child_usage_separate_from_model_refinement()
 {
-    use halo_agents::agent::SubAgent;
+    use halo::agent::SubAgent;
     for react in [false, true] {
         let checkpoint = Arc::new(core::checkpoint::InMemory::new());
         let child = agent::chat()
@@ -844,7 +844,7 @@ impl Chat for SequenceModel {
         requests.push(request);
         Ok(stream::iter(vec![Ok(Event::Complete {
             message,
-            usage: Some(halo_agents::model::token::Usage {
+            usage: Some(halo::model::token::Usage {
                 input: Some(3),
                 output: Some(0),
                 total: Some(3),
@@ -857,7 +857,7 @@ impl Chat for SequenceModel {
 
 #[tokio::test]
 async fn subagent_cannot_override_shared_run_session_or_user_ownership() {
-    use halo_agents::{agent::SubAgent, runtime::workflow::Runtime};
+    use halo::{agent::SubAgent, runtime::workflow::Runtime};
     for react in [false, true] {
         for key in ["chat_id", "session_id", "user_id", "tenant_id"] {
             let child = Model::new(Message::new(Role::Assistant));
@@ -895,7 +895,7 @@ async fn subagent_cannot_override_shared_run_session_or_user_ownership() {
             let mut runtime = Runtime::new(1001, compiled).unwrap();
             let events = runtime
                 .run(
-                    halo_agents::Messages::new([user]),
+                    halo::Messages::new([user]),
                     Arc::new(|| 9001),
                     Cancellation::new(),
                 )
@@ -968,7 +968,7 @@ impl Chat for TaskDelegationModel {
         }
         Ok(stream::iter(vec![Ok(Event::Complete {
             message,
-            usage: Some(halo_agents::model::token::Usage {
+            usage: Some(halo::model::token::Usage {
                 input: Some(3),
                 output: Some(0),
                 total: Some(3),
@@ -981,7 +981,7 @@ impl Chat for TaskDelegationModel {
 
 #[tokio::test]
 async fn planned_subagent_wait_must_not_replay_child_tool_after_checkpoint_restore() {
-    use halo_agents::agent::SubAgent;
+    use halo::agent::SubAgent;
     let checkpoint = Arc::new(core::checkpoint::InMemory::new());
     let counts = Arc::new(Mutex::new(Counts::default()));
     let child = agent::chat()
@@ -1004,7 +1004,7 @@ async fn planned_subagent_wait_must_not_replay_child_tool_after_checkpoint_resto
         .await;
     assert!(matches!(events.last(),Some(Err(error)) if error.code=="WAITING"));
     let saved = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
-    let saved: halo_agents::runtime::agent::State = serde_json::from_value(saved).unwrap();
+    let saved: halo::runtime::agent::State = serde_json::from_value(saved).unwrap();
     let attempt = &saved.nodes["a"].execution.as_ref().unwrap().attempts[0];
     assert_eq!(
         attempt.nodes.len(),
@@ -1065,13 +1065,13 @@ async fn planned_subagent_wait_must_not_replay_child_tool_after_checkpoint_resto
         "resume must complete the pending eval"
     );
     let final_scene = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
-    let final_scene: halo_agents::runtime::agent::State =
+    let final_scene: halo::runtime::agent::State =
         serde_json::from_value(final_scene).unwrap();
     let final_attempt = &final_scene.nodes["a"].execution.as_ref().unwrap().attempts[0];
     let retained = &final_attempt.nodes[child_id];
     assert_eq!(
         retained.status,
-        halo_agents::runtime::agent::node::Status::Succeeded
+        halo::runtime::agent::node::Status::Succeeded
     );
     let retained_execution = retained.execution.as_ref().unwrap();
     assert_eq!(retained_execution.exec_id, child_execution.exec_id);
@@ -1114,7 +1114,7 @@ impl Chat for ContextualChildModel {
         }
         Ok(stream::iter(vec![Ok(Event::Complete {
             message,
-            usage: Some(halo_agents::model::token::Usage {
+            usage: Some(halo::model::token::Usage {
                 input: Some(3),
                 output: Some(0),
                 total: Some(3),
@@ -1167,7 +1167,7 @@ impl Chat for DelegateThenPlanModel {
         }
         Ok(stream::iter(vec![Ok(Event::Complete {
             message,
-            usage: Some(halo_agents::model::token::Usage {
+            usage: Some(halo::model::token::Usage {
                 input: Some(3),
                 output: Some(0),
                 total: Some(3),
@@ -1304,7 +1304,7 @@ async fn planned_subagent_inherits_id_function_for_its_own_plan_and_restores_tha
         } else {
             assert!(events.iter().all(Result::is_ok), "{events:?}");
         }
-        let state: halo_agents::runtime::agent::State =
+        let state: halo::runtime::agent::State =
             serde_json::from_value(checkpoint.load(1001, &Cancellation::new()).await.unwrap())
                 .unwrap();
         let attempt = &state.nodes["a"].execution.as_ref().unwrap().attempts[0];
@@ -1367,7 +1367,7 @@ async fn repeated_registered_subagent_has_distinct_nodes_and_retains_successful_
         .await;
     assert!(events.iter().all(Result::is_ok), "{events:?}");
     let saved = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
-    let state: halo_agents::runtime::agent::State = serde_json::from_value(saved).unwrap();
+    let state: halo::runtime::agent::State = serde_json::from_value(saved).unwrap();
     assert_eq!(state.graph.as_ref().unwrap().plan.nodes.len(), 1);
     assert_eq!(
         state.nodes.len(),
@@ -1386,7 +1386,7 @@ async fn repeated_registered_subagent_has_distinct_nodes_and_retains_successful_
         assert!(identities.insert(execution.exec_id));
         assert_eq!(
             node.status,
-            halo_agents::runtime::agent::node::Status::Succeeded
+            halo::runtime::agent::node::Status::Succeeded
         );
         assert_eq!(
             execution.attempts[0].agent.as_ref().unwrap()["status"],
@@ -1404,11 +1404,11 @@ async fn repeated_registered_subagent_has_distinct_nodes_and_retains_successful_
     assert_eq!(state.usage.as_ref().unwrap().total, Some(23));
     let old_children = attempt.nodes.clone();
     let mut graph =
-        halo_agents::runtime::agent::graph::Graph::new(state.graph.unwrap().plan).unwrap();
+        halo::runtime::agent::graph::Graph::new(state.graph.unwrap().plan).unwrap();
     graph
         .start_batch(
             1,
-            &[halo_agents::runtime::agent::graph::Start {
+            &[halo::runtime::agent::graph::Start {
                 node_id: "a".into(),
                 exec_id: 900001,
             }],
@@ -1438,7 +1438,7 @@ async fn repeated_registered_subagent_has_distinct_nodes_and_retains_successful_
 
 #[tokio::test]
 async fn real_subagent_eval_wait_retains_child_consumption_and_does_not_reselect_delegation() {
-    use halo_agents::{
+    use halo::{
         agent::SubAgent,
         runtime::workflow::{Runtime, Status},
     };
@@ -1477,7 +1477,7 @@ async fn real_subagent_eval_wait_retains_child_consumption_and_does_not_reselect
             r#type: "text".into(),
             data: json!({"value":"parent task"}).as_object().unwrap().clone(),
         });
-        let initial = halo_agents::Messages::new([user]);
+        let initial = halo::Messages::new([user]);
         let mut runtime = Runtime::new(1001, compiled)
             .unwrap()
             .with_checkpoint(checkpoint.clone());
@@ -1550,7 +1550,7 @@ async fn real_subagent_eval_wait_retains_child_consumption_and_does_not_reselect
         restored
             .resume(
                 "agent",
-                halo_agents::Messages::new([Message::function(json!({"approved":true}))]),
+                halo::Messages::new([Message::function(json!({"approved":true}))]),
             )
             .unwrap();
         let events = restored
@@ -1586,7 +1586,7 @@ async fn real_subagent_eval_wait_retains_child_consumption_and_does_not_reselect
 
 #[tokio::test]
 async fn planned_eval_in_nested_workflow_keeps_successful_sibling_and_current_attempt() {
-    use halo_agents::runtime::workflow::{Runtime, Status};
+    use halo::runtime::workflow::{Runtime, Status};
     let counts = Arc::new(Mutex::new(Counts::default()));
     let checkpoint = Arc::new(core::checkpoint::InMemory::new());
     let model = PlannedModel::default();
@@ -1608,7 +1608,7 @@ async fn planned_eval_in_nested_workflow_keeps_successful_sibling_and_current_at
         r#type: "text".into(),
         data: json!({"value":"weather?"}).as_object().unwrap().clone(),
     });
-    let initial = halo_agents::Messages::new([user]);
+    let initial = halo::Messages::new([user]);
     let next = Arc::new(std::sync::atomic::AtomicI64::new(9001));
     let mut runtime = Runtime::new(1001, compiled)
         .unwrap()
@@ -1666,7 +1666,7 @@ async fn planned_eval_in_nested_workflow_keeps_successful_sibling_and_current_at
     restored
         .resume(
             "child",
-            halo_agents::Messages::new([Message::function(json!({"approved":true}))]),
+            halo::Messages::new([Message::function(json!({"approved":true}))]),
         )
         .unwrap();
     let events = restored
@@ -1723,7 +1723,7 @@ async fn planned_eval_in_nested_workflow_keeps_successful_sibling_and_current_at
 
 #[tokio::test]
 async fn nested_builtin_agents_resume_model_wait_from_the_parent_checkpoint() {
-    use halo_agents::runtime::workflow::{Runtime, Status};
+    use halo::runtime::workflow::{Runtime, Status};
     for react in [false, true] {
         let compiled = if react {
             embedded_workflow(agent::react().model(WaitingModel).build().unwrap())
@@ -1740,7 +1740,7 @@ async fn nested_builtin_agents_resume_model_wait_from_the_parent_checkpoint() {
                 .unwrap()
                 .clone(),
         });
-        let initial = halo_agents::Messages::new([user]);
+        let initial = halo::Messages::new([user]);
         let next = Arc::new(std::sync::atomic::AtomicI64::new(9001));
         let mut runtime = Runtime::new(1001, compiled)
             .unwrap()
@@ -1777,7 +1777,7 @@ async fn nested_builtin_agents_resume_model_wait_from_the_parent_checkpoint() {
         restored
             .resume(
                 "child",
-                halo_agents::Messages::new([Message::function(json!({"approved":true}))]),
+                halo::Messages::new([Message::function(json!({"approved":true}))]),
             )
             .unwrap();
         let events = restored
@@ -1828,21 +1828,27 @@ async fn nested_builtin_agents_resume_model_wait_from_the_parent_checkpoint() {
 
 #[tokio::test]
 async fn embedded_reply_identity_conflict_keeps_previous_scene_and_consumption() {
-    use halo_agents::runtime::workflow::{Runtime, Status};
+    use halo::runtime::workflow::{Runtime, Status};
     for react in [false, true] {
         let counts = Arc::new(Mutex::new(Counts::default()));
         let model = Metered(Model::new(calls(&["weather_001"])), 3);
-        let toolkit = Toolkit::new().tools(Weather::new(counts.clone()));
+        let capabilities = Toolkit::new().tools(Weather::new(counts.clone()));
         let compiled = if react {
             embedded_workflow(
                 agent::react()
                     .model(model)
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .build()
                     .unwrap(),
             )
         } else {
-            embedded_workflow(agent::chat().model(model).toolkit(toolkit).build().unwrap())
+            embedded_workflow(
+                agent::chat()
+                    .model(model)
+                    .toolkit(capabilities)
+                    .build()
+                    .unwrap(),
+            )
         };
         let mut user = Message::new(Role::User);
         user.metadata = input("weather?").metadata;
@@ -1850,7 +1856,7 @@ async fn embedded_reply_identity_conflict_keeps_previous_scene_and_consumption()
             r#type: "text".into(),
             data: json!({"value":"weather?"}).as_object().unwrap().clone(),
         });
-        let initial = halo_agents::Messages::new([user]);
+        let initial = halo::Messages::new([user]);
         let runtime = Runtime::new(1001, compiled.clone()).unwrap();
         let events = runtime
             .run(initial.clone(), Arc::new(|| 9001), Cancellation::new())
@@ -1865,7 +1871,7 @@ async fn embedded_reply_identity_conflict_keeps_previous_scene_and_consumption()
         let mut reply = Message::function(json!({"approved":true}));
         reply.metadata.insert("user_id".into(), json!(999));
         runtime
-            .resume("agent", halo_agents::Messages::new([reply]))
+            .resume("agent", halo::Messages::new([reply]))
             .unwrap();
         let events = runtime
             .run(
@@ -1894,18 +1900,18 @@ async fn embedded_reply_identity_conflict_keeps_previous_scene_and_consumption()
 
 #[tokio::test]
 async fn embedded_chat_and_react_resume_eval_in_the_original_workflow_attempt() {
-    use halo_agents::runtime::workflow::{Runtime, Status, node};
+    use halo::runtime::workflow::{Runtime, Status, node};
     for react in [false, true] {
         let checkpoint = Arc::new(core::checkpoint::InMemory::new());
         let child_checkpoint = Arc::new(core::checkpoint::InMemory::new());
         let counts = Arc::new(Mutex::new(Counts::default()));
         let model = Metered(Model::new(calls(&["weather_002", "weather_001"])), 3);
-        let toolkit = Toolkit::new().tools(Weather::new(counts.clone()));
+        let capabilities = Toolkit::new().tools(Weather::new(counts.clone()));
         let compiled = if react {
             embedded_workflow(
                 agent::react()
                     .model(model)
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .checkpoint(child_checkpoint.clone())
                     .build()
                     .unwrap(),
@@ -1914,7 +1920,7 @@ async fn embedded_chat_and_react_resume_eval_in_the_original_workflow_attempt() 
             embedded_workflow(
                 agent::chat()
                     .model(model)
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .checkpoint(child_checkpoint.clone())
                     .build()
                     .unwrap(),
@@ -1926,7 +1932,7 @@ async fn embedded_chat_and_react_resume_eval_in_the_original_workflow_attempt() 
             data: json!({"value":"weather?"}).as_object().unwrap().clone(),
         });
         user.metadata = input("weather?").metadata;
-        let initial = halo_agents::Messages::new([user]);
+        let initial = halo::Messages::new([user]);
         let mut runtime = Runtime::new(1001, compiled)
             .unwrap()
             .with_checkpoint(checkpoint.clone());
@@ -1979,12 +1985,12 @@ async fn embedded_chat_and_react_resume_eval_in_the_original_workflow_attempt() 
         answer.values.insert("answer".into(), json!(42));
         let model = Metered(Model::new(answer), 5);
         let requests = model.0.requests.clone();
-        let toolkit = Toolkit::new().tools(Weather::new(counts.clone()));
+        let capabilities = Toolkit::new().tools(Weather::new(counts.clone()));
         let compiled = if react {
             embedded_workflow(
                 agent::react()
                     .model(model)
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .checkpoint(child_checkpoint.clone())
                     .build()
                     .unwrap(),
@@ -1993,7 +1999,7 @@ async fn embedded_chat_and_react_resume_eval_in_the_original_workflow_attempt() 
             embedded_workflow(
                 agent::chat()
                     .model(model)
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .checkpoint(child_checkpoint.clone())
                     .build()
                     .unwrap(),
@@ -2005,7 +2011,7 @@ async fn embedded_chat_and_react_resume_eval_in_the_original_workflow_attempt() 
         restored
             .resume(
                 "agent",
-                halo_agents::Messages::new([Message::function(json!({"approved":true}))]),
+                halo::Messages::new([Message::function(json!({"approved":true}))]),
             )
             .unwrap();
         let events = restored
@@ -2129,7 +2135,7 @@ impl Chat for Metered {
         self.0.requests.lock().unwrap().push(request);
         Ok(stream::iter(vec![Ok(Event::Complete {
             message: self.0.response.clone(),
-            usage: Some(halo_agents::model::token::Usage {
+            usage: Some(halo::model::token::Usage {
                 input: Some(self.1),
                 output: Some(0),
                 total: Some(self.1),
@@ -2149,7 +2155,7 @@ impl Chat for PendingFinal {
         } else {
             Ok(stream::iter(vec![Ok(Event::Complete {
                 message: calls(&["weather_002"]),
-                usage: Some(halo_agents::model::token::Usage {
+                usage: Some(halo::model::token::Usage {
                     input: Some(3),
                     output: Some(0),
                     total: Some(3),
@@ -2884,7 +2890,7 @@ async fn missing_eval_result_is_rejected_before_model_or_state_writes() {
 
 #[derive(Clone)]
 struct Disk(PathBuf);
-impl halo_agents::checkpoint::Checkpoint for Disk {
+impl halo::checkpoint::Checkpoint for Disk {
     async fn delete(&self, _: i64, _: &Cancellation) -> Result<(), Error> {
         std::fs::remove_file(&self.0).map_err(|e| Error::new("IO", e.to_string()))
     }
@@ -3008,7 +3014,7 @@ fn independent_process_real_subagent_recovery() {
 #[tokio::test]
 #[ignore = "subprocess fixture, invoked by independent_process_real_subagent_recovery"]
 async fn subagent_worker() {
-    use halo_agents::{
+    use halo::{
         agent::SubAgent,
         runtime::workflow::{Runtime, Status},
     };
@@ -3071,7 +3077,7 @@ async fn subagent_worker() {
         r#type: "text".into(),
         data: json!({"value":"parent task"}).as_object().unwrap().clone(),
     });
-    let initial = halo_agents::Messages::new([user]);
+    let initial = halo::Messages::new([user]);
     let mut runtime = if wait {
         Runtime::new(1001, compiled.clone()).unwrap()
     } else {
@@ -3084,7 +3090,7 @@ async fn subagent_worker() {
         runtime
             .resume(
                 "agent",
-                halo_agents::Messages::new([Message::function(json!({"approved":true}))]),
+                halo::Messages::new([Message::function(json!({"approved":true}))]),
             )
             .unwrap();
         runtime
@@ -3149,7 +3155,7 @@ async fn subagent_worker() {
 #[tokio::test]
 #[ignore = "subprocess fixture, invoked by independent_process_embedded_eval_recovery"]
 async fn embedded_eval_worker() {
-    use halo_agents::runtime::workflow::{Runtime, Status};
+    use halo::runtime::workflow::{Runtime, Status};
     let root = PathBuf::from(std::env::var_os("HEART_EVAL_SCENE").unwrap());
     let phase = std::env::var("HEART_EVAL_PHASE").unwrap();
     let kind = std::env::var("HEART_EVAL_AGENT").unwrap();
@@ -3171,12 +3177,12 @@ async fn embedded_eval_worker() {
         }),
         if phase == "wait" { 3 } else { 5 },
     );
-    let toolkit = Toolkit::new().tools(Weather::new(counts.clone()));
+    let capabilities = Toolkit::new().tools(Weather::new(counts.clone()));
     let compiled = if react {
         embedded_workflow(
             agent::react()
                 .model(model)
-                .toolkit(toolkit)
+                .toolkit(capabilities)
                 .checkpoint(child_checkpoint)
                 .build()
                 .unwrap(),
@@ -3185,7 +3191,7 @@ async fn embedded_eval_worker() {
         embedded_workflow(
             agent::chat()
                 .model(model)
-                .toolkit(toolkit)
+                .toolkit(capabilities)
                 .checkpoint(child_checkpoint)
                 .build()
                 .unwrap(),
@@ -3199,7 +3205,7 @@ async fn embedded_eval_worker() {
     let compiled = wrap_workflow(compiled, depth);
     // The enclosing Workflow supplies chat_id; user metadata is not required
     // to duplicate it just to restore the embedded Agent's original scene.
-    let initial = halo_agents::Messages::new([user]);
+    let initial = halo::Messages::new([user]);
     let mut runtime = if phase == "wait" {
         Runtime::new(1001, compiled.clone()).unwrap()
     } else {
@@ -3208,7 +3214,7 @@ async fn embedded_eval_worker() {
         runtime
             .resume(
                 if depth == 0 { "agent" } else { "child" },
-                halo_agents::Messages::new([Message::function(json!({"approved":true}))]),
+                halo::Messages::new([Message::function(json!({"approved":true}))]),
             )
             .unwrap();
         runtime
@@ -3302,23 +3308,29 @@ async fn embedded_eval_worker() {
 
 #[tokio::test]
 async fn embedded_chat_and_react_cancel_pending_eval_preserving_the_agent_scene() {
-    use halo_agents::runtime::workflow::{Runtime, Status, node};
+    use halo::runtime::workflow::{Runtime, Status, node};
     for react in [false, true] {
         let counts = Arc::new(Mutex::new(Counts::default()));
         let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let model = Metered(Model::new(calls(&["weather_002"])), 3);
-        let toolkit =
+        let capabilities =
             Toolkit::new().tools(PendingEval(Weather::new(counts.clone()), entered.clone()));
         let compiled = if react {
             embedded_workflow(
                 agent::react()
                     .model(model)
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .build()
                     .unwrap(),
             )
         } else {
-            embedded_workflow(agent::chat().model(model).toolkit(toolkit).build().unwrap())
+            embedded_workflow(
+                agent::chat()
+                    .model(model)
+                    .toolkit(capabilities)
+                    .build()
+                    .unwrap(),
+            )
         };
         let checkpoint = Arc::new(core::checkpoint::InMemory::new());
         let mut runtime = Runtime::new(1001, compiled)
@@ -3339,7 +3351,7 @@ async fn embedded_chat_and_react_cancel_pending_eval_preserving_the_agent_scene(
         });
         let events = tokio::time::timeout(std::time::Duration::from_secs(2), async {
             runtime
-                .run(halo_agents::Messages::new([user]), Arc::new(|| 9001), token)
+                .run(halo::Messages::new([user]), Arc::new(|| 9001), token)
                 .await
                 .unwrap()
                 .collect::<Vec<_>>()
@@ -3401,7 +3413,7 @@ fn independent_process_planned_subagent_recovery() {
 #[tokio::test]
 #[ignore = "subprocess fixture, invoked by independent_process_planned_subagent_recovery"]
 async fn planned_child_worker() {
-    use halo_agents::runtime::workflow::{Runtime, Status};
+    use halo::runtime::workflow::{Runtime, Status};
     let root = PathBuf::from(std::env::var_os("HEART_EVAL_SCENE").unwrap());
     let wait = std::env::var("HEART_EVAL_PHASE").unwrap() == "wait";
     let nested = std::env::var("HEART_EVAL_AGENT").unwrap() == "planned_child_nested";
@@ -3441,7 +3453,7 @@ async fn planned_child_worker() {
             runtime
                 .resume(
                     "child",
-                    halo_agents::Messages::new([Message::function(json!({"approved":true}))]),
+                    halo::Messages::new([Message::function(json!({"approved":true}))]),
                 )
                 .unwrap();
             runtime
@@ -3453,7 +3465,7 @@ async fn planned_child_worker() {
         user.metadata = input("parent task").metadata;
         let events = runtime
             .run(
-                halo_agents::Messages::new([user]),
+                halo::Messages::new([user]),
                 Arc::new(move || {
                     assert!(wait, "restore must retain Workflow execution identities");
                     next_plan_id()
@@ -3493,7 +3505,7 @@ async fn planned_child_worker() {
             checkpoint.load(1001, &Cancellation::new()).await.unwrap(),
         )
     };
-    let state: halo_agents::runtime::agent::State = serde_json::from_value(scene).unwrap();
+    let state: halo::runtime::agent::State = serde_json::from_value(scene).unwrap();
     let parent_execution = state.nodes["a"].execution.as_ref().unwrap();
     let attempt = &parent_execution.attempts[0];
     assert_eq!(attempt.nodes.len(), 1);
@@ -3521,7 +3533,7 @@ async fn planned_child_worker() {
         assert!(events.iter().all(Result::is_ok), "{events:?}");
         assert_eq!(
             child.status,
-            halo_agents::runtime::agent::node::Status::Succeeded
+            halo::runtime::agent::node::Status::Succeeded
         );
         assert_eq!(execution.attempts.len(), 1);
         assert_eq!(child_attempt.agent.as_ref().unwrap()["status"], "succeeded");

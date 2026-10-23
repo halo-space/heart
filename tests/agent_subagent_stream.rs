@@ -1,7 +1,7 @@
 //! I03: the parent consumes the same native events while children are running.
 use futures_core::Stream;
 use futures_util::{StreamExt, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{self, Agent, Input, SubAgent},
     checkpoint::Checkpoint as _,
@@ -356,10 +356,10 @@ struct WaitingChild;
 impl Agent for WaitingChild {
     async fn reply(
         &self,
-        _: halo_agents::agent::Input,
-        _: halo_agents::Cancellation,
-    ) -> Result<(), halo_agents::Error> {
-        Err(halo_agents::Error::new(
+        _: halo::agent::Input,
+        _: halo::Cancellation,
+    ) -> Result<(), halo::Error> {
+        Err(halo::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))
@@ -449,10 +449,10 @@ struct SourcedChild;
 impl Agent for SourcedChild {
     async fn reply(
         &self,
-        _: halo_agents::agent::Input,
-        _: halo_agents::Cancellation,
-    ) -> Result<(), halo_agents::Error> {
-        Err(halo_agents::Error::new(
+        _: halo::agent::Input,
+        _: halo::Cancellation,
+    ) -> Result<(), halo::Error> {
+        Err(halo::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))
@@ -604,7 +604,7 @@ async fn planned_task_forwards_live_child_events_but_commits_only_its_own_output
     let scene = checkpoint.load(501, &Cancellation::new()).await.unwrap();
     let node = &scene["nodes"]["a"];
     assert_eq!(node["status"], "succeeded");
-    let messages: halo_agents::Messages = serde_json::from_value(node["messages"].clone()).unwrap();
+    let messages: halo::Messages = serde_json::from_value(node["messages"].clone()).unwrap();
     let child_results = messages
         .0
         .iter()
@@ -639,8 +639,8 @@ async fn planned_task_forwards_live_child_events_but_commits_only_its_own_output
     }));
 }
 
-fn embedded<A: Agent + 'static>(agent: A) -> halo_agents::runtime::workflow::CompiledWorkflow {
-    use halo_agents::runtime::workflow::{
+fn embedded<A: Agent + 'static>(agent: A) -> halo::runtime::workflow::CompiledWorkflow {
+    use halo::runtime::workflow::{
         WorkflowBuilder,
         graph::{END, START},
     };
@@ -698,7 +698,7 @@ async fn nested_workflow_forwards_the_same_live_child_source_without_extra_subsc
                     .unwrap(),
             )
         };
-        let mut runtime = halo_agents::runtime::workflow::Runtime::new(501, graph).unwrap();
+        let mut runtime = halo::runtime::workflow::Runtime::new(501, graph).unwrap();
         let mut initial = Message::new(Role::User);
         initial.values = json!({"metadata":input().metadata,"payload":input().payload})
             .as_object()
@@ -707,7 +707,7 @@ async fn nested_workflow_forwards_the_same_live_child_source_without_extra_subsc
         let mut events = Box::pin(
             runtime
                 .run(
-                    halo_agents::Messages::new([initial]),
+                    halo::Messages::new([initial]),
                     Arc::new(next_id),
                     Cancellation::new(),
                 )
@@ -741,10 +741,10 @@ struct MultiStageChild(Arc<Notify>);
 impl Agent for MultiStageChild {
     async fn reply(
         &self,
-        _: halo_agents::agent::Input,
-        _: halo_agents::Cancellation,
-    ) -> Result<(), halo_agents::Error> {
-        Err(halo_agents::Error::new(
+        _: halo::agent::Input,
+        _: halo::Cancellation,
+    ) -> Result<(), halo::Error> {
+        Err(halo::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))

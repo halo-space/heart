@@ -1,7 +1,7 @@
 //! Native waiting-fact collection, not the complete generic live handoff.
 use std::collections::BTreeMap;
 
-use halo_agents::{
+use halo::{
     Cancellation, Message,
     checkpoint::Checkpoint,
     core,
@@ -77,7 +77,7 @@ async fn three_feedback_parts_preserve_required_count_and_progress_through_check
             waits: BTreeMap::from([(5001, record)]),
             ..Default::default()
         }],
-        waits: vec![halo_agents::runtime::agent::wait::Wait {
+        waits: vec![halo::runtime::agent::wait::Wait {
             nodes: vec![],
             step: "human_0".into(),
         }],

@@ -9,7 +9,7 @@ use std::{
 
 use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{Agent, Input, Payload, toolkit::Toolkit},
     core,
@@ -183,7 +183,7 @@ impl Drop for Directory {
 
 #[tokio::test]
 async fn workspace_preserves_ready_tools_mcps_and_skills() {
-    let toolkit = Toolkit::new()
+    let capabilities = Toolkit::new()
         .tools(Echo(definition("echo")))
         .mcps([Remote {
             definition: McpDefinition {
@@ -200,11 +200,11 @@ async fn workspace_preserves_ready_tools_mcps_and_skills() {
     let directory = Directory::new();
     let workspace = core::workspace::Local::new(&directory.0)
         .unwrap()
-        .toolkit(toolkit);
+        .toolkit(capabilities);
     assert_eq!(workspace.definition().mode, Mode::Local);
     assert!(workspace.definition().path.is_some());
-    let toolkit = Toolkit::from(workspace);
-    let names: Vec<_> = toolkit
+    let capabilities = Toolkit::from(workspace);
+    let names: Vec<_> = capabilities
         .definitions()
         .into_iter()
         .map(|definition| definition.name)
@@ -227,12 +227,12 @@ async fn workspace_preserves_ready_tools_mcps_and_skills() {
     // Skill metadata stays in the Toolkit catalog and does not become a
     // separate executable definition before the model view is prepared.
     assert!(
-        toolkit
+        capabilities
             .definitions()
             .iter()
             .all(|definition| definition.name != "research")
     );
-    let (result, _) = toolkit
+    let (result, _) = capabilities
         .execute(call("remote", json!({})), &cancellation)
         .await
         .unwrap();
@@ -242,13 +242,13 @@ async fn workspace_preserves_ready_tools_mcps_and_skills() {
 #[tokio::test]
 async fn bound_file_tools_share_one_backend_and_preserve_direct_errors() {
     let directory = Directory::new();
-    let toolkit = Toolkit::from(
+    let capabilities = Toolkit::from(
         core::workspace::Local::new(&directory.0)
             .unwrap()
             .toolkit(Toolkit::new()),
     );
     let cancellation = Cancellation::new();
-    toolkit
+    capabilities
         .execute(
             call(
                 "workspace_write",
@@ -258,7 +258,7 @@ async fn bound_file_tools_share_one_backend_and_preserve_direct_errors() {
         )
         .await
         .unwrap();
-    let (result, _) = toolkit
+    let (result, _) = capabilities
         .execute(
             call("workspace_read", json!({"path":"notes/draft.txt"})),
             &cancellation,
@@ -283,7 +283,7 @@ async fn bound_file_tools_share_one_backend_and_preserve_direct_errors() {
     assert_eq!(error.code, "NOT_FOUND");
     let cancelled = Cancellation::new();
     cancelled.cancel();
-    let error = toolkit
+    let error = capabilities
         .execute(
             call(
                 "workspace_write",
@@ -294,7 +294,7 @@ async fn bound_file_tools_share_one_backend_and_preserve_direct_errors() {
         .await
         .unwrap_err();
     assert_eq!(error.code, "CANCELLED");
-    let (result, _) = toolkit
+    let (result, _) = capabilities
         .execute(
             call("workspace_read", json!({"path":"notes/draft.txt"})),
             &cancellation,
@@ -398,7 +398,7 @@ async fn permission_denial_stops_a_workspace_write_before_side_effects() {
     let decisions = Arc::new(AtomicUsize::new(0));
     let checks = Arc::clone(&decisions);
     let policy = core::permission::Permission::new(
-        move |request: halo_agents::permission::Request, _: Cancellation| {
+        move |request: halo::permission::Request, _: Cancellation| {
             let checks = Arc::clone(&checks);
             async move {
                 assert_eq!(request.resource, "workspace_write");
@@ -474,19 +474,19 @@ fn harness_without_workspace_does_not_install_file_tools() {
 // A contract fixture, not a database backend. It deliberately has no file
 // methods, path parameter, filesystem or in-memory file store.
 struct DatabaseWorkspace {
-    definition: halo_agents::workspace::Definition,
-    toolkit: Toolkit,
+    definition: halo::workspace::Definition,
+    capabilities: Toolkit,
 }
 
 impl Workspace for DatabaseWorkspace {
-    fn definition(&self) -> &halo_agents::workspace::Definition {
+    fn definition(&self) -> &halo::workspace::Definition {
         &self.definition
     }
 }
 
 impl From<DatabaseWorkspace> for Toolkit {
     fn from(workspace: DatabaseWorkspace) -> Self {
-        workspace.toolkit
+        workspace.capabilities
     }
 }
 
@@ -513,12 +513,12 @@ impl Tool for Query {
 
 fn database_workspace(calls: Arc<AtomicUsize>) -> DatabaseWorkspace {
     DatabaseWorkspace {
-        definition: halo_agents::workspace::Definition {
+        definition: halo::workspace::Definition {
             mode: Mode::Server,
             path: None,
             metadata: Default::default(),
         },
-        toolkit: Toolkit::new().tools(Query {
+        capabilities: Toolkit::new().tools(Query {
             definition: ToolDefinition {
                 name: "records_read".into(),
                 description: "Read a bound database record using a filter, not a path".into(),
@@ -604,8 +604,8 @@ async fn definition_only_server_uses_its_own_schema_and_the_original_harness_loo
 #[tokio::test]
 async fn definition_only_server_keeps_tool_validation_cancellation_and_results() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let toolkit = Toolkit::from(database_workspace(Arc::clone(&calls)));
-    let error = toolkit
+    let capabilities = Toolkit::from(database_workspace(Arc::clone(&calls)));
+    let error = capabilities
         .execute(
             call("records_read", json!({"path":"fake/file"})),
             &Cancellation::new(),
@@ -616,7 +616,7 @@ async fn definition_only_server_keeps_tool_validation_cancellation_and_results()
     let cancellation = Cancellation::new();
     cancellation.cancel();
     assert_eq!(
-        toolkit
+        capabilities
             .execute(
                 call("records_read", json!({"filter":{"id":1001}})),
                 &cancellation
@@ -627,7 +627,7 @@ async fn definition_only_server_keeps_tool_validation_cancellation_and_results()
         "CANCELLED"
     );
     assert_eq!(calls.load(Ordering::SeqCst), 0);
-    let (result, _) = toolkit
+    let (result, _) = capabilities
         .execute(
             call("records_read", json!({"filter":{"id":1001}})),
             &Cancellation::new(),
@@ -653,7 +653,7 @@ async fn definition_only_server_still_checks_existing_permission_before_call() {
         message(Role::Assistant, "denied"),
     ]);
     let permission = core::permission::Permission::new(
-        |_: halo_agents::permission::Request, _: Cancellation| async {
+        |_: halo::permission::Request, _: Cancellation| async {
             Ok(Decision {
                 behavior: Behavior::Deny,
                 reason: Some("not allowed".into()),
@@ -698,7 +698,7 @@ async fn configured_workspace_commands_use_the_original_harness_loop_and_shared_
         .workspace(
             core::workspace::Local::new(&directory.0)
                 .unwrap()
-                .sandbox(halo_agents::sandbox::Local::default()),
+                .sandbox(halo::sandbox::Local::default()),
         )
         .build()
         .unwrap();
@@ -751,7 +751,7 @@ async fn permission_denial_blocks_builtin_delete_and_command_without_side_effect
         let checks = Arc::new(AtomicUsize::new(0));
         let checked = Arc::clone(&checks);
         let permission = core::permission::Permission::new(
-            move |request: halo_agents::permission::Request, _: Cancellation| {
+            move |request: halo::permission::Request, _: Cancellation| {
                 assert_eq!(request.resource, name);
                 checked.fetch_add(1, Ordering::SeqCst);
                 async {
@@ -767,7 +767,7 @@ async fn permission_denial_blocks_builtin_delete_and_command_without_side_effect
             .workspace(
                 core::workspace::Local::new(&directory.0)
                     .unwrap()
-                    .sandbox(halo_agents::sandbox::Local::default()),
+                    .sandbox(halo::sandbox::Local::default()),
             )
             .permission(permission)
             .build()
@@ -795,7 +795,7 @@ fn automatically_bound_operations_still_reject_custom_name_collisions() {
         let (model, requests) = Model::new(vec![]);
         let workspace = core::workspace::Local::new(&directory.0)
             .unwrap()
-            .sandbox(halo_agents::sandbox::Local::default())
+            .sandbox(halo::sandbox::Local::default())
             .toolkit(Toolkit::new().tools(Echo(definition(name))));
         let Err(error) = harness::builder().model(model).workspace(workspace).build() else {
             panic!("built-in operation collision was accepted");

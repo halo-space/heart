@@ -3,7 +3,7 @@
 use std::sync::{Arc, Mutex};
 
 use futures_util::stream;
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     agent::{self, Agent, Input},
     checkpoint::Checkpoint as _,

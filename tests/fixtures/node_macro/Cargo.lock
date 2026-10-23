@@ -798,7 +798,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "halo-agents"
+name = "halo"
 version = "0.1.0"
 dependencies = [
  "csv",
@@ -844,7 +844,7 @@ dependencies = [
 name = "heart-node-macro-fixtures"
 version = "0.0.0"
 dependencies = [
- "halo-agents",
+ "halo",
  "schemars 0.8.22",
  "serde",
 ]

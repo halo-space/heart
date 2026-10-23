@@ -14,7 +14,7 @@ use std::{
 use futures_core::Stream;
 use futures_executor::block_on;
 use futures_util::{StreamExt, poll};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     agent::{self, Agent, Input, Payload},
     checkpoint::Checkpoint as _,
@@ -197,7 +197,7 @@ fn execution_source_is_only_in_events_not_plan_history_checkpoint_or_next_model_
         for gate in gates.into_values() {
             gate.send(Ok(())).unwrap();
         }
-        let checkpoint = Arc::new(halo_agents::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
         let agent = agent::react()
             .model(model)
             .with_id_fn(next_id)
@@ -394,7 +394,7 @@ fn failed_task_waits_for_independent_work_without_activating_its_downstream() {
 fn cancelling_parallel_tasks_settles_each_admitted_task_and_never_starts_queued_work() {
     block_on(async {
         let (model, probe, _gates) = setup();
-        let checkpoint = Arc::new(halo_agents::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
         let agent = agent::react()
             .model(model)
             .with_id_fn(next_id)

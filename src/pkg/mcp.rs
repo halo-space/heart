@@ -50,7 +50,7 @@ pub(crate) struct Client {
 fn config() -> ClientConfig {
     ClientConfig::new(
         ClientCapabilities::default(),
-        Implementation::new("halo-agents", env!("CARGO_PKG_VERSION")),
+        Implementation::new("halo", env!("CARGO_PKG_VERSION")),
     )
     .with_protocol_version(ProtocolVersion::V_2025_11_25)
 }

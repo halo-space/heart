@@ -11,7 +11,7 @@ use std::{
 
 use futures_core::Stream;
 use futures_util::{StreamExt, poll, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{self, Agent, Input, SubAgent},
     checkpoint::Checkpoint,
@@ -677,8 +677,8 @@ fn workflow(
     depth: usize,
     log: Arc<Log>,
     child_store: Arc<Store>,
-) -> halo_agents::runtime::workflow::CompiledWorkflow {
-    use halo_agents::runtime::workflow::WorkflowBuilder;
+) -> halo::runtime::workflow::CompiledWorkflow {
+    use halo::runtime::workflow::WorkflowBuilder;
     let mut builder = WorkflowBuilder::new("cancel-owner");
     if let Some(child_react) = child_react {
         let child = if child_react {
@@ -756,17 +756,17 @@ fn workflow(
 }
 
 fn finish_workflow(
-    mut builder: halo_agents::runtime::workflow::WorkflowBuilder,
+    mut builder: halo::runtime::workflow::WorkflowBuilder,
     depth: usize,
-) -> halo_agents::runtime::workflow::CompiledWorkflow {
-    use halo_agents::runtime::workflow::{
+) -> halo::runtime::workflow::CompiledWorkflow {
+    use halo::runtime::workflow::{
         WorkflowBuilder,
         graph::{END, START},
     };
     builder
-        .add_node("sibling", halo_agents::node::Echo)
+        .add_node("sibling", halo::node::Echo)
         .unwrap();
-    builder.add_node("merge", halo_agents::node::Echo).unwrap();
+    builder.add_node("merge", halo::node::Echo).unwrap();
     builder.add_edge(START, "agent").unwrap();
     builder.add_edge(START, "sibling").unwrap();
     builder.add_join(["agent", "sibling"], "merge").unwrap();
@@ -782,10 +782,10 @@ fn finish_workflow(
     graph
 }
 
-fn workflow_input() -> halo_agents::Messages {
+fn workflow_input() -> halo::Messages {
     let mut message = Message::new(Role::User);
     message.metadata = input().metadata;
-    halo_agents::Messages::new([message])
+    halo::Messages::new([message])
 }
 
 fn workflow_attempt<'a>(scene: &'a Value, node: &str) -> &'a Value {
@@ -799,7 +799,7 @@ fn workflow_attempt<'a>(scene: &'a Value, node: &str) -> &'a Value {
 
 #[tokio::test]
 async fn workflow_cancellation_closes_actual_nested_agent_before_checkpoint() {
-    use halo_agents::runtime::workflow::Runtime;
+    use halo::runtime::workflow::Runtime;
     for react in [false, true] {
         for child in [None, Some(false), Some(true)] {
             for depth in [0, 2] {
@@ -923,7 +923,7 @@ async fn workflow_cancellation_closes_actual_nested_agent_before_checkpoint() {
 
 #[tokio::test]
 async fn dropping_workflow_releases_nested_agents_without_checkpoint_closeout() {
-    use halo_agents::runtime::workflow::Runtime;
+    use halo::runtime::workflow::Runtime;
     for react in [false, true] {
         for child in [None, Some(false), Some(true)] {
             let log = Arc::new(Log::default());
@@ -983,7 +983,7 @@ impl Agent for OpaqueCancelled {
 
 #[tokio::test]
 async fn opaque_agents_cancelled_complete_still_closes_without_waiting_for_eof() {
-    use halo_agents::runtime::workflow::{
+    use halo::runtime::workflow::{
         Runtime, WorkflowBuilder,
         graph::{END, START},
     };
@@ -1182,8 +1182,8 @@ fn planned_workflow(
     depth: usize,
     log: Arc<Log>,
     store: Arc<Store>,
-) -> halo_agents::runtime::workflow::CompiledWorkflow {
-    use halo_agents::runtime::workflow::WorkflowBuilder;
+) -> halo::runtime::workflow::CompiledWorkflow {
+    use halo::runtime::workflow::WorkflowBuilder;
     let mut builder = WorkflowBuilder::new("planned-cancel-owner");
     if matches!(kind, PlannedEmbedding::Plan) {
         builder
@@ -1350,7 +1350,7 @@ fn check_embedded_plan(scene: &Value, kind: PlannedEmbedding) {
 
 #[tokio::test]
 async fn workflow_plans_and_child_plans_close_in_their_actual_nested_owners() {
-    use halo_agents::runtime::workflow::Runtime;
+    use halo::runtime::workflow::Runtime;
     let kinds = [
         PlannedEmbedding::Plan,
         PlannedEmbedding::PlannedDelegation(false),
@@ -1487,7 +1487,7 @@ impl Checkpoint for FailingCloseout {
 
 #[tokio::test]
 async fn failed_outer_checkpoint_keeps_cancelled_scene_and_never_reexecutes_work() {
-    use halo_agents::runtime::workflow::Runtime;
+    use halo::runtime::workflow::Runtime;
     for after_write in [false, true] {
         for depth in [0, 2] {
             let log = Arc::new(Log::default());
@@ -1614,7 +1614,7 @@ impl Checkpoint for DelayedCloseout {
 
 #[tokio::test]
 async fn pending_outer_closeout_is_owned_by_the_stream_without_hidden_writers() {
-    use halo_agents::runtime::workflow::Runtime;
+    use halo::runtime::workflow::Runtime;
     for drop_while_saving in [false, true] {
         let store = Arc::new(DelayedCloseout::default());
         let child_store = Arc::new(Store::default());

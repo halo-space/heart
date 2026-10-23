@@ -3,7 +3,7 @@
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::toolkit::Toolkit,
     core,
@@ -42,8 +42,8 @@ fn call(name: &str, arguments: Value) -> Call {
     }
 }
 
-async fn run(toolkit: &Toolkit, name: &str, arguments: Value) -> Result<Message, Error> {
-    let (message, evaluation) = toolkit
+async fn run(capabilities: &Toolkit, name: &str, arguments: Value) -> Result<Message, Error> {
+    let (message, evaluation) = capabilities
         .execute(call(name, arguments), &Cancellation::new())
         .await?;
     assert!(evaluation.passed);
@@ -59,9 +59,9 @@ async fn run(toolkit: &Toolkit, name: &str, arguments: Value) -> Result<Message,
 #[tokio::test]
 async fn local_defaults_include_delete_but_not_host_commands() {
     let directory = Directory::new();
-    let toolkit = Toolkit::from(directory.workspace());
+    let capabilities = Toolkit::from(directory.workspace());
     assert_eq!(
-        toolkit
+        capabilities
             .definitions()
             .iter()
             .map(|tool| tool.name.as_str())
@@ -76,12 +76,12 @@ async fn local_defaults_include_delete_but_not_host_commands() {
             "workspace_delete",
         ]
     );
-    for definition in toolkit.definitions() {
+    for definition in capabilities.definitions() {
         definition.validate().unwrap();
     }
     assert_eq!(
         run(
-            &toolkit,
+            &capabilities,
             "exec_shell",
             json!({"args":["/bin/sh","-c","printf wrong > unexpected"]})
         )
@@ -96,9 +96,9 @@ async fn local_defaults_include_delete_but_not_host_commands() {
 #[tokio::test]
 async fn deletion_is_relative_single_file_physical_and_cancel_safe() {
     let directory = Directory::new();
-    let toolkit = Toolkit::from(directory.workspace());
+    let capabilities = Toolkit::from(directory.workspace());
     run(
-        &toolkit,
+        &capabilities,
         "write",
         json!({"path":"notes/draft.txt","content":"keep"}),
     )
@@ -113,7 +113,7 @@ async fn deletion_is_relative_single_file_physical_and_cancel_safe() {
         "notes/",
     ] {
         assert_eq!(
-            run(&toolkit, "delete", json!({"path":path}))
+            run(&capabilities, "delete", json!({"path":path}))
                 .await
                 .unwrap_err()
                 .code,
@@ -121,7 +121,7 @@ async fn deletion_is_relative_single_file_physical_and_cancel_safe() {
         );
     }
     assert!(
-        run(&toolkit, "delete", json!({"path":"notes"}))
+        run(&capabilities, "delete", json!({"path":"notes"}))
             .await
             .is_err()
     );
@@ -132,7 +132,7 @@ async fn deletion_is_relative_single_file_physical_and_cancel_safe() {
     let cancellation = Cancellation::new();
     cancellation.cancel();
     assert_eq!(
-        toolkit
+        capabilities
             .execute(
                 call("delete", json!({"path":"notes/draft.txt"})),
                 &cancellation
@@ -142,7 +142,7 @@ async fn deletion_is_relative_single_file_physical_and_cancel_safe() {
             .code,
         "CANCELLED"
     );
-    let message = run(&toolkit, "delete", json!({"path":"notes/draft.txt"}))
+    let message = run(&capabilities, "delete", json!({"path":"notes/draft.txt"}))
         .await
         .unwrap();
     assert_eq!(
@@ -155,7 +155,7 @@ async fn deletion_is_relative_single_file_physical_and_cancel_safe() {
     assert!(!directory.0.join("notes/draft.txt").exists());
     assert!(directory.0.join("notes").is_dir());
     assert_eq!(
-        run(&toolkit, "delete", json!({"path":"notes/draft.txt"}))
+        run(&capabilities, "delete", json!({"path":"notes/draft.txt"}))
             .await
             .unwrap_err()
             .code,
@@ -170,10 +170,10 @@ async fn deletion_does_not_follow_symlink_resources_or_parents() {
     std::fs::write(outside.0.join("keep.txt"), "keep").unwrap();
     std::os::unix::fs::symlink(outside.0.join("keep.txt"), inside.0.join("file-link")).unwrap();
     std::os::unix::fs::symlink(&outside.0, inside.0.join("directory-link")).unwrap();
-    let toolkit = Toolkit::from(inside.workspace());
+    let capabilities = Toolkit::from(inside.workspace());
     for path in ["file-link", "directory-link/keep.txt"] {
         assert_eq!(
-            run(&toolkit, "delete", json!({"path":path}))
+            run(&capabilities, "delete", json!({"path":path}))
                 .await
                 .unwrap_err()
                 .code,
@@ -196,17 +196,17 @@ async fn configured_sandbox_automatically_adds_command_and_uses_the_same_files()
         0,
         "configuration must not execute"
     );
-    let toolkit = Toolkit::from(workspace);
-    assert_eq!(toolkit.definitions().len(), 8);
+    let capabilities = Toolkit::from(workspace);
+    assert_eq!(capabilities.definitions().len(), 8);
     run(
-        &toolkit,
+        &capabilities,
         "write",
         json!({"path":"draft.txt","content":"draft"}),
     )
     .await
     .unwrap();
     let read = run(
-        &toolkit,
+        &capabilities,
         "exec_shell",
         json!({"args":["/bin/cat","draft.txt"]}),
     )
@@ -220,24 +220,24 @@ async fn configured_sandbox_automatically_adds_command_and_uses_the_same_files()
             .clone()
     );
     run(
-        &toolkit,
+        &capabilities,
         "exec_shell",
         json!({"args":["/bin/sh","-c","printf 'new data' > draft.txt"]}),
     )
     .await
     .unwrap();
     assert_eq!(
-        run(&toolkit, "read", json!({"path":"draft.txt"}))
+        run(&capabilities, "read", json!({"path":"draft.txt"}))
             .await
             .unwrap()
             .values["content"],
         "new data"
     );
-    run(&toolkit, "delete", json!({"path":"draft.txt"}))
+    run(&capabilities, "delete", json!({"path":"draft.txt"}))
         .await
         .unwrap();
     run(
-        &toolkit,
+        &capabilities,
         "exec_shell",
         json!({"args":["/bin/sh","-c","test ! -e draft.txt"]}),
     )
@@ -249,9 +249,9 @@ async fn configured_sandbox_automatically_adds_command_and_uses_the_same_files()
 #[tokio::test]
 async fn command_argv_is_literal_and_call_cannot_override_environment_configuration() {
     let directory = Directory::new();
-    let toolkit = Toolkit::from(directory.workspace().sandbox(Sandbox::default()));
+    let capabilities = Toolkit::from(directory.workspace().sandbox(Sandbox::default()));
     let message = run(
-        &toolkit,
+        &capabilities,
         "exec_shell",
         json!({"args":["/usr/bin/printf","%s","$(exit 7); * $HOME"]}),
     )
@@ -270,7 +270,7 @@ async fn command_argv_is_literal_and_call_cannot_override_environment_configurat
         json!({"args":["/bin/pwd"],"timeout":100}),
     ] {
         assert_eq!(
-            run(&toolkit, "exec_shell", arguments)
+            run(&capabilities, "exec_shell", arguments)
                 .await
                 .unwrap_err()
                 .code,
@@ -279,7 +279,7 @@ async fn command_argv_is_literal_and_call_cannot_override_environment_configurat
     }
     assert_eq!(
         run(
-            &toolkit,
+            &capabilities,
             "exec_shell",
             json!({"args":["/nonexistent-heart-workspace-command"]})
         )
@@ -291,7 +291,7 @@ async fn command_argv_is_literal_and_call_cannot_override_environment_configurat
     let cancellation = Cancellation::new();
     cancellation.cancel();
     assert_eq!(
-        toolkit
+        capabilities
             .execute(
                 call(
                     "exec_shell",
@@ -310,9 +310,9 @@ async fn command_argv_is_literal_and_call_cannot_override_environment_configurat
 #[tokio::test]
 async fn command_failure_is_direct_not_retried_and_does_not_undo_side_effects() {
     let directory = Directory::new();
-    let toolkit = Toolkit::from(directory.workspace().sandbox(Sandbox::default()));
+    let capabilities = Toolkit::from(directory.workspace().sandbox(Sandbox::default()));
     let error = run(
-        &toolkit,
+        &capabilities,
         "exec_shell",
         json!({"args":["/bin/sh","-c","printf x >> attempts; printf out; printf err >&2; exit 7"]}),
     )
@@ -332,7 +332,7 @@ async fn command_failure_is_direct_not_retried_and_does_not_undo_side_effects() 
 #[tokio::test]
 async fn command_reuses_configured_output_limit_timeout_and_utf8_errors() {
     let directory = Directory::new();
-    let toolkit = Toolkit::from(
+    let capabilities = Toolkit::from(
         directory.workspace().sandbox(
             Sandbox::new(Config {
                 max_output: 3,
@@ -343,7 +343,7 @@ async fn command_reuses_configured_output_limit_timeout_and_utf8_errors() {
     );
     assert_eq!(
         run(
-            &toolkit,
+            &capabilities,
             "exec_shell",
             json!({"args":["/usr/bin/printf","abcd"]})
         )
@@ -354,7 +354,7 @@ async fn command_reuses_configured_output_limit_timeout_and_utf8_errors() {
     );
     assert_eq!(
         run(
-            &toolkit,
+            &capabilities,
             "exec_shell",
             json!({"args":["/bin/sh","-c","printf '\\377'"]})
         )
@@ -363,7 +363,7 @@ async fn command_reuses_configured_output_limit_timeout_and_utf8_errors() {
         .code,
         "INVALID_RESPONSE"
     );
-    let toolkit = Toolkit::from(
+    let capabilities = Toolkit::from(
         directory.workspace().sandbox(
             Sandbox::new(Config {
                 timeout: Duration::from_millis(50),
@@ -375,7 +375,11 @@ async fn command_reuses_configured_output_limit_timeout_and_utf8_errors() {
     assert_eq!(
         tokio::time::timeout(
             Duration::from_secs(5),
-            run(&toolkit, "exec_shell", json!({"args":["/bin/sleep","20"]}))
+            run(
+                &capabilities,
+                "exec_shell",
+                json!({"args":["/bin/sleep","20"]})
+            )
         )
         .await
         .unwrap()
@@ -385,7 +389,7 @@ async fn command_reuses_configured_output_limit_timeout_and_utf8_errors() {
     );
     // The writer lock is released after the failed/timed-out process.
     run(
-        &toolkit,
+        &capabilities,
         "write",
         json!({"path":"after.txt","content":"ok"}),
     )
@@ -399,17 +403,17 @@ async fn independent_workspaces_do_not_share_cwd_or_execution_configuration() {
     let second = Directory::new();
     std::fs::write(first.0.join("value.txt"), "first").unwrap();
     std::fs::write(second.0.join("value.txt"), "second").unwrap();
-    let first_toolkit = Toolkit::from(first.workspace().sandbox(Sandbox::default()));
-    let second_toolkit = Toolkit::from(second.workspace().sandbox(Sandbox::default()));
+    let first_mounted_capabilities = Toolkit::from(first.workspace().sandbox(Sandbox::default()));
+    let second_mounted_capabilities = Toolkit::from(second.workspace().sandbox(Sandbox::default()));
     let original_cwd = std::env::current_dir().unwrap();
     let (a, b) = tokio::join!(
         run(
-            &first_toolkit,
+            &first_mounted_capabilities,
             "exec_shell",
             json!({"args":["/bin/cat","value.txt"]})
         ),
         run(
-            &second_toolkit,
+            &second_mounted_capabilities,
             "exec_shell",
             json!({"args":["/bin/cat","value.txt"]})
         ),
@@ -423,12 +427,12 @@ async fn independent_workspaces_do_not_share_cwd_or_execution_configuration() {
 async fn cancellation_while_waiting_for_a_command_lock_never_runs_the_file_operation() {
     let directory = Directory::new();
     std::fs::write(directory.0.join("draft.txt"), "keep").unwrap();
-    let toolkit = Arc::new(Toolkit::from(
+    let capabilities = Arc::new(Toolkit::from(
         directory.workspace().sandbox(Sandbox::default()),
     ));
     let cancellation = Cancellation::new();
     let signal = cancellation.clone();
-    let running = Arc::clone(&toolkit);
+    let running = Arc::clone(&capabilities);
     let process = tokio::spawn(async move {
         running
             .execute(
@@ -461,7 +465,7 @@ async fn cancellation_while_waiting_for_a_command_lock_never_runs_the_file_opera
         ("list", json!({})),
     ] {
         let waiting = Cancellation::new();
-        let mut operation = std::pin::pin!(toolkit.execute(call(name, args), &waiting));
+        let mut operation = std::pin::pin!(capabilities.execute(call(name, args), &waiting));
         assert!(futures_util::poll!(&mut operation).is_pending());
         waiting.cancel();
         assert_eq!(
@@ -484,13 +488,13 @@ async fn cancellation_while_waiting_for_a_command_lock_never_runs_the_file_opera
         "CANCELLED"
     );
     assert_eq!(
-        run(&toolkit, "read", json!({"path":"draft.txt"}))
+        run(&capabilities, "read", json!({"path":"draft.txt"}))
             .await
             .unwrap()
             .values["content"],
         "keep"
     );
-    run(&toolkit, "delete", json!({"path":"draft.txt"}))
+    run(&capabilities, "delete", json!({"path":"draft.txt"}))
         .await
         .unwrap();
 }

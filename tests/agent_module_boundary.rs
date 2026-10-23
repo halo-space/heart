@@ -6,12 +6,12 @@ use std::task::{Context, Poll};
 
 use futures_executor::block_on;
 use futures_util::{Stream, StreamExt, stream};
-use halo_agents::agent::{self, Agent, Input, Payload};
-use halo_agents::event::Event;
-use halo_agents::message::Role;
-use halo_agents::model::chat::{Chat, Request};
-use halo_agents::runtime::agent::{graph::Graph, node::Status};
-use halo_agents::{Cancellation, Error, Message};
+use halo::agent::{self, Agent, Input, Payload};
+use halo::event::Event;
+use halo::message::Role;
+use halo::model::chat::{Chat, Request};
+use halo::runtime::agent::{graph::Graph, node::Status};
+use halo::{Cancellation, Error, Message};
 use serde_json::{Map, json};
 
 struct Model {
@@ -146,9 +146,9 @@ fn chat_is_constructed_and_run_from_agent_without_a_runtime_owner() {
 }
 
 #[test]
-fn react_and_toolkit_are_agent_assembly_not_runtime_kinds() {
+fn react_and_mounted_capabilities_are_agent_assembly_not_runtime_kinds() {
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let agent: halo_agents::core::agent::react::Agent<Model> = agent::react()
+    let agent: halo::core::agent::react::Agent<Model> = agent::react()
         .model(Model {
             requests: Arc::clone(&requests),
         })
@@ -160,7 +160,7 @@ fn react_and_toolkit_are_agent_assembly_not_runtime_kinds() {
 
 #[test]
 fn runtime_graph_keeps_execution_state_and_its_existing_json_shape() {
-    use halo_agents::plan::{Plan, PlanNode};
+    use halo::plan::{Plan, PlanNode};
     let mut plan = Plan::new(1).unwrap();
     plan.add(
         PlanNode {

@@ -3,7 +3,7 @@
 use std::sync::{Arc, LazyLock, Mutex};
 
 use futures_util::{StreamExt, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{self, Agent, Input, toolkit::Toolkit},
     checkpoint::Checkpoint,
@@ -94,11 +94,11 @@ async fn run(react: bool, with_tool: bool) -> (Vec<Request>, Vec<Event>, serde_j
         "payload":[{"type":"json", "data":{"value":{"reply_id":88,"text":"question"}}}]
     }))
     .unwrap();
-    let toolkit = Toolkit::new().tools(vec![Lookup]);
+    let capabilities = Toolkit::new().tools(vec![Lookup]);
     let events = if react {
         let mut builder = agent::react().model(model).checkpoint(checkpoint.clone());
         if with_tool {
-            builder = builder.toolkit(toolkit);
+            builder = builder.toolkit(capabilities);
         }
         builder
             .build()
@@ -111,7 +111,7 @@ async fn run(react: bool, with_tool: bool) -> (Vec<Request>, Vec<Event>, serde_j
     } else {
         let mut builder = agent::chat().model(model).checkpoint(checkpoint.clone());
         if with_tool {
-            builder = builder.toolkit(toolkit);
+            builder = builder.toolkit(capabilities);
         }
         builder
             .build()

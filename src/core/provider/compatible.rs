@@ -1079,7 +1079,7 @@ mod tests {
     #[test]
     fn vllm_options_and_reasoning_use_the_shared_chat_contract() {
         let config = model::chat::Config {
-            model_name: "deepseek-flash".into(),
+            model_name: "Qwen3.5-122B-A10B".into(),
             options: Map::new(),
         };
         let request = Request {

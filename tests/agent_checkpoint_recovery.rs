@@ -1,6 +1,6 @@
 //! Frozen Agent run entry: original query, identity and same planned execution.
 use futures_util::{StreamExt, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{self, Agent, Input, Payload},
     checkpoint::Checkpoint as _,
@@ -426,7 +426,7 @@ fn no_new_id() -> i64 {
 #[tokio::test]
 async fn chat_waiting_reuses_memory_chat_and_final_trace_is_an_independent_scene_copy() {
     use chat::Store as _;
-    use halo_agents::memory::{
+    use halo::memory::{
         self,
         short::{chat, session, trace},
     };

@@ -6,7 +6,7 @@ use std::sync::{
 
 use chat::Store as _;
 use futures_util::{StreamExt, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     agent::{self, Agent, Input, Payload},
     checkpoint::Checkpoint,
@@ -618,7 +618,7 @@ fn graph(react: bool, hooks: Isolated, model: Model) -> CompiledWorkflow {
         }
         builder.add_edge(START, node).unwrap();
     }
-    builder.add_node("merge", halo_agents::node::Echo).unwrap();
+    builder.add_node("merge", halo::node::Echo).unwrap();
     builder.add_join(["a", "b"], "merge").unwrap();
     builder.add_edge("merge", END).unwrap();
     let child = builder.compile().unwrap();
@@ -645,7 +645,7 @@ fn workflow_input() -> Messages {
     message.metadata = input().metadata;
     message
         .content
-        .push(halo_agents::model::content::part::Part {
+        .push(halo::model::content::part::Part {
             r#type: "text".into(),
             data: json!({"value":"original input"})
                 .as_object()

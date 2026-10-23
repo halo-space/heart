@@ -5,7 +5,7 @@ use std::{
 
 use futures_executor::block_on;
 use futures_util::{FutureExt, StreamExt, poll, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{self, Agent, Input, toolkit::Toolkit},
     event::Event,
@@ -471,20 +471,20 @@ fn business_feedback_does_not_masquerade_as_tool_error_context() {
 }
 
 struct Allow;
-impl halo_agents::permission::Permission for Allow {
+impl halo::permission::Permission for Allow {
     async fn check(
         &self,
-        _: &halo_agents::permission::Request,
+        _: &halo::permission::Request,
         _: &Cancellation,
-    ) -> Result<halo_agents::permission::Decision, Error> {
-        Ok(halo_agents::permission::Decision {
-            behavior: halo_agents::permission::Behavior::Allow,
+    ) -> Result<halo::permission::Decision, Error> {
+        Ok(halo::permission::Decision {
+            behavior: halo::permission::Behavior::Allow,
             reason: None,
         })
     }
 }
 struct HookFailure(Mutex<Option<oneshot::Receiver<()>>>);
-impl halo_agents::middleware::Middleware for HookFailure {
+impl halo::middleware::Middleware for HookFailure {
     async fn before_permission(
         &self,
         value: &mut serde_json::Value,

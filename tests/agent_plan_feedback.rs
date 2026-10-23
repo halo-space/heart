@@ -1,6 +1,6 @@
 //! Ordinary feedback belongs to each planned task's current native Step.
 use futures_util::{StreamExt, poll, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     agent::{self, Agent, Input, toolkit::Toolkit},
     checkpoint::Checkpoint,

@@ -1,6 +1,6 @@
 use futures_executor::block_on;
 use futures_util::stream;
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages, core,
     event::Event,
     memory::{self, extraction::Extractor as _},
@@ -238,7 +238,7 @@ fn extraction_without_trigger_is_rejected_without_allocating_ids() {
     .with_extractor(extractor)
     .with_id_fn(|| panic!("build must not invoke the ID function"));
     assert!(
-        halo_agents::agent::chat()
+        halo::agent::chat()
             .model(Model::default())
             .memory(config)
             .build()
@@ -275,7 +275,7 @@ fn missing_id_function_is_a_configuration_error() {
         .with_compression(compressor)
         .with_extractor(extractor);
     assert_eq!(
-        halo_agents::agent::chat()
+        halo::agent::chat()
             .model(Model::default())
             .memory(config)
             .build()
@@ -299,14 +299,14 @@ fn build_and_clone_accept_a_function_pointer_without_calling_it() {
         .with_extractor(extractor)
         .with_compression(compressor);
     assert!(
-        halo_agents::agent::chat()
+        halo::agent::chat()
             .model(Model::default())
             .memory(config.clone())
             .build()
             .is_ok()
     );
     assert!(
-        halo_agents::agent::react()
+        halo::agent::react()
             .model(Model::default())
             .memory(config)
             .build()
@@ -317,7 +317,7 @@ fn build_and_clone_accept_a_function_pointer_without_calling_it() {
 #[test]
 fn id_configuration_alone_does_not_enable_memory_transforms() {
     assert!(
-        halo_agents::agent::chat()
+        halo::agent::chat()
             .model(Model::default())
             .memory(memory_config().with_id_fn(unexpected_id))
             .build()
@@ -328,7 +328,7 @@ fn id_configuration_alone_does_not_enable_memory_transforms() {
 #[test]
 fn extraction_preserves_complete_usage_without_aggregating_it() {
     let model = Model::output(json!({"user":{"fact":"new fact"}}));
-    let usage = halo_agents::model::token::Usage {
+    let usage = halo::model::token::Usage {
         input: Some(7),
         output: Some(3),
         total: Some(10),

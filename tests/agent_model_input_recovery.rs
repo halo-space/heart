@@ -1,6 +1,6 @@
 //! Model input middleware resumes from the actual native Model Step.
 use futures_util::{StreamExt, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{self, Agent, Input, Payload, toolkit::Toolkit},
     checkpoint::Checkpoint,
@@ -123,7 +123,7 @@ impl Tool for Lookup {
         Ok(message)
     }
 }
-fn toolkit(log: Arc<Log>) -> Toolkit {
+fn capabilities(log: Arc<Log>) -> Toolkit {
     Toolkit::new().tools(Lookup(
         log,
         ToolDefinition {
@@ -159,7 +159,7 @@ async fn run(
     if react {
         Ok(agent::react()
             .model(Model(log.clone()))
-            .toolkit(toolkit(log.clone()))
+            .toolkit(capabilities(log.clone()))
             .middleware(First(log.clone()))
             .middleware(Gate(log))
             .with_max_iters(2)
@@ -172,7 +172,7 @@ async fn run(
     } else {
         Ok(agent::chat()
             .model(Model(log.clone()))
-            .toolkit(toolkit(log.clone()))
+            .toolkit(capabilities(log.clone()))
             .middleware(First(log.clone()))
             .middleware(Gate(log))
             .checkpoint(checkpoint)
@@ -532,8 +532,8 @@ impl Middleware for OwnerGate {
         Ok(())
     }
 }
-fn nested(react: bool, log: Arc<Log>) -> halo_agents::runtime::workflow::CompiledWorkflow {
-    use halo_agents::runtime::workflow::{
+fn nested(react: bool, log: Arc<Log>) -> halo::runtime::workflow::CompiledWorkflow {
+    use halo::runtime::workflow::{
         WorkflowBuilder,
         graph::{END, START},
     };
@@ -568,7 +568,7 @@ fn nested(react: bool, log: Arc<Log>) -> halo_agents::runtime::workflow::Compile
         }
         child.add_edge(START, node).unwrap();
     }
-    child.add_node("merge", halo_agents::node::Echo).unwrap();
+    child.add_node("merge", halo::node::Echo).unwrap();
     child.add_join(["a", "b"], "merge").unwrap();
     child.add_edge("merge", END).unwrap();
     let child = child.compile().unwrap();
@@ -588,7 +588,7 @@ fn attempt<'a>(scene: &'a Value, node: &str) -> &'a Value {
 }
 #[tokio::test]
 async fn nested_workflow_before_restore_reuses_own_input_and_preserves_sibling() {
-    use halo_agents::{Messages, runtime::workflow::Runtime};
+    use halo::{Messages, runtime::workflow::Runtime};
     for react in [false, true] {
         let log = Arc::new(Log::default());
         let runtime = Runtime::new(1001, nested(react, log.clone())).unwrap();

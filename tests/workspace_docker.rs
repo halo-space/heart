@@ -4,7 +4,7 @@
 
 use std::{path::PathBuf, process::Command, time::Duration};
 
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::toolkit::Toolkit,
     core::{
@@ -93,7 +93,10 @@ protocol_test!(
     cancelled_lock_wait_does_not_close_environment
 );
 protocol_test!(protocol_dropped_future, drop_in_flight_future_cleans_up);
-protocol_test!(protocol_dropped_toolkit, drop_toolkit_releases_environment);
+protocol_test!(
+    protocol_dropped_mounted_capabilities,
+    drop_mounted_capabilities_releases_environment
+);
 protocol_test!(protocol_foreign_resource, foreign_resource_is_never_removed);
 protocol_test!(protocol_mount_and_env, configured_mount_and_env);
 protocol_test!(
@@ -132,7 +135,9 @@ async fn run_protocol_case() {
             cancelled_lock_wait_does_not_close_environment().await
         }
         "drop_in_flight_future_cleans_up" => drop_in_flight_future_cleans_up().await,
-        "drop_toolkit_releases_environment" => drop_toolkit_releases_environment().await,
+        "drop_mounted_capabilities_releases_environment" => {
+            drop_mounted_capabilities_releases_environment().await
+        }
         "foreign_resource_is_never_removed" => foreign_resource_is_never_removed().await,
         "configured_mount_and_env" => configured_mount_and_env().await,
         "custom_tool_and_harness_permission" => custom_tool_and_harness_permission().await,
@@ -180,8 +185,8 @@ fn call(name: &str, args: Value) -> Call {
         arguments: args.as_object().unwrap().clone(),
     }
 }
-async fn run(toolkit: &Toolkit, name: &str, args: Value) -> Result<Message, Error> {
-    toolkit
+async fn run(capabilities: &Toolkit, name: &str, args: Value) -> Result<Message, Error> {
+    capabilities
         .execute(call(name, args), &Cancellation::new())
         .await
         .map(|(message, _)| message)
@@ -218,21 +223,21 @@ async fn shared_files_and_default_tools() {
     let workspace = Docker::new(config()).unwrap();
     assert_eq!(workspace.definition().mode, Mode::Local);
     assert_eq!(workspace.definition().path.as_deref(), Some("/workspace"));
-    let toolkit = Toolkit::from(workspace);
-    assert_eq!(toolkit.definitions().len(), 8);
-    for tool in toolkit.definitions() {
+    let capabilities = Toolkit::from(workspace);
+    assert_eq!(capabilities.definitions().len(), 8);
+    for tool in capabilities.definitions() {
         tool.validate().unwrap();
     }
     assert!(operations().is_empty());
     run(
-        &toolkit,
+        &capabilities,
         "write",
         json!({"path":"notes/a.txt","content":"alpha\nbeta\n"}),
     )
     .await
     .unwrap();
     let output = run(
-        &toolkit,
+        &capabilities,
         "exec_shell",
         json!({"args":["/bin/sh","-c","cat notes/a.txt > result.txt; printf gamma >> result.txt"]}),
     )
@@ -240,27 +245,27 @@ async fn shared_files_and_default_tools() {
     .unwrap();
     assert_eq!(output.values["exit_code"], 0);
     assert_eq!(
-        run(&toolkit, "read", json!({"path":"result.txt"}))
+        run(&capabilities, "read", json!({"path":"result.txt"}))
             .await
             .unwrap()
             .values["content"],
         "alpha\nbeta\ngamma"
     );
     run(
-        &toolkit,
+        &capabilities,
         "edit",
         json!({"path":"result.txt","old_string":"gamma","new_string":"delta"}),
     )
     .await
     .unwrap();
     assert_eq!(
-        run(&toolkit, "glob", json!({"pattern":"**/*.txt"}))
+        run(&capabilities, "glob", json!({"pattern":"**/*.txt"}))
             .await
             .unwrap()
             .values["files"],
         json!(["notes/a.txt", "result.txt"])
     );
-    let grep = run(&toolkit, "grep", json!({"pattern":"delta"}))
+    let grep = run(&capabilities, "grep", json!({"pattern":"delta"}))
         .await
         .unwrap();
     assert!(
@@ -268,18 +273,18 @@ async fn shared_files_and_default_tools() {
             .unwrap()
             .contains("result.txt")
     );
-    let listed = run(&toolkit, "list", json!({"recursive":true}))
+    let listed = run(&capabilities, "list", json!({"recursive":true}))
         .await
         .unwrap();
     assert_eq!(
         listed.values["entries"],
         json!(["notes/a.txt", "result.txt"])
     );
-    run(&toolkit, "delete", json!({"path":"result.txt"}))
+    run(&capabilities, "delete", json!({"path":"result.txt"}))
         .await
         .unwrap();
     assert_eq!(
-        run(&toolkit, "read", json!({"path":"result.txt"}))
+        run(&capabilities, "read", json!({"path":"result.txt"}))
             .await
             .unwrap_err()
             .code,
@@ -298,7 +303,7 @@ async fn shared_files_and_default_tools() {
         assert!(args.contains(flag));
     }
     assert!(!args.contains("ARG:--mount"));
-    drop(toolkit);
+    drop(capabilities);
     wait_for_removal().await;
 }
 
@@ -318,16 +323,16 @@ async fn literal_paths_and_binary_data() {
         workspace.list(".", true, &cancellation).await.unwrap(),
         [path]
     );
-    let toolkit = Toolkit::from(workspace);
+    let capabilities = Toolkit::from(workspace);
     assert_eq!(
-        run(&toolkit, "read", json!({"path":path}))
+        run(&capabilities, "read", json!({"path":path}))
             .await
             .unwrap_err()
             .code,
         "INVALID_ARGUMENTS"
     );
     run(
-        &toolkit,
+        &capabilities,
         "exec_shell",
         json!({"args":["ln","-s","/tmp","link"]}),
     )
@@ -339,19 +344,21 @@ async fn literal_paths_and_binary_data() {
             args["content"] = json!("no");
         }
         assert_eq!(
-            run(&toolkit, name, args).await.unwrap_err().code,
+            run(&capabilities, name, args).await.unwrap_err().code,
             "PERMISSION_DENIED"
         );
     }
-    run(&toolkit, "delete", json!({"path":path})).await.unwrap();
+    run(&capabilities, "delete", json!({"path":path}))
+        .await
+        .unwrap();
     assert!(
-        run(&toolkit, "delete", json!({"path":"notes"}))
+        run(&capabilities, "delete", json!({"path":"notes"}))
             .await
             .is_err()
     );
     assert_eq!(
         run(
-            &toolkit,
+            &capabilities,
             "exec_shell",
             json!({"args":["/bin/sh","-c","test ! -e nope"]})
         )
@@ -360,7 +367,7 @@ async fn literal_paths_and_binary_data() {
         .values["exit_code"],
         0
     );
-    drop(toolkit);
+    drop(capabilities);
     wait_for_removal().await;
 }
 
@@ -389,16 +396,16 @@ async fn concurrent_init_and_isolated_workspaces() {
 }
 
 async fn failures_do_not_recreate_environment() {
-    let toolkit = Toolkit::from(Docker::new(config()).unwrap());
+    let capabilities = Toolkit::from(Docker::new(config()).unwrap());
     assert_eq!(
-        run(&toolkit, "read", json!({"path":"missing"}))
+        run(&capabilities, "read", json!({"path":"missing"}))
             .await
             .unwrap_err()
             .code,
         "NOT_FOUND"
     );
     let error = run(
-        &toolkit,
+        &capabilities,
         "exec_shell",
         json!({"args":["/bin/sh","-c","printf kept > kept; printf failed >&2; exit 7"]}),
     )
@@ -407,7 +414,7 @@ async fn failures_do_not_recreate_environment() {
     assert_eq!(error.code, "EXECUTION_FAILED");
     assert!(error.details.unwrap().contains("failed"));
     assert_eq!(
-        run(&toolkit, "read", json!({"path":"kept"}))
+        run(&capabilities, "read", json!({"path":"kept"}))
             .await
             .unwrap()
             .values["content"],
@@ -416,7 +423,7 @@ async fn failures_do_not_recreate_environment() {
     assert_eq!(count("create"), 1);
     std::fs::write(state().join("oom"), "").unwrap();
     assert_eq!(
-        run(&toolkit, "read", json!({"path":"kept"}))
+        run(&capabilities, "read", json!({"path":"kept"}))
             .await
             .unwrap_err()
             .code,
@@ -424,7 +431,7 @@ async fn failures_do_not_recreate_environment() {
     );
     assert_eq!(count("rm"), 1);
     assert_eq!(
-        run(&toolkit, "read", json!({"path":"kept"}))
+        run(&capabilities, "read", json!({"path":"kept"}))
             .await
             .unwrap_err()
             .code,
@@ -533,12 +540,12 @@ async fn drop_in_flight_future_cleans_up() {
     assert_eq!(count("create"), 1);
 }
 
-async fn drop_toolkit_releases_environment() {
-    let toolkit = Toolkit::from(Docker::new(config()).unwrap());
-    run(&toolkit, "write", json!({"path":"x","content":"kept"}))
+async fn drop_mounted_capabilities_releases_environment() {
+    let capabilities = Toolkit::from(Docker::new(config()).unwrap());
+    run(&capabilities, "write", json!({"path":"x","content":"kept"}))
         .await
         .unwrap();
-    drop(toolkit);
+    drop(capabilities);
     wait_for_removal().await;
     assert_eq!(count("create"), 1);
     assert_eq!(count("rm"), 1);
@@ -591,7 +598,7 @@ async fn configured_mount_and_env() {
 
 async fn custom_tool_and_harness_permission() {
     use futures_util::{StreamExt, stream};
-    use halo_agents::{
+    use halo::{
         agent::{Agent, Input},
         event::Event,
         message::Role,
@@ -623,7 +630,7 @@ async fn custom_tool_and_harness_permission() {
             if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
                 message
                     .content
-                    .push(halo_agents::model::content::part::Part {
+                    .push(halo::model::content::part::Part {
                         r#type: "tool_call".into(),
                         data: serde_json::to_value(call(
                             "write",
@@ -650,12 +657,12 @@ async fn custom_tool_and_harness_permission() {
     let workspace = Docker::new(config())
         .unwrap()
         .toolkit(Toolkit::new().tools(echo));
-    let agent = halo_agents::harness::builder()
+    let agent = halo::harness::builder()
         .model(Model(Arc::clone(&calls)))
         .workspace(workspace)
-        .permission(halo_agents::core::permission::Permission::new({
+        .permission(halo::core::permission::Permission::new({
             let checks = Arc::clone(&checks);
-            move |request: halo_agents::permission::Request, _: Cancellation| {
+            move |request: halo::permission::Request, _: Cancellation| {
                 let checks = Arc::clone(&checks);
                 async move {
                     assert_eq!(request.resource, "workspace_write");
@@ -675,7 +682,7 @@ async fn custom_tool_and_harness_permission() {
             .as_object()
             .unwrap()
             .clone(),
-        payload: vec![halo_agents::agent::Payload {
+        payload: vec![halo::agent::Payload {
             r#type: "text".into(),
             data: json!({"value":"write a file"}),
             mime_type: None,
@@ -721,12 +728,16 @@ async fn pre_cancel_and_invalid_arguments_are_no_io() {
             "INVALID_ARGUMENTS"
         );
     }
-    let toolkit = Toolkit::from(workspace);
+    let capabilities = Toolkit::from(workspace);
     assert_eq!(
-        run(&toolkit, "exec_shell", json!({"args":["echo"],"env":{}}))
-            .await
-            .unwrap_err()
-            .code,
+        run(
+            &capabilities,
+            "exec_shell",
+            json!({"args":["echo"],"env":{}})
+        )
+        .await
+        .unwrap_err()
+        .code,
         "INVALID_ARGUMENTS"
     );
     assert!(operations().is_empty());
@@ -760,10 +771,10 @@ async fn limits_and_startup_failure() {
     std::fs::remove_file(state().join("start_fail")).unwrap();
     let mut config = config();
     config.sandbox.max_output = 4;
-    let toolkit = Toolkit::from(Docker::new(config).unwrap());
+    let capabilities = Toolkit::from(Docker::new(config).unwrap());
     assert_eq!(
         run(
-            &toolkit,
+            &capabilities,
             "exec_shell",
             json!({"args":["/bin/sh","-c","printf 123456789"]})
         )
@@ -774,7 +785,7 @@ async fn limits_and_startup_failure() {
     );
     assert_eq!(count("rm"), 2);
     assert_eq!(
-        run(&toolkit, "read", json!({"path":"x"}))
+        run(&capabilities, "read", json!({"path":"x"}))
             .await
             .unwrap_err()
             .code,
@@ -796,23 +807,23 @@ async fn docker_workspace_real_container_smoke() {
         ..Default::default()
     })
     .unwrap();
-    let toolkit = Toolkit::from(workspace);
+    let capabilities = Toolkit::from(workspace);
     let mut id = None;
     let result = async {
-        let hostname=run(&toolkit,"exec_shell",json!({"args":["/bin/cat","/etc/hostname"]})).await?;
+        let hostname=run(&capabilities,"exec_shell",json!({"args":["/bin/cat","/etc/hostname"]})).await?;
         let hostname=hostname.values["stdout"].as_str().unwrap().trim().to_owned();
         assert_eq!(hostname.len(),12); assert!(hostname.bytes().all(|byte|byte.is_ascii_hexdigit()));
         id=Some(hostname);
-        run(&toolkit,"write",json!({"path":"input.txt","content":"shared"})).await?;
-        run(&toolkit,"exec_shell",json!({"args":["/bin/sh","-c","test $(id -u) != 0 && cat input.txt > output.txt; printf ' environment' >> output.txt"]})).await?;
-        assert_eq!(run(&toolkit,"read",json!({"path":"output.txt"})).await?.values["content"],"shared environment");
-        run(&toolkit,"edit",json!({"path":"output.txt","old_string":"environment","new_string":"container"})).await?;
-        assert_eq!(run(&toolkit,"grep",json!({"pattern":"container"})).await?.values["files"],json!(["output.txt"]));
-        run(&toolkit,"delete",json!({"path":"output.txt"})).await?;
+        run(&capabilities,"write",json!({"path":"input.txt","content":"shared"})).await?;
+        run(&capabilities,"exec_shell",json!({"args":["/bin/sh","-c","test $(id -u) != 0 && cat input.txt > output.txt; printf ' environment' >> output.txt"]})).await?;
+        assert_eq!(run(&capabilities,"read",json!({"path":"output.txt"})).await?.values["content"],"shared environment");
+        run(&capabilities,"edit",json!({"path":"output.txt","old_string":"environment","new_string":"container"})).await?;
+        assert_eq!(run(&capabilities,"grep",json!({"pattern":"container"})).await?.values["files"],json!(["output.txt"]));
+        run(&capabilities,"delete",json!({"path":"output.txt"})).await?;
         Ok::<_, Error>(())
     }
     .await;
-    drop(toolkit);
+    drop(capabilities);
     if let Some(id) = id {
         real_removal(&id).await;
     }
@@ -863,18 +874,18 @@ async fn docker_workspace_real_bind_mount_smoke() {
         ..Default::default()
     })
     .unwrap();
-    let toolkit = Toolkit::from(workspace);
+    let capabilities = Toolkit::from(workspace);
     let mut id = None;
     let result=async {
-        let hostname=run(&toolkit,"exec_shell",json!({"args":["/bin/cat","/etc/hostname"]})).await?;
+        let hostname=run(&capabilities,"exec_shell",json!({"args":["/bin/cat","/etc/hostname"]})).await?;
         id=Some(hostname.values["stdout"].as_str().unwrap().trim().to_owned());
-        assert_eq!(run(&toolkit,"read",json!({"path":"source.txt"})).await?.values["content"],"host source");
-        run(&toolkit,"write",json!({"path":"from_tool.txt","content":"tool"})).await?;
-        run(&toolkit,"exec_shell",json!({"args":["/bin/sh","-c","cat from_tool.txt > from_command.txt; printf ' %s' \"$WORKSPACE_SETTING\" >> from_command.txt"]})).await?;
-        assert_eq!(run(&toolkit,"read",json!({"path":"from_command.txt"})).await?.values["content"],"tool configured");
+        assert_eq!(run(&capabilities,"read",json!({"path":"source.txt"})).await?.values["content"],"host source");
+        run(&capabilities,"write",json!({"path":"from_tool.txt","content":"tool"})).await?;
+        run(&capabilities,"exec_shell",json!({"args":["/bin/sh","-c","cat from_tool.txt > from_command.txt; printf ' %s' \"$WORKSPACE_SETTING\" >> from_command.txt"]})).await?;
+        assert_eq!(run(&capabilities,"read",json!({"path":"from_command.txt"})).await?.values["content"],"tool configured");
         Ok::<_,Error>(())
     }.await;
-    drop(toolkit);
+    drop(capabilities);
     if let Some(id) = id {
         real_removal(&id).await;
     }
@@ -907,9 +918,9 @@ async fn docker_workspace_real_cancellation_smoke() {
         ..Default::default()
     })
     .unwrap();
-    let toolkit = Toolkit::from(workspace);
+    let capabilities = Toolkit::from(workspace);
     let hostname = run(
-        &toolkit,
+        &capabilities,
         "exec_shell",
         json!({"args":["/bin/cat","/etc/hostname"]}),
     )
@@ -921,7 +932,7 @@ async fn docker_workspace_real_cancellation_smoke() {
         .trim()
         .to_owned();
     let cancellation = Cancellation::new();
-    let command = toolkit.execute(
+    let command = capabilities.execute(
         call(
             "exec_shell",
             json!({"args":["/bin/sh","-c","printf started > started; exec sleep 60"]}),
@@ -936,7 +947,7 @@ async fn docker_workspace_real_cancellation_smoke() {
     real_removal(&id).await;
     assert_eq!(result.unwrap_err().code, "CANCELLED");
     assert_eq!(
-        run(&toolkit, "read", json!({"path":"started"}))
+        run(&capabilities, "read", json!({"path":"started"}))
             .await
             .unwrap_err()
             .code,

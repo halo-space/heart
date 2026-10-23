@@ -15,7 +15,7 @@ use elasticsearch::{
     indices::{IndicesDeleteParts, IndicesExistsParts},
 };
 use futures_util::{StreamExt, future::join_all, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{Agent, Input, Payload, toolkit::Toolkit},
     core,
@@ -47,8 +47,8 @@ fn call(name: &str, args: Value) -> Call {
     }
 }
 
-async fn run(toolkit: &Toolkit, name: &str, args: Value) -> Result<Message, Error> {
-    let (message, evaluation) = toolkit
+async fn run(capabilities: &Toolkit, name: &str, args: Value) -> Result<Message, Error> {
+    let (message, evaluation) = capabilities
         .execute(call(name, args), &Cancellation::new())
         .await?;
     assert!(evaluation.passed);
@@ -64,38 +64,44 @@ async fn run(toolkit: &Toolkit, name: &str, args: Value) -> Result<Message, Erro
 #[ignore = "requires application-prepared HEART_ES_URL and isolated HEART_ES_TEST_INDEX"]
 async fn real_i64_extremes_noop_and_physical_delete() {
     let (client, index) = environment();
-    let toolkit = Toolkit::from(core::workspace::es::new(client, index).unwrap());
+    let capabilities = Toolkit::from(core::workspace::es::new(client, index).unwrap());
     for id in [i64::MIN, i64::MAX, -1, 0] {
         let data = json!({"id":id,"content":"边界测试","metadata":{"kept":true}});
         // A conflicting pre-existing record is NOT owned by this test. Stop
         // before cleanup instead of deleting somebody else's record.
-        let written = run(&toolkit, "write", json!({"data":data})).await.unwrap();
-        let read = run(&toolkit, "read", json!({"id":id})).await;
+        let written = run(&capabilities, "write", json!({"data":data}))
+            .await
+            .unwrap();
+        let read = run(&capabilities, "read", json!({"id":id})).await;
         let noop = run(
-            &toolkit,
+            &capabilities,
             "update",
             json!({"id":id,"data":{"content":"边界测试"}}),
         )
         .await;
         let changed_id = run(
-            &toolkit,
+            &capabilities,
             "update",
             json!({"id":id,"data":{"id":if id == 0 {1} else {0}}}),
         )
         .await;
         let patched = run(
-            &toolkit,
+            &capabilities,
             "update",
             json!({"id":id,"data":{"content":"changed"}}),
         )
         .await;
-        let after = run(&toolkit, "read", json!({"id":id})).await;
+        let after = run(&capabilities, "read", json!({"id":id})).await;
         // Perform cleanup before checking intermediate results.
-        let deleted = run(&toolkit, "delete", json!({"id":id})).await.unwrap();
-        let absent = run(&toolkit, "read", json!({"id":id})).await.unwrap();
-        let repeated_delete = run(&toolkit, "delete", json!({"id":id})).await.unwrap();
+        let deleted = run(&capabilities, "delete", json!({"id":id}))
+            .await
+            .unwrap();
+        let absent = run(&capabilities, "read", json!({"id":id})).await.unwrap();
+        let repeated_delete = run(&capabilities, "delete", json!({"id":id}))
+            .await
+            .unwrap();
         let no_upsert = run(
-            &toolkit,
+            &capabilities,
             "update",
             json!({"id":id,"data":{"content":"must not insert"}}),
         )
@@ -115,7 +121,7 @@ async fn real_i64_extremes_noop_and_physical_delete() {
         assert_eq!(repeated_delete.values["count"], 0);
         assert_eq!(no_upsert.values["count"], 0);
         assert_eq!(
-            run(&toolkit, "read", json!({"id":id}))
+            run(&capabilities, "read", json!({"id":id}))
                 .await
                 .unwrap()
                 .values["data"],
@@ -128,11 +134,11 @@ async fn real_i64_extremes_noop_and_physical_delete() {
 #[ignore = "requires application-prepared HEART_ES_URL and isolated HEART_ES_TEST_INDEX"]
 async fn real_concurrent_create_has_one_winner() {
     let (client, index) = environment();
-    let toolkit = Toolkit::from(core::workspace::es::new(client, index).unwrap());
+    let capabilities = Toolkit::from(core::workspace::es::new(client, index).unwrap());
     let id = rand::random::<i64>();
     let results = join_all((0..8).map(|writer| {
         run(
-            &toolkit,
+            &capabilities,
             "write",
             json!({"data":{"id":id,"content":format!("writer {writer}")}}),
         )
@@ -144,8 +150,8 @@ async fn real_concurrent_create_has_one_winner() {
         .collect();
     // No successful create => the test cannot claim ownership of this ID.
     assert!(!winners.is_empty(), "no owned record; not deleting ID {id}");
-    let saved = run(&toolkit, "read", json!({"id":id})).await;
-    let cleanup = run(&toolkit, "delete", json!({"id":id})).await;
+    let saved = run(&capabilities, "read", json!({"id":id})).await;
+    let cleanup = run(&capabilities, "delete", json!({"id":id})).await;
     assert_eq!(winners.len(), 1);
     assert_eq!(
         results
@@ -177,14 +183,14 @@ async fn real_missing_index_is_error_without_provisioning() {
             .as_u16(),
         404
     );
-    let toolkit = Toolkit::from(core::workspace::es::new(client.clone(), &index).unwrap());
+    let capabilities = Toolkit::from(core::workspace::es::new(client.clone(), &index).unwrap());
     for (name, args) in [
         ("read", json!({"id":1})),
         ("write", json!({"data":{"id":1}})),
         ("update", json!({"id":1,"data":{"content":"absent"}})),
         ("delete", json!({"id":1})),
     ] {
-        let result = run(&toolkit, name, args).await;
+        let result = run(&capabilities, name, args).await;
         let status = client
             .indices()
             .exists(IndicesExistsParts::Index(&[&index]))
@@ -215,12 +221,14 @@ async fn real_write_returns_pipeline_transformed_source() {
     let (client, _) = environment();
     let index =
         std::env::var("HEART_ES_PIPELINE_TEST_INDEX").expect("provide a dedicated pipeline index");
-    let toolkit = Toolkit::from(core::workspace::es::new(client, index).unwrap());
+    let capabilities = Toolkit::from(core::workspace::es::new(client, index).unwrap());
     let id = rand::random::<i64>();
     let data = json!({"id":id,"content":"MiXeD Text","metadata":{"kept":true}});
-    let written = run(&toolkit, "write", json!({"data":data})).await.unwrap();
-    let read = run(&toolkit, "read", json!({"id":id})).await;
-    let cleanup = run(&toolkit, "delete", json!({"id":id})).await;
+    let written = run(&capabilities, "write", json!({"data":data}))
+        .await
+        .unwrap();
+    let read = run(&capabilities, "read", json!({"id":id})).await;
+    let cleanup = run(&capabilities, "delete", json!({"id":id})).await;
     assert_eq!(
         written.values["data"],
         json!({"id":id,"content":"mixed text","metadata":{"kept":true,"ingested":true}})
@@ -257,7 +265,7 @@ fn text(role: Role, value: &str) -> Message {
     let mut message = Message::new(role);
     message
         .content
-        .push(halo_agents::model::content::part::Part {
+        .push(halo::model::content::part::Part {
             r#type: "text".into(),
             data: json!({"value":value}).as_object().unwrap().clone(),
         });
@@ -279,7 +287,7 @@ impl Tool for Custom {
 async fn real_harness_crud_and_permission_use_the_existing_tool_chain() {
     let (client, index) = environment();
     for allowed in [true, false] {
-        let toolkit = Toolkit::from(core::workspace::es::new(client.clone(), &index).unwrap());
+        let capabilities = Toolkit::from(core::workspace::es::new(client.clone(), &index).unwrap());
         let id = rand::random::<i64>();
         let data = json!({"id":id,"content":"original","metadata":{"kept":true}});
         let operations = if allowed {
@@ -303,7 +311,7 @@ async fn real_harness_crud_and_permission_use_the_existing_tool_chain() {
                 let mut message = Message::new(Role::Assistant);
                 message
                     .content
-                    .push(halo_agents::model::content::part::Part {
+                    .push(halo::model::content::part::Part {
                         r#type: "tool_call".into(),
                         data: serde_json::to_value(actual_call)
                             .unwrap()
@@ -333,14 +341,14 @@ async fn real_harness_crud_and_permission_use_the_existing_tool_chain() {
                     }))),
             )
             .permission(core::permission::Permission::new(
-                move |request: halo_agents::permission::Request, _: Cancellation| {
+                move |request: halo::permission::Request, _: Cancellation| {
                     checked.lock().unwrap().push(request.resource);
                     async move {
-                        Ok(halo_agents::permission::Decision {
+                        Ok(halo::permission::Decision {
                             behavior: if allowed {
-                                halo_agents::permission::Behavior::Allow
+                                halo::permission::Behavior::Allow
                             } else {
-                                halo_agents::permission::Behavior::Deny
+                                halo::permission::Behavior::Deny
                             },
                             reason: None,
                         })
@@ -371,9 +379,11 @@ async fn real_harness_crud_and_permission_use_the_existing_tool_chain() {
         })
         .await;
         // Capture any leftover record, then clean before asserting the run.
-        let leftover = run(&toolkit, "read", json!({"id":id})).await;
+        let leftover = run(&capabilities, "read", json!({"id":id})).await;
         if allowed {
-            run(&toolkit, "delete", json!({"id":id})).await.unwrap();
+            run(&capabilities, "delete", json!({"id":id}))
+                .await
+                .unwrap();
         }
         let events = result.unwrap().unwrap();
         assert_eq!(events.len(), operations.len() * 2 + 1);

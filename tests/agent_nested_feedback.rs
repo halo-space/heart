@@ -1,6 +1,6 @@
 //! Ordinary feedback follows actual planned/delegated containment.
 use futures_util::{StreamExt, poll, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     agent::{self, Agent, Input, SubAgent, toolkit::Toolkit},
     checkpoint::Checkpoint,
@@ -1205,7 +1205,7 @@ fn nested_feedback_restores_in_fresh_processes() {
 
 #[tokio::test]
 async fn workflow_now_owns_the_verified_nested_feedback_handoff() {
-    use halo_agents::runtime::workflow::{
+    use halo::runtime::workflow::{
         Runtime, WorkflowBuilder,
         graph::{END, START},
     };

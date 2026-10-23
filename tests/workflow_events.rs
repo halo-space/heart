@@ -12,7 +12,7 @@ use std::{
 use futures_core::Stream;
 use futures_executor::block_on;
 use futures_util::{StreamExt, poll, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     agent::{self, Agent, Input},
     checkpoint::Checkpoint as _,
@@ -71,10 +71,10 @@ struct ReadyAgent {
 impl Agent for ReadyAgent {
     async fn reply(
         &self,
-        _: halo_agents::agent::Input,
-        _: halo_agents::Cancellation,
-    ) -> Result<(), halo_agents::Error> {
-        Err(halo_agents::Error::new(
+        _: halo::agent::Input,
+        _: halo::Cancellation,
+    ) -> Result<(), halo::Error> {
+        Err(halo::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))
@@ -197,7 +197,7 @@ fn nested_graphs_forward_each_real_event_once_without_leaking_values() {
             2,
             downstream.clone(),
         );
-        let checkpoint = Arc::new(halo_agents::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
         let mut runtime = Runtime::new(1001, compiled)
             .unwrap()
             .with_checkpoint(checkpoint.clone());
@@ -374,10 +374,10 @@ struct GatedAgent(Mutex<Option<oneshot::Receiver<()>>>);
 impl Agent for GatedAgent {
     async fn reply(
         &self,
-        _: halo_agents::agent::Input,
-        _: halo_agents::Cancellation,
-    ) -> Result<(), halo_agents::Error> {
-        Err(halo_agents::Error::new(
+        _: halo::agent::Input,
+        _: halo::Cancellation,
+    ) -> Result<(), halo::Error> {
+        Err(halo::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))
@@ -399,7 +399,7 @@ fn delta_arrives_before_agent_and_downstream_completion() {
     block_on(async {
         let (release, gate) = oneshot::channel();
         let downstream = Arc::new(AtomicUsize::new(0));
-        let checkpoint = Arc::new(halo_agents::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
         let compiled = graph_with_agent(GatedAgent(Mutex::new(Some(gate))), 1, downstream.clone());
         let mut runtime = Runtime::new(1002, compiled)
             .unwrap()
@@ -519,7 +519,7 @@ fn final_error_is_direct_and_checkpoint_is_saved_before_it_is_delivered() {
             .unwrap();
         builder.add_edge(START, "agent").unwrap();
         builder.add_edge("agent", END).unwrap();
-        let checkpoint = Arc::new(halo_agents::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
         let mut runtime = Runtime::new(1005, builder.compile().unwrap())
             .unwrap()
             .with_checkpoint(checkpoint.clone());
@@ -567,7 +567,7 @@ fn waiting_stream_ends_after_saving_the_same_waiting_scene() {
         builder.add_node("review", Review).unwrap();
         builder.add_edge(START, "review").unwrap();
         builder.add_edge("review", END).unwrap();
-        let checkpoint = Arc::new(halo_agents::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
         let mut runtime = Runtime::new(1006, builder.compile().unwrap())
             .unwrap()
             .with_checkpoint(checkpoint.clone());
@@ -625,7 +625,7 @@ fn cancellation_forwards_the_agents_partial_complete_and_settled_usage() {
         builder.add_agent_node("agent", agent).unwrap();
         builder.add_edge(START, "agent").unwrap();
         builder.add_edge("agent", END).unwrap();
-        let checkpoint = Arc::new(halo_agents::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
         let compiled = builder.compile().unwrap();
         let mut runtime = Runtime::new(1007, compiled.clone())
             .unwrap()
@@ -761,10 +761,10 @@ struct LocalAgent;
 impl Agent for LocalAgent {
     async fn reply(
         &self,
-        _: halo_agents::agent::Input,
-        _: halo_agents::Cancellation,
-    ) -> Result<(), halo_agents::Error> {
-        Err(halo_agents::Error::new(
+        _: halo::agent::Input,
+        _: halo::Cancellation,
+    ) -> Result<(), halo::Error> {
+        Err(halo::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))
@@ -840,15 +840,15 @@ fn model_message_usage_is_preserved_when_the_event_usage_is_missing() {
 }
 
 struct BatchTool {
-    definition: halo_agents::tool::ToolDefinition,
+    definition: halo::tool::ToolDefinition,
     calls: Arc<AtomicUsize>,
     fail_first: bool,
 }
-impl halo_agents::tool::Tool for BatchTool {
-    fn definition(&self) -> &halo_agents::tool::ToolDefinition {
+impl halo::tool::Tool for BatchTool {
+    fn definition(&self) -> &halo::tool::ToolDefinition {
         &self.definition
     }
-    async fn call(&self, _: &halo_agents::tool::Call, _: &Cancellation) -> Result<Message, Error> {
+    async fn call(&self, _: &halo::tool::Call, _: &Cancellation) -> Result<Message, Error> {
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 && self.fail_first {
             Err(Error::new("TIMEOUT", "raw batch tool failure"))
         } else {
@@ -860,7 +860,7 @@ impl halo_agents::tool::Tool for BatchTool {
 }
 fn batch_tool(name: &str, calls: Arc<AtomicUsize>, fail_first: bool) -> BatchTool {
     BatchTool {
-        definition: halo_agents::tool::ToolDefinition {
+        definition: halo::tool::ToolDefinition {
             name: name.into(),
             description: name.into(),
             parameters: json!({"type":"object"}).as_object().unwrap().clone(),
@@ -876,7 +876,7 @@ fn native_tool_batch_observes_saved_successes_once_without_error_messages() {
         for max_retries in [0, 1] {
             let good = Arc::new(AtomicUsize::new(0));
             let bad = Arc::new(AtomicUsize::new(0));
-            let tools = halo_agents::runtime::workflow::tool::ToolNode::new(batch_tool(
+            let tools = halo::runtime::workflow::tool::ToolNode::new(batch_tool(
                 "good",
                 good.clone(),
                 false,
@@ -887,7 +887,7 @@ fn native_tool_batch_observes_saved_successes_once_without_error_messages() {
             builder
                 .set_retry(
                     "tools",
-                    halo_agents::middleware::RetryPolicy {
+                    halo::middleware::RetryPolicy {
                         max_retries,
                         min_delay_ms: 0,
                         max_delay_ms: 0,

@@ -1,4 +1,4 @@
-use halo_agents::{
+use halo::{
     Cancellation, core,
     mcp::{Definition, Server as _},
     message::Role,

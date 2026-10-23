@@ -1,7 +1,7 @@
 //! Host execution regressions use only static trusted test commands.
 #![cfg(unix)]
 
-use halo_agents::{
+use halo::{
     Cancellation,
     sandbox::{Local, Request, Sandbox, local::Config},
 };

@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use futures_util::future::join_all;
-use halo_agents::{Cancellation, Error, Message, agent::toolkit::Toolkit, core, tool::Call};
+use halo::{Cancellation, Error, Message, agent::toolkit::Toolkit, core, tool::Call};
 use serde_json::{Value, json};
 
 struct Directory(PathBuf);
@@ -22,8 +22,8 @@ impl Drop for Directory {
     }
 }
 
-async fn run(toolkit: &Toolkit, name: &str, arguments: Value) -> Result<Message, Error> {
-    toolkit
+async fn run(capabilities: &Toolkit, name: &str, arguments: Value) -> Result<Message, Error> {
+    capabilities
         .execute(
             Call {
                 call_id: format!("call_{name}"),
@@ -118,11 +118,13 @@ async fn list_and_glob_filter_nested_files_and_paginate_in_stable_order() {
     let directory = Directory::new();
     let workspace = core::workspace::Local::new(&directory.0).unwrap();
     populate(&workspace).await;
-    let toolkit = Toolkit::from(workspace.toolkit(Toolkit::new()));
-    let result = run(&toolkit, "list", json!({"path":"src"})).await.unwrap();
+    let capabilities = Toolkit::from(workspace.toolkit(Toolkit::new()));
+    let result = run(&capabilities, "list", json!({"path":"src"}))
+        .await
+        .unwrap();
     assert_eq!(result.values["entries"], json!(["src/a.rs", "src/deep"]));
     let result = run(
-        &toolkit,
+        &capabilities,
         "glob",
         json!({"pattern":"**/*.{rs,txt}","offset":1,"head_limit":1}),
     )
@@ -131,7 +133,7 @@ async fn list_and_glob_filter_nested_files_and_paginate_in_stable_order() {
     assert_eq!(result.values["files"], json!(["src/a.rs"]));
     assert_eq!(result.values["truncated"], true);
     let result = run(
-        &toolkit,
+        &capabilities,
         "glob",
         json!({"path":"src","pattern":"*.rs","head_limit":0}),
     )
@@ -139,14 +141,16 @@ async fn list_and_glob_filter_nested_files_and_paginate_in_stable_order() {
     .unwrap();
     assert_eq!(result.values["files"], json!(["src/a.rs", "src/deep/b.rs"]));
     let result = run(
-        &toolkit,
+        &capabilities,
         "glob",
         json!({"path":"src","pattern":"deep/?.rs"}),
     )
     .await
     .unwrap();
     assert_eq!(result.values["files"], json!(["src/deep/b.rs"]));
-    let result = run(&toolkit, "list", json!({"offset":999})).await.unwrap();
+    let result = run(&capabilities, "list", json!({"offset":999}))
+        .await
+        .unwrap();
     assert_eq!(result.values["entries"], json!([]));
     assert_eq!(result.values["truncated"], false);
 }
@@ -156,9 +160,9 @@ async fn grep_supports_modes_case_filtering_single_files_and_skips_binary_vcs_da
     let directory = Directory::new();
     let workspace = core::workspace::Local::new(&directory.0).unwrap();
     populate(&workspace).await;
-    let toolkit = Toolkit::from(workspace);
+    let capabilities = Toolkit::from(workspace);
     let result = run(
-        &toolkit,
+        &capabilities,
         "grep",
         json!({"pattern":"^alpha$","case_insensitive":true}),
     )
@@ -169,7 +173,7 @@ async fn grep_supports_modes_case_filtering_single_files_and_skips_binary_vcs_da
         json!(["readme.txt", "src/deep/b.rs"])
     );
     let result = run(
-        &toolkit,
+        &capabilities,
         "grep",
         json!({"pattern":"beta","case_insensitive":true,"output_mode":"count"}),
     )
@@ -180,20 +184,20 @@ async fn grep_supports_modes_case_filtering_single_files_and_skips_binary_vcs_da
         json!([{"path":"readme.txt","count":2},{"path":"src/deep/b.rs","count":1}])
     );
     let result = run(
-        &toolkit,
+        &capabilities,
         "grep",
         json!({"pattern":"beta","case_insensitive":true,"glob":"*.rs"}),
     )
     .await
     .unwrap();
     assert_eq!(result.values["files"], json!(["src/deep/b.rs"]));
-    let result = run(&toolkit, "grep", json!({"path":"readme.txt","pattern":"beta","output_mode":"content","head_limit":1,"offset":1})).await.unwrap();
+    let result = run(&capabilities, "grep", json!({"path":"readme.txt","pattern":"beta","output_mode":"content","head_limit":1,"offset":1})).await.unwrap();
     assert_eq!(
         result.values["matches"],
         json!([{"path":"readme.txt","line":3,"content":"beta","matched":true}])
     );
     assert_eq!(result.values["truncated"], false);
-    let result = run(&toolkit, "grep", json!({"pattern":"not-present"}))
+    let result = run(&capabilities, "grep", json!({"pattern":"not-present"}))
         .await
         .unwrap();
     assert_eq!(result.values["files"], json!([]));
@@ -204,8 +208,8 @@ async fn grep_multiline_and_overlapping_context_keep_original_line_numbers() {
     let directory = Directory::new();
     let workspace = core::workspace::Local::new(&directory.0).unwrap();
     populate(&workspace).await;
-    let toolkit = Toolkit::from(workspace);
-    let result = run(&toolkit, "grep", json!({"path":"src/a.rs","pattern":"first.*second","multiline":true,"output_mode":"content","context":1})).await.unwrap();
+    let capabilities = Toolkit::from(workspace);
+    let result = run(&capabilities, "grep", json!({"path":"src/a.rs","pattern":"first.*second","multiline":true,"output_mode":"content","context":1})).await.unwrap();
     assert_eq!(
         result.values["matches"],
         json!([
@@ -215,7 +219,7 @@ async fn grep_multiline_and_overlapping_context_keep_original_line_numbers() {
         ])
     );
     let result = run(
-        &toolkit,
+        &capabilities,
         "grep",
         json!({"path":"readme.txt","pattern":"beta","output_mode":"content","context":1}),
     )
@@ -223,7 +227,7 @@ async fn grep_multiline_and_overlapping_context_keep_original_line_numbers() {
     .unwrap();
     assert_eq!(result.values["matches"].as_array().unwrap().len(), 3);
     let result = run(
-        &toolkit,
+        &capabilities,
         "grep",
         json!({"path":"src/a.rs","pattern":"first.*second"}),
     )
@@ -235,9 +239,9 @@ async fn grep_multiline_and_overlapping_context_keep_original_line_numbers() {
 #[tokio::test]
 async fn exact_edits_preserve_files_on_missing_or_ambiguous_matches() {
     let directory = Directory::new();
-    let toolkit = Toolkit::from(core::workspace::Local::new(&directory.0).unwrap());
+    let capabilities = Toolkit::from(core::workspace::Local::new(&directory.0).unwrap());
     run(
-        &toolkit,
+        &capabilities,
         "write",
         json!({"path":"draft.txt","content":"alpha alpha"}),
     )
@@ -250,27 +254,27 @@ async fn exact_edits_preserve_files_on_missing_or_ambiguous_matches() {
         ("alpha", "alpha", "INVALID_ARGUMENTS"),
     ] {
         let error = run(
-            &toolkit,
+            &capabilities,
             "edit",
             json!({"path":"draft.txt","old_string":old,"new_string":new}),
         )
         .await
         .unwrap_err();
         assert_eq!(error.code, code);
-        let result = run(&toolkit, "read", json!({"path":"draft.txt"}))
+        let result = run(&capabilities, "read", json!({"path":"draft.txt"}))
             .await
             .unwrap();
         assert_eq!(result.values["content"], "alpha alpha");
     }
     let result = run(
-        &toolkit,
+        &capabilities,
         "edit",
         json!({"path":"draft.txt","old_string":"alpha","new_string":"β","replace_all":true}),
     )
     .await
     .unwrap();
     assert_eq!(result.values["replacements"], 2);
-    let result = run(&toolkit, "read", json!({"path":"draft.txt"}))
+    let result = run(&capabilities, "read", json!({"path":"draft.txt"}))
         .await
         .unwrap();
     assert_eq!(result.values["content"], "β β");
@@ -279,28 +283,28 @@ async fn exact_edits_preserve_files_on_missing_or_ambiguous_matches() {
 #[tokio::test]
 async fn concurrent_local_edits_do_not_overwrite_each_others_successful_changes() {
     let directory = Directory::new();
-    let toolkit = Arc::new(Toolkit::from(
+    let capabilities = Arc::new(Toolkit::from(
         core::workspace::Local::new(&directory.0).unwrap(),
     ));
     let original = (0..20)
         .map(|idx| format!("[token:{idx}]\n"))
         .collect::<String>();
     run(
-        &toolkit,
+        &capabilities,
         "write",
         json!({"path":"draft.txt","content":original}),
     )
     .await
     .unwrap();
     let jobs = (0..20).map(|idx| {
-        let toolkit = Arc::clone(&toolkit);
+        let capabilities = Arc::clone(&capabilities);
         async move {
-            run(&toolkit, "edit", json!({"path":"draft.txt","old_string":format!("[token:{idx}]"),"new_string":format!("[done:{idx}]")})).await
+            run(&capabilities, "edit", json!({"path":"draft.txt","old_string":format!("[token:{idx}]"),"new_string":format!("[done:{idx}]")})).await
         }
     });
     let results = join_all(jobs).await;
     assert!(results.iter().all(Result::is_ok));
-    let result = run(&toolkit, "read", json!({"path":"draft.txt"}))
+    let result = run(&capabilities, "read", json!({"path":"draft.txt"}))
         .await
         .unwrap();
     let content = result.values["content"].as_str().unwrap();
@@ -313,7 +317,7 @@ async fn concurrent_local_edits_do_not_overwrite_each_others_successful_changes(
 #[tokio::test]
 async fn invalid_search_and_scope_arguments_return_errors_without_commands() {
     let directory = Directory::new();
-    let toolkit = Toolkit::from(core::workspace::Local::new(&directory.0).unwrap());
+    let capabilities = Toolkit::from(core::workspace::Local::new(&directory.0).unwrap());
     for (name, args) in [
         ("glob", json!({"pattern":"["})),
         ("glob", json!({"pattern":"../*"})),
@@ -332,13 +336,13 @@ async fn invalid_search_and_scope_arguments_return_errors_without_commands() {
         ("list", json!({"path":"/outside"})),
     ] {
         assert_eq!(
-            run(&toolkit, name, args).await.unwrap_err().code,
+            run(&capabilities, name, args).await.unwrap_err().code,
             "INVALID_ARGUMENTS"
         );
     }
     let cancellation = Cancellation::new();
     cancellation.cancel();
-    let error = toolkit
+    let error = capabilities
         .execute(
             Call {
                 call_id: "cancelled".into(),
@@ -367,18 +371,18 @@ async fn local_listing_glob_and_grep_do_not_follow_outside_symlinks() {
             .unwrap()
             .is_empty()
     );
-    let toolkit = Toolkit::from(workspace);
-    let result = run(&toolkit, "glob", json!({"pattern":"**/*"}))
+    let capabilities = Toolkit::from(workspace);
+    let result = run(&capabilities, "glob", json!({"pattern":"**/*"}))
         .await
         .unwrap();
     assert_eq!(result.values["files"], json!([]));
-    let result = run(&toolkit, "grep", json!({"pattern":"secret"}))
+    let result = run(&capabilities, "grep", json!({"pattern":"secret"}))
         .await
         .unwrap();
     assert_eq!(result.values["files"], json!([]));
     assert_eq!(
         run(
-            &toolkit,
+            &capabilities,
             "grep",
             json!({"path":"linked","pattern":"secret"})
         )

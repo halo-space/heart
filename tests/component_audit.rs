@@ -1,7 +1,7 @@
 //! Frozen component boundaries; no Runtime, real model or backend service.
 use futures_executor::block_on;
 use futures_util::stream::{self, Iter};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     document::{Document, raptor::Raptor},
     event::Event,
@@ -50,12 +50,12 @@ struct Embedding {
     cancel: Option<Cancellation>,
 }
 impl Embed for Embedding {
-    async fn embed(&self, _request: halo_agents::model::embed::Request) -> Result<Message, Error> {
+    async fn embed(&self, _request: halo::model::embed::Request) -> Result<Message, Error> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if let Some(cancel) = &self.cancel {
             cancel.cancel();
         }
-        halo_agents::model::embed::message(vec![1.0], "test", "test", None)
+        halo::model::embed::message(vec![1.0], "test", "test", None)
     }
 }
 fn embed() -> Embedding {

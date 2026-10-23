@@ -10,7 +10,7 @@ use std::{
 
 use futures_core::Stream;
 use futures_util::{StreamExt, poll, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{self, Agent, Input, SubAgent, toolkit::Toolkit},
     checkpoint::Checkpoint,
@@ -179,12 +179,12 @@ async fn both_modes_retain_each_model_and_tool_complete_and_same_usage() {
             let model = Model::default();
             let requests = model.0.clone();
             let checkpoint = Arc::new(core::checkpoint::InMemory::new());
-            let toolkit = Toolkit::new().tools(vec![Lookup]);
+            let capabilities = Toolkit::new().tools(vec![Lookup]);
             let events = if react {
                 collect(
                     agent::react()
                         .model(model)
-                        .toolkit(toolkit)
+                        .toolkit(capabilities)
                         .checkpoint(checkpoint.clone())
                         .build()
                         .unwrap(),
@@ -195,7 +195,7 @@ async fn both_modes_retain_each_model_and_tool_complete_and_same_usage() {
                 collect(
                     agent::chat()
                         .model(model)
-                        .toolkit(toolkit)
+                        .toolkit(capabilities)
                         .checkpoint(checkpoint.clone())
                         .build()
                         .unwrap(),
@@ -468,7 +468,7 @@ async fn reject_wait<A: Agent>(agent: A, checkpoint: Arc<core::checkpoint::InMem
         .last_mut()
         .unwrap()["waits"] = serde_json::to_value(std::collections::BTreeMap::from([(
         5001,
-        halo_agents::runtime::agent::node::Wait {
+        halo::runtime::agent::node::Wait {
             count: 1,
             kind: "ask".into(),
             status: "received".into(),

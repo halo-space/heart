@@ -8,7 +8,7 @@ publish = false
 [workspace]
 
 [dependencies]
-heart = { package = "halo-agents", path = "../../.." }
+heart = { package = "halo", path = "../../.." }
 serde = { version = "1", features = ["derive"] }
 schemars = "0.8"
 

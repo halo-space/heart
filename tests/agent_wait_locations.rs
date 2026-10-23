@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 use futures_util::{StreamExt, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{self, Agent, Input},
     checkpoint::Checkpoint,
@@ -38,13 +38,13 @@ fn input() -> Input {
 }
 
 fn step(id: &str, reply_id: i64) -> Value {
-    serde_json::to_value(halo_agents::runtime::agent::node::Step {
+    serde_json::to_value(halo::runtime::agent::node::Step {
         id: id.into(),
         kind: "human".into(),
         status: "waiting".into(),
         waits: [(
             reply_id,
-            halo_agents::runtime::agent::node::Wait {
+            halo::runtime::agent::node::Wait {
                 count: 1,
                 kind: "approval".into(),
                 status: "waiting".into(),

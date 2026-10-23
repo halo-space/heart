@@ -12,7 +12,7 @@ use std::{
 
 use futures_core::Stream;
 use futures_executor::block_on;
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     agent::{Input, Payload},
     core,
@@ -363,7 +363,7 @@ fn planner_accepts_task_names_but_rejects_dag_failures_without_changing_snapshot
 }
 
 #[test]
-fn planner_uses_current_plan_as_task_data_without_toolkit_validation() {
+fn planner_uses_current_plan_as_task_data_without_mounted_capabilities_validation() {
     let current: Plan = serde_json::from_value(plan_json()).unwrap();
     let model = Model::new(vec![complete(text(
         Role::Assistant,

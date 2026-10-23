@@ -1,10 +1,10 @@
 use futures_executor::block_on;
-use halo_agents::event::Event;
-use halo_agents::message::Role;
-use halo_agents::model::content::part::Part;
-use halo_agents::model::token::Usage;
-use halo_agents::node::{Echo, Node, Signal};
-use halo_agents::{Cancellation, Message, Messages};
+use halo::event::Event;
+use halo::message::Role;
+use halo::model::content::part::Part;
+use halo::model::token::Usage;
+use halo::node::{Echo, Node, Signal};
+use halo::{Cancellation, Message, Messages};
 use serde_json::json;
 
 #[test]
@@ -35,17 +35,17 @@ fn message_keeps_values_metadata_and_usage_as_siblings() {
 
 #[test]
 fn public_component_error_aliases_and_usage_details_are_stable() {
-    let error = halo_agents::Error::new("INVALID_ARGUMENTS", "bad input");
-    let _: halo_agents::tool::Error = error.clone();
-    let _: halo_agents::function::Error = error.clone();
-    let _: halo_agents::prompt::Error = error;
+    let error = halo::Error::new("INVALID_ARGUMENTS", "bad input");
+    let _: halo::tool::Error = error.clone();
+    let _: halo::function::Error = error.clone();
+    let _: halo::prompt::Error = error;
 
     let usage = Usage {
         input: Some(10),
         output: Some(4),
         total: Some(14),
-        input_details: Some(halo_agents::model::token::InputDetails { cached: Some(2) }),
-        output_details: Some(halo_agents::model::token::OutputDetails { think: Some(1) }),
+        input_details: Some(halo::model::token::InputDetails { cached: Some(2) }),
+        output_details: Some(halo::model::token::OutputDetails { think: Some(1) }),
         details: Default::default(),
     };
     assert_eq!(
@@ -109,7 +109,7 @@ fn independent_events_preserve_the_public_wire_format() {
 
 #[test]
 fn content_uses_the_canonical_nested_part_path() {
-    let _part = halo_agents::model::content::part::Part {
+    let _part = halo::model::content::part::Part {
         r#type: "text".into(),
         data: json!({"value": "ok"}).as_object().unwrap().clone(),
     };
@@ -118,11 +118,11 @@ fn content_uses_the_canonical_nested_part_path() {
 #[test]
 fn integration_components_are_implementable_without_runtime_state() {
     struct Skill;
-    impl halo_agents::skill::Skill for Skill {
-        fn definition(&self) -> &halo_agents::skill::Definition {
-            static DEFINITION: std::sync::OnceLock<halo_agents::skill::Definition> =
+    impl halo::skill::Skill for Skill {
+        fn definition(&self) -> &halo::skill::Definition {
+            static DEFINITION: std::sync::OnceLock<halo::skill::Definition> =
                 std::sync::OnceLock::new();
-            DEFINITION.get_or_init(|| halo_agents::skill::Definition {
+            DEFINITION.get_or_init(|| halo::skill::Definition {
                 name: "echo".into(),
                 description: Some("echoes messages".into()),
                 metadata: Default::default(),
@@ -132,26 +132,26 @@ fn integration_components_are_implementable_without_runtime_state() {
         async fn read(
             &self,
             _cancellation: &Cancellation,
-        ) -> Result<String, halo_agents::skill::Error> {
+        ) -> Result<String, halo::skill::Error> {
             Ok("skill instructions".into())
         }
     }
 
     struct Permission;
-    impl halo_agents::permission::Permission for Permission {
+    impl halo::permission::Permission for Permission {
         async fn check(
             &self,
-            request: &halo_agents::permission::Request,
+            request: &halo::permission::Request,
             _cancellation: &Cancellation,
-        ) -> Result<halo_agents::permission::Decision, halo_agents::permission::Error> {
+        ) -> Result<halo::permission::Decision, halo::permission::Error> {
             if request.action == "read" {
-                Ok(halo_agents::permission::Decision {
-                    behavior: halo_agents::permission::Behavior::Allow,
+                Ok(halo::permission::Decision {
+                    behavior: halo::permission::Behavior::Allow,
                     reason: None,
                 })
             } else {
-                Ok(halo_agents::permission::Decision {
-                    behavior: halo_agents::permission::Behavior::Deny,
+                Ok(halo::permission::Decision {
+                    behavior: halo::permission::Behavior::Deny,
                     reason: Some("denied".into()),
                 })
             }
@@ -159,13 +159,13 @@ fn integration_components_are_implementable_without_runtime_state() {
     }
 
     struct Sandbox;
-    impl halo_agents::sandbox::Sandbox for Sandbox {
+    impl halo::sandbox::Sandbox for Sandbox {
         async fn execute(
             &self,
-            request: halo_agents::sandbox::Request,
+            request: halo::sandbox::Request,
             _cancellation: &Cancellation,
-        ) -> Result<halo_agents::sandbox::Response, halo_agents::sandbox::Error> {
-            Ok(halo_agents::sandbox::Response {
+        ) -> Result<halo::sandbox::Response, halo::sandbox::Error> {
+            Ok(halo::sandbox::Response {
                 data: request.input,
                 metadata: request.metadata,
             })
@@ -173,23 +173,23 @@ fn integration_components_are_implementable_without_runtime_state() {
     }
 
     struct Reasoner;
-    impl halo_agents::reason::Reasoner for Reasoner {
+    impl halo::reason::Reasoner for Reasoner {
         async fn reason(
             &self,
             input: Messages,
             _cancellation: &Cancellation,
-        ) -> Result<Messages, halo_agents::reason::Error> {
+        ) -> Result<Messages, halo::reason::Error> {
             Ok(input)
         }
     }
 
     struct Compressor;
-    impl halo_agents::compression::Compressor for Compressor {
+    impl halo::compression::Compressor for Compressor {
         async fn compress(
             &self,
             input: Messages,
             _cancellation: &Cancellation,
-        ) -> Result<Messages, halo_agents::compression::Error> {
+        ) -> Result<Messages, halo::compression::Error> {
             Ok(input)
         }
     }
@@ -197,13 +197,13 @@ fn integration_components_are_implementable_without_runtime_state() {
     let cancellation = Cancellation::new();
     let input = Messages::new([Message::new(Role::User)]);
     assert_eq!(
-        block_on(halo_agents::skill::Skill::read(&Skill, &cancellation)).unwrap(),
+        block_on(halo::skill::Skill::read(&Skill, &cancellation)).unwrap(),
         "skill instructions"
     );
     assert!(
-        block_on(halo_agents::permission::Permission::check(
+        block_on(halo::permission::Permission::check(
             &Permission,
-            &halo_agents::permission::Request {
+            &halo::permission::Request {
                 action: "read".into(),
                 resource: "file".into(),
                 metadata: Default::default(),
@@ -213,9 +213,9 @@ fn integration_components_are_implementable_without_runtime_state() {
         .is_ok()
     );
     assert_eq!(
-        block_on(halo_agents::sandbox::Sandbox::execute(
+        block_on(halo::sandbox::Sandbox::execute(
             &Sandbox,
-            halo_agents::sandbox::Request {
+            halo::sandbox::Request {
                 operation: "identity".into(),
                 input: json!("ok"),
                 metadata: Default::default(),
@@ -227,7 +227,7 @@ fn integration_components_are_implementable_without_runtime_state() {
         json!("ok")
     );
     assert_eq!(
-        block_on(halo_agents::reason::Reasoner::reason(
+        block_on(halo::reason::Reasoner::reason(
             &Reasoner,
             input.clone(),
             &cancellation,
@@ -236,7 +236,7 @@ fn integration_components_are_implementable_without_runtime_state() {
         input.clone()
     );
     assert_eq!(
-        block_on(halo_agents::compression::Compressor::compress(
+        block_on(halo::compression::Compressor::compress(
             &Compressor,
             input,
             &cancellation,
@@ -251,22 +251,22 @@ fn integration_components_are_implementable_without_runtime_state() {
 #[test]
 fn mcp_and_workspace_are_explicit_adapters() {
     struct Mcp;
-    impl halo_agents::mcp::Server for Mcp {
-        fn definition(&self) -> &halo_agents::mcp::Definition {
-            static DEFINITION: std::sync::OnceLock<halo_agents::mcp::Definition> =
+    impl halo::mcp::Server for Mcp {
+        fn definition(&self) -> &halo::mcp::Definition {
+            static DEFINITION: std::sync::OnceLock<halo::mcp::Definition> =
                 std::sync::OnceLock::new();
-            DEFINITION.get_or_init(|| halo_agents::mcp::Definition {
+            DEFINITION.get_or_init(|| halo::mcp::Definition {
                 name: "weather".into(),
                 description: Some("weather tools".into()),
                 metadata: Default::default(),
             })
         }
 
-        fn tools(&self) -> &[halo_agents::tool::ToolDefinition] {
-            static TOOLS: std::sync::OnceLock<Vec<halo_agents::tool::ToolDefinition>> =
+        fn tools(&self) -> &[halo::tool::ToolDefinition] {
+            static TOOLS: std::sync::OnceLock<Vec<halo::tool::ToolDefinition>> =
                 std::sync::OnceLock::new();
             TOOLS.get_or_init(|| {
-                vec![halo_agents::tool::ToolDefinition {
+                vec![halo::tool::ToolDefinition {
                     name: "current_weather".into(),
                     description: "Read weather".into(),
                     parameters: serde_json::Map::from_iter([("type".into(), json!("object"))]),
@@ -276,20 +276,20 @@ fn mcp_and_workspace_are_explicit_adapters() {
 
         async fn call(
             &self,
-            call: halo_agents::tool::Call,
+            call: halo::tool::Call,
             _cancellation: &Cancellation,
-        ) -> Result<Message, halo_agents::mcp::Error> {
+        ) -> Result<Message, halo::mcp::Error> {
             Ok(Message::function(json!({"name": call.name})))
         }
     }
 
     struct Workspace;
-    impl halo_agents::workspace::Workspace for Workspace {
-        fn definition(&self) -> &halo_agents::workspace::Definition {
-            static DEFINITION: std::sync::OnceLock<halo_agents::workspace::Definition> =
+    impl halo::workspace::Workspace for Workspace {
+        fn definition(&self) -> &halo::workspace::Definition {
+            static DEFINITION: std::sync::OnceLock<halo::workspace::Definition> =
                 std::sync::OnceLock::new();
-            DEFINITION.get_or_init(|| halo_agents::workspace::Definition {
-                mode: halo_agents::workspace::Mode::Server,
+            DEFINITION.get_or_init(|| halo::workspace::Definition {
+                mode: halo::workspace::Mode::Server,
                 path: None,
                 metadata: Default::default(),
             })
@@ -297,12 +297,12 @@ fn mcp_and_workspace_are_explicit_adapters() {
     }
 
     let cancellation = Cancellation::new();
-    assert_eq!(halo_agents::mcp::Server::definition(&Mcp).name, "weather");
-    assert_eq!(halo_agents::mcp::Server::tools(&Mcp).len(), 1);
+    assert_eq!(halo::mcp::Server::definition(&Mcp).name, "weather");
+    assert_eq!(halo::mcp::Server::tools(&Mcp).len(), 1);
     assert_eq!(
-        block_on(halo_agents::mcp::Server::call(
+        block_on(halo::mcp::Server::call(
             &Mcp,
-            halo_agents::tool::Call {
+            halo::tool::Call {
                 call_id: "call_1".into(),
                 name: "current_weather".into(),
                 arguments: Default::default(),
@@ -314,11 +314,11 @@ fn mcp_and_workspace_are_explicit_adapters() {
         "current_weather"
     );
     assert_eq!(
-        halo_agents::workspace::Workspace::definition(&Workspace).mode,
-        halo_agents::workspace::Mode::Server
+        halo::workspace::Workspace::definition(&Workspace).mode,
+        halo::workspace::Mode::Server
     );
     assert!(
-        halo_agents::workspace::Workspace::definition(&Workspace)
+        halo::workspace::Workspace::definition(&Workspace)
             .path
             .is_none()
     );

@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use futures_executor::block_on;
-use halo_agents::{
+use halo::{
     Cancellation,
     document::{self, Document, Loader as _, Parser as _, Transformer as _},
 };

@@ -6,7 +6,7 @@ use std::{
 
 use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{self, Agent, Input, Payload, toolkit::Toolkit},
     event::Event,

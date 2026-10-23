@@ -5,7 +5,7 @@
 mod workflow_support;
 use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     runtime::workflow::{
         CompiledWorkflow, FieldSource, InputBinding, NodeAttrs, RetryPolicy, Runtime,
@@ -258,7 +258,7 @@ fn stateless_batch_workflow(
 
 #[test]
 fn restoring_full_runtime_reuses_successful_nodes_and_does_not_guess_internal_batch_facts() {
-    use halo_agents::checkpoint::Checkpoint as _;
+    use halo::checkpoint::Checkpoint as _;
     block_on(async {
         let original_calls = Arc::new(AtomicUsize::new(0));
         let workflow = stateless_batch_workflow(original_calls.clone(), Default::default());
@@ -286,7 +286,7 @@ fn restoring_full_runtime_reuses_successful_nodes_and_does_not_guess_internal_ba
             )])
             .unwrap();
         assert_eq!(original_calls.load(Ordering::SeqCst), 1);
-        let checkpoint = Arc::new(halo_agents::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
         original
             .save_checkpoint(checkpoint.as_ref(), &Cancellation::new())
             .await
@@ -409,12 +409,12 @@ fn failing_batch_workflow(
 
 #[test]
 fn failed_batch_checkpoint_is_terminal_and_never_replays_completed_or_failed_nodes() {
-    use halo_agents::checkpoint::Checkpoint as _;
+    use halo::checkpoint::Checkpoint as _;
     block_on(async {
         let source_calls = Arc::new(AtomicUsize::new(0));
         let item_calls = Arc::new(Mutex::new(Vec::new()));
         let downstream = Arc::new(AtomicUsize::new(0));
-        let checkpoint = Arc::new(halo_agents::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
         let workflow =
             failing_batch_workflow(source_calls.clone(), item_calls.clone(), downstream.clone());
         let ids = Arc::new(AtomicI64::new(3000));
@@ -478,7 +478,7 @@ fn failed_batch_checkpoint_is_terminal_and_never_replays_completed_or_failed_nod
 
 #[test]
 fn unfinished_batch_restore_preserves_failed_attempt_history_and_remaining_retry_budget() {
-    use halo_agents::checkpoint::Checkpoint as _;
+    use halo::checkpoint::Checkpoint as _;
     block_on(async {
         let original_calls = Arc::new(AtomicUsize::new(0));
         let mut original = Runtime::new(
@@ -525,7 +525,7 @@ fn unfinished_batch_restore_preserves_failed_attempt_history_and_remaining_retry
         );
         execution.attempts[0].created_time = Some(10);
         execution.attempts[0].finished_time = Some(20);
-        execution.attempts[0].usage = Some(halo_agents::model::token::Usage {
+        execution.attempts[0].usage = Some(halo::model::token::Usage {
             input: Some(7),
             output: Some(3),
             total: Some(10),
@@ -541,7 +541,7 @@ fn unfinished_batch_restore_preserves_failed_attempt_history_and_remaining_retry
                 },
             )
             .unwrap();
-        let checkpoint = Arc::new(halo_agents::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
         original
             .save_checkpoint(checkpoint.as_ref(), &Cancellation::new())
             .await

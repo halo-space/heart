@@ -1,5 +1,5 @@
 [package]
-name = "halo-agents"
+name = "halo"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.99.1"
@@ -7,6 +7,7 @@ license = "MIT"
 description = "Halo Agent and Workflow execution kernel"
 
 [lib]
+name = "halo"
 path = "src/lib.rs"
 
 [dependencies]

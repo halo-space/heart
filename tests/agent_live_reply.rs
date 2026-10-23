@@ -1,6 +1,6 @@
 //! Root Chat/ReAct live approval on the original run stream, without replay.
 use futures_util::{StreamExt, poll, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{self, Agent, Input, SubAgent, toolkit::Toolkit},
     checkpoint::Checkpoint,
@@ -182,13 +182,13 @@ fn waiting_children(react: bool) -> (Vec<SubAgent>, Vec<ChildProbe>) {
         };
         let log = Arc::new(Log::default());
         let checkpoint = Arc::new(Store::default());
-        let toolkit = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+        let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
         let child = if react {
             SubAgent::new(
                 name,
                 agent::react()
                     .model(model.clone())
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(checkpoint.clone())
                     .build()
@@ -200,7 +200,7 @@ fn waiting_children(react: bool) -> (Vec<SubAgent>, Vec<ChildProbe>) {
                 name,
                 agent::chat()
                     .model(model.clone())
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(checkpoint.clone())
                     .build()
@@ -2231,7 +2231,7 @@ async fn exercise<A: Agent>(
             .expect("actual Tool Step")["waits"][id.to_string()]["status"],
         "waiting"
     );
-    let _: halo_agents::runtime::agent::State = serde_json::from_value(waiting.clone()).unwrap();
+    let _: halo::runtime::agent::State = serde_json::from_value(waiting.clone()).unwrap();
     let mut invalid = answer(id, json!(true));
     invalid.metadata.insert("session_id".into(), json!(2002));
     assert_eq!(
@@ -2373,12 +2373,12 @@ async fn root_chat_and_react_consume_approval_on_the_original_stream() {
                     multiple: false,
                 };
                 let checkpoint = Arc::new(core::checkpoint::InMemory::new());
-                let toolkit = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+                let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
                 if react {
                     exercise(
                         agent::react()
                             .model(model.clone())
-                            .toolkit(toolkit)
+                            .toolkit(capabilities)
                             .permission(Ask(log.clone()))
                             .checkpoint(checkpoint.clone())
                             .with_id_fn(next_id)
@@ -2395,7 +2395,7 @@ async fn root_chat_and_react_consume_approval_on_the_original_stream() {
                     exercise(
                         agent::chat()
                             .model(model.clone())
-                            .toolkit(toolkit)
+                            .toolkit(capabilities)
                             .permission(Ask(log.clone()))
                             .checkpoint(checkpoint.clone())
                             .with_id_fn(next_id)
@@ -2498,12 +2498,12 @@ async fn before_changed_arguments_need_their_own_question_without_reusing_approv
             multiple: false,
         };
         let checkpoint = Arc::new(core::checkpoint::InMemory::new());
-        let toolkit = Toolkit::new().tools([Lookup::new(log.clone(), true)]);
+        let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), true)]);
         if react {
             changed(
                 agent::react()
                     .model(model.clone())
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(checkpoint.clone())
                     .with_id_fn(next_id)
@@ -2518,7 +2518,7 @@ async fn before_changed_arguments_need_their_own_question_without_reusing_approv
             changed(
                 agent::chat()
                     .model(model.clone())
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(checkpoint.clone())
                     .with_id_fn(next_id)
@@ -2584,12 +2584,12 @@ async fn concurrent_question_replies_are_consumed_in_fifo_order() {
             requests: Default::default(),
             multiple: true,
         };
-        let toolkit = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+        let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
         if react {
             parallel(
                 agent::react()
                     .model(model.clone())
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .permission(Ask(log.clone()))
                     .with_max_concurrency(2)
                     .with_id_fn(next_id)
@@ -2603,7 +2603,7 @@ async fn concurrent_question_replies_are_consumed_in_fifo_order() {
             parallel(
                 agent::chat()
                     .model(model.clone())
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .permission(Ask(log.clone()))
                     .with_max_concurrency(2)
                     .with_id_fn(next_id)
@@ -2715,12 +2715,12 @@ async fn cancellation_and_stream_drop_release_live_handoffs_without_running_tool
                 multiple: false,
             };
             let checkpoint = Arc::new(core::checkpoint::InMemory::new());
-            let toolkit = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+            let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
             if react {
                 cancelled(
                     agent::react()
                         .model(model)
-                        .toolkit(toolkit)
+                        .toolkit(capabilities)
                         .permission(Ask(log.clone()))
                         .checkpoint(checkpoint.clone())
                         .with_id_fn(next_id)
@@ -2735,7 +2735,7 @@ async fn cancellation_and_stream_drop_release_live_handoffs_without_running_tool
                 cancelled(
                     agent::chat()
                         .model(model)
-                        .toolkit(toolkit)
+                        .toolkit(capabilities)
                         .permission(Ask(log.clone()))
                         .checkpoint(checkpoint.clone())
                         .with_id_fn(next_id)
@@ -2775,13 +2775,13 @@ fn recovered_children(react: bool) -> (Vec<SubAgent>, Vec<RecoveredChild>) {
         let model = RecoveryOnlyModel::default();
         let log = Arc::new(Log::default());
         let checkpoint = Arc::new(Store::default());
-        let toolkit = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+        let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
         let child = if react {
             SubAgent::new(
                 name,
                 agent::react()
                     .model(model.clone())
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(checkpoint.clone())
                     .build()
@@ -2793,7 +2793,7 @@ fn recovered_children(react: bool) -> (Vec<SubAgent>, Vec<RecoveredChild>) {
                 name,
                 agent::chat()
                     .model(model.clone())
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(checkpoint.clone())
                     .build()
@@ -5573,12 +5573,12 @@ async fn live_submission_and_duplicate_run_do_not_reload_checkpoint() {
             multiple: false,
         };
         let store = Arc::new(Store::default());
-        let toolkit = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+        let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
         if react {
             no_reload(
                 agent::react()
                     .model(model)
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .permission(Ask(log))
                     .checkpoint(store.clone())
                     .with_id_fn(next_id)
@@ -5591,7 +5591,7 @@ async fn live_submission_and_duplicate_run_do_not_reload_checkpoint() {
             no_reload(
                 agent::chat()
                     .model(model)
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .permission(Ask(log))
                     .checkpoint(store.clone())
                     .with_id_fn(next_id)
@@ -5672,12 +5672,12 @@ async fn cancellation_during_question_save_never_presents_a_cancelled_question()
             blocked: AtomicUsize::new(0),
             gate: Mutex::new(Some(gate)),
         });
-        let toolkit = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+        let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
         if react {
             cancel_before_presentation(
                 agent::react()
                     .model(model)
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(store.clone())
                     .with_id_fn(next_id)
@@ -5692,7 +5692,7 @@ async fn cancellation_during_question_save_never_presents_a_cancelled_question()
             cancel_before_presentation(
                 agent::chat()
                     .model(model)
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(store.clone())
                     .with_id_fn(next_id)
@@ -5757,12 +5757,12 @@ async fn question_save_failure_is_not_presented_and_terminal_error_is_still_reco
             multiple: false,
         };
         let store = Arc::new(FailingStore::default());
-        let toolkit = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+        let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
         if react {
             failed_save(
                 agent::react()
                     .model(model)
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(store.clone())
                     .with_id_fn(next_id)
@@ -5776,7 +5776,7 @@ async fn question_save_failure_is_not_presented_and_terminal_error_is_still_reco
             failed_save(
                 agent::chat()
                     .model(model)
-                    .toolkit(toolkit)
+                    .toolkit(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(store.clone())
                     .with_id_fn(next_id)

@@ -1,6 +1,6 @@
 //! Direct delegated feedback retains native child scenes, never parent Steps.
 use futures_util::{StreamExt, poll, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     agent::{self, Agent, Input, SubAgent, toolkit::Toolkit},
     checkpoint::Checkpoint,

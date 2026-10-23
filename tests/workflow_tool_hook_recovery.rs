@@ -1,6 +1,6 @@
 //! ToolNode recovery uses native Workflow Attempts, not a public state API.
 use futures_util::StreamExt;
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     checkpoint::Checkpoint,
     event::Event,
@@ -448,7 +448,7 @@ async fn invalid_native_tool_scene_fails_before_component_work() {
 }
 
 struct Store {
-    inner: halo_agents::core::checkpoint::InMemory,
+    inner: halo::core::checkpoint::InMemory,
     saves: AtomicUsize,
 }
 impl Checkpoint for Store {
@@ -467,7 +467,7 @@ impl Checkpoint for Store {
 async fn phase_acknowledgements_do_not_add_checkpoint_writes() {
     let log = Arc::new(Log::new(Phase::After));
     let store = Arc::new(Store {
-        inner: halo_agents::core::checkpoint::InMemory::new(),
+        inner: halo::core::checkpoint::InMemory::new(),
         saves: AtomicUsize::new(0),
     });
     let runtime = Runtime::new(1001, workflow(log.clone(), true, 2, 0))
@@ -501,7 +501,7 @@ fn shared_nodes(log: Arc<Log>) -> CompiledWorkflow {
         builder.add_edge(START, source).unwrap();
         builder.add_edge(source, target).unwrap();
     }
-    builder.add_node("merge", halo_agents::node::Echo).unwrap();
+    builder.add_node("merge", halo::node::Echo).unwrap();
     builder.add_join(["a", "b"], "merge").unwrap();
     builder.add_edge("merge", END).unwrap();
     builder.compile().unwrap()

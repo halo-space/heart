@@ -11,7 +11,7 @@ use std::{
 
 use futures_core::Stream;
 use futures_executor::block_on;
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     compression::Compressor as _,
     core,
@@ -207,7 +207,7 @@ fn custom_compressors_share_size_contract_and_legacy_standalone_remains_compatib
             self
         }
     }
-    impl halo_agents::compression::Compressor for Custom {
+    impl halo::compression::Compressor for Custom {
         fn size(&self) -> Option<u64> {
             self.size
         }
@@ -216,7 +216,7 @@ fn custom_compressors_share_size_contract_and_legacy_standalone_remains_compatib
         }
     }
     struct Standalone;
-    impl halo_agents::compression::Compressor for Standalone {
+    impl halo::compression::Compressor for Standalone {
         async fn compress(&self, input: Messages, _: &Cancellation) -> Result<Messages, Error> {
             Ok(input)
         }

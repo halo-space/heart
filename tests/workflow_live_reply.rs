@@ -1,6 +1,6 @@
 //! Actual embedded Agents use the Workflow's original run/reply and snapshot.
 use futures_util::{StreamExt, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     agent::{self, SubAgent, toolkit::Toolkit},
     checkpoint::Checkpoint,
@@ -118,14 +118,14 @@ fn compiled(react: bool, depth: usize, count: usize) -> (CompiledWorkflow, Vec<P
         let model = Model::default();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let checkpoint = Arc::new(Store::default());
-        let toolkit=Toolkit::new().tools([Lookup{definition:ToolDefinition{name:"lookup".into(),description:"lookup weather".into(),parameters:json!({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}).as_object().unwrap().clone()},calls:calls.clone()}]);
+        let capabilities=Toolkit::new().tools([Lookup{definition:ToolDefinition{name:"lookup".into(),description:"lookup weather".into(),parameters:json!({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}).as_object().unwrap().clone()},calls:calls.clone()}]);
         if react {
             builder
                 .add_agent_node(
                     name,
                     agent::react()
                         .model(model.clone())
-                        .toolkit(toolkit)
+                        .toolkit(capabilities)
                         .permission(Ask)
                         .checkpoint(checkpoint.clone())
                         .with_id_fn(next_id)
@@ -139,7 +139,7 @@ fn compiled(react: bool, depth: usize, count: usize) -> (CompiledWorkflow, Vec<P
                     name,
                     agent::chat()
                         .model(model.clone())
-                        .toolkit(toolkit)
+                        .toolkit(capabilities)
                         .permission(Ask)
                         .checkpoint(checkpoint.clone())
                         .with_id_fn(next_id)

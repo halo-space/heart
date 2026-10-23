@@ -212,7 +212,7 @@ impl<M> Builder<M> {
     ///
     /// A fixed ID is not a function:
     /// ```compile_fail
-    /// use halo_agents::agent;
+    /// use halo::agent;
     /// agent::react().with_id_fn(123_i64);
     /// ```
     pub fn with_id_fn(mut self, id_fn: fn() -> i64) -> Self {

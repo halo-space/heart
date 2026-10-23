@@ -1,6 +1,6 @@
 //! One lifecycle implementation, actual per-execution state and native APIs.
 use futures_util::{StreamExt, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     agent::{self, toolkit::Toolkit},
     event::Event,
@@ -134,7 +134,7 @@ fn graph(react: bool, tool: SharedTool) -> CompiledWorkflow {
     let mut builder = WorkflowBuilder::new("shared-lifecycle-owners");
     let model = SharedModel(tool.0.counts.clone());
     for (id, owner) in [("a", "A"), ("b", "B")] {
-        let toolkit = Toolkit::new().tools(tool.clone());
+        let capabilities = Toolkit::new().tools(tool.clone());
         if react {
             builder
                 .add_agent_node(
@@ -142,7 +142,7 @@ fn graph(react: bool, tool: SharedTool) -> CompiledWorkflow {
                     agent::react()
                         .model(model.clone())
                         .system_prompt(owner)
-                        .toolkit(toolkit)
+                        .toolkit(capabilities)
                         .build()
                         .unwrap(),
                 )
@@ -154,7 +154,7 @@ fn graph(react: bool, tool: SharedTool) -> CompiledWorkflow {
                     agent::chat()
                         .model(model.clone())
                         .system_prompt(owner)
-                        .toolkit(toolkit)
+                        .toolkit(capabilities)
                         .build()
                         .unwrap(),
                 )
@@ -162,7 +162,7 @@ fn graph(react: bool, tool: SharedTool) -> CompiledWorkflow {
         }
         builder.add_edge(START, id).unwrap();
     }
-    builder.add_node("merge", halo_agents::node::Echo).unwrap();
+    builder.add_node("merge", halo::node::Echo).unwrap();
     builder.add_join(["a", "b"], "merge").unwrap();
     builder.add_edge("merge", END).unwrap();
     builder.compile().unwrap()
@@ -300,7 +300,7 @@ impl Tool for Plain {
     }
 }
 #[tokio::test]
-async fn absent_hooks_pass_through_direct_tool_toolkit_and_workflow() {
+async fn absent_hooks_pass_through_direct_tool_mounted_capabilities_and_workflow() {
     let calls = Arc::new(AtomicUsize::new(0));
     let tool = Plain {
         definition: ToolDefinition {
@@ -320,17 +320,17 @@ async fn absent_hooks_pass_through_direct_tool_toolkit_and_workflow() {
         arguments: json!({"n":7}).as_object().unwrap().clone(),
     };
     let c = Cancellation::new();
-    let (direct, eval) = halo_agents::tool::execute(&tool, call.clone(), &c)
+    let (direct, eval) = halo::tool::execute(&tool, call.clone(), &c)
         .await
         .unwrap();
     assert!(eval.passed);
-    let (toolkit, eval) = Toolkit::new()
+    let (capabilities, eval) = Toolkit::new()
         .tools(tool.clone())
         .execute(call.clone(), &c)
         .await
         .unwrap();
     assert!(eval.passed);
-    assert_eq!(direct, toolkit);
+    assert_eq!(direct, capabilities);
     let mut selection = Message::new(Role::Assistant);
     selection.content.push(Part {
         r#type: "tool_call".into(),

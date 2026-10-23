@@ -13,7 +13,7 @@ use elasticsearch::{
     http::transport::{SingleNodeConnectionPool, TransportBuilder},
 };
 use futures_util::{StreamExt, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{Agent, toolkit::Toolkit},
     core,
@@ -157,8 +157,8 @@ fn call(name: &str, arguments: Value) -> Call {
     }
 }
 
-async fn run(toolkit: &Toolkit, name: &str, args: Value) -> Result<Message, Error> {
-    let (message, evaluation) = toolkit
+async fn run(capabilities: &Toolkit, name: &str, args: Value) -> Result<Message, Error> {
+    let (message, evaluation) = capabilities
         .execute(call(name, args), &Cancellation::new())
         .await?;
     assert!(evaluation.passed);
@@ -183,8 +183,8 @@ fn es_assembly_has_no_file_methods_config_layer_or_eager_network_access() {
     assert_eq!(workspace.definition().mode, Mode::Server);
     assert!(workspace.definition().path.is_none());
     assert!(workspace.definition().metadata.is_empty());
-    let toolkit = Toolkit::from(workspace);
-    let definitions = toolkit.definitions();
+    let capabilities = Toolkit::from(workspace);
+    let definitions = capabilities.definitions();
     assert_eq!(
         definitions
             .iter()
@@ -240,10 +240,10 @@ async fn es_crud_uses_atomic_create_partial_update_physical_delete_and_stored_so
         (404, json!({"found":false})),
     ])
     .await;
-    let toolkit = Toolkit::from(fixture.workspace().toolkit(Toolkit::new()));
+    let capabilities = Toolkit::from(fixture.workspace().toolkit(Toolkit::new()));
     assert_eq!(
         run(
-            &toolkit,
+            &capabilities,
             "write",
             json!({"data":{"id":3001,"content":"raw","kept":true}})
         )
@@ -253,7 +253,7 @@ async fn es_crud_uses_atomic_create_partial_update_physical_delete_and_stored_so
         json!({"data":stored}).as_object().unwrap().clone()
     );
     assert_eq!(
-        run(&toolkit, "read", json!({"id":3001}))
+        run(&capabilities, "read", json!({"id":3001}))
             .await
             .unwrap()
             .values["data"],
@@ -261,7 +261,7 @@ async fn es_crud_uses_atomic_create_partial_update_physical_delete_and_stored_so
     );
     assert_eq!(
         run(
-            &toolkit,
+            &capabilities,
             "update",
             json!({"id":3001,"data":{"content":"new"}})
         )
@@ -271,21 +271,21 @@ async fn es_crud_uses_atomic_create_partial_update_physical_delete_and_stored_so
         1
     );
     assert_eq!(
-        run(&toolkit, "read", json!({"id":3001}))
+        run(&capabilities, "read", json!({"id":3001}))
             .await
             .unwrap()
             .values["data"],
         json!([updated])
     );
     assert_eq!(
-        run(&toolkit, "delete", json!({"id":3001}))
+        run(&capabilities, "delete", json!({"id":3001}))
             .await
             .unwrap()
             .values["count"],
         1
     );
     assert_eq!(
-        run(&toolkit, "read", json!({"id":3001}))
+        run(&capabilities, "read", json!({"id":3001}))
             .await
             .unwrap()
             .values["data"],
@@ -331,25 +331,32 @@ async fn es_noop_and_missing_records_return_zero_without_upsert_or_soft_delete()
         (404, json!({"found":false})),
     ])
     .await;
-    let toolkit = Toolkit::from(fixture.workspace());
+    let capabilities = Toolkit::from(fixture.workspace());
     for _ in 0..2 {
         assert_eq!(
-            run(&toolkit, "update", json!({"id":1,"data":{"content":"new"}}))
-                .await
-                .unwrap()
-                .values["count"],
+            run(
+                &capabilities,
+                "update",
+                json!({"id":1,"data":{"content":"new"}})
+            )
+            .await
+            .unwrap()
+            .values["count"],
             0
         );
     }
     assert_eq!(
-        run(&toolkit, "delete", json!({"id":1}))
+        run(&capabilities, "delete", json!({"id":1}))
             .await
             .unwrap()
             .values["count"],
         0
     );
     assert_eq!(
-        run(&toolkit, "read", json!({"id":1})).await.unwrap().values["data"],
+        run(&capabilities, "read", json!({"id":1}))
+            .await
+            .unwrap()
+            .values["data"],
         json!([])
     );
     fixture.finish().await;
@@ -413,7 +420,7 @@ async fn es_missing_index_is_error_not_empty_success_or_automatic_provisioning()
 
 #[tokio::test]
 async fn es_schema_and_i64_identity_validation_precede_network_access() {
-    let toolkit =
+    let capabilities =
         Toolkit::from(core::workspace::es::new(client("http://127.0.0.1:1"), "records").unwrap());
     for (name, args) in [
         ("write", json!({"data":{}})),
@@ -429,7 +436,7 @@ async fn es_schema_and_i64_identity_validation_precede_network_access() {
         ("update", json!({"id":1,"data":{"id":null}})),
     ] {
         assert_eq!(
-            run(&toolkit, name, args).await.unwrap_err().code,
+            run(&capabilities, name, args).await.unwrap_err().code,
             "INVALID_ARGUMENTS"
         );
     }
@@ -438,9 +445,9 @@ async fn es_schema_and_i64_identity_validation_precede_network_access() {
 #[tokio::test]
 async fn es_ids_do_not_round_through_floats_or_get_positive_only_restrictions() {
     let mut fixture = Fixture::new(vec![(404, json!({"found":false})); 3]).await;
-    let toolkit = Toolkit::from(fixture.workspace());
+    let capabilities = Toolkit::from(fixture.workspace());
     for id in [i64::MIN, 0, i64::MAX] {
-        run(&toolkit, "read", json!({"id":id})).await.unwrap();
+        run(&capabilities, "read", json!({"id":id})).await.unwrap();
     }
     fixture.finish().await;
     let requests = fixture.requests.lock().unwrap();
@@ -550,12 +557,12 @@ async fn es_update_preflight_failure_never_sends_mutation() {
 
 #[tokio::test]
 async fn es_cancellation_before_send_and_during_headers_or_body_does_not_hang() {
-    let toolkit =
+    let capabilities =
         Toolkit::from(core::workspace::es::new(client("http://127.0.0.1:1"), "records").unwrap());
     let cancellation = Cancellation::new();
     cancellation.cancel();
     assert_eq!(
-        toolkit
+        capabilities
             .execute(call("read", json!({"id":1})), &cancellation)
             .await
             .unwrap_err()
@@ -564,7 +571,7 @@ async fn es_cancellation_before_send_and_during_headers_or_body_does_not_hang() 
     );
     for body_started in [false, true] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let toolkit = Toolkit::from(
+        let capabilities = Toolkit::from(
             core::workspace::es::new(
                 client(&format!("http://{}", listener.local_addr().unwrap())),
                 "records",
@@ -585,7 +592,7 @@ async fn es_cancellation_before_send_and_during_headers_or_body_does_not_hang() 
         let cancellation = Cancellation::new();
         let signal = cancellation.clone();
         let operation = tokio::spawn(async move {
-            toolkit
+            capabilities
                 .execute(call("read", json!({"id":1})), &signal)
                 .await
         });
@@ -628,7 +635,7 @@ async fn es_transport_failure_has_no_credentials_url_or_raw_driver_details() {
 async fn es_non_json_responses_preserve_http_errors_without_echoing_body() {
     for (status, code) in [(200, "INVALID_RESPONSE"), (403, "PERMISSION_DENIED")] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let toolkit = Toolkit::from(
+        let capabilities = Toolkit::from(
             core::workspace::es::new(
                 client(&format!("http://{}", listener.local_addr().unwrap())),
                 "records",
@@ -643,7 +650,9 @@ async fn es_non_json_responses_preserve_http_errors_without_echoing_body() {
                 "HTTP/1.1 {status} Test\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}", body.len(),
             ).as_bytes()).await.unwrap();
         });
-        let error = run(&toolkit, "read", json!({"id":1})).await.unwrap_err();
+        let error = run(&capabilities, "read", json!({"id":1}))
+            .await
+            .unwrap_err();
         assert_eq!(error.code, code);
         assert!(
             !serde_json::to_string(&error)
@@ -698,25 +707,29 @@ async fn es_real_cluster_crud_smoke() {
         transport = transport.auth(Credentials::EncodedApiKey(key));
     }
     let client = Elasticsearch::new(transport.build().unwrap());
-    let toolkit = Toolkit::from(core::workspace::es::new(client, index).unwrap());
+    let capabilities = Toolkit::from(core::workspace::es::new(client, index).unwrap());
     // Test/application supplies identity; the framework does not allocate it.
     let id = rand::random::<i64>();
     let data = json!({"id":id,"content":"heart workspace smoke","metadata":{"kept":true}});
-    run(&toolkit, "write", json!({"data":data})).await.unwrap();
-    let conflict = run(&toolkit, "write", json!({"data":{"id":id}})).await;
-    let before = run(&toolkit, "read", json!({"id":id})).await;
+    run(&capabilities, "write", json!({"data":data}))
+        .await
+        .unwrap();
+    let conflict = run(&capabilities, "write", json!({"data":{"id":id}})).await;
+    let before = run(&capabilities, "read", json!({"id":id})).await;
     let changed = run(
-        &toolkit,
+        &capabilities,
         "update",
         json!({"id":id,"data":{"content":"updated"}}),
     )
     .await;
-    let after = run(&toolkit, "read", json!({"id":id})).await;
+    let after = run(&capabilities, "read", json!({"id":id})).await;
     // Perform the scoped cleanup before assertions on the preceding results.
-    let deleted = run(&toolkit, "delete", json!({"id":id})).await.unwrap();
-    let missing = run(&toolkit, "read", json!({"id":id})).await.unwrap();
+    let deleted = run(&capabilities, "delete", json!({"id":id}))
+        .await
+        .unwrap();
+    let missing = run(&capabilities, "read", json!({"id":id})).await.unwrap();
     let no_upsert = run(
-        &toolkit,
+        &capabilities,
         "update",
         json!({"id":id,"data":{"content":"absent"}}),
     )
@@ -758,7 +771,7 @@ fn text(role: Role, value: &str) -> Message {
     let mut message = Message::new(role);
     message
         .content
-        .push(halo_agents::model::content::part::Part {
+        .push(halo::model::content::part::Part {
             r#type: "text".into(),
             data: json!({"value":value}).as_object().unwrap().clone(),
         });
@@ -776,7 +789,7 @@ impl Tool for Custom {
 }
 
 #[tokio::test]
-async fn es_harness_uses_existing_model_loop_permission_and_custom_toolkit() {
+async fn es_harness_uses_existing_model_loop_permission_and_custom_mounted_capabilities() {
     for allowed in [true, false] {
         let mut fixture = Fixture::new(if allowed {
             vec![(200, document(json!({"id":1,"content":"saved"})))]
@@ -788,7 +801,7 @@ async fn es_harness_uses_existing_model_loop_permission_and_custom_toolkit() {
         let mut selection = Message::new(Role::Assistant);
         selection
             .content
-            .push(halo_agents::model::content::part::Part {
+            .push(halo::model::content::part::Part {
                 r#type: "tool_call".into(),
                 data: serde_json::to_value(call("read", json!({"id":1})))
                     .unwrap()
@@ -808,14 +821,14 @@ async fn es_harness_uses_existing_model_loop_permission_and_custom_toolkit() {
         let permission_calls = Arc::new(Mutex::new(Vec::new()));
         let checked = Arc::clone(&permission_calls);
         let permission = core::permission::Permission::new(
-            move |request: halo_agents::permission::Request, _: Cancellation| {
+            move |request: halo::permission::Request, _: Cancellation| {
                 checked.lock().unwrap().push(request);
                 async move {
-                    Ok(halo_agents::permission::Decision {
+                    Ok(halo::permission::Decision {
                         behavior: if allowed {
-                            halo_agents::permission::Behavior::Allow
+                            halo::permission::Behavior::Allow
                         } else {
-                            halo_agents::permission::Behavior::Deny
+                            halo::permission::Behavior::Deny
                         },
                         reason: None,
                     })
@@ -830,12 +843,12 @@ async fn es_harness_uses_existing_model_loop_permission_and_custom_toolkit() {
             .unwrap();
         let events: Vec<_> = agent
             .run(
-                halo_agents::agent::Input {
+                halo::agent::Input {
                     metadata: json!({"chat_id":101,"agent_id":201,"session_id":301})
                         .as_object()
                         .unwrap()
                         .clone(),
-                    payload: vec![halo_agents::agent::Payload {
+                    payload: vec![halo::agent::Payload {
                         r#type: "text".into(),
                         data: json!({"value":"read record 1"}),
                         mime_type: None,

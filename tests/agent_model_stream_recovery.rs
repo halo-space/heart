@@ -10,7 +10,7 @@ use std::{
 
 use futures_core::Stream;
 use futures_util::{StreamExt, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{self, Agent, Input, SubAgent, toolkit::Toolkit},
     checkpoint::Checkpoint,
@@ -519,8 +519,8 @@ fn nested(
     react: bool,
     log: Arc<Log>,
     child_store: Arc<Store>,
-) -> halo_agents::runtime::workflow::CompiledWorkflow {
-    use halo_agents::runtime::workflow::{
+) -> halo::runtime::workflow::CompiledWorkflow {
+    use halo::runtime::workflow::{
         WorkflowBuilder,
         graph::{END, START},
     };
@@ -557,8 +557,8 @@ fn nested(
             )
             .unwrap();
     }
-    child.add_node("sibling", halo_agents::node::Echo).unwrap();
-    child.add_node("merge", halo_agents::node::Echo).unwrap();
+    child.add_node("sibling", halo::node::Echo).unwrap();
+    child.add_node("merge", halo::node::Echo).unwrap();
     child.add_edge(START, "model").unwrap();
     child.add_edge(START, "sibling").unwrap();
     child.add_join(["model", "sibling"], "merge").unwrap();
@@ -584,7 +584,7 @@ fn ids() -> i64 {
 }
 #[tokio::test]
 async fn nested_workflow_retains_same_attempt_partial_cost_and_successful_sibling() {
-    use halo_agents::{Messages, runtime::workflow::Runtime};
+    use halo::{Messages, runtime::workflow::Runtime};
     for react in [false, true] {
         let log = Arc::new(Log::default());
         let child_store = Arc::new(Store::default());

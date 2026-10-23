@@ -11,7 +11,7 @@ use std::{
 
 use futures_core::Stream;
 use futures_util::{StreamExt, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{self, Agent, Input, SubAgent},
     checkpoint::Checkpoint,

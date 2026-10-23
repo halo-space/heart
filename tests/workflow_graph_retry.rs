@@ -9,7 +9,7 @@ use std::sync::{
 
 use futures_executor::block_on;
 use futures_util::stream;
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     agent::{Agent, Input},
     checkpoint::Checkpoint as _,
@@ -46,11 +46,11 @@ impl Node<Messages, Messages, Error> for Approval {
 
 fn approval_workflow(approved: bool) -> CompiledWorkflow {
     let mut builder = WorkflowBuilder::new("restored-approval-downstream");
-    builder.add_node("source", halo_agents::node::Echo).unwrap();
+    builder.add_node("source", halo::node::Echo).unwrap();
     builder
         .add_node("approval", Approval(AtomicBool::new(approved)))
         .unwrap();
-    builder.add_node("next", halo_agents::node::Echo).unwrap();
+    builder.add_node("next", halo::node::Echo).unwrap();
     builder.add_edge(START, "source").unwrap();
     builder.add_edge("source", "approval").unwrap();
     builder.add_edge("approval", "next").unwrap();
@@ -61,7 +61,7 @@ fn approval_workflow(approved: bool) -> CompiledWorkflow {
 #[test]
 fn restored_external_wait_advances_the_barrier_and_runs_its_downstream() {
     block_on(async {
-        let checkpoint = Arc::new(halo_agents::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
         let mut original = Runtime::new(908, approval_workflow(false))
             .unwrap()
             .with_checkpoint(checkpoint.clone());
@@ -118,10 +118,10 @@ fn restored_external_wait_advances_the_barrier_and_runs_its_downstream() {
 impl Agent for CountedAgent {
     async fn reply(
         &self,
-        _: halo_agents::agent::Input,
-        _: halo_agents::Cancellation,
-    ) -> Result<(), halo_agents::Error> {
-        Err(halo_agents::Error::new(
+        _: halo::agent::Input,
+        _: halo::Cancellation,
+    ) -> Result<(), halo::Error> {
+        Err(halo::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))
@@ -194,7 +194,7 @@ fn workflow_at(
             )
             .unwrap();
     } else {
-        child.add_node("merge", halo_agents::node::Echo).unwrap();
+        child.add_node("merge", halo::node::Echo).unwrap();
     }
     child.add_edge(START, "a").unwrap();
     child.add_edge(START, "b").unwrap();
@@ -212,7 +212,7 @@ fn workflow_at(
     };
 
     let mut parent = WorkflowBuilder::new("retry-parent");
-    parent.add_node("source", halo_agents::node::Echo).unwrap();
+    parent.add_node("source", halo::node::Echo).unwrap();
     parent.add_graph_node("batch", &child).unwrap();
     parent
         .add_node("next", move |input: Messages, _: Cancellation| {
@@ -386,7 +386,7 @@ fn checkpoint_resumes_an_outer_graph_retry_with_its_original_successes_and_attem
             // provide a cache or influence Runtime recovery decisions.
             let second = Arc::new(AtomicUsize::new(1));
             let downstream = Arc::new(AtomicUsize::new(0));
-            let checkpoint = Arc::new(halo_agents::core::checkpoint::InMemory::new());
+            let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
             let mut restored = Runtime::from_snapshot(
                 907,
                 workflow_at(
@@ -435,7 +435,7 @@ fn graph_node_retry_inherits_successes_without_recounting_their_usage() {
         let first = Arc::new(AtomicUsize::new(0));
         let second = Arc::new(AtomicUsize::new(0));
         let downstream = Arc::new(AtomicUsize::new(0));
-        let checkpoint = Arc::new(halo_agents::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
         let compiled = workflow(first.clone(), second.clone(), downstream.clone());
         let mut runtime = Runtime::new(905, compiled)
             .unwrap()

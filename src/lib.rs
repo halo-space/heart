@@ -3,7 +3,7 @@
 //! This crate starts from the frozen public contracts. Runtime scheduling is
 //! intentionally added after these contracts compile and are covered by tests.
 
-extern crate self as halo_agents;
+extern crate self as halo;
 
 pub mod agent;
 pub mod cancellation;
@@ -57,7 +57,7 @@ pub use core::provider;
 /// inherent impl, without a wrapping Node object.
 ///
 /// ```
-/// use halo_agents::{Cancellation, Error, node, runtime::workflow::WorkflowBuilder};
+/// use halo::agent::{Cancellation, Error, node, workflow::WorkflowBuilder};
 /// use schemars::JsonSchema;
 /// use serde::{Deserialize, Serialize};
 ///
@@ -73,11 +73,11 @@ pub use core::provider;
 ///
 /// let mut builder = WorkflowBuilder::new("example");
 /// builder.add_node("calculate", calculate)?;
-/// # Ok::<(), halo_agents::runtime::workflow::GraphError>(())
+/// # Ok::<(), halo::agent::workflow::GraphError>(())
 /// ```
 ///
 /// ```compile_fail
-/// use halo_agents::{Cancellation, Error, node};
+/// use halo::agent::{Cancellation, Error, node};
 /// #[node]
 /// fn synchronous(_: i64, _: Cancellation) -> Result<i64, Error> { Ok(1) }
 /// ```

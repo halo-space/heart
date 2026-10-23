@@ -7,7 +7,7 @@ use std::{
 
 use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{self, Agent, Input, Payload, toolkit::Toolkit},
     event::Event,
@@ -862,7 +862,7 @@ fn react_model_iterations_reuse_one_initial_memory_snapshot() {
         .lock()
         .unwrap()
         .push(history(201, 1, "first", "a"));
-    let toolkit = Toolkit::new().tools(vec![Search {
+    let capabilities = Toolkit::new().tools(vec![Search {
         definition: ToolDefinition {
             name: "search".into(),
             description: "search".into(),
@@ -877,7 +877,7 @@ fn react_model_iterations_reuse_one_initial_memory_snapshot() {
     let agent = agent::react()
         .model(model.clone())
         .memory(config(session(), &state).with_scopes(["user"]))
-        .toolkit(toolkit)
+        .toolkit(capabilities)
         .build()
         .unwrap();
     let output = block_on(agent.run(input(), true, Cancellation::new())).unwrap();
@@ -1016,10 +1016,10 @@ fn synchronous_backend_cancellation_stops_later_reads_and_model() {
 #[test]
 fn in_memory_backends_remain_directly_usable_through_the_config() {
     let configured = memory::Config::new(
-        halo_agents::core::memory::short::session::InMemory::new(),
-        halo_agents::core::memory::short::chat::InMemory::new(),
-        halo_agents::core::memory::short::trace::InMemory::new(),
-        halo_agents::core::memory::InMemory::new(),
+        halo::core::memory::short::session::InMemory::new(),
+        halo::core::memory::short::chat::InMemory::new(),
+        halo::core::memory::short::trace::InMemory::new(),
+        halo::core::memory::InMemory::new(),
     );
     block_on(configured.session.create(session(), &Cancellation::new())).unwrap();
     let model = Model::default();

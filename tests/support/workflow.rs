@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use halo_agents::{
+use halo::{
     Cancellation, Error, Messages,
     runtime::workflow::{Runtime, graph, node},
 };

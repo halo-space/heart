@@ -54,8 +54,8 @@ pub fn node(attributes: TokenStream, item: TokenStream) -> TokenStream {
 
 fn root() -> syn::Result<Tokens> {
     use proc_macro_crate::{FoundCrate, crate_name};
-    match crate_name("halo-agents") {
-        Ok(FoundCrate::Itself) => Ok(quote!(::halo_agents)),
+    match crate_name("halo") {
+        Ok(FoundCrate::Itself) => Ok(quote!(::halo)),
         Ok(FoundCrate::Name(name)) => {
             let name = syn::parse_str::<Ident>(&name)
                 .or_else(|_| syn::parse_str::<Ident>(&format!("r#{name}")))?;

@@ -1,7 +1,7 @@
 use futures_core::Stream;
 use futures_executor::block_on;
 use futures_util::{StreamExt, poll};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message,
     agent::{self, Agent, Input, Payload, toolkit::Toolkit},
     evaluation::Evaluation,
@@ -195,14 +195,14 @@ fn revised_plan() -> Value {
 
 async fn final_evaluation(
     _: Input,
-    result: halo_agents::Messages,
+    result: halo::Messages,
     _: Cancellation,
 ) -> Result<Evaluation, Error> {
     let passed = result.as_slice()[0].values["answer"] == "accepted";
     Ok(Evaluation {
         passed,
         feedback: (!passed).then(|| {
-            halo_agents::Messages::new([Message::function(json!({"feedback": "需要补充天气日期"}))])
+            halo::Messages::new([Message::function(json!({"feedback": "需要补充天气日期"}))])
         }),
     })
 }
@@ -226,7 +226,7 @@ fn rejected_final_replans_directly_and_reexecutes_even_the_same_logical_node() {
             .model(model)
             .with_id_fn(next_parallel_exec_id)
             .evaluator(
-                move |query: Input, result: halo_agents::Messages, cancellation: Cancellation| {
+                move |query: Input, result: halo::Messages, cancellation: Cancellation| {
                     seen.lock().unwrap().push((query.clone(), result.clone()));
                     final_evaluation(query, result, cancellation)
                 },
@@ -304,7 +304,7 @@ fn graph_rejection_without_feedback_still_replans_instead_of_succeeding() {
             .model(model)
             .with_id_fn(next_parallel_exec_id)
             .evaluator(
-                |_: Input, result: halo_agents::Messages, _: Cancellation| async move {
+                |_: Input, result: halo::Messages, _: Cancellation| async move {
                     Ok(Evaluation {
                         passed: result.as_slice()[0].values["answer"] == "accepted",
                         feedback: None,
@@ -990,7 +990,7 @@ fn missing_planner_complete_cannot_be_reconstructed_from_delta() {
 #[test]
 fn planner_usage_is_in_chat_total_but_control_ack_has_no_double_charge() {
     use chat::Store as _;
-    use halo_agents::{
+    use halo::{
         core,
         memory::{
             self,
@@ -1094,8 +1094,8 @@ fn planner_usage_is_in_chat_total_but_control_ack_has_no_double_charge() {
 #[test]
 fn configured_plan_closure_persists_final_graph_and_agent_state_trace() {
     use chat::Store as _;
-    use halo_agents::checkpoint::Checkpoint as _;
-    use halo_agents::{
+    use halo::checkpoint::Checkpoint as _;
+    use halo::{
         core,
         memory::{
             self,
@@ -1175,9 +1175,9 @@ fn configured_plan_closure_persists_final_graph_and_agent_state_trace() {
 
 #[test]
 fn checkpoint_backend_saves_an_ordinary_react_runtime_without_graph() {
-    use halo_agents::checkpoint::Checkpoint as _;
+    use halo::checkpoint::Checkpoint as _;
     block_on(async {
-        let checkpoint = std::sync::Arc::new(halo_agents::core::checkpoint::InMemory::new());
+        let checkpoint = std::sync::Arc::new(halo::core::checkpoint::InMemory::new());
         let agent = agent::react()
             .model(Model::new(vec![vec![complete(final_message())]]))
             .checkpoint(checkpoint.clone())
@@ -1201,7 +1201,7 @@ fn checkpoint_backend_saves_an_ordinary_react_runtime_without_graph() {
 #[test]
 fn plan_failure_and_cancellation_persist_once_only_at_terminal_closeout() {
     use chat::Store as _;
-    use halo_agents::{
+    use halo::{
         core,
         memory::{
             self,

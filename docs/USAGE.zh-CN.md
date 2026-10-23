@@ -6,11 +6,11 @@
 
 ## 1. 安装
 
-Heart 的 Cargo 包名是 `halo-agents`，Rust crate 名是 `halo_agents`，要求 Rust 1.99.1 或更新版本。
+Heart 的 Cargo 包名和 Rust crate 名是 `halo`，要求 Rust 1.99.1 或更新版本。
 
 ```toml
 [dependencies]
-halo-agents = { git = "https://github.com/halo-space/heart.git" }
+halo = { git = "https://github.com/halo-space/heart.git" }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -36,7 +36,7 @@ harness/      面向长任务 Agent 的高阶组合能力
 Chat Agent 和 ReAct Agent 共同使用 `agent::Input`，不分别定义业务输入类型：
 
 ```rust
-use halo_agents::agent::{Input, Payload};
+use halo::agent::{Input, Payload};
 use serde_json::{Map, json};
 
 let input = Input {
@@ -84,7 +84,7 @@ Chat Agent 是普通对话循环。它可以使用已挂载的 Tool、MCP 和 Sk
 
 ```rust
 use futures_util::StreamExt;
-use halo_agents::{agent, Cancellation};
+use halo::{agent, Cancellation};
 
 let agent = agent::chat()
     .model(chat)
@@ -196,7 +196,7 @@ Fan-out、等待和 Checkpoint。
 普通函数直接交给 `WorkflowBuilder::add_node`；不需要包装类。普通节点的输入输出应为对象根 Schema，`Messages` 是消息型例外：
 
 ```rust
-use halo_agents::{Cancellation, Error};
+use halo::{Cancellation, Error};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -217,8 +217,8 @@ Runtime 根据节点的 `attrs.input` 从上游 State 组织 `SearchInput`，每
 
 ```rust
 use futures_util::StreamExt;
-use halo_agents::{Cancellation, Error, Messages};
-use halo_agents::runtime::workflow::{graph::{END, START, GraphError}, Runtime, WorkflowBuilder};
+use halo::{Cancellation, Error, Messages};
+use halo::agent::workflow::{graph::{END, START, GraphError}, Runtime, WorkflowBuilder};
 use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
 
 fn graph_error(error: GraphError) -> Error {
@@ -283,18 +283,16 @@ runtime.reply(feedback, Cancellation::new()).await?;
 Provider 初始化参数和单次调用参数分开。当前 OpenAI、DeepSeek 和 VLLM 使用 Chat Completions；不实现 Responses API。
 
 ```rust
-use halo_agents::provider::vllm::Vllm;
-use halo_agents::model::chat;
+use halo::agent::core::provider::vllm::Vllm;
+use halo::agent::model::chat;
 use serde_json::{Map, json};
 
 let provider = Vllm::builder()
-    .provider_id(1)
-    .name("vllm")
     .base_url("http://127.0.0.1:8000/v1")
     .api_key(std::env::var("HEART_VLLM_API_KEY")?)
     .build()?;
 let chat = provider.chat(
-    chat::Config::new("deepseek-flash").options(Map::from_iter([(
+    chat::Config::new("Qwen3.5-122B-A10B").options(Map::from_iter([(
         "chat_template_kwargs".into(),
         json!({"enable_thinking": true}),
     )])),
@@ -303,14 +301,26 @@ let chat = provider.chat(
 
 VLLM 的 `delta.reasoning` 转成统一的 `think` Part，普通输出转成 `text` Part。供应商特有参数放在 `Config.options` 或 `Request.options`。
 
+DeepSeek 使用自己的 Provider 类型，模型名也只放在 DeepSeek 的 Chat 配置中：
+
+```rust
+let provider = halo::agent::core::provider::deepseek::DeepSeek::builder()
+    .base_url("https://api.deepseek.com")
+    .api_key(std::env::var("DEEPSEEK_API_KEY")?)
+    .build()?;
+let chat = provider.chat(halo::agent::model::chat::Config::new("deepseek-flash"))?;
+```
+
+VLLM 示例中的 Qwen 模型属于 VLLM 服务，不与 DeepSeek Provider 混用。
+
 ## 7. Workspace、Skill 和 MCP
 
 Workspace 决定执行环境是本地文件还是服务器数据库。Local Workspace 默认提供列目录、读取、写入、精确编辑、Glob、Grep 和单文件删除；
 命令执行必须显式配置 Sandbox。
 
 ```rust
-let workspace = halo_agents::core::workspace::Local::new("./workspace")?
-    .sandbox(halo_agents::sandbox::Local::default())
+let workspace = halo::agent::core::workspace::Local::new("./workspace")?
+    .sandbox(halo::agent::sandbox::Local::default())
     .tools(custom_tool)
     .mcps(servers)
     .skills(skills)?;
@@ -366,7 +376,7 @@ cargo run
 
 ```rust
 use futures_util::{StreamExt, stream};
-use halo_agents::{agent, event::Event, message::{Message, Role}, model::{chat::{Chat, Request}, content::part::Part}, Cancellation, Error};
+use halo::{agent, event::Event, message::{Message, Role}, model::{chat::{Chat, Request}, content::part::Part}, Cancellation, Error};
 use serde_json::json;
 
 struct DemoChat;
@@ -439,7 +449,7 @@ Permission 只在真正执行工具时检查，模型只负责选择工具和参
 ```rust
 use std::sync::{LazyLock, atomic::{AtomicUsize, Ordering}};
 use futures_util::{StreamExt, stream};
-use halo_agents::{agent, event::Event, message::{Message, Role}, model::{chat::{Chat, Request}, content::part::Part}, permission::{Behavior, Decision, Request as PermissionRequest}, tool::{Call, Tool, ToolDefinition}, Cancellation, Error};
+use halo::{agent, event::Event, message::{Message, Role}, model::{chat::{Chat, Request}, content::part::Part}, permission::{Behavior, Decision, Request as PermissionRequest}, tool::{Call, Tool, ToolDefinition}, Cancellation, Error};
 use serde_json::json;
 
 struct Lookup;
@@ -491,7 +501,7 @@ impl Chat for DemoModel {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let permission = halo_agents::core::permission::Permission::new(
+    let permission = halo::agent::core::permission::Permission::new(
         |request: PermissionRequest, _cancel: Cancellation| async move {
             if request.action == "call" && request.resource == "lookup" {
                 Ok(Decision { behavior: Behavior::Allow, reason: None })
@@ -527,7 +537,7 @@ async fn main() -> Result<(), Error> {
 ```rust
 use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
 use futures_util::StreamExt;
-use halo_agents::{Cancellation, Error, Messages, event::Event, runtime::workflow::{GraphError, Runtime, WorkflowBuilder, graph::{START, END}}};
+use halo::agent::{Cancellation, Error, Messages, event::Event, workflow::{GraphError, Runtime, WorkflowBuilder, graph::{START, END}}};
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -576,7 +586,7 @@ State 读取字段，不把多个节点结果偷偷拼成一个新的全局消�
 编排动作；它会编译并打印版本，便于在应用构图阶段先验证非法边、重复边和 Join 冲突。
 
 ```rust
-use halo_agents::{Cancellation, Error, Messages, runtime::workflow::{GraphError, WorkflowBuilder, graph::{START, END}}};
+use halo::agent::{Cancellation, Error, Messages, workflow::{GraphError, WorkflowBuilder, graph::{START, END}}};
 
 fn graph_error(error: GraphError) -> Error { Error { code: error.code, message: error.message, details: error.details } }
 
@@ -615,7 +625,7 @@ Checkpoint 保存的是完整 Runtime State，而不是 Trace。生产环境通�
 ```rust
 use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
 use futures_util::StreamExt;
-use halo_agents::{Cancellation, Error, Messages, core, runtime::workflow::{GraphError, Runtime, WorkflowBuilder, graph::{START, END}}};
+use halo::agent::{Cancellation, Error, Messages, core, workflow::{GraphError, Runtime, WorkflowBuilder, graph::{START, END}}};
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -658,7 +668,7 @@ async fn main() -> Result<(), Error> {
 ```dotenv
 HEART_VLLM_BASE_URL=http://127.0.0.1:8000/v1
 HEART_VLLM_API_KEY=replace-me
-HEART_VLLM_MODEL=deepseek-flash
+HEART_VLLM_MODEL=Qwen3.5-122B-A10B
 ```
 
 运行前把变量导入当前 Shell：
@@ -672,16 +682,16 @@ cargo run
 
 ```rust
 use futures_util::StreamExt;
-use halo_agents::{event::Event, message::{Message, Messages, Role}, model::{chat, chat::Chat, content::part::Part}, provider::vllm::Vllm};
+use halo::agent::{event::Event, message::{Message, Messages, Role}, model::{chat, chat::Chat, content::part::Part}, core::provider::vllm::Vllm};
 use serde_json::json;
 
 #[tokio::main]
-async fn main() -> Result<(), halo_agents::model::Error> {
+async fn main() -> Result<(), halo::agent::model::Error> {
     let provider = Vllm::builder()
         .base_url(std::env::var("HEART_VLLM_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000/v1".into()))
-        .api_key(std::env::var("HEART_VLLM_API_KEY").map_err(|_| halo_agents::model::Error::new("AUTHENTICATION", "HEART_VLLM_API_KEY is required"))?)
+        .api_key(std::env::var("HEART_VLLM_API_KEY").map_err(|_| halo::agent::model::Error::new("AUTHENTICATION", "HEART_VLLM_API_KEY is required"))?)
         .build()?;
-    let chat = provider.chat(chat::Config::new(std::env::var("HEART_VLLM_MODEL").map_err(|_| halo_agents::model::Error::new("INVALID_ARGUMENTS", "HEART_VLLM_MODEL is required"))?).options(serde_json::Map::from_iter([("chat_template_kwargs".into(), json!({"enable_thinking": true}))])))?;
+    let chat = provider.chat(chat::Config::new(std::env::var("HEART_VLLM_MODEL").map_err(|_| halo::agent::model::Error::new("INVALID_ARGUMENTS", "HEART_VLLM_MODEL is required"))?).options(serde_json::Map::from_iter([("chat_template_kwargs".into(), json!({"enable_thinking": true}))])))?;
     let mut user = Message::new(Role::User);
     user.content.push(Part { r#type: "text".into(), data: json!({"value":"介绍平路运河"}).as_object().unwrap().clone() });
     let mut events = chat.stream(chat::Request { messages: Messages::new([user]), stream: true, max_tokens: Some(512), ..Default::default() }).await?;
@@ -705,7 +715,7 @@ async fn main() -> Result<(), halo_agents::model::Error> {
 
 ```rust
 use futures_util::{StreamExt, stream};
-use halo_agents::{Cancellation, Error, Message, agent::{self, Agent, Input, Payload}, core, event::Event, memory::{self, Memory}, memory::short::{self, chat, session}, message::Role, model::{chat::{Chat, Request}, content::part::Part}};
+use halo::{Cancellation, Error, Message, agent::{self, Agent, Input, Payload}, core, event::Event, memory::{self, Memory}, memory::short::{self, chat, session}, message::Role, model::{chat::{Chat, Request}, content::part::Part}};
 use serde_json::{Map, json};
 use memory::short::chat::Store as _;
 use memory::short::session::Store as _;
@@ -744,7 +754,7 @@ Workspace 的本地实现只操作它的根目录。以下程序创建临时目�
 Skill 中的脚本，也不自动赋予 Skill 工具权限。
 
 ```rust
-use halo_agents::{Cancellation, Error, core, skill::Skill as _, workspace::Workspace};
+use halo::agent::{Cancellation, Error, core, skill::Skill as _, workspace::Workspace};
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
@@ -778,7 +788,7 @@ MCP 连接不是运行中临时发现。下面是完整的初始化形态；如�
 
 ```rust
 use futures_util::stream;
-use halo_agents::{Cancellation, Error, Message, agent, event::Event, mcp::{Definition, Server as _}, message::Role, model::chat::{Chat, Request}};
+use halo::{Cancellation, Error, Message, agent, event::Event, mcp::{Definition, Server as _}, message::Role, model::chat::{Chat, Request}};
 use serde_json::Map;
 
 struct MyChat;
@@ -795,7 +805,7 @@ impl Chat for MyChat {
 async fn main() -> Result<(), Error> {
     let endpoint = std::env::var("HEART_MCP_SSE_URL")
         .map_err(|_| Error::new("INVALID_ARGUMENTS", "HEART_MCP_SSE_URL is required"))?;
-    let server = halo_agents::core::mcp::Server::http(
+    let server = halo::agent::core::mcp::Server::http(
         Definition { name: "weather".into(), description: Some("天气 MCP".into()), metadata: Map::new() },
         &endpoint,
         Map::new(),

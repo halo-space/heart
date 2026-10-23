@@ -3,7 +3,7 @@ use chat::Store as _;
 use futures_core::Stream;
 use futures_executor::block_on;
 use futures_util::{StreamExt, poll, stream};
-use halo_agents::{
+use halo::{
     Cancellation, Error, Message, Messages,
     agent::{self, Agent, Input, Payload, toolkit::Toolkit},
     checkpoint::Checkpoint as _,
@@ -298,7 +298,7 @@ impl Tool for Lookup {
         Ok(message)
     }
 }
-fn toolkit(cancel: bool) -> Toolkit {
+fn capabilities(cancel: bool) -> Toolkit {
     Toolkit::new().tools(vec![Lookup::new(cancel)])
 }
 fn saved(config: &Config, id: i64) -> chat::Chat {
@@ -381,7 +381,7 @@ fn react_aggregates_two_model_calls_but_keeps_per_call_usage() {
     ]);
     let agent = agent::react()
         .model(model)
-        .toolkit(toolkit(false))
+        .toolkit(capabilities(false))
         .memory(config.clone())
         .build()
         .unwrap();
@@ -493,7 +493,7 @@ fn react_tool_cancellation_does_not_double_count_a_completed_model() {
     )])]);
     let agent = agent::react()
         .model(model)
-        .toolkit(toolkit(true))
+        .toolkit(capabilities(true))
         .memory(config.clone())
         .build()
         .unwrap();
@@ -522,7 +522,7 @@ fn react_active_second_call_cancellation_adds_only_that_partial_call() {
     ]);
     let agent = agent::react()
         .model(model)
-        .toolkit(toolkit(false))
+        .toolkit(capabilities(false))
         .memory(config.clone())
         .build()
         .unwrap();
@@ -613,7 +613,7 @@ fn react_failure_keeps_previous_settled_usage_not_intermediate_message() {
             Step::events(vec![complete(tool_call(), Some(usage(10, 3)))]),
             Step::error(),
         ]))
-        .toolkit(toolkit(false))
+        .toolkit(capabilities(false))
         .memory(config.clone())
         .build()
         .unwrap();
@@ -980,7 +980,7 @@ struct FailingCheckpoint {
     saves: AtomicUsize,
     after_write: bool,
 }
-impl halo_agents::checkpoint::Checkpoint for FailingCheckpoint {
+impl halo::checkpoint::Checkpoint for FailingCheckpoint {
     async fn save(&self, id: i64, state: Value, c: &Cancellation) -> Result<(), Error> {
         assert!(!c.is_cancelled());
         self.saves.fetch_add(1, Ordering::SeqCst);
@@ -1256,7 +1256,7 @@ fn max_iters_and_missing_complete_are_failed_not_successful_closure() {
             Some(usage(10, 3)),
         )])]))
         .with_max_iters(1)
-        .toolkit(toolkit(false))
+        .toolkit(capabilities(false))
         .memory(config.clone())
         .build()
         .unwrap();
