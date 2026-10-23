@@ -1,8 +1,8 @@
 use futures_core::Stream;
 use futures_executor::block_on;
 use futures_util::{StreamExt, poll};
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::{self, Agent, Input, Payload, toolkit::Toolkit},
     evaluation::Evaluation,
     event::Event,
@@ -195,14 +195,14 @@ fn revised_plan() -> Value {
 
 async fn final_evaluation(
     _: Input,
-    result: halo::Messages,
+    result: halo::agent::Messages,
     _: Cancellation,
 ) -> Result<Evaluation, Error> {
     let passed = result.as_slice()[0].values["answer"] == "accepted";
     Ok(Evaluation {
         passed,
         feedback: (!passed).then(|| {
-            halo::Messages::new([Message::function(json!({"feedback": "需要补充天气日期"}))])
+            halo::agent::Messages::new([Message::function(json!({"feedback": "需要补充天气日期"}))])
         }),
     })
 }
@@ -226,7 +226,7 @@ fn rejected_final_replans_directly_and_reexecutes_even_the_same_logical_node() {
             .model(model)
             .with_id_fn(next_parallel_exec_id)
             .evaluator(
-                move |query: Input, result: halo::Messages, cancellation: Cancellation| {
+                move |query: Input, result: halo::agent::Messages, cancellation: Cancellation| {
                     seen.lock().unwrap().push((query.clone(), result.clone()));
                     final_evaluation(query, result, cancellation)
                 },
@@ -304,7 +304,7 @@ fn graph_rejection_without_feedback_still_replans_instead_of_succeeding() {
             .model(model)
             .with_id_fn(next_parallel_exec_id)
             .evaluator(
-                |_: Input, result: halo::Messages, _: Cancellation| async move {
+                |_: Input, result: halo::agent::Messages, _: Cancellation| async move {
                     Ok(Evaluation {
                         passed: result.as_slice()[0].values["answer"] == "accepted",
                         feedback: None,

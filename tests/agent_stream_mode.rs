@@ -10,8 +10,8 @@ use std::{
 
 use futures_core::Stream;
 use futures_util::{StreamExt, poll, stream};
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::{self, Agent, Input, SubAgent, toolkit::Toolkit},
     checkpoint::Checkpoint,
     core,

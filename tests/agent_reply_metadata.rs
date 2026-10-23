@@ -3,8 +3,8 @@
 use std::sync::{Arc, LazyLock, Mutex};
 
 use futures_util::{StreamExt, stream};
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::{self, Agent, Input, toolkit::Toolkit},
     checkpoint::Checkpoint,
     core,

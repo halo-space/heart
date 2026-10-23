@@ -4,8 +4,8 @@ use std::sync::{
 };
 
 use futures_executor::block_on;
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     document::{self, Chunker as _, Document},
     model::embed::{Embed, Request},
 };

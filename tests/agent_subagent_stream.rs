@@ -1,8 +1,8 @@
 //! I03: the parent consumes the same native events while children are running.
 use futures_core::Stream;
 use futures_util::{StreamExt, stream};
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::{self, Agent, Input, SubAgent},
     checkpoint::Checkpoint as _,
     core,
@@ -357,9 +357,9 @@ impl Agent for WaitingChild {
     async fn reply(
         &self,
         _: halo::agent::Input,
-        _: halo::Cancellation,
-    ) -> Result<(), halo::Error> {
-        Err(halo::Error::new(
+        _: halo::agent::Cancellation,
+    ) -> Result<(), halo::agent::Error> {
+        Err(halo::agent::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))
@@ -450,9 +450,9 @@ impl Agent for SourcedChild {
     async fn reply(
         &self,
         _: halo::agent::Input,
-        _: halo::Cancellation,
-    ) -> Result<(), halo::Error> {
-        Err(halo::Error::new(
+        _: halo::agent::Cancellation,
+    ) -> Result<(), halo::agent::Error> {
+        Err(halo::agent::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))
@@ -604,7 +604,7 @@ async fn planned_task_forwards_live_child_events_but_commits_only_its_own_output
     let scene = checkpoint.load(501, &Cancellation::new()).await.unwrap();
     let node = &scene["nodes"]["a"];
     assert_eq!(node["status"], "succeeded");
-    let messages: halo::Messages = serde_json::from_value(node["messages"].clone()).unwrap();
+    let messages: halo::agent::Messages = serde_json::from_value(node["messages"].clone()).unwrap();
     let child_results = messages
         .0
         .iter()
@@ -707,7 +707,7 @@ async fn nested_workflow_forwards_the_same_live_child_source_without_extra_subsc
         let mut events = Box::pin(
             runtime
                 .run(
-                    halo::Messages::new([initial]),
+                    halo::agent::Messages::new([initial]),
                     Arc::new(next_id),
                     Cancellation::new(),
                 )
@@ -742,9 +742,9 @@ impl Agent for MultiStageChild {
     async fn reply(
         &self,
         _: halo::agent::Input,
-        _: halo::Cancellation,
-    ) -> Result<(), halo::Error> {
-        Err(halo::Error::new(
+        _: halo::agent::Cancellation,
+    ) -> Result<(), halo::agent::Error> {
+        Err(halo::agent::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))

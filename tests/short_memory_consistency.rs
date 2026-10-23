@@ -2,8 +2,9 @@
 use std::sync::{Arc, Barrier};
 
 use futures_executor::block_on;
+use halo::agent::{Cancellation, Message};
 use halo::{
-    Cancellation, Message, core,
+    core,
     memory::short::{Type, chat, session, trace},
     message::Role,
     model::token::Usage,

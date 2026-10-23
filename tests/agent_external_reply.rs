@@ -3,8 +3,8 @@
 use std::sync::{Arc, Mutex};
 
 use futures_util::stream;
+use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    Cancellation, Error, Message, Messages,
     agent::{self, Agent, Input},
     checkpoint::Checkpoint as _,
     core,

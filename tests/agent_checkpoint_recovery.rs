@@ -1,7 +1,7 @@
 //! Frozen Agent run entry: original query, identity and same planned execution.
 use futures_util::{StreamExt, stream};
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::{self, Agent, Input, Payload},
     checkpoint::Checkpoint as _,
     core,

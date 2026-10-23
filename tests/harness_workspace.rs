@@ -9,8 +9,8 @@ use std::{
 
 use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::{Agent, Input, Payload, toolkit::Toolkit},
     core,
     event::Event,
@@ -652,14 +652,13 @@ async fn definition_only_server_still_checks_existing_permission_before_call() {
         tool_call("records_read", json!({"filter":{"id":1001}})),
         message(Role::Assistant, "denied"),
     ]);
-    let permission = core::permission::Permission::new(
-        |_: halo::permission::Request, _: Cancellation| async {
+    let permission =
+        core::permission::Permission::new(|_: halo::permission::Request, _: Cancellation| async {
             Ok(Decision {
                 behavior: Behavior::Deny,
                 reason: Some("not allowed".into()),
             })
-        },
-    );
+        });
     let agent = harness::builder()
         .model(model)
         .workspace(database_workspace(Arc::clone(&calls)))

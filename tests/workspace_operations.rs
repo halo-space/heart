@@ -3,8 +3,8 @@
 
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::toolkit::Toolkit,
     core,
     message::Role,

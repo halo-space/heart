@@ -1,7 +1,7 @@
 //! Workflow owns embedded ordinary feedback and the only saved scene.
 use futures_util::{StreamExt, poll, stream};
+use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    Cancellation, Error, Message, Messages,
     agent::{self, SubAgent, toolkit::Toolkit},
     checkpoint::Checkpoint,
     core,

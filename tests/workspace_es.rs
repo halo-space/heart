@@ -13,8 +13,8 @@ use elasticsearch::{
     http::transport::{SingleNodeConnectionPool, TransportBuilder},
 };
 use futures_util::{StreamExt, stream};
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::{Agent, toolkit::Toolkit},
     core,
     event::Event,
@@ -769,12 +769,10 @@ impl Chat for Model {
 
 fn text(role: Role, value: &str) -> Message {
     let mut message = Message::new(role);
-    message
-        .content
-        .push(halo::model::content::part::Part {
-            r#type: "text".into(),
-            data: json!({"value":value}).as_object().unwrap().clone(),
-        });
+    message.content.push(halo::model::content::part::Part {
+        r#type: "text".into(),
+        data: json!({"value":value}).as_object().unwrap().clone(),
+    });
     message
 }
 
@@ -799,16 +797,14 @@ async fn es_harness_uses_existing_model_loop_permission_and_custom_mounted_capab
         .await;
         let requests = Arc::new(Mutex::new(Vec::new()));
         let mut selection = Message::new(Role::Assistant);
-        selection
-            .content
-            .push(halo::model::content::part::Part {
-                r#type: "tool_call".into(),
-                data: serde_json::to_value(call("read", json!({"id":1})))
-                    .unwrap()
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            });
+        selection.content.push(halo::model::content::part::Part {
+            r#type: "tool_call".into(),
+            data: serde_json::to_value(call("read", json!({"id":1})))
+                .unwrap()
+                .as_object()
+                .unwrap()
+                .clone(),
+        });
         let model = Model {
             output: Mutex::new(vec![selection, text(Role::Assistant, "done")].into()),
             requests: Arc::clone(&requests),

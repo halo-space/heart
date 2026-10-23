@@ -76,7 +76,10 @@ planning or replanning.
 
 ```rust
 use futures_util::StreamExt;
-use halo::{agent, Cancellation};
+use halo::agent::{Cancellation};
+use halo::{
+agent
+};
 
 let agent = agent::chat()
     .model(chat)
@@ -167,7 +170,7 @@ Ordinary functions can be passed directly to `WorkflowBuilder::add_node`; no wra
 schemas, with `Messages` as the message-oriented exception:
 
 ```rust
-use halo::{Cancellation, Error};
+use halo::agent::{Cancellation, Error};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -188,7 +191,7 @@ Runtime builds each node's business input from upstream State according to `attr
 
 ```rust
 use futures_util::StreamExt;
-use halo::{Cancellation, Error, Messages};
+use halo::agent::{Cancellation, Error, Messages};
 use halo::agent::workflow::{graph::{END, START, GraphError}, Runtime, WorkflowBuilder};
 use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
 
@@ -335,7 +338,13 @@ Agent input and model `Messages`, and the fixed `Delta`/`Complete` event stream.
 
 ```rust
 use futures_util::{StreamExt, stream};
-use halo::{agent, event::Event, message::{Message, Role}, model::{chat::{Chat, Request}, content::part::Part}, Cancellation, Error};
+use halo::agent::{Cancellation, Error};
+use halo::{
+agent,
+event::Event,
+message::{Message, Role},
+model::{chat::{Chat, Request}, content::part::Part}
+};
 use serde_json::json;
 
 struct DemoChat;
@@ -368,7 +377,15 @@ table, not an application API.
 ```rust
 use std::sync::{LazyLock, atomic::{AtomicUsize, Ordering}};
 use futures_util::{StreamExt, stream};
-use halo::{agent, event::Event, message::{Message, Role}, model::{chat::{Chat, Request}, content::part::Part}, permission::{Behavior, Decision, Request as PermissionRequest}, tool::{Call, Tool, ToolDefinition}, Cancellation, Error};
+use halo::agent::{Cancellation, Error};
+use halo::{
+agent,
+event::Event,
+message::{Message, Role},
+model::{chat::{Chat, Request}, content::part::Part},
+permission::{Behavior, Decision, Request as PermissionRequest},
+tool::{Call, Tool, ToolDefinition}
+};
 use serde_json::json;
 struct Lookup;
 impl Tool for Lookup {
@@ -505,7 +522,16 @@ or long-memory capability. This complete offline program writes a Session and on
 
 ```rust
 use futures_util::{StreamExt, stream};
-use halo::{Cancellation, Error, Message, agent::{self, Agent, Input}, core, event::Event, memory::{self, Memory}, memory::short::{self, session}, message::Role, model::{chat::{Chat, Request}, content::part::Part}};
+use halo::agent::{Cancellation, Error, Message};
+use halo::{
+agent::{self, Agent, Input},
+core,
+event::Event,
+memory::{self, Memory},
+memory::short::{self, session},
+message::Role,
+model::{chat::{Chat, Request}, content::part::Part}
+};
 use serde_json::{Map, json};
 use memory::short::session::Store as _;
 struct Model;
@@ -544,7 +570,10 @@ MCP connection and tool discovery happen before Agent construction. A failed end
 treated as an optional capability:
 
 ```rust
-use halo::{Cancellation, Error, mcp::{Definition, Server as _}}; use serde_json::Map;
+use halo::agent::{Cancellation, Error};
+use halo::{
+mcp::{Definition, Server as _}
+}; use serde_json::Map;
 #[tokio::main] async fn main() -> Result<(), Error> {
     let endpoint=std::env::var("HEART_MCP_SSE_URL").map_err(|_|Error::new("INVALID_ARGUMENTS","HEART_MCP_SSE_URL is required"))?;
     let server=halo::agent::core::mcp::Server::http(Definition{name:"weather".into(),description:Some("weather MCP".into()),metadata:Map::new()},&endpoint,Map::new(),&Cancellation::new()).await?;

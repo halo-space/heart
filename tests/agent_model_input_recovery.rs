@@ -1,7 +1,7 @@
 //! Model input middleware resumes from the actual native Model Step.
 use futures_util::{StreamExt, stream};
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::{self, Agent, Input, Payload, toolkit::Toolkit},
     checkpoint::Checkpoint,
     core,
@@ -588,7 +588,8 @@ fn attempt<'a>(scene: &'a Value, node: &str) -> &'a Value {
 }
 #[tokio::test]
 async fn nested_workflow_before_restore_reuses_own_input_and_preserves_sibling() {
-    use halo::{Messages, runtime::workflow::Runtime};
+    use halo::agent::Messages;
+    use halo::runtime::workflow::Runtime;
     for react in [false, true] {
         let log = Arc::new(Log::default());
         let runtime = Runtime::new(1001, nested(react, log.clone())).unwrap();

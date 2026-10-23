@@ -1,6 +1,6 @@
 //! Opt-in real-container smoke test. No image pull or Docker daemon startup.
+use halo::agent::Cancellation;
 use halo::{
-    Cancellation,
     core::sandbox::docker::{Config, Docker},
     sandbox::{Request, Sandbox},
 };

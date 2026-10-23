@@ -1,7 +1,8 @@
 use std::{path::PathBuf, sync::Arc};
 
 use futures_util::future::join_all;
-use halo::{Cancellation, Error, Message, agent::toolkit::Toolkit, core, tool::Call};
+use halo::agent::{Cancellation, Error, Message};
+use halo::{agent::toolkit::Toolkit, core, tool::Call};
 use serde_json::{Value, json};
 
 struct Directory(PathBuf);

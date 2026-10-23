@@ -14,8 +14,8 @@ use std::{
 use futures_core::Stream;
 use futures_executor::block_on;
 use futures_util::{StreamExt, poll};
+use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    Cancellation, Error, Message, Messages,
     agent::{self, Agent, Input, Payload},
     checkpoint::Checkpoint as _,
     event::Event,

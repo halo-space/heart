@@ -15,8 +15,8 @@ use elasticsearch::{
     indices::{IndicesDeleteParts, IndicesExistsParts},
 };
 use futures_util::{StreamExt, future::join_all, stream};
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::{Agent, Input, Payload, toolkit::Toolkit},
     core,
     event::Event,
@@ -263,12 +263,10 @@ impl Chat for Model {
 
 fn text(role: Role, value: &str) -> Message {
     let mut message = Message::new(role);
-    message
-        .content
-        .push(halo::model::content::part::Part {
-            r#type: "text".into(),
-            data: json!({"value":value}).as_object().unwrap().clone(),
-        });
+    message.content.push(halo::model::content::part::Part {
+        r#type: "text".into(),
+        data: json!({"value":value}).as_object().unwrap().clone(),
+    });
     message
 }
 
@@ -309,16 +307,14 @@ async fn real_harness_crud_and_permission_use_the_existing_tool_chain() {
                 // Each model-selected call has its own identity, including repeated read.
                 actual_call.call_id = format!("es_real_{idx}");
                 let mut message = Message::new(Role::Assistant);
-                message
-                    .content
-                    .push(halo::model::content::part::Part {
-                        r#type: "tool_call".into(),
-                        data: serde_json::to_value(actual_call)
-                            .unwrap()
-                            .as_object()
-                            .unwrap()
-                            .clone(),
-                    });
+                message.content.push(halo::model::content::part::Part {
+                    r#type: "tool_call".into(),
+                    data: serde_json::to_value(actual_call)
+                        .unwrap()
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                });
                 message
             })
             .collect();

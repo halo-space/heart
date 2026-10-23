@@ -84,7 +84,10 @@ Chat Agent 是普通对话循环。它可以使用已挂载的 Tool、MCP 和 Sk
 
 ```rust
 use futures_util::StreamExt;
-use halo::{agent, Cancellation};
+use halo::agent::{Cancellation};
+use halo::{
+agent
+};
 
 let agent = agent::chat()
     .model(chat)
@@ -196,7 +199,7 @@ Fan-out、等待和 Checkpoint。
 普通函数直接交给 `WorkflowBuilder::add_node`；不需要包装类。普通节点的输入输出应为对象根 Schema，`Messages` 是消息型例外：
 
 ```rust
-use halo::{Cancellation, Error};
+use halo::agent::{Cancellation, Error};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -217,7 +220,7 @@ Runtime 根据节点的 `attrs.input` 从上游 State 组织 `SearchInput`，每
 
 ```rust
 use futures_util::StreamExt;
-use halo::{Cancellation, Error, Messages};
+use halo::agent::{Cancellation, Error, Messages};
 use halo::agent::workflow::{graph::{END, START, GraphError}, Runtime, WorkflowBuilder};
 use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
 
@@ -376,7 +379,13 @@ cargo run
 
 ```rust
 use futures_util::{StreamExt, stream};
-use halo::{agent, event::Event, message::{Message, Role}, model::{chat::{Chat, Request}, content::part::Part}, Cancellation, Error};
+use halo::agent::{Cancellation, Error};
+use halo::{
+agent,
+event::Event,
+message::{Message, Role},
+model::{chat::{Chat, Request}, content::part::Part}
+};
 use serde_json::json;
 
 struct DemoChat;
@@ -449,7 +458,15 @@ Permission 只在真正执行工具时检查，模型只负责选择工具和参
 ```rust
 use std::sync::{LazyLock, atomic::{AtomicUsize, Ordering}};
 use futures_util::{StreamExt, stream};
-use halo::{agent, event::Event, message::{Message, Role}, model::{chat::{Chat, Request}, content::part::Part}, permission::{Behavior, Decision, Request as PermissionRequest}, tool::{Call, Tool, ToolDefinition}, Cancellation, Error};
+use halo::agent::{Cancellation, Error};
+use halo::{
+agent,
+event::Event,
+message::{Message, Role},
+model::{chat::{Chat, Request}, content::part::Part},
+permission::{Behavior, Decision, Request as PermissionRequest},
+tool::{Call, Tool, ToolDefinition}
+};
 use serde_json::json;
 
 struct Lookup;
@@ -715,7 +732,16 @@ async fn main() -> Result<(), halo::agent::model::Error> {
 
 ```rust
 use futures_util::{StreamExt, stream};
-use halo::{Cancellation, Error, Message, agent::{self, Agent, Input, Payload}, core, event::Event, memory::{self, Memory}, memory::short::{self, chat, session}, message::Role, model::{chat::{Chat, Request}, content::part::Part}};
+use halo::agent::{Cancellation, Error, Message};
+use halo::{
+agent::{self, Agent, Input, Payload},
+core,
+event::Event,
+memory::{self, Memory},
+memory::short::{self, chat, session},
+message::Role,
+model::{chat::{Chat, Request}, content::part::Part}
+};
 use serde_json::{Map, json};
 use memory::short::chat::Store as _;
 use memory::short::session::Store as _;
@@ -788,7 +814,14 @@ MCP 连接不是运行中临时发现。下面是完整的初始化形态；如�
 
 ```rust
 use futures_util::stream;
-use halo::{Cancellation, Error, Message, agent, event::Event, mcp::{Definition, Server as _}, message::Role, model::chat::{Chat, Request}};
+use halo::agent::{Cancellation, Error, Message};
+use halo::{
+agent,
+event::Event,
+mcp::{Definition, Server as _},
+message::Role,
+model::chat::{Chat, Request}
+};
 use serde_json::Map;
 
 struct MyChat;

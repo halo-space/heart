@@ -1,7 +1,7 @@
 //! Permission progress is native to the actual Tool Step, never a grant cache.
 use futures_util::{StreamExt, stream};
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::{self, Agent, Input, Payload, toolkit::Toolkit},
     checkpoint::Checkpoint,
     core,
@@ -741,7 +741,8 @@ fn attempt<'a>(scene: &'a Value, node: &str) -> &'a Value {
 
 #[tokio::test]
 async fn nested_workflow_permission_progress_belongs_to_actual_agent_owner() {
-    use halo::{Messages, runtime::workflow::Runtime};
+    use halo::agent::Messages;
+    use halo::runtime::workflow::Runtime;
     for react in [false, true] {
         let mut setup = Log::new(Phase::After, false);
         setup.only_city = Some("Beijing");

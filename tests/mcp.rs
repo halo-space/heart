@@ -1,5 +1,6 @@
+use halo::agent::Cancellation;
 use halo::{
-    Cancellation, core,
+    core,
     mcp::{Definition, Server as _},
     message::Role,
     tool::Call,

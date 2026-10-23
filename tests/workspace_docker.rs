@@ -4,8 +4,8 @@
 
 use std::{path::PathBuf, process::Command, time::Duration};
 
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::toolkit::Toolkit,
     core::{
         sandbox,
@@ -628,19 +628,17 @@ async fn custom_tool_and_harness_permission() {
             assert!(request.tools.iter().any(|tool| tool.name == "echo"));
             let mut message = Message::new(Role::Assistant);
             if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
-                message
-                    .content
-                    .push(halo::model::content::part::Part {
-                        r#type: "tool_call".into(),
-                        data: serde_json::to_value(call(
-                            "write",
-                            json!({"path":"denied","content":"no"}),
-                        ))
-                        .unwrap()
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                    });
+                message.content.push(halo::model::content::part::Part {
+                    r#type: "tool_call".into(),
+                    data: serde_json::to_value(call(
+                        "write",
+                        json!({"path":"denied","content":"no"}),
+                    ))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                });
             }
             Ok(stream::iter(vec![Ok(Event::Complete {
                 message,

@@ -6,8 +6,8 @@ use std::sync::{
 
 use chat::Store as _;
 use futures_util::{StreamExt, stream};
+use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    Cancellation, Error, Message, Messages,
     agent::{self, Agent, Input, Payload},
     checkpoint::Checkpoint,
     core,
@@ -643,15 +643,13 @@ fn attempt<'a>(snapshot: &'a Value, node: &str) -> &'a Value {
 fn workflow_input() -> Messages {
     let mut message = Message::new(Role::User);
     message.metadata = input().metadata;
-    message
-        .content
-        .push(halo::model::content::part::Part {
-            r#type: "text".into(),
-            data: json!({"value":"original input"})
-                .as_object()
-                .unwrap()
-                .clone(),
-        });
+    message.content.push(halo::model::content::part::Part {
+        r#type: "text".into(),
+        data: json!({"value":"original input"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    });
     Messages::new([message])
 }
 #[tokio::test]

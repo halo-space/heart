@@ -6,8 +6,9 @@ use std::sync::{
 
 use futures_executor::block_on;
 use futures_util::StreamExt;
+use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    Cancellation, Error, Message, Messages, node,
+    node,
     node::{Node, Signal, Wait},
     runtime::workflow::{
         Runtime, WorkflowBuilder,

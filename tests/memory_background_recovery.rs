@@ -2,8 +2,8 @@
 //! Each recovery phase runs in a different OS process with fresh Agent objects.
 use chat::Store as _;
 use futures_util::{StreamExt, stream};
+use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    Cancellation, Error, Message, Messages,
     agent::{self, Agent, Input, Payload},
     compression::Compressor,
     core,

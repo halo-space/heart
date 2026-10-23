@@ -1,10 +1,8 @@
 //! Host execution regressions use only static trusted test commands.
 #![cfg(unix)]
 
-use halo::{
-    Cancellation,
-    sandbox::{Local, Request, Sandbox, local::Config},
-};
+use halo::agent::Cancellation;
+use halo::sandbox::{Local, Request, Sandbox, local::Config};
 use serde_json::json;
 use std::time::Duration;
 

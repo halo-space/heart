@@ -11,8 +11,8 @@ use std::{
 
 use futures_core::Stream;
 use futures_executor::block_on;
+use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    Cancellation, Error, Message, Messages,
     compression::Compressor as _,
     core,
     event::Event,

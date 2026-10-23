@@ -3,10 +3,8 @@
 use std::sync::Arc;
 
 use futures_util::StreamExt;
-use halo::{
-    Cancellation, Error, Messages,
-    runtime::workflow::{Runtime, graph, node},
-};
+use halo::agent::{Cancellation, Error, Messages};
+use halo::runtime::workflow::{Runtime, graph, node};
 
 pub async fn run_workflow(
     runtime: &mut Runtime,

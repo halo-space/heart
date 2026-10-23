@@ -1,7 +1,7 @@
 //! ToolNode recovery uses native Workflow Attempts, not a public state API.
 use futures_util::StreamExt;
+use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    Cancellation, Error, Message, Messages,
     checkpoint::Checkpoint,
     event::Event,
     message::Role,

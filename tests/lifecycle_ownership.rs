@@ -1,7 +1,7 @@
 //! One lifecycle implementation, actual per-execution state and native APIs.
 use futures_util::{StreamExt, stream};
+use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    Cancellation, Error, Message, Messages,
     agent::{self, toolkit::Toolkit},
     event::Event,
     message::Role,
@@ -320,9 +320,7 @@ async fn absent_hooks_pass_through_direct_tool_mounted_capabilities_and_workflow
         arguments: json!({"n":7}).as_object().unwrap().clone(),
     };
     let c = Cancellation::new();
-    let (direct, eval) = halo::tool::execute(&tool, call.clone(), &c)
-        .await
-        .unwrap();
+    let (direct, eval) = halo::tool::execute(&tool, call.clone(), &c).await.unwrap();
     assert!(eval.passed);
     let (capabilities, eval) = Toolkit::new()
         .tools(tool.clone())

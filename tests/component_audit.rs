@@ -1,8 +1,8 @@
 //! Frozen component boundaries; no Runtime, real model or backend service.
 use futures_executor::block_on;
 use futures_util::stream::{self, Iter};
+use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    Cancellation, Error, Message, Messages,
     document::{Document, raptor::Raptor},
     event::Event,
     message::Role,

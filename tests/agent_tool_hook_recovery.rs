@@ -5,8 +5,8 @@ use std::sync::{
 };
 
 use futures_util::{StreamExt, poll, stream};
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::{self, Agent, Input, toolkit::Toolkit},
     checkpoint::Checkpoint,
     core,
@@ -529,7 +529,7 @@ fn graph(
         )
     }
 }
-fn initial() -> halo::Messages {
+fn initial() -> halo::agent::Messages {
     let mut message = Message::new(Role::User);
     message.metadata = input().metadata;
     message.content.push(Part {
@@ -539,7 +539,7 @@ fn initial() -> halo::Messages {
             .unwrap()
             .clone(),
     });
-    halo::Messages::new([message])
+    halo::agent::Messages::new([message])
 }
 
 #[tokio::test]
@@ -581,7 +581,7 @@ async fn direct_and_nested_workflows_restore_hook_phases_from_the_outer_scene() 
                 restored
                     .resume(
                         if depth == 0 { "worker" } else { "inside" },
-                        halo::Messages::new([Message::function(json!({"continue":true}))]),
+                        halo::agent::Messages::new([Message::function(json!({"continue":true}))]),
                     )
                     .unwrap();
                 let events = restored
@@ -651,7 +651,7 @@ async fn nested_workflow_after_feedback_uses_the_saved_result_and_original_quest
                 r#type: "text".into(),
                 data: input.payload[0].data.as_object().unwrap().clone(),
             });
-            halo::Messages::new([message])
+            halo::agent::Messages::new([message])
         };
         restored
             .reply(feedback("first"), Cancellation::new())
@@ -1384,7 +1384,7 @@ async fn planned_tasks_restore_phases_in_the_same_attempt_independently_and_insi
                         runtime
                             .resume(
                                 "inside",
-                                halo::Messages::new([Message::function(
+                                halo::agent::Messages::new([Message::function(
                                     json!({"continue":true}),
                                 )]),
                             )

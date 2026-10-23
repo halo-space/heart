@@ -11,8 +11,8 @@ use std::{
 
 use futures_core::Stream;
 use futures_util::{StreamExt, poll, stream};
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::{self, Agent, Input, SubAgent},
     checkpoint::Checkpoint,
     core,
@@ -763,9 +763,7 @@ fn finish_workflow(
         WorkflowBuilder,
         graph::{END, START},
     };
-    builder
-        .add_node("sibling", halo::node::Echo)
-        .unwrap();
+    builder.add_node("sibling", halo::node::Echo).unwrap();
     builder.add_node("merge", halo::node::Echo).unwrap();
     builder.add_edge(START, "agent").unwrap();
     builder.add_edge(START, "sibling").unwrap();
@@ -782,10 +780,10 @@ fn finish_workflow(
     graph
 }
 
-fn workflow_input() -> halo::Messages {
+fn workflow_input() -> halo::agent::Messages {
     let mut message = Message::new(Role::User);
     message.metadata = input().metadata;
-    halo::Messages::new([message])
+    halo::agent::Messages::new([message])
 }
 
 fn workflow_attempt<'a>(scene: &'a Value, node: &str) -> &'a Value {

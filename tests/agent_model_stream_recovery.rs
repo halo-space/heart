@@ -10,8 +10,8 @@ use std::{
 
 use futures_core::Stream;
 use futures_util::{StreamExt, stream};
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::{self, Agent, Input, SubAgent, toolkit::Toolkit},
     checkpoint::Checkpoint,
     core,
@@ -584,7 +584,8 @@ fn ids() -> i64 {
 }
 #[tokio::test]
 async fn nested_workflow_retains_same_attempt_partial_cost_and_successful_sibling() {
-    use halo::{Messages, runtime::workflow::Runtime};
+    use halo::agent::Messages;
+    use halo::runtime::workflow::Runtime;
     for react in [false, true] {
         let log = Arc::new(Log::default());
         let child_store = Arc::new(Store::default());

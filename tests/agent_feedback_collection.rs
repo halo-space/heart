@@ -1,8 +1,8 @@
 //! Native waiting-fact collection, not the complete generic live handoff.
 use std::collections::BTreeMap;
 
+use halo::agent::{Cancellation, Message};
 use halo::{
-    Cancellation, Message,
     checkpoint::Checkpoint,
     core,
     message::Role,

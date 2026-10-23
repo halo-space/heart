@@ -5,8 +5,8 @@ use std::sync::{
 };
 
 use futures_util::{StreamExt, stream};
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::{self, Agent, Input},
     checkpoint::Checkpoint,
     core,

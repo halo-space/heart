@@ -5,8 +5,8 @@ use std::{
 
 use futures_executor::block_on;
 use futures_util::{FutureExt, StreamExt, poll, stream};
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::{self, Agent, Input, toolkit::Toolkit},
     event::Event,
     message::{Messages, Role},

@@ -12,8 +12,8 @@ use std::{
 
 use futures_core::Stream;
 use futures_executor::block_on;
+use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    Cancellation, Error, Message, Messages,
     agent::{Input, Payload},
     core,
     evaluation::{Evaluation, Evaluator as _},

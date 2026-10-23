@@ -1,7 +1,7 @@
 //! A successful model is not replayed to finish its Middleware or Agent after.
 use futures_util::{StreamExt, stream};
+use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    Cancellation, Error, Message,
     agent::{self, Agent, Input, Payload, toolkit::Toolkit},
     checkpoint::Checkpoint,
     core,
@@ -598,11 +598,7 @@ async fn new_call_after_restored_selection_settles_its_reported_partial_usage() 
     }
 }
 
-fn graph(
-    react: bool,
-    phase: Phase,
-    log: Arc<Log>,
-) -> halo::runtime::workflow::CompiledWorkflow {
+fn graph(react: bool, phase: Phase, log: Arc<Log>) -> halo::runtime::workflow::CompiledWorkflow {
     use halo::runtime::workflow::{
         WorkflowBuilder,
         graph::{END, START},
@@ -672,7 +668,8 @@ fn attempt<'a>(scene: &'a Value, node: &str) -> &'a Value {
 }
 #[tokio::test]
 async fn nested_workflow_retains_actual_owner_and_successful_sibling() {
-    use halo::{Messages, runtime::workflow::Runtime};
+    use halo::agent::Messages;
+    use halo::runtime::workflow::Runtime;
     for react in [false, true] {
         for phase in [Phase::Model, Phase::Execute] {
             let log = Arc::new(Log::default());

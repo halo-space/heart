@@ -5,13 +5,11 @@
 mod workflow_support;
 use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
-use halo::{
-    Cancellation, Error, Message, Messages,
-    runtime::workflow::{
-        CompiledWorkflow, FieldSource, InputBinding, NodeAttrs, RetryPolicy, Runtime,
-        WorkflowBuilder, graph,
-        node::{self, ExecutionRef},
-    },
+use halo::agent::{Cancellation, Error, Message, Messages};
+use halo::runtime::workflow::{
+    CompiledWorkflow, FieldSource, InputBinding, NodeAttrs, RetryPolicy, Runtime, WorkflowBuilder,
+    graph,
+    node::{self, ExecutionRef},
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

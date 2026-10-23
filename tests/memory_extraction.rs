@@ -1,7 +1,8 @@
 use futures_executor::block_on;
 use futures_util::stream;
+use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    Cancellation, Error, Message, Messages, core,
+    core,
     event::Event,
     memory::{self, extraction::Extractor as _},
     message::Role,

@@ -12,8 +12,8 @@ use std::{
 use futures_core::Stream;
 use futures_executor::block_on;
 use futures_util::{StreamExt, poll, stream};
+use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    Cancellation, Error, Message, Messages,
     agent::{self, Agent, Input},
     checkpoint::Checkpoint as _,
     event::Event,
@@ -72,9 +72,9 @@ impl Agent for ReadyAgent {
     async fn reply(
         &self,
         _: halo::agent::Input,
-        _: halo::Cancellation,
-    ) -> Result<(), halo::Error> {
-        Err(halo::Error::new(
+        _: halo::agent::Cancellation,
+    ) -> Result<(), halo::agent::Error> {
+        Err(halo::agent::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))
@@ -375,9 +375,9 @@ impl Agent for GatedAgent {
     async fn reply(
         &self,
         _: halo::agent::Input,
-        _: halo::Cancellation,
-    ) -> Result<(), halo::Error> {
-        Err(halo::Error::new(
+        _: halo::agent::Cancellation,
+    ) -> Result<(), halo::agent::Error> {
+        Err(halo::agent::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))
@@ -762,9 +762,9 @@ impl Agent for LocalAgent {
     async fn reply(
         &self,
         _: halo::agent::Input,
-        _: halo::Cancellation,
-    ) -> Result<(), halo::Error> {
-        Err(halo::Error::new(
+        _: halo::agent::Cancellation,
+    ) -> Result<(), halo::agent::Error> {
+        Err(halo::agent::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))

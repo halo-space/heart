@@ -7,11 +7,11 @@ use std::task::{Context, Poll};
 use futures_executor::block_on;
 use futures_util::{Stream, StreamExt, stream};
 use halo::agent::{self, Agent, Input, Payload};
+use halo::agent::{Cancellation, Error, Message};
 use halo::event::Event;
 use halo::message::Role;
 use halo::model::chat::{Chat, Request};
 use halo::runtime::agent::{graph::Graph, node::Status};
-use halo::{Cancellation, Error, Message};
 use serde_json::{Map, json};
 
 struct Model {

@@ -1,7 +1,7 @@
 //! Actual embedded Agents use the Workflow's original run/reply and snapshot.
 use futures_util::{StreamExt, stream};
+use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    Cancellation, Error, Message, Messages,
     agent::{self, SubAgent, toolkit::Toolkit},
     checkpoint::Checkpoint,
     core,

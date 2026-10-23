@@ -8,8 +8,9 @@ use std::{
 };
 
 use futures_executor::block_on;
+use halo::agent::{Cancellation, Error};
 use halo::{
-    Cancellation, Error, core,
+    core,
     memory::short::{
         Type,
         chat::{self, Store as _},

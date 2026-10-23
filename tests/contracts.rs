@@ -1,10 +1,10 @@
 use futures_executor::block_on;
+use halo::agent::{Cancellation, Message, Messages};
 use halo::event::Event;
 use halo::message::Role;
 use halo::model::content::part::Part;
 use halo::model::token::Usage;
 use halo::node::{Echo, Node, Signal};
-use halo::{Cancellation, Message, Messages};
 use serde_json::json;
 
 #[test]
@@ -35,7 +35,7 @@ fn message_keeps_values_metadata_and_usage_as_siblings() {
 
 #[test]
 fn public_component_error_aliases_and_usage_details_are_stable() {
-    let error = halo::Error::new("INVALID_ARGUMENTS", "bad input");
+    let error = halo::agent::Error::new("INVALID_ARGUMENTS", "bad input");
     let _: halo::tool::Error = error.clone();
     let _: halo::function::Error = error.clone();
     let _: halo::prompt::Error = error;
@@ -129,10 +129,7 @@ fn integration_components_are_implementable_without_runtime_state() {
             })
         }
 
-        async fn read(
-            &self,
-            _cancellation: &Cancellation,
-        ) -> Result<String, halo::skill::Error> {
+        async fn read(&self, _cancellation: &Cancellation) -> Result<String, halo::skill::Error> {
             Ok("skill instructions".into())
         }
     }
