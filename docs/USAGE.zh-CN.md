@@ -338,3 +338,514 @@ cargo clippy --all-targets --all-features -- -D warnings
 ## 9. 当前版本边界
 
 完整 PDF/Office/OCR Parser、Python 函数接入、TTS 和完整多模态契约属于后续版本。本手册只描述当前公开的 Rust 能力。
+
+## 10. 完整可运行配方
+
+前面的片段用于解释概念；本节把每个常用入口都写成可以直接复制到一个新 Cargo 项目的
+`src/main.rs` 的完整程序。先建立项目并把 Heart 作为依赖：
+
+```bash
+cargo new heart-guide-demo
+cd heart-guide-demo
+```
+
+将本手册第 10 节中的任意一个程序保存为 `src/main.rs`，再执行：
+
+```bash
+cargo run
+```
+
+示例只使用当前公开契约。需要网络、凭据或外部服务的示例会在标题中明确标出；其余示例离线即可运行。
+
+### 10.1 离线 Chat Agent：从 Input 到 Delta/Complete
+
+这个例子使用一个确定性的本地 Chat 实现，因此不需要 API Key。它展示了四件事：
+
+1. `Input.metadata` 放业务身份，`payload` 放有序用户输入；
+2. Agent 的输入不是模型 `Messages`，Agent 内部才把 Input 组织成模型消息；
+3. `stream = true` 同时观察 Delta 和 Complete；
+4. `Complete.message` 才是该次调用的完整结果，不能用 Delta 反推 Runtime State。
+
+```rust
+use futures_util::{StreamExt, stream};
+use halo_agents::{agent, event::Event, message::{Message, Role}, model::{chat::{Chat, Request}, content::part::Part}, Cancellation, Error};
+use serde_json::json;
+
+struct DemoChat;
+
+impl Chat for DemoChat {
+    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+
+    async fn stream(&self, _request: Request) -> Result<Self::Stream, Error> {
+        let mut delta = Message::new(Role::Assistant);
+        delta.content.push(Part {
+            r#type: "text".into(),
+            data: json!({"value": "北京今天晴朗。"}).as_object().unwrap().clone(),
+        });
+        let mut complete = Message::new(Role::Assistant);
+        complete.content.push(Part {
+            r#type: "text".into(),
+            data: json!({"value": "北京今天晴朗，适合出行。"}).as_object().unwrap().clone(),
+        });
+        Ok(stream::iter(vec![
+            Ok(Event::Delta { message: delta }),
+            Ok(Event::Complete {
+                message: complete,
+                usage: None,
+                finish_reason: Some("stop".into()),
+            }),
+        ]))
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let agent = agent::chat()
+        .model(DemoChat)
+        .system_prompt("你是一个简洁的中文助手")
+        .build()?;
+
+    let input = agent::Input {
+        metadata: serde_json::Map::from_iter([
+            ("chat_id".into(), json!(1001)),
+            ("session_id".into(), json!(2001)),
+            ("agent_id".into(), json!(3001)),
+        ]),
+        payload: vec![agent::Payload {
+            r#type: "text".into(),
+            data: json!({"value": "北京今天适合出门吗？"}),
+            mime_type: None,
+        }],
+    };
+
+    let mut events = agent.run(input, true, Cancellation::new()).await?;
+    while let Some(event) = events.next().await {
+        match event? {
+            Event::Delta { message } => println!("delta = {:?}", message.content),
+            Event::Complete { message, usage, finish_reason } => {
+                println!("complete = {:?}", message.content);
+                println!("usage = {usage:?}, finish_reason = {finish_reason:?}");
+            }
+        }
+    }
+    Ok(())
+}
+```
+
+### 10.2 ReAct：工具、Permission 和工具错误反馈
+
+下面的模型第一次返回一个工具调用，第二次读取工具结果并给出最终答案。工具本身实现 `Tool` 契约；
+Permission 只在真正执行工具时检查，模型只负责选择工具和参数。把 `.tools(Lookup)` 改成多个工具时可以传
+`vec![Lookup, OtherTool]`，不需要 `Toolkit` 公共对象。
+
+```rust
+use std::sync::{LazyLock, atomic::{AtomicUsize, Ordering}};
+use futures_util::{StreamExt, stream};
+use halo_agents::{agent, event::Event, message::{Message, Role}, model::{chat::{Chat, Request}, content::part::Part}, permission::{Behavior, Decision, Request as PermissionRequest}, tool::{Call, Tool, ToolDefinition}, Cancellation, Error};
+use serde_json::json;
+
+struct Lookup;
+impl Tool for Lookup {
+    fn definition(&self) -> &ToolDefinition {
+        static DEFINITION: LazyLock<ToolDefinition> = LazyLock::new(|| ToolDefinition {
+            name: "lookup".into(),
+            description: "读取一个固定的天气结果".into(),
+            parameters: serde_json::from_value(json!({
+                "type": "object", "properties": {}, "additionalProperties": false
+            })).unwrap(),
+        });
+        &DEFINITION
+    }
+
+    async fn call(&self, _call: &Call, _cancellation: &Cancellation) -> Result<Message, Error> {
+        Ok(Message::function(json!({"temperature": 22, "condition": "晴"})))
+    }
+}
+
+struct DemoModel(AtomicUsize);
+impl Chat for DemoModel {
+    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+
+    async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
+        let mut output = Message::new(Role::Assistant);
+        if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
+            output.content.push(Part {
+                r#type: "tool_call".into(),
+                data: json!({"call_id":"call_1","name":"lookup","arguments":{}})
+                    .as_object().unwrap().clone(),
+            });
+        } else {
+            let saw_tool = request.messages.as_slice().iter()
+                .any(|message| message.role == Role::Tool);
+            output.values.insert("answer".into(), json!(if saw_tool {
+                "北京 22 度，天气晴朗。"
+            } else {
+                "没有工具结果。"
+            }));
+        }
+        Ok(stream::iter(vec![Ok(Event::Complete {
+            message: output,
+            usage: None,
+            finish_reason: Some("stop".into()),
+        })]))
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let permission = halo_agents::core::permission::Permission::new(
+        |request: PermissionRequest, _cancel: Cancellation| async move {
+            if request.action == "call" && request.resource == "lookup" {
+                Ok(Decision { behavior: Behavior::Allow, reason: None })
+            } else {
+                Ok(Decision { behavior: Behavior::Deny, reason: Some("not allowed".into()) })
+            }
+        },
+    );
+
+    let agent = agent::react()
+        .model(DemoModel(AtomicUsize::new(0)))
+        .tools(Lookup)
+        .permission(permission)
+        .with_max_iters(20)
+        .build()?;
+    let mut events = agent.run(agent::Input::default(), true, Cancellation::new()).await?;
+    while let Some(event) = events.next().await {
+        println!("{:?}", event?);
+    }
+    Ok(())
+}
+```
+
+如果 `Tool::call` 返回错误，ReAct 会把原始错误作为当前模型下一轮可见的工具错误上下文；这不是一个成功的业务
+结果，也不会把整个 Agent 直接改成失败。`Tool::eval` 只有在用户实现它时才判断业务结果，失败后由当前 Agent 的
+规划/执行流程决定是否继续。
+
+### 10.3 Workflow：普通节点、State 和事件流
+
+这个例子是一个完整的单节点 Workflow。它展示了 `START/END`、应用提供的执行 ID 函数、事件流和最终 State。
+注意：必须在事件流被消费并释放后再读取 `runtime.state()`。
+
+```rust
+use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
+use futures_util::StreamExt;
+use halo_agents::{Cancellation, Error, Messages, event::Event, runtime::workflow::{GraphError, Runtime, WorkflowBuilder, graph::{START, END}}};
+use schemars::JsonSchema;
+use serde::Serialize;
+
+#[derive(Serialize, JsonSchema)]
+struct Answer { answer: i64 }
+
+fn graph_error(error: GraphError) -> Error {
+    Error { code: error.code, message: error.message, details: error.details }
+}
+
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Error> {
+    let mut builder = WorkflowBuilder::new("answer-workflow");
+    builder.add_node("answer", |_: Messages, _: Cancellation| async {
+        Ok::<_, Error>(Answer { answer: 42 })
+    }).map_err(graph_error)?;
+    builder.add_edge(START, "answer").map_err(graph_error)?;
+    builder.add_edge("answer", END).map_err(graph_error)?;
+
+    let workflow = builder.compile().map_err(graph_error)?;
+    let runtime = Runtime::new(1001, workflow)?;
+    let ids = Arc::new(AtomicI64::new(1));
+    let mut events = runtime.run(
+        Messages::default(),
+        Arc::new(move || ids.fetch_add(1, Ordering::SeqCst)),
+        Cancellation::new(),
+    ).await?;
+    while let Some(event) = events.next().await {
+        match event? {
+            Event::Delta { message } => println!("delta = {:?}", message.content),
+            Event::Complete { message, usage, .. } => println!("complete = {:?}, usage = {usage:?}", message.content),
+        }
+    }
+    drop(events);
+    println!("workflow state = {:?}", runtime.state());
+    Ok(())
+}
+```
+
+普通节点的输入输出是强类型对象；只有消息型节点才直接使用 `Messages`。Runtime 按节点的 `attrs.input` 从上游
+State 读取字段，不把多个节点结果偷偷拼成一个新的全局消息。
+
+### 10.4 Workflow 图关系：条件、Join、Fan-out 和子图
+
+图的关系在编译期声明，执行时才产生本次运行的 `State`。下面的程序只用 `Messages` 作为节点 I/O，重点演示四种
+编排动作；它会编译并打印版本，便于在应用构图阶段先验证非法边、重复边和 Join 冲突。
+
+```rust
+use halo_agents::{Cancellation, Error, Messages, runtime::workflow::{GraphError, WorkflowBuilder, graph::{START, END}}};
+
+fn graph_error(error: GraphError) -> Error { Error { code: error.code, message: error.message, details: error.details } }
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let mut builder = WorkflowBuilder::new("relations");
+    for id in ["router", "left", "right", "merge", "worker"] {
+        builder.add_node(id, |input: Messages, _cancel: Cancellation| async move {
+            Ok::<_, Error>(input)
+        }).map_err(graph_error)?;
+    }
+    builder.add_edge(START, "router").map_err(graph_error)?;
+    builder.add_conditional_edges(
+        "router",
+        |_messages| Ok(vec!["left".to_owned(), "right".to_owned()]),
+        ["left", "right"],
+    ).map_err(graph_error)?;
+    builder.add_join(["left", "right"], "merge").map_err(graph_error)?;
+    builder.add_fan_out_edges("merge", "worker").map_err(graph_error)?;
+    builder.add_edge("worker", END).map_err(graph_error)?;
+    let compiled = builder.compile().map_err(graph_error)?;
+    println!("definition_id = {}, version = {}", compiled.definition().definition_id, compiled.definition().version);
+    Ok(())
+}
+```
+
+语义要点：普通边不等待其他前驱；Join 必须等所有声明来源成功；条件边只能返回声明过的目标；Fan-out 的子项可以
+并发，但恢复时只重试失败子集。若要把一个已编译 Workflow 嵌入父图，使用 `add_graph_node("child", &child)`，不要把
+子图伪装成普通函数节点。
+
+### 10.5 Workflow Checkpoint：保存现场后恢复
+
+Checkpoint 保存的是完整 Runtime State，而不是 Trace。生产环境通常让 Runtime 在成功或最终异常收口时写一次快照；示例使用
+内存后端演示同一进程内的保存和恢复，跨进程时只需替换 `core::checkpoint::InMemory`。
+
+```rust
+use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
+use futures_util::StreamExt;
+use halo_agents::{Cancellation, Error, Messages, core, runtime::workflow::{GraphError, Runtime, WorkflowBuilder, graph::{START, END}}};
+use schemars::JsonSchema;
+use serde::Serialize;
+
+#[derive(Serialize, JsonSchema)]
+struct Output { value: String }
+fn graph_error(e: GraphError) -> Error { Error { code: e.code, message: e.message, details: e.details } }
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let mut builder = WorkflowBuilder::new("checkpoint-demo");
+    builder.add_node("done", |_: Messages, _: Cancellation| async {
+        Ok::<_, Error>(Output { value: "saved".into() })
+    }).map_err(graph_error)?;
+    builder.add_edge(START, "done").map_err(graph_error)?;
+    builder.add_edge("done", END).map_err(graph_error)?;
+    let workflow = builder.compile().map_err(graph_error)?;
+    let checkpoint = core::checkpoint::InMemory::new();
+    let runtime = Runtime::new(7001, workflow.clone())?.with_checkpoint(checkpoint);
+    let ids = Arc::new(AtomicI64::new(1));
+    let mut events = runtime.run(Messages::default(), Arc::new(move || ids.fetch_add(1, Ordering::SeqCst)), Cancellation::new()).await?;
+    while let Some(_event) = events.next().await {}
+    drop(events);
+    let snapshot = runtime.snapshot()?;
+    println!("snapshot status = {}", snapshot["status"]);
+
+    // Persisted deployments normally load this JSON from the Checkpoint backend.
+    let mut restored = Runtime::from_snapshot(7001, workflow, snapshot)?;
+    println!("restored status = {:?}", restored.state().status);
+    Ok(())
+}
+```
+
+如果进程在等待人工反馈时结束，重新创建 Runtime 后调用 `reply(Messages, Cancellation)`；如果只是同一进程的活跃运行，
+直接调用原 Runtime 的 `reply`，不要再创建第二个运行流。
+
+### 10.6 VLLM：真实 Chat Completions 调用
+
+这是唯一需要外部服务和密钥的基础示例。把配置写进项目根目录的 `.env`（该文件已经被 `.gitignore` 忽略），例如：
+
+```dotenv
+HEART_VLLM_BASE_URL=http://127.0.0.1:8000/v1
+HEART_VLLM_API_KEY=replace-me
+HEART_VLLM_MODEL=Qwen3.5-122B-A10B
+```
+
+运行前把变量导入当前 Shell：
+
+```bash
+set -a; source .env; set +a
+cargo run
+```
+
+将下面完整程序保存为 `src/main.rs`：
+
+```rust
+use futures_util::StreamExt;
+use halo_agents::{event::Event, message::{Message, Messages, Role}, model::{chat, chat::Chat, content::part::Part}, provider::vllm::{Config, Vllm}};
+use serde_json::json;
+
+#[tokio::main]
+async fn main() -> Result<(), halo_agents::model::Error> {
+    let provider = Vllm::new(Config {
+        base_url: std::env::var("HEART_VLLM_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000/v1".into()),
+        api_key: std::env::var("HEART_VLLM_API_KEY").map_err(|_| halo_agents::model::Error::new("AUTHENTICATION", "HEART_VLLM_API_KEY is required"))?,
+        ..Config::default()
+    })?;
+    let chat = provider.chat(chat::Config {
+        model_name: std::env::var("HEART_VLLM_MODEL").map_err(|_| halo_agents::model::Error::new("INVALID_ARGUMENTS", "HEART_VLLM_MODEL is required"))?,
+        options: serde_json::Map::from_iter([("chat_template_kwargs".into(), json!({"enable_thinking": true}))]),
+    })?;
+    let mut user = Message::new(Role::User);
+    user.content.push(Part { r#type: "text".into(), data: json!({"value":"介绍平路运河"}).as_object().unwrap().clone() });
+    let mut events = chat.stream(chat::Request { messages: Messages::new([user]), stream: true, max_tokens: Some(512), ..Default::default() }).await?;
+    while let Some(event) = events.next().await {
+        match event? {
+            Event::Delta { message } => for part in message.content { print!("{}", part.data["value"].as_str().unwrap_or_default()); },
+            Event::Complete { usage, finish_reason, .. } => println!("\nusage={usage:?}, finish_reason={finish_reason:?}"),
+        }
+    }
+    Ok(())
+}
+```
+
+当前 VLLM 适配的是 `/v1/chat/completions`，不是 Responses API。VLLM 的 `delta.reasoning` 对外统一为 `think`，普通输出统一为
+`text`；Provider 初始化参数和单次 `chat::Request` 参数不能混用。
+
+### 10.7 Memory：短期记录、长期记忆和显式召回
+
+下面的程序完全离线运行，先写入 Session、Chat 和一条长期 Preference，再构造 Agent。它说明 Memory 不会在没有配置时自动启用，
+短期数据和长期数据也不是同一张记录。
+
+```rust
+use futures_util::{StreamExt, stream};
+use halo_agents::{Cancellation, Error, Message, agent::{self, Agent, Input, Payload}, core, event::Event, memory::{self, Memory}, memory::short::{self, chat, session}, message::Role, model::{chat::{Chat, Request}, content::part::Part}};
+use serde_json::{Map, json};
+use memory::short::chat::Store as _;
+use memory::short::session::Store as _;
+
+struct Model;
+impl Chat for Model {
+    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+    async fn stream(&self, _request: Request) -> Result<Self::Stream, Error> {
+        let mut message = Message::new(Role::Assistant);
+        message.content.push(Part { r#type: "text".into(), data: json!({"value":"晴天，适合露营。"}).as_object().unwrap().clone() });
+        Ok(stream::iter(vec![Ok(Event::Complete { message, usage: None, finish_reason: Some("stop".into()) })]))
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let cancellation = Cancellation::new();
+    let config = memory::Config::new(core::memory::short::session::InMemory::new(), core::memory::short::chat::InMemory::new(), core::memory::short::trace::InMemory::new(), core::memory::InMemory::new()).with_scopes(["user", "agent"]);
+    config.session.create(session::Session { id: 1, tenant_id: 1, user_id: 2, r#type: short::Type::Agent, title: Some("天气".into()), summary: None, usage: None, status: session::Status::Active, metadata: Map::new(), created_time: 0, updated_time: 0 }, &cancellation).await?;
+    config.chat.create(chat::Chat { id: 2, tenant_id: 1, user_id: 2, agent_id: 3, session_id: 1, r#type: short::Type::Agent, status: chat::Status::Completed, input: Some(chat::Request { metadata: Map::new(), payload: vec![chat::Payload { r#type: "text".into(), data: json!({"value":"北京天气？"}), mime_type: None }] }), message: None, usage: None, graph: None, metadata: Map::new(), started_time: None, completed_time: None, created_time: 0, updated_time: 0 }, &cancellation).await?;
+    config.long.write(memory::Request { id: 3, r#type: memory::Type::Preference, user_id: 2, agent_id: None, session_id: None, from: 1, to: 2, content: "用户喜欢露营".into(), metadata: None, vector: None }, &cancellation).await?;
+    let agent = agent::chat().model(Model).memory(config).build()?;
+    let input = Input { metadata: Map::from_iter([("chat_id".into(), json!(3)), ("session_id".into(), json!(1)), ("user_id".into(), json!(2)), ("agent_id".into(), json!(3))]), payload: vec![Payload { r#type: "text".into(), data: json!({"value":"天气好就去露营"}), mime_type: None }] };
+    let mut events = agent.run(input, false, Cancellation::new()).await?;
+    while let Some(event) = events.next().await { println!("{:?}", event?); }
+    Ok(())
+}
+```
+
+压缩是独立能力：只有应用或 Harness 配置了压缩组件并主动触发检查，才会用摘要替换已覆盖的 Chat 范围；本次请求不会中途
+切换到新摘要。
+
+### 10.8 Workspace 和 Skill：本地发现、内容读取和安全边界
+
+Workspace 的本地实现只操作它的根目录。以下程序创建临时目录、写入一个标准 `SKILL.md`、读取 Skill 内容并列出目录；它不执行
+Skill 中的脚本，也不自动赋予 Skill 工具权限。
+
+```rust
+use halo_agents::{Cancellation, Error, core, skill::Skill as _, workspace::Workspace};
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let root = std::env::temp_dir().join(format!("heart-guide-{}", std::process::id()));
+    std::fs::create_dir_all(&root).map_err(|e| Error::new("IO_ERROR", e.to_string()))?;
+    let workspace = core::workspace::Local::new(&root)?;
+    let cancel = Cancellation::new();
+    workspace.write("research/SKILL.md", br#"---
+name: research
+description: 查找资料并列出来源
+---
+# Instructions
+先确认来源，再给出结论。
+"#.to_vec(), &cancel).await?;
+    let paths = workspace.list(".", true, &cancel).await?;
+    let skill = core::skill::Skill::load(&workspace, "research/SKILL.md", &cancel).await?;
+    println!("workspace mode = {:?}", workspace.definition().mode);
+    println!("files = {paths:?}");
+    println!("skill = {:?}", skill.read(&cancel).await?);
+    let _ = std::fs::remove_dir_all(root);
+    Ok(())
+}
+```
+
+需要让 Agent 使用这个 Skill 时，在构造 Agent 时调用 `.skills([skill])?`；需要目录发现时实现 `skill::Loader`，再通过
+`.skills(loader)` 挂载。Server Workspace 不假装存在本地路径，而是由后端 Loader 从数据库读取同样的定义和资源。
+
+### 10.9 MCP：先连接和发现，再挂载
+
+MCP 连接不是运行中临时发现。下面是完整的初始化形态；如果网络不可用，程序会在 `Server::http` 返回统一错误，Agent 不会被构造出来。
+
+```rust
+use futures_util::stream;
+use halo_agents::{Cancellation, Error, Message, agent, event::Event, mcp::{Definition, Server as _}, message::Role, model::chat::{Chat, Request}};
+use serde_json::Map;
+
+struct MyChat;
+impl Chat for MyChat {
+    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+    async fn stream(&self, _request: Request) -> Result<Self::Stream, Error> {
+        Ok(stream::iter(vec![Ok(Event::Complete {
+            message: Message::new(Role::Assistant), usage: None, finish_reason: Some("stop".into())
+        })]))
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let endpoint = std::env::var("HEART_MCP_SSE_URL")
+        .map_err(|_| Error::new("INVALID_ARGUMENTS", "HEART_MCP_SSE_URL is required"))?;
+    let server = halo_agents::core::mcp::Server::http(
+        Definition { name: "weather".into(), description: Some("天气 MCP".into()), metadata: Map::new() },
+        &endpoint,
+        Map::new(),
+        &Cancellation::new(),
+    ).await?;
+    println!("discovered tools = {:?}", server.tools().iter().map(|t| &t.name).collect::<Vec<_>>());
+    let _agent = agent::chat().model(MyChat).mcps([server]).build()?;
+    Ok(())
+}
+
+// 这里的 MyChat 只是让程序在 MCP 连接成功后仍能完整构造 Agent；真实应用替换为 VLLM/OpenAI Chat。
+```
+
+如需让该段也在没有 MCP 服务时离线运行，可把 `Server::http` 替换成测试中的内存 `Server` 实现。不要把连接失败当成“可选工具”静默吞掉；
+应用应先决定是否继续构造 Agent。当前示例中的 `HEART_MCP_SSE_URL` 也只能放在 `.env`，不能提交。
+
+### 10.10 Prompt、压缩、Permission 和 Middleware 的组合
+
+这些是可选组件，不配置就不产生对应能力。实际项目可以先用确定性模型验证生命周期，再换成 VLLM：
+
+```rust
+let agent = agent::chat()
+    .model(chat)
+    .system_prompt("只回答用户真正提出的问题")
+    .permission(permission)
+    .middleware(middleware)
+    .memory(memory_config)
+    .checkpoint(checkpoint)
+    .build()?;
+```
+
+`Middleware::before_model` 可调整本次模型请求，`after_execute` 可检查或补充完成消息；Tool 自身的 `before/after/eval` 只属于该 Tool
+调用。重试、取消和并发限制由 Runtime/Agent 控制，不由业务 Tool 私自重跑。
+
+## 11. 验证清单
+
+复制示例后，建议按这个顺序验证，先排除格式问题，再接入网络服务：
+
+```bash
+cargo fmt --all --check
+cargo check --offline --lib --all-targets
+cargo check --offline --examples
+cargo test --offline --lib
+```
+
+最后再运行需要外部服务的 VLLM/MCP 示例。若 `cargo test --all-targets` 报缺少被忽略的测试 fixture，说明本地测试目录不是发布内容，
+不要把 `.env`、测试数据或设计文档强行加入源码提交。

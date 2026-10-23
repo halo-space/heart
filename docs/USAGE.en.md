@@ -310,3 +310,253 @@ cargo clippy --all-targets --all-features -- -D warnings
 ## 9. Current scope
 
 Full PDF/Office/OCR Parser extensions, Python function integration, TTS and the complete multimodal contract are future-version work.
+
+## 10. Complete runnable recipes
+
+The snippets above explain the contracts. This section gives complete programs that can be copied to `src/main.rs` in a fresh project:
+
+```bash
+cargo new heart-guide-demo
+cd heart-guide-demo
+```
+
+The first recipes are offline and deterministic. VLLM and MCP recipes explicitly require external services and environment variables.
+
+### 10.1 Offline Chat Agent
+
+This program uses a deterministic local Chat implementation, so it needs no credentials. It shows the shared `Input`, the separation between
+Agent input and model `Messages`, and the fixed `Delta`/`Complete` event stream.
+
+```rust
+use futures_util::{StreamExt, stream};
+use halo_agents::{agent, event::Event, message::{Message, Role}, model::{chat::{Chat, Request}, content::part::Part}, Cancellation, Error};
+use serde_json::json;
+
+struct DemoChat;
+impl Chat for DemoChat {
+    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+    async fn stream(&self, _: Request) -> Result<Self::Stream, Error> {
+        let mut delta = Message::new(Role::Assistant);
+        delta.content.push(Part { r#type: "text".into(), data: json!({"value":"Beijing is sunny."}).as_object().unwrap().clone() });
+        let mut complete = Message::new(Role::Assistant);
+        complete.content.push(Part { r#type: "text".into(), data: json!({"value":"Beijing is sunny and suitable for going out."}).as_object().unwrap().clone() });
+        Ok(stream::iter(vec![Ok(Event::Delta { message: delta }), Ok(Event::Complete { message: complete, usage: None, finish_reason: Some("stop".into()) })]))
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let agent = agent::chat().model(DemoChat).system_prompt("You are concise").build()?;
+    let input = agent::Input { metadata: serde_json::Map::from_iter([("chat_id".into(), json!(1001)), ("session_id".into(), json!(2001)), ("agent_id".into(), json!(3001))]), payload: vec![agent::Payload { r#type: "text".into(), data: json!({"value":"Can I go outside in Beijing today?"}), mime_type: None }] };
+    let mut events = agent.run(input, true, Cancellation::new()).await?;
+    while let Some(event) = events.next().await { println!("{:?}", event?); }
+    Ok(())
+}
+```
+
+### 10.2 ReAct with a Tool and Permission
+
+The model emits one Tool call, then answers after seeing the Tool message. The public builder uses `.tools(...)`; `Toolkit` is an internal dispatch
+table, not an application API.
+
+```rust
+use std::sync::{LazyLock, atomic::{AtomicUsize, Ordering}};
+use futures_util::{StreamExt, stream};
+use halo_agents::{agent, event::Event, message::{Message, Role}, model::{chat::{Chat, Request}, content::part::Part}, permission::{Behavior, Decision, Request as PermissionRequest}, tool::{Call, Tool, ToolDefinition}, Cancellation, Error};
+use serde_json::json;
+struct Lookup;
+impl Tool for Lookup {
+    fn definition(&self) -> &ToolDefinition { static D: LazyLock<ToolDefinition> = LazyLock::new(|| ToolDefinition { name: "lookup".into(), description: "return weather".into(), parameters: serde_json::from_value(json!({"type":"object","properties":{},"additionalProperties":false})).unwrap() }); &D }
+    async fn call(&self, _: &Call, _: &Cancellation) -> Result<Message, Error> { Ok(Message::function(json!({"temperature":22,"condition":"sunny"}))) }
+}
+struct DemoModel(AtomicUsize);
+impl Chat for DemoModel {
+    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+    async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
+        let mut message = Message::new(Role::Assistant);
+        if self.0.fetch_add(1, Ordering::SeqCst) == 0 { message.content.push(Part { r#type: "tool_call".into(), data: json!({"call_id":"call_1","name":"lookup","arguments":{}}).as_object().unwrap().clone() }); }
+        else { message.values.insert("answer".into(), json!(if request.messages.as_slice().iter().any(|m| m.role == Role::Tool) { "22 C and sunny" } else { "no tool result" })); }
+        Ok(stream::iter(vec![Ok(Event::Complete { message, usage: None, finish_reason: Some("stop".into()) })]))
+    }
+}
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let permission = halo_agents::core::permission::Permission::new(|r: PermissionRequest, _: Cancellation| async move { Ok(if r.action == "call" && r.resource == "lookup" { Decision { behavior: Behavior::Allow, reason: None } } else { Decision { behavior: Behavior::Deny, reason: Some("not allowed".into()) } }) });
+    let agent = agent::react().model(DemoModel(AtomicUsize::new(0))).tools(Lookup).permission(permission).with_max_iters(20).build()?;
+    let mut events = agent.run(agent::Input::default(), true, Cancellation::new()).await?;
+    while let Some(event) = events.next().await { println!("{:?}", event?); }
+    Ok(())
+}
+```
+
+Tool errors are returned as errors in the current model context. They are not successful business values and do not automatically turn the whole
+ReAct Agent into a failed run.
+
+### 10.3 Workflow ordinary node and state
+
+```rust
+use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
+use futures_util::StreamExt;
+use halo_agents::{Cancellation, Error, Messages, event::Event, runtime::workflow::{GraphError, Runtime, WorkflowBuilder, graph::{START, END}}};
+use schemars::JsonSchema; use serde::Serialize;
+#[derive(Serialize, JsonSchema)] struct Output { value: i64 }
+fn ge(e: GraphError) -> Error { Error { code: e.code, message: e.message, details: e.details } }
+#[tokio::main(flavor = "current_thread")]
+async fn main() -> Result<(), Error> {
+    let mut b = WorkflowBuilder::new("answer");
+    b.add_node("answer", |_: Messages, _: Cancellation| async { Ok::<_, Error>(Output { value: 42 }) }).map_err(ge)?;
+    b.add_edge(START, "answer").map_err(ge)?; b.add_edge("answer", END).map_err(ge)?;
+    let runtime = Runtime::new(1001, b.compile().map_err(ge)?)?;
+    let ids = Arc::new(AtomicI64::new(1));
+    let mut events = runtime.run(Messages::default(), Arc::new(move || ids.fetch_add(1, Ordering::SeqCst)), Cancellation::new()).await?;
+    while let Some(event) = events.next().await { println!("{:?}", event?); }
+    drop(events); println!("state = {:?}", runtime.state()); Ok(())
+}
+```
+
+### 10.4 Workflow relations and child graphs
+
+This complete compile-time example declares conditional routing, Join and Fan-out. It prints the immutable definition version without requiring a
+model or a database:
+
+```rust
+use halo_agents::{Cancellation, Error, Messages, runtime::workflow::{GraphError, WorkflowBuilder, graph::{START, END}}};
+fn ge(e: GraphError) -> Error { Error { code: e.code, message: e.message, details: e.details } }
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let mut b = WorkflowBuilder::new("relations");
+    for id in ["router", "left", "right", "merge", "worker"] { b.add_node(id, |input: Messages, _: Cancellation| async move { Ok::<_, Error>(input) }).map_err(ge)?; }
+    b.add_edge(START, "router").map_err(ge)?;
+    b.add_conditional_edges("router", |_| Ok(vec!["left".into(), "right".into()]), ["left", "right"]).map_err(ge)?;
+    b.add_join(["left", "right"], "merge").map_err(ge)?;
+    b.add_fan_out_edges("merge", "worker").map_err(ge)?;
+    b.add_edge("worker", END).map_err(ge)?;
+    let graph = b.compile().map_err(ge)?; println!("{}@{}", graph.definition().definition_id, graph.definition().version); Ok(())
+}
+```
+
+Ordinary edges activate on any successful source, Join waits for every declared source, conditional targets are statically declared, and Fan-out
+workers can run concurrently. Use `add_graph_node("child", &child)` for an already compiled child Workflow; a child graph is not erased into a
+plain function node.
+
+### 10.5 Checkpoint recovery
+
+```rust
+use std::sync::{Arc, atomic::{AtomicI64, Ordering}}; use futures_util::StreamExt;
+use halo_agents::{Cancellation, Error, Messages, core, runtime::workflow::{GraphError, Runtime, WorkflowBuilder, graph::{START, END}}};
+use schemars::JsonSchema; use serde::Serialize;
+#[derive(Serialize, JsonSchema)] struct Output { value: String }
+fn ge(e: GraphError) -> Error { Error { code:e.code, message:e.message, details:e.details } }
+#[tokio::main] async fn main() -> Result<(), Error> {
+    let mut b=WorkflowBuilder::new("checkpoint"); b.add_node("done", |_:Messages,_:Cancellation| async { Ok::<_,Error>(Output{value:"saved".into()}) }).map_err(ge)?; b.add_edge(START,"done").map_err(ge)?; b.add_edge("done",END).map_err(ge)?;
+    let workflow=b.compile().map_err(ge)?; let checkpoint=core::checkpoint::InMemory::new(); let runtime=Runtime::new(7001,workflow.clone())?.with_checkpoint(checkpoint);
+    let ids=Arc::new(AtomicI64::new(1)); let mut events=runtime.run(Messages::default(),Arc::new(move||ids.fetch_add(1,Ordering::SeqCst)),Cancellation::new()).await?; while let Some(_)=events.next().await {} drop(events);
+    let snapshot=runtime.snapshot()?; let mut restored=Runtime::from_snapshot(7001,workflow,snapshot)?; println!("restored={:?}",restored.state().status); Ok(())
+}
+```
+
+The snapshot is the full recovery scene: node State, errors, waits, graph version and business data. Trace is an audit projection, not recovery truth.
+
+### 10.6 VLLM Chat Completions
+
+Create an ignored `.env` file and load it before running:
+
+```dotenv
+HEART_VLLM_BASE_URL=http://127.0.0.1:8000/v1
+HEART_VLLM_API_KEY=replace-me
+HEART_VLLM_MODEL=Qwen3.5-122B-A10B
+```
+
+```bash
+set -a; source .env; set +a; cargo run
+```
+
+Save this complete provider program as `src/main.rs`:
+
+```rust
+use futures_util::StreamExt;
+use halo_agents::{event::Event, message::{Message, Messages, Role}, model::{chat, chat::Chat, content::part::Part}, provider::vllm::{Config, Vllm}};
+use serde_json::json;
+#[tokio::main]
+async fn main() -> Result<(), halo_agents::model::Error> {
+    let provider = Vllm::new(Config { base_url: std::env::var("HEART_VLLM_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000/v1".into()), api_key: std::env::var("HEART_VLLM_API_KEY").map_err(|_| halo_agents::model::Error::new("AUTHENTICATION", "HEART_VLLM_API_KEY is required"))?, ..Config::default() })?;
+    let chat = provider.chat(chat::Config { model_name: std::env::var("HEART_VLLM_MODEL").map_err(|_| halo_agents::model::Error::new("INVALID_ARGUMENTS", "HEART_VLLM_MODEL is required"))?, options: serde_json::Map::from_iter([("chat_template_kwargs".into(), json!({"enable_thinking": true}))]) })?;
+    let mut user = Message::new(Role::User); user.content.push(Part { r#type: "text".into(), data: json!({"value":"Introduce Pinglu Canal"}).as_object().unwrap().clone() });
+    let mut events = chat.stream(chat::Request { messages: Messages::new([user]), stream: true, max_tokens: Some(512), ..Default::default() }).await?;
+    while let Some(event) = events.next().await { match event? { Event::Delta { message } => for p in message.content { print!("{}", p.data["value"].as_str().unwrap_or_default()); }, Event::Complete { usage, finish_reason, .. } => println!("\nusage={usage:?}, finish_reason={finish_reason:?}") } }
+    Ok(())
+}
+```
+
+The current adapter targets `/v1/chat/completions`, not Responses API. VLLM reasoning deltas become `think` Parts and ordinary deltas become
+`text` Parts.
+
+### 10.7 Memory and explicit recall
+
+Use `core::memory::short::{session, chat, trace}::InMemory` for short history and `core::memory::InMemory` for long-term
+`summary/fact/preference`. Pass the resulting `memory::Config` through `.memory(config)`. Without that call, the Agent has no automatic history
+or long-memory capability. This complete offline program writes a Session and one long-term Preference before running:
+
+```rust
+use futures_util::{StreamExt, stream};
+use halo_agents::{Cancellation, Error, Message, agent::{self, Agent, Input}, core, event::Event, memory::{self, Memory}, memory::short::{self, session}, message::Role, model::{chat::{Chat, Request}, content::part::Part}};
+use serde_json::{Map, json};
+use memory::short::session::Store as _;
+struct Model;
+impl Chat for Model { type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>; async fn stream(&self, _: Request) -> Result<Self::Stream, Error> { let mut m=Message::new(Role::Assistant); m.content.push(Part{r#type:"text".into(),data:json!({"value":"Sunny; camping is fine."}).as_object().unwrap().clone()}); Ok(stream::iter(vec![Ok(Event::Complete{message:m,usage:None,finish_reason:Some("stop".into())})])) } }
+#[tokio::main] async fn main() -> Result<(), Error> {
+    let cancel=Cancellation::new(); let config=memory::Config::new(core::memory::short::session::InMemory::new(),core::memory::short::chat::InMemory::new(),core::memory::short::trace::InMemory::new(),core::memory::InMemory::new()).with_scopes(["user","agent"]);
+    config.session.create(session::Session{id:1,tenant_id:1,user_id:2,r#type:short::Type::Agent,title:Some("weather".into()),summary:None,usage:None,status:session::Status::Active,metadata:Map::new(),created_time:0,updated_time:0},&cancel).await?;
+    config.long.write(memory::Request{id:3,r#type:memory::Type::Preference,user_id:2,agent_id:None,session_id:None,from:1,to:2,content:"User likes camping".into(),metadata:None,vector:None},&cancel).await?;
+    let agent=agent::chat().model(Model).memory(config).build()?; let mut events=agent.run(Input::default(),false,Cancellation::new()).await?; while let Some(e)=events.next().await { println!("{:?}",e?); } Ok(())
+}
+```
+
+Compression is separate and opt-in. A configured compressor may replace the Chat range covered by the current Session summary when the application
+explicitly checks the threshold; the current request is never switched to a newly written summary midway through execution.
+
+### 10.8 Local Workspace and Skill
+
+```rust
+use halo_agents::{Cancellation, Error, core, skill::Skill as _, workspace::Workspace};
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let root=std::env::temp_dir().join(format!("heart-guide-{}",std::process::id())); std::fs::create_dir_all(&root).map_err(|e|Error::new("IO_ERROR",e.to_string()))?;
+    let workspace=core::workspace::Local::new(&root)?; let cancel=Cancellation::new();
+    workspace.write("research/SKILL.md", b"---\nname: research\ndescription: List sources\n---\n# Instructions\nAlways cite sources.\n".to_vec(), &cancel).await?;
+    println!("files={:?}",workspace.list(".",true,&cancel).await?); let skill=core::skill::Skill::load(&workspace,"research/SKILL.md",&cancel).await?; println!("instructions={:?}",skill.read(&cancel).await?);
+    let _=std::fs::remove_dir_all(root); Ok(())
+}
+```
+
+Mount a concrete Skill with `.skills([skill])?`, or implement `skill::Loader` and use `.skills(loader)` for directory/database discovery. Skill
+text is instructions; it does not execute scripts or grant permissions.
+
+### 10.9 MCP initialization
+
+MCP connection and tool discovery happen before Agent construction. A failed endpoint returns an error from `Server::http` and is not silently
+treated as an optional capability:
+
+```rust
+use halo_agents::{Cancellation, Error, mcp::{Definition, Server as _}}; use serde_json::Map;
+#[tokio::main] async fn main() -> Result<(), Error> {
+    let endpoint=std::env::var("HEART_MCP_SSE_URL").map_err(|_|Error::new("INVALID_ARGUMENTS","HEART_MCP_SSE_URL is required"))?;
+    let server=halo_agents::core::mcp::Server::http(Definition{name:"weather".into(),description:Some("weather MCP".into()),metadata:Map::new()},&endpoint,Map::new(),&Cancellation::new()).await?;
+    println!("tools={:?}",server.tools().iter().map(|t|&t.name).collect::<Vec<_>>()); Ok(())
+}
+```
+
+The application then passes the connected `server` to `agent::chat().model(chat).mcps([server])`. Do not commit the endpoint or credentials.
+
+### 10.10 Validation order
+
+Run offline checks before external services:
+
+```bash
+cargo fmt --all --check
+cargo check --offline --lib --all-targets
+cargo check --offline --examples
+cargo test --offline --lib
+```
+
+Then run the VLLM/MCP recipes with their environment variables. Keep `.env`, test fixtures and design material out of the source commit.
