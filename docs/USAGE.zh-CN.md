@@ -294,7 +294,7 @@ let provider = Vllm::builder()
     .api_key(std::env::var("HEART_VLLM_API_KEY")?)
     .build()?;
 let chat = provider.chat(
-    chat::Config::new("Qwen3.5-122B-A10B").options(Map::from_iter([(
+    chat::Config::new("deepseek-flash").options(Map::from_iter([(
         "chat_template_kwargs".into(),
         json!({"enable_thinking": true}),
     )])),
@@ -658,7 +658,7 @@ async fn main() -> Result<(), Error> {
 ```dotenv
 HEART_VLLM_BASE_URL=http://127.0.0.1:8000/v1
 HEART_VLLM_API_KEY=replace-me
-HEART_VLLM_MODEL=Qwen3.5-122B-A10B
+HEART_VLLM_MODEL=deepseek-flash
 ```
 
 运行前把变量导入当前 Shell：
