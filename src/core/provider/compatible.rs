@@ -24,6 +24,7 @@ type Error = model::Error;
 pub(super) enum Kind {
     OpenAI,
     DeepSeek,
+    Vllm,
 }
 
 impl Kind {
@@ -31,6 +32,7 @@ impl Kind {
         match self {
             Self::OpenAI => "openai",
             Self::DeepSeek => "deepseek",
+            Self::Vllm => "vllm",
         }
     }
 }
@@ -318,6 +320,17 @@ fn encode_request(
             "logprobs",
             "top_logprobs",
         ],
+        Kind::Vllm => &[
+            "seed",
+            "frequency_penalty",
+            "presence_penalty",
+            "repetition_penalty",
+            "top_k",
+            "min_p",
+            "logprobs",
+            "top_logprobs",
+            "chat_template_kwargs",
+        ],
     };
     for key in allowed {
         if let Some(value) = options.get(*key) {
@@ -350,7 +363,7 @@ fn encode_request(
         body.insert(
             match kind {
                 Kind::OpenAI => "max_completion_tokens",
-                Kind::DeepSeek => "max_tokens",
+                Kind::DeepSeek | Kind::Vllm => "max_tokens",
             }
             .into(),
             value.into(),
@@ -486,7 +499,7 @@ fn encode_message(kind: Kind, message: &Message) -> Result<Value, Error> {
                 };
                 tool_calls.push(json!({"id": id, "type": "function", "function": {"name": name, "arguments": arguments}}));
             }
-            "image" if kind == Kind::OpenAI && message.role == Role::User => {
+            "image" if matches!(kind, Kind::OpenAI | Kind::Vllm) && message.role == Role::User => {
                 let source = part
                     .data
                     .get("source")
@@ -698,12 +711,20 @@ impl Accumulator {
         }
         let mut observation = Message::new(Role::Assistant);
         observation.metadata = self.message.metadata.clone();
-        for (field, kind) in [
-            ("reasoning_content", "think"),
-            ("content", "text"),
-            ("refusal", "refusal"),
+        // Providers use different wire names for the same reasoning stream.
+        // Keep the public Message contract stable and expose all of them as
+        // the canonical `think` content part.
+        for (value, kind) in [
+            (
+                delta
+                    .get("reasoning")
+                    .or_else(|| delta.get("reasoning_content")),
+                "think",
+            ),
+            (delta.get("content"), "text"),
+            (delta.get("refusal"), "refusal"),
         ] {
-            if let Some(value) = delta.get(field).filter(|value| !value.is_null()) {
+            if let Some(value) = value.filter(|value| !value.is_null()) {
                 let text = value
                     .as_str()
                     .ok_or_else(|| Error::new("INVALID_RESPONSE", "chat text delta is invalid"))?;
@@ -1053,6 +1074,52 @@ mod tests {
             .options
             .insert("reasoning_effort".into(), json!("none"));
         assert!(encode_request(Kind::DeepSeek, &config, &request).is_ok());
+    }
+
+    #[test]
+    fn vllm_options_and_reasoning_use_the_shared_chat_contract() {
+        let config = model::chat::Config {
+            model_name: "Qwen3.5-122B-A10B".into(),
+            options: Map::new(),
+        };
+        let request = Request {
+            messages: Messages::new([Message::new(Role::User)]),
+            stream: true,
+            max_tokens: Some(128),
+            options: Map::from_iter([
+                ("top_k".into(), json!(20)),
+                (
+                    "chat_template_kwargs".into(),
+                    json!({"enable_thinking": true}),
+                ),
+            ]),
+            ..Default::default()
+        };
+        let wire = encode_request(Kind::Vllm, &config, &request).unwrap();
+        assert_eq!(wire["max_tokens"], 128);
+        assert_eq!(wire["top_k"], 20);
+        assert_eq!(wire["chat_template_kwargs"]["enable_thinking"], true);
+        assert_eq!(wire["stream_options"]["include_usage"], true);
+
+        let value = json!({
+            "choices": [{
+                "index": 0,
+                "message": {
+                    "role": "assistant",
+                    "reasoning": "先分析问题",
+                    "content": "这是答案"
+                },
+                "finish_reason": "stop"
+            }]
+        });
+        let Event::Complete { message, .. } = complete_response(&value, Map::new(), None).unwrap()
+        else {
+            panic!()
+        };
+        assert_eq!(message.content[0].r#type, "think");
+        assert_eq!(message.content[0].data["value"], "先分析问题");
+        assert_eq!(message.content[1].r#type, "text");
+        assert_eq!(message.content[1].data["value"], "这是答案");
     }
 
     #[test]

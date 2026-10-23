@@ -101,6 +101,34 @@ ReAct 使用同一 `Input` 和事件流入口，通过 `agent::react()` 构造�
 `run(input, true, cancellation)` 交付实际产生的 Delta 和 Complete，`false` 仅交付 Complete；
 不会把多次模型或工具调用合成一个 Complete，也不会给只返回 Complete 的模型伪造 Delta。
 
+### Model Provider 与 VLLM
+
+当前 Chat Provider 包括 `provider::openai`、`provider::deepseek` 和
+`provider::vllm`。VLLM 使用 OpenAI 兼容的 Chat Completions 接口：
+
+```rust
+let provider = halo_agents::provider::vllm::Vllm::new(
+    halo_agents::provider::vllm::Config {
+        provider_id: 1,
+        base_url: "http://127.0.0.1:8000/v1".into(),
+        api_key: "应用配置的密钥".into(),
+        ..Default::default()
+    },
+)?;
+let chat = provider.chat(halo_agents::model::chat::Config {
+    model_name: "Qwen3.5-122B-A10B".into(),
+    options: serde_json::Map::from_iter([(
+        "chat_template_kwargs".into(),
+        serde_json::json!({"enable_thinking": true}),
+    )]),
+})?;
+```
+
+当前统一调用 `/v1/chat/completions`，不实现 Responses API。VLLM 返回的
+`delta.reasoning` 会在 Provider 层转换为统一的 `Message` `think` 内容，普通输出转换为
+`text`；应用层不需要识别供应商字段。VLLM 的 `top_k`、`chat_template_kwargs` 等差异参数放在
+`model::chat::Config.options` 或 `chat::Request.options` 中。
+
 ### Workflow：普通函数到图执行
 
 普通异步函数可以直接加入图。这个示例执行一个节点，再从 Runtime State 读取业务结果；
