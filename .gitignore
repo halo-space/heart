@@ -2,6 +2,8 @@
 /*
 !/.gitignore
 !/README.md
+!/docs/
+!/docs/**
 !/Cargo.toml
 !/src/
 !/src/**
