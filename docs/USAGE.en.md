@@ -77,9 +77,7 @@ planning or replanning.
 ```rust
 use futures_util::StreamExt;
 use halo::agent::{Cancellation};
-use halo::{
-agent
-};
+use halo::agent;
 
 let agent = agent::chat()
     .model(chat)
@@ -339,11 +337,10 @@ Agent input and model `Messages`, and the fixed `Delta`/`Complete` event stream.
 ```rust
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error};
-use halo::{
-agent,
-event::Event,
-message::{Message, Role},
-model::{chat::{Chat, Request}, content::part::Part}
+use halo::agent::{
+    event::Event,
+    message::{Message, Role},
+    model::{chat::{Chat, Request}, content::part::Part},
 };
 use serde_json::json;
 
@@ -378,13 +375,12 @@ table, not an application API.
 use std::sync::{LazyLock, atomic::{AtomicUsize, Ordering}};
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error};
-use halo::{
-agent,
-event::Event,
-message::{Message, Role},
-model::{chat::{Chat, Request}, content::part::Part},
-permission::{Behavior, Decision, Request as PermissionRequest},
-tool::{Call, Tool, ToolDefinition}
+use halo::agent::{
+    event::Event,
+    message::{Message, Role},
+    model::{chat::{Chat, Request}, content::part::Part},
+    permission::{Behavior, Decision, Request as PermissionRequest},
+    tool::{Call, Tool, ToolDefinition},
 };
 use serde_json::json;
 struct Lookup;
@@ -523,14 +519,14 @@ or long-memory capability. This complete offline program writes a Session and on
 ```rust
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
-use halo::{
-agent::{self, Agent, Input},
-core,
-event::Event,
-memory::{self, Memory},
-memory::short::{self, session},
-message::Role,
-model::{chat::{Chat, Request}, content::part::Part}
+use halo::agent::{
+    self, Agent, Input,
+    core,
+    event::Event,
+    memory::{self, Memory},
+    memory::short::{self, session},
+    message::Role,
+    model::{chat::{Chat, Request}, content::part::Part},
 };
 use serde_json::{Map, json};
 use memory::short::session::Store as _;
@@ -571,9 +567,8 @@ treated as an optional capability:
 
 ```rust
 use halo::agent::{Cancellation, Error};
-use halo::{
-mcp::{Definition, Server as _}
-}; use serde_json::Map;
+use halo::agent::mcp::{Definition, Server as _};
+use serde_json::Map;
 #[tokio::main] async fn main() -> Result<(), Error> {
     let endpoint=std::env::var("HEART_MCP_SSE_URL").map_err(|_|Error::new("INVALID_ARGUMENTS","HEART_MCP_SSE_URL is required"))?;
     let server=halo::agent::core::mcp::Server::http(Definition{name:"weather".into(),description:Some("weather MCP".into()),metadata:Map::new()},&endpoint,Map::new(),&Cancellation::new()).await?;
