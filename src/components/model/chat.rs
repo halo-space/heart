@@ -16,6 +16,26 @@ pub struct Config {
     pub options: Options,
 }
 
+impl Config {
+    /// Create a model binding with no provider-specific defaults.
+    ///
+    /// Provider initialization remains separate: this value only selects the
+    /// model and its model-level defaults for one `Chat` instance.
+    pub fn new(model_name: impl Into<String>) -> Self {
+        Self {
+            model_name: model_name.into(),
+            options: Options::new(),
+        }
+    }
+
+    /// Set provider-specific model defaults while keeping the common contract
+    /// independent of any one provider's option names.
+    pub fn options(mut self, options: Options) -> Self {
+        self.options = options;
+        self
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ToolChoice {
     None,
@@ -163,5 +183,13 @@ mod tests {
         assert_eq!(config.model_name, "demo");
         assert!(config.options.contains_key("thinking"));
         assert!(request.options.contains_key("temperature_mode"));
+    }
+
+    #[test]
+    fn config_constructor_keeps_provider_and_model_binding_separate() {
+        let config =
+            Config::new("demo").options(Map::from_iter([("thinking".into(), json!(true))]));
+        assert_eq!(config.model_name, "demo");
+        assert_eq!(config.options["thinking"], json!(true));
     }
 }

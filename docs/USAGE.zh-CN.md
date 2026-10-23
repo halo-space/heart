@@ -294,13 +294,12 @@ let provider = Vllm::new(Config {
     api_key: std::env::var("HEART_VLLM_API_KEY")?,
     ..Default::default()
 })?;
-let chat = provider.chat(chat::Config {
-    model_name: "Qwen3.5-122B-A10B".into(),
-    options: Map::from_iter([(
+let chat = provider.chat(
+    chat::Config::new("Qwen3.5-122B-A10B").options(Map::from_iter([(
         "chat_template_kwargs".into(),
         json!({"enable_thinking": true}),
-    )]),
-})?;
+    )])),
+)?;
 ```
 
 VLLM 的 `delta.reasoning` 转成统一的 `think` Part，普通输出转成 `text` Part。供应商特有参数放在 `Config.options` 或 `Request.options`。
@@ -684,10 +683,7 @@ async fn main() -> Result<(), halo_agents::model::Error> {
         api_key: std::env::var("HEART_VLLM_API_KEY").map_err(|_| halo_agents::model::Error::new("AUTHENTICATION", "HEART_VLLM_API_KEY is required"))?,
         ..Config::default()
     })?;
-    let chat = provider.chat(chat::Config {
-        model_name: std::env::var("HEART_VLLM_MODEL").map_err(|_| halo_agents::model::Error::new("INVALID_ARGUMENTS", "HEART_VLLM_MODEL is required"))?,
-        options: serde_json::Map::from_iter([("chat_template_kwargs".into(), json!({"enable_thinking": true}))]),
-    })?;
+    let chat = provider.chat(chat::Config::new(std::env::var("HEART_VLLM_MODEL").map_err(|_| halo_agents::model::Error::new("INVALID_ARGUMENTS", "HEART_VLLM_MODEL is required"))?).options(serde_json::Map::from_iter([("chat_template_kwargs".into(), json!({"enable_thinking": true}))])))?;
     let mut user = Message::new(Role::User);
     user.content.push(Part { r#type: "text".into(), data: json!({"value":"介绍平路运河"}).as_object().unwrap().clone() });
     let mut events = chat.stream(chat::Request { messages: Messages::new([user]), stream: true, max_tokens: Some(512), ..Default::default() }).await?;

@@ -268,13 +268,12 @@ let provider = halo_agents::provider::vllm::Vllm::new(
         ..Default::default()
     },
 )?;
-let chat = provider.chat(halo_agents::model::chat::Config {
-    model_name: "Qwen3.5-122B-A10B".into(),
-    options: serde_json::Map::from_iter([(
+let chat = provider.chat(
+    halo_agents::model::chat::Config::new("Qwen3.5-122B-A10B").options(serde_json::Map::from_iter([(
         "chat_template_kwargs".into(),
         serde_json::json!({"enable_thinking": true}),
-    )]),
-})?;
+    )])),
+)?;
 ```
 
 VLLM `delta.reasoning` becomes the shared `think` Part and ordinary output becomes `text`. Provider-specific options stay in
@@ -480,7 +479,7 @@ use serde_json::json;
 #[tokio::main]
 async fn main() -> Result<(), halo_agents::model::Error> {
     let provider = Vllm::new(Config { base_url: std::env::var("HEART_VLLM_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000/v1".into()), api_key: std::env::var("HEART_VLLM_API_KEY").map_err(|_| halo_agents::model::Error::new("AUTHENTICATION", "HEART_VLLM_API_KEY is required"))?, ..Config::default() })?;
-    let chat = provider.chat(chat::Config { model_name: std::env::var("HEART_VLLM_MODEL").map_err(|_| halo_agents::model::Error::new("INVALID_ARGUMENTS", "HEART_VLLM_MODEL is required"))?, options: serde_json::Map::from_iter([("chat_template_kwargs".into(), json!({"enable_thinking": true}))]) })?;
+    let chat = provider.chat(chat::Config::new(std::env::var("HEART_VLLM_MODEL").map_err(|_| halo_agents::model::Error::new("INVALID_ARGUMENTS", "HEART_VLLM_MODEL is required"))?).options(serde_json::Map::from_iter([("chat_template_kwargs".into(), json!({"enable_thinking": true}))])))?;
     let mut user = Message::new(Role::User); user.content.push(Part { r#type: "text".into(), data: json!({"value":"Introduce Pinglu Canal"}).as_object().unwrap().clone() });
     let mut events = chat.stream(chat::Request { messages: Messages::new([user]), stream: true, max_tokens: Some(512), ..Default::default() }).await?;
     while let Some(event) = events.next().await { match event? { Event::Delta { message } => for p in message.content { print!("{}", p.data["value"].as_str().unwrap_or_default()); }, Event::Complete { usage, finish_reason, .. } => println!("\nusage={usage:?}, finish_reason={finish_reason:?}") } }
