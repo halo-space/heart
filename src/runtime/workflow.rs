@@ -207,7 +207,10 @@ impl Runtime {
     pub fn cancel(&mut self, node_id: &str, exec_id: i64) -> Result<(), Error> {
         self.engine_mut().cancel(node_id, exec_id)
     }
-    /// Resolved, ended invocations retain their existing node-based recovery.
+    /// Internal state transition used by the runtime after a `reply`.
+    ///
+    /// Applications submit external feedback through [`Runtime::reply`].
+    #[doc(hidden)]
     pub fn resume(&mut self, node_id: &str, response: Messages) -> Result<(), Error> {
         self.engine_mut().resume(node_id, response)
     }

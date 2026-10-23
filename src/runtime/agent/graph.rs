@@ -248,6 +248,9 @@ impl Graph {
             .set_attempt_result(Status::Waiting, None, None)
     }
 
+    /// Internal transition used after the waiting reply has been accepted.
+    /// External callers submit feedback through the Agent `reply` entry point.
+    #[doc(hidden)]
     pub fn resume(&mut self, node_id: &str) -> Result<(), Error> {
         self.ensure_attempt(node_id)?;
         self.transition(node_id, Status::Running)?;
