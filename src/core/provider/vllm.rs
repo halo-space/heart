@@ -45,6 +45,13 @@ pub struct Vllm {
 }
 
 impl Vllm {
+    /// Start configuring a VLLM provider connection.
+    pub fn builder() -> Builder {
+        Builder {
+            config: Config::default(),
+        }
+    }
+
     pub fn new(config: Config) -> Result<Self, model::Error> {
         Ok(Self {
             connection: Connection::new(
@@ -64,6 +71,42 @@ impl Vllm {
 
     pub fn embed(&self, config: model::embed::Config) -> Result<embed::Embed, model::Error> {
         self.connection.embed(config)
+    }
+}
+
+/// Fluent configuration for a VLLM provider connection.
+pub struct Builder {
+    config: Config,
+}
+
+impl Builder {
+    pub fn provider_id(mut self, provider_id: i64) -> Self {
+        self.config.provider_id = provider_id;
+        self
+    }
+
+    pub fn name(mut self, name: impl Into<String>) -> Self {
+        self.config.provider_name = name.into();
+        self
+    }
+
+    pub fn base_url(mut self, base_url: impl Into<String>) -> Self {
+        self.config.base_url = base_url.into();
+        self
+    }
+
+    pub fn api_key(mut self, api_key: impl Into<String>) -> Self {
+        self.config.api_key = api_key.into();
+        self
+    }
+
+    pub fn timeout(mut self, timeout: u64) -> Self {
+        self.config.timeout = timeout;
+        self
+    }
+
+    pub fn build(self) -> Result<Vllm, model::Error> {
+        Vllm::new(self.config)
     }
 }
 
