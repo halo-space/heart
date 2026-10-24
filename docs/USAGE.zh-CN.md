@@ -469,7 +469,7 @@ async fn main() -> Result<(), halo::agent::Error> {
 
 ### 10.2 ReAct：工具、Permission 和工具错误反馈
 
-下面的模型第一次返回一个工具调用，第二次读取工具结果并给出最终答案。工具本身实现 `Tool` 契约；
+下面用确定性的模型替身模拟“第一次返回工具调用、第二次读取工具结果”的闭环，不代表真实模型推理。真实模型只需把模型替身替换为 10.1 中初始化的 Provider Chat。工具本身实现 `Tool` 契约；
 Permission 只在真正执行工具时检查，模型只负责选择工具和参数。把 `.tools(Lookup)` 改成多个工具时可以传
 `vec![Lookup, OtherTool]`，不需要 `Toolkit` 公共对象。
 

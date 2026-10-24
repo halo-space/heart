@@ -405,8 +405,9 @@ async fn main() -> Result<(), halo::agent::Error> {
 
 ### 10.2 ReAct with a Tool and Permission
 
-The model emits one Tool call, then answers after seeing the Tool message. The public builder uses `.tools(...)`; `Toolkit` is an internal dispatch
-table, not an application API.
+This offline recipe uses a deterministic model double to simulate one Tool call followed by an answer after the Tool message; it is not model
+reasoning. Replace the model double with the Provider Chat initialized in 10.1 for a real model. The public builder uses `.tools(...)`; `Toolkit`
+is an internal dispatch table, not an application API.
 
 ```rust
 use std::sync::{LazyLock, atomic::{AtomicUsize, Ordering}};
