@@ -8,6 +8,10 @@ pub use crate::components::agent::{Agent, Error, Input, Payload};
 pub use crate::components::message::{Message, Messages};
 pub use crate::core::agent::subagent::SubAgent;
 pub use crate::core::agent::{chat, react};
+/// Concrete model providers are part of the Agent-facing implementation
+/// namespace. The provider implementations themselves remain under `core`;
+/// this re-export keeps application code on the single `halo::agent` entry.
+pub use crate::core::provider;
 pub use crate::{
     checkpoint, compression, document, event, function, knowledge, mcp, memory, message,
     middleware, model, node, permission, plan, prompt, reason, sandbox, skill, tool, workspace,

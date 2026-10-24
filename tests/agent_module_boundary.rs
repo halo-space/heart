@@ -193,3 +193,8 @@ fn workflow_public_entry_uses_agent_namespace() {
 
     assert_eq!(workflow.definition().definition_id, "public-workflow-entry");
 }
+
+#[test]
+fn provider_public_entry_uses_agent_namespace() {
+    let _ = halo::agent::provider::vllm::Config::default();
+}
