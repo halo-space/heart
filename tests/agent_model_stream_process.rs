@@ -13,17 +13,17 @@ use futures_core::Stream;
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, SubAgent},
-    checkpoint::Checkpoint,
-    core,
-    event::Event,
-    message::Role,
-    middleware::Middleware,
-    model::{
+    agent::checkpoint::Checkpoint,
+    agent::event::Event,
+    agent::message::Role,
+    agent::middleware::Middleware,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
         token::Usage,
     },
+    agent::{self, Agent, Input, SubAgent},
+    core,
 };
 use serde_json::{Value, json};
 

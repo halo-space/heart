@@ -6,11 +6,11 @@ use std::task::{Context, Poll};
 
 use futures_executor::block_on;
 use futures_util::{Stream, StreamExt, stream};
+use halo::agent::event::Event;
+use halo::agent::message::Role;
+use halo::agent::model::chat::{Chat, Request};
 use halo::agent::{self, Agent, Input, Payload};
 use halo::agent::{Cancellation, Error, Message};
-use halo::event::Event;
-use halo::message::Role;
-use halo::model::chat::{Chat, Request};
 use halo::runtime::agent::{graph::Graph, node::Status};
 use serde_json::{Map, json};
 
@@ -159,7 +159,7 @@ fn react_and_mounted_capabilities_are_agent_assembly_not_runtime_kinds() {
 
 #[test]
 fn runtime_graph_keeps_execution_state_and_its_existing_json_shape() {
-    use halo::plan::{Plan, PlanNode};
+    use halo::agent::plan::{Plan, PlanNode};
     let mut plan = Plan::new(1).unwrap();
     plan.add(
         PlanNode {
@@ -183,7 +183,10 @@ fn runtime_graph_keeps_execution_state_and_its_existing_json_shape() {
 #[test]
 fn workflow_public_entry_uses_agent_namespace() {
     use halo::agent::core::node::Echo;
-    use halo::agent::workflow::{graph::{END, START}, WorkflowBuilder};
+    use halo::agent::workflow::{
+        WorkflowBuilder,
+        graph::{END, START},
+    };
 
     let mut builder = WorkflowBuilder::new("public-workflow-entry");
     builder.add_node("echo", Echo).unwrap();

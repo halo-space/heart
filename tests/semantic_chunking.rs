@@ -6,8 +6,8 @@ use std::sync::{
 use futures_executor::block_on;
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    document::{self, Chunker as _, Document},
-    model::embed::{Embed, Request},
+    agent::document::{self, Chunker as _, Document},
+    agent::model::embed::{Embed, Request},
 };
 use serde_json::{Value, json};
 
@@ -24,7 +24,7 @@ impl Embed for Model {
         } else {
             vec![1.0, 0.0]
         };
-        halo::model::embed::message(vector, "test", "embed", None)
+        halo::agent::model::embed::message(vector, "test", "embed", None)
     }
 }
 
@@ -277,7 +277,7 @@ fn already_cancelled_does_not_invoke_embed() {
 struct InvalidVector(Value);
 impl Embed for InvalidVector {
     async fn embed(&self, _: Request) -> Result<Message, Error> {
-        let mut message = Message::new(halo::message::Role::Assistant);
+        let mut message = Message::new(halo::agent::message::Role::Assistant);
         message.values.insert("vector".into(), self.0.clone());
         Ok(message)
     }
@@ -305,7 +305,7 @@ impl Embed for Parallel {
         let delay = if request.input.contains('A') { 15 } else { 1 };
         tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
         self.active.fetch_sub(1, Ordering::SeqCst);
-        halo::model::embed::message(vec![1.0, 0.0], "test", "test", None)
+        halo::agent::model::embed::message(vec![1.0, 0.0], "test", "test", None)
     }
 }
 

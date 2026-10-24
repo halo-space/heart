@@ -3,8 +3,7 @@ use serde_json::{Map, Value};
 use std::{future::Future, pin::Pin};
 
 use crate::{
-    Cancellation,
-    Message,
+    Cancellation, Message,
     mcp::Definition as McpDefinition,
     skill::Definition as SkillDefinition,
     tool::{Call, Evaluation, ToolDefinition},
@@ -55,11 +54,7 @@ pub trait Workspace: Send + Sync {
     /// are read through the ordinary `skill` Tool call.
     fn skill(&self) -> Vec<SkillDefinition>;
 
-    fn execute<'a>(
-        &'a self,
-        call: Call,
-        cancellation: &'a Cancellation,
-    ) -> ToolFuture<'a>;
+    fn execute<'a>(&'a self, call: Call, cancellation: &'a Cancellation) -> ToolFuture<'a>;
 }
 
 impl<T> Workspace for std::sync::Arc<T>
@@ -82,11 +77,7 @@ where
         (**self).skill()
     }
 
-    fn execute<'a>(
-        &'a self,
-        call: Call,
-        cancellation: &'a Cancellation,
-    ) -> ToolFuture<'a> {
+    fn execute<'a>(&'a self, call: Call, cancellation: &'a Cancellation) -> ToolFuture<'a> {
         (**self).execute(call, cancellation)
     }
 }

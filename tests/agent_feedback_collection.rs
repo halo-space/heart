@@ -3,10 +3,10 @@ use std::collections::BTreeMap;
 
 use halo::agent::{Cancellation, Message};
 use halo::{
-    checkpoint::Checkpoint,
+    agent::checkpoint::Checkpoint,
+    agent::message::Role,
+    agent::model::content::part::Part,
     core,
-    message::Role,
-    model::content::part::Part,
     runtime::agent::{
         State,
         node::{Step, Wait},

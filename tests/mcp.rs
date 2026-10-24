@@ -1,9 +1,9 @@
 use halo::agent::Cancellation;
 use halo::{
+    agent::mcp::{Definition, Server as _},
+    agent::message::Role,
+    agent::tool::Call,
     core,
-    mcp::{Definition, Server as _},
-    message::Role,
-    tool::Call,
 };
 use serde_json::{Map, Value, json};
 use std::{sync::Arc, time::Duration};

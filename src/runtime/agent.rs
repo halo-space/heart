@@ -28,12 +28,6 @@ use crate::Error;
 use crate::components::message::{Message, Messages};
 use crate::components::model::token::Usage;
 
-/// Static graph portion of an Agent runtime state.
-#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct GraphState {
-    pub plan: crate::components::plan::Plan,
-}
-
 /// Canonical serialized state for one independent Agent run.
 ///
 /// Checkpoint and Trace each serialize an independent copy of this state. The
@@ -58,7 +52,7 @@ pub struct State {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub execution: Option<node::Execution>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub graph: Option<GraphState>,
+    pub graph: Option<graph::State>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub nodes: BTreeMap<String, node::State>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]

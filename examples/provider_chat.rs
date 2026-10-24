@@ -1,13 +1,13 @@
 //! Explicit Provider -> model binding -> shared Event, with no Runtime required.
 use futures_util::StreamExt;
 use halo::{
-    event::Event,
-    message::{Message, Messages, Role},
-    model::{
+    agent::event::Event,
+    agent::message::{Message, Messages, Role},
+    agent::model::{
         chat::{self, Chat as _},
         content::part::Part,
     },
-    provider::openai::{Config, OpenAI},
+    agent::provider::openai::{Config, OpenAI},
 };
 use serde_json::{Map, json};
 

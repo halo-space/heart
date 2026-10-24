@@ -14,16 +14,16 @@ use futures_executor::block_on;
 use futures_util::{StreamExt, poll, stream};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    agent::{self, Agent, Input},
-    checkpoint::Checkpoint as _,
-    event::Event,
-    message::Role,
-    model::{
+    agent::checkpoint::Checkpoint as _,
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
         token::Usage,
     },
-    node::{Node, Signal, Wait},
+    agent::node::{Node, Signal, Wait},
+    agent::{self, Agent, Input},
     runtime::workflow::{
         CompiledWorkflow, FieldSource, InputBinding, NodeAttrs, Runtime, WorkflowBuilder,
         graph::{self, END, START},
@@ -840,15 +840,15 @@ fn model_message_usage_is_preserved_when_the_event_usage_is_missing() {
 }
 
 struct BatchTool {
-    definition: halo::tool::ToolDefinition,
+    definition: halo::agent::tool::ToolDefinition,
     calls: Arc<AtomicUsize>,
     fail_first: bool,
 }
-impl halo::tool::Tool for BatchTool {
-    fn definition(&self) -> &halo::tool::ToolDefinition {
+impl halo::agent::tool::Tool for BatchTool {
+    fn definition(&self) -> &halo::agent::tool::ToolDefinition {
         &self.definition
     }
-    async fn call(&self, _: &halo::tool::Call, _: &Cancellation) -> Result<Message, Error> {
+    async fn call(&self, _: &halo::agent::tool::Call, _: &Cancellation) -> Result<Message, Error> {
         if self.calls.fetch_add(1, Ordering::SeqCst) == 0 && self.fail_first {
             Err(Error::new("TIMEOUT", "raw batch tool failure"))
         } else {
@@ -860,7 +860,7 @@ impl halo::tool::Tool for BatchTool {
 }
 fn batch_tool(name: &str, calls: Arc<AtomicUsize>, fail_first: bool) -> BatchTool {
     BatchTool {
-        definition: halo::tool::ToolDefinition {
+        definition: halo::agent::tool::ToolDefinition {
             name: name.into(),
             description: name.into(),
             parameters: json!({"type":"object"}).as_object().unwrap().clone(),
@@ -887,7 +887,7 @@ fn native_tool_batch_observes_saved_successes_once_without_error_messages() {
             builder
                 .set_retry(
                     "tools",
-                    halo::middleware::RetryPolicy {
+                    halo::agent::middleware::RetryPolicy {
                         max_retries,
                         min_delay_ms: 0,
                         max_delay_ms: 0,

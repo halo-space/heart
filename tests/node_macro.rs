@@ -8,8 +8,8 @@ use futures_executor::block_on;
 use futures_util::StreamExt;
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
+    agent::node::{Node, Signal, Wait},
     node,
-    node::{Node, Signal, Wait},
     runtime::workflow::{
         Runtime, WorkflowBuilder,
         graph::{END, START},

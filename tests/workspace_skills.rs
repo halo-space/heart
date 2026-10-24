@@ -4,12 +4,12 @@ use elasticsearch::{Elasticsearch, http::transport::Transport};
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-agent::{self, Agent, Input},
-event::Event,
-mcp::{Definition as McpDefinition, Server},
-model::chat::{Chat, Request},
-skill::{Definition, Loader, Skill},
-tool::{Call, Tool, ToolDefinition}
+    agent::event::Event,
+    agent::mcp::{Definition as McpDefinition, Server},
+    agent::model::chat::{Chat, Request},
+    agent::skill::{Definition, Loader, Skill},
+    agent::tool::{Call, Tool, ToolDefinition},
+    agent::{self, Agent, Input},
 };
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -160,7 +160,7 @@ fn skill_names_do_not_replace_tool_names() {
         .skills([research()])
         .unwrap();
     assert!(
-        halo::workspace::Workspace::tool(&workspace)
+        halo::agent::workspace::Workspace::tool(&workspace)
             .iter()
             .any(|tool| tool.name == "research")
     );

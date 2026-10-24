@@ -2,16 +2,16 @@
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, Payload, },
-    checkpoint::Checkpoint as _,
-    core,
-    event::Event,
-    message::Role,
-    model::{
+    agent::checkpoint::Checkpoint as _,
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
     },
-    tool::{Call, Evaluation, Tool, ToolDefinition},
+    agent::tool::{Call, Evaluation, Tool, ToolDefinition},
+    agent::{self, Agent, Input, Payload},
+    core,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -86,7 +86,7 @@ impl Chat for WaitingModel {
                 .unwrap()
                 .clone(),
         });
-        message.usage = Some(halo::model::token::Usage {
+        message.usage = Some(halo::agent::model::token::Usage {
             input: Some(3),
             output: Some(0),
             total: Some(3),
@@ -165,7 +165,7 @@ impl Chat for PlannedModel {
         self.0.lock().unwrap().push(request);
         Ok(stream::iter(vec![Ok(Event::Complete {
             message,
-            usage: Some(halo::model::token::Usage {
+            usage: Some(halo::agent::model::token::Usage {
                 input: Some(2),
                 output: Some(1),
                 total: Some(3),
@@ -839,7 +839,7 @@ impl Chat for SequenceModel {
         requests.push(request);
         Ok(stream::iter(vec![Ok(Event::Complete {
             message,
-            usage: Some(halo::model::token::Usage {
+            usage: Some(halo::agent::model::token::Usage {
                 input: Some(3),
                 output: Some(0),
                 total: Some(3),
@@ -963,7 +963,7 @@ impl Chat for TaskDelegationModel {
         }
         Ok(stream::iter(vec![Ok(Event::Complete {
             message,
-            usage: Some(halo::model::token::Usage {
+            usage: Some(halo::agent::model::token::Usage {
                 input: Some(3),
                 output: Some(0),
                 total: Some(3),
@@ -1108,7 +1108,7 @@ impl Chat for ContextualChildModel {
         }
         Ok(stream::iter(vec![Ok(Event::Complete {
             message,
-            usage: Some(halo::model::token::Usage {
+            usage: Some(halo::agent::model::token::Usage {
                 input: Some(3),
                 output: Some(0),
                 total: Some(3),
@@ -1161,7 +1161,7 @@ impl Chat for DelegateThenPlanModel {
         }
         Ok(stream::iter(vec![Ok(Event::Complete {
             message,
-            usage: Some(halo::model::token::Usage {
+            usage: Some(halo::agent::model::token::Usage {
                 input: Some(3),
                 output: Some(0),
                 total: Some(3),
@@ -2125,7 +2125,7 @@ impl Chat for Metered {
         self.0.requests.lock().unwrap().push(request);
         Ok(stream::iter(vec![Ok(Event::Complete {
             message: self.0.response.clone(),
-            usage: Some(halo::model::token::Usage {
+            usage: Some(halo::agent::model::token::Usage {
                 input: Some(self.1),
                 output: Some(0),
                 total: Some(self.1),
@@ -2145,7 +2145,7 @@ impl Chat for PendingFinal {
         } else {
             Ok(stream::iter(vec![Ok(Event::Complete {
                 message: calls(&["weather_002"]),
-                usage: Some(halo::model::token::Usage {
+                usage: Some(halo::agent::model::token::Usage {
                     input: Some(3),
                     output: Some(0),
                     total: Some(3),
@@ -2880,7 +2880,7 @@ async fn missing_eval_result_is_rejected_before_model_or_state_writes() {
 
 #[derive(Clone)]
 struct Disk(PathBuf);
-impl halo::checkpoint::Checkpoint for Disk {
+impl halo::agent::checkpoint::Checkpoint for Disk {
     async fn delete(&self, _: i64, _: &Cancellation) -> Result<(), Error> {
         std::fs::remove_file(&self.0).map_err(|e| Error::new("IO", e.to_string()))
     }
@@ -3303,8 +3303,7 @@ async fn embedded_chat_and_react_cancel_pending_eval_preserving_the_agent_scene(
         let counts = Arc::new(Mutex::new(Counts::default()));
         let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let model = Metered(Model::new(calls(&["weather_002"])), 3);
-        let capabilities =
-            PendingEval(Weather::new(counts.clone()), entered.clone());
+        let capabilities = PendingEval(Weather::new(counts.clone()), entered.clone());
         let compiled = if react {
             embedded_workflow(
                 agent::react()

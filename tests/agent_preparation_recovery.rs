@@ -8,17 +8,17 @@ use chat::Store as _;
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    agent::{self, Agent, Input, Payload},
-    checkpoint::Checkpoint,
-    core,
-    event::Event,
-    memory::{
+    agent::checkpoint::Checkpoint,
+    agent::event::Event,
+    agent::memory::{
         self,
         short::{chat, session, trace},
     },
-    message::Role,
-    middleware::Middleware,
-    model::chat::{Chat, Request},
+    agent::message::Role,
+    agent::middleware::Middleware,
+    agent::model::chat::{Chat, Request},
+    agent::{self, Agent, Input, Payload},
+    core,
     runtime::workflow::{
         CompiledWorkflow, Runtime, WorkflowBuilder,
         graph::{END, START},
@@ -618,7 +618,7 @@ fn graph(react: bool, hooks: Isolated, model: Model) -> CompiledWorkflow {
         }
         builder.add_edge(START, node).unwrap();
     }
-    builder.add_node("merge", halo::node::Echo).unwrap();
+    builder.add_node("merge", halo::agent::node::Echo).unwrap();
     builder.add_join(["a", "b"], "merge").unwrap();
     builder.add_edge("merge", END).unwrap();
     let child = builder.compile().unwrap();
@@ -643,13 +643,15 @@ fn attempt<'a>(snapshot: &'a Value, node: &str) -> &'a Value {
 fn workflow_input() -> Messages {
     let mut message = Message::new(Role::User);
     message.metadata = input().metadata;
-    message.content.push(halo::model::content::part::Part {
-        r#type: "text".into(),
-        data: json!({"value":"original input"})
-            .as_object()
-            .unwrap()
-            .clone(),
-    });
+    message
+        .content
+        .push(halo::agent::model::content::part::Part {
+            r#type: "text".into(),
+            data: json!({"value":"original input"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        });
     Messages::new([message])
 }
 #[tokio::test]

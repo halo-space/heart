@@ -11,20 +11,19 @@ use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{Agent, Input, Payload},
-    core,
-    event::Event,
-    harness,
-    mcp::{Definition as McpDefinition, Server},
-    message::Role,
-    model::{
+    agent::event::Event,
+    agent::mcp::{Definition as McpDefinition, Server},
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
     },
-    permission::{Behavior, Decision},
-    skill::{Definition as SkillDefinition, Skill},
-    tool::{Call, Tool, ToolDefinition},
-    workspace::{Mode, Workspace},
+    agent::permission::{Behavior, Decision},
+    agent::skill::{Definition as SkillDefinition, Skill},
+    agent::tool::{Call, Tool, ToolDefinition},
+    agent::workspace::{Mode, Workspace},
+    agent::{Agent, Input, Payload},
+    core, harness,
 };
 use serde_json::{Value, json};
 
@@ -202,7 +201,7 @@ async fn workspace_preserves_ready_tools_mcps_and_skills() {
 
     assert_eq!(workspace.definition().mode, Mode::Local);
     assert!(workspace.definition().path.is_some());
-    let names: Vec<_> = halo::workspace::Workspace::tool(&workspace)
+    let names: Vec<_> = halo::agent::workspace::Workspace::tool(&workspace)
         .into_iter()
         .map(|definition| definition.name)
         .collect();
@@ -224,7 +223,7 @@ async fn workspace_preserves_ready_tools_mcps_and_skills() {
     // Skill metadata stays in the Toolkit catalog and does not become a
     // separate executable definition before the model view is prepared.
     assert!(
-        halo::workspace::Workspace::tool(&workspace)
+        halo::agent::workspace::Workspace::tool(&workspace)
             .iter()
             .all(|definition| definition.name != "research")
     );
@@ -386,7 +385,7 @@ async fn permission_denial_stops_a_workspace_write_before_side_effects() {
     let decisions = Arc::new(AtomicUsize::new(0));
     let checks = Arc::clone(&decisions);
     let policy = core::permission::Permission::new(
-        move |request: halo::permission::Request, _: Cancellation| {
+        move |request: halo::agent::permission::Request, _: Cancellation| {
             let checks = Arc::clone(&checks);
             async move {
                 assert_eq!(request.resource, "workspace_write");
@@ -398,9 +397,7 @@ async fn permission_denial_stops_a_workspace_write_before_side_effects() {
             }
         },
     );
-    let workspace = core::workspace::Local::new(&directory.0)
-        .unwrap()
-        ;
+    let workspace = core::workspace::Local::new(&directory.0).unwrap();
     let agent = harness::builder()
         .model(model)
         .workspace(workspace)
@@ -462,12 +459,12 @@ fn harness_without_workspace_does_not_install_file_tools() {
 // A contract fixture, not a database backend. It deliberately has no file
 // methods, path parameter, filesystem or in-memory file store.
 struct DatabaseWorkspace {
-    definition: halo::workspace::Definition,
+    definition: halo::agent::workspace::Definition,
     query: Query,
 }
 
 impl Workspace for DatabaseWorkspace {
-    fn definition(&self) -> &halo::workspace::Definition {
+    fn definition(&self) -> &halo::agent::workspace::Definition {
         &self.definition
     }
 
@@ -487,16 +484,26 @@ impl Workspace for DatabaseWorkspace {
         &'a self,
         call: Call,
         cancellation: &'a Cancellation,
-    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Message, halo::tool::Evaluation), Error>> + Send + 'a>> {
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<(Message, halo::agent::tool::Evaluation), Error>,
+                > + Send
+                + 'a,
+        >,
+    > {
         Box::pin(async move {
             if cancellation.is_cancelled() {
                 return Err(Error::new("CANCELLED", "operation cancelled"));
             }
             if call.name != self.query.definition.name || !call.arguments.contains_key("filter") {
-                return Err(Error::new("INVALID_ARGUMENTS", "invalid records_read arguments"));
+                return Err(Error::new(
+                    "INVALID_ARGUMENTS",
+                    "invalid records_read arguments",
+                ));
             }
             let message = self.query.call(&call, cancellation).await?;
-            Ok((message, halo::tool::Evaluation::passed()))
+            Ok((message, halo::agent::tool::Evaluation::passed()))
         })
     }
 }
@@ -524,7 +531,7 @@ impl Tool for Query {
 
 fn database_workspace(calls: Arc<AtomicUsize>) -> DatabaseWorkspace {
     DatabaseWorkspace {
-        definition: halo::workspace::Definition {
+        definition: halo::agent::workspace::Definition {
             mode: Mode::Server,
             path: None,
             metadata: Default::default(),
@@ -663,13 +670,14 @@ async fn definition_only_server_still_checks_existing_permission_before_call() {
         tool_call("records_read", json!({"filter":{"id":1001}})),
         message(Role::Assistant, "denied"),
     ]);
-    let permission =
-        core::permission::Permission::new(|_: halo::permission::Request, _: Cancellation| async {
+    let permission = core::permission::Permission::new(
+        |_: halo::agent::permission::Request, _: Cancellation| async {
             Ok(Decision {
                 behavior: Behavior::Deny,
                 reason: Some("not allowed".into()),
             })
-        });
+        },
+    );
     let agent = harness::builder()
         .model(model)
         .workspace(database_workspace(Arc::clone(&calls)))
@@ -708,7 +716,7 @@ async fn configured_workspace_commands_use_the_original_harness_loop_and_shared_
         .workspace(
             core::workspace::Local::new(&directory.0)
                 .unwrap()
-                .sandbox(halo::sandbox::Local::default()),
+                .sandbox(halo::agent::sandbox::Local::default()),
         )
         .build()
         .unwrap();
@@ -761,7 +769,7 @@ async fn permission_denial_blocks_builtin_delete_and_command_without_side_effect
         let checks = Arc::new(AtomicUsize::new(0));
         let checked = Arc::clone(&checks);
         let permission = core::permission::Permission::new(
-            move |request: halo::permission::Request, _: Cancellation| {
+            move |request: halo::agent::permission::Request, _: Cancellation| {
                 assert_eq!(request.resource, name);
                 checked.fetch_add(1, Ordering::SeqCst);
                 async {
@@ -777,7 +785,7 @@ async fn permission_denial_blocks_builtin_delete_and_command_without_side_effect
             .workspace(
                 core::workspace::Local::new(&directory.0)
                     .unwrap()
-                    .sandbox(halo::sandbox::Local::default()),
+                    .sandbox(halo::agent::sandbox::Local::default()),
             )
             .permission(permission)
             .build()
@@ -805,7 +813,7 @@ fn automatically_bound_operations_still_reject_custom_name_collisions() {
         let (model, requests) = Model::new(vec![]);
         let workspace = core::workspace::Local::new(&directory.0)
             .unwrap()
-            .sandbox(halo::sandbox::Local::default())
+            .sandbox(halo::agent::sandbox::Local::default())
             .tools(Echo(definition(name)));
         let Err(error) = harness::builder().model(model).workspace(workspace).build() else {
             panic!("built-in operation collision was accepted");

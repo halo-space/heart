@@ -6,51 +6,45 @@
 extern crate self as halo;
 
 pub mod agent;
-pub mod cancellation;
+pub(crate) mod cancellation;
 mod components;
 pub mod core;
 pub(crate) mod pkg;
 pub mod runtime;
 
-pub use components::checkpoint;
-pub use components::compression;
-/// Document contracts and the agreed concrete construction paths. Contract
-/// definitions remain under components; implementations remain under core.
-pub mod document {
+pub(crate) use components::checkpoint;
+pub(crate) use components::compression;
+pub(crate) mod document {
     pub use crate::components::document::*;
-    pub use crate::core::document::{LocalLoader, chunker, graph, parser, raptor, transformer};
 }
 pub use components::error::Error;
-pub use components::evaluation;
-pub use components::event;
-pub use components::function;
+pub(crate) use components::evaluation;
+pub(crate) use components::event;
 pub mod harness;
-pub use components::knowledge;
-pub use components::mcp;
-pub use components::memory;
-pub use components::message::{self, Message, Messages};
-pub mod middleware {
+pub(crate) use components::mcp;
+pub(crate) use components::memory;
+pub(crate) use components::message::{self, Message, Messages};
+pub(crate) mod middleware {
     pub use crate::components::middleware::*;
-    pub use crate::core::middleware::Retry;
 }
-pub use components::model;
-pub mod node {
+pub(crate) use components::model;
+pub(crate) mod node {
     pub use crate::components::node::*;
+    #[allow(unused_imports)]
     pub use crate::core::node::Echo;
 }
 pub use cancellation::Cancellation;
-pub use components::permission;
-pub use components::plan;
-pub use components::prompt;
-pub use components::reason;
-pub use components::sandbox;
-pub use components::skill;
-pub mod tool {
+pub(crate) use components::permission;
+pub(crate) use components::plan;
+pub(crate) use components::reason;
+pub(crate) use components::sandbox;
+pub(crate) use components::skill;
+pub(crate) mod tool {
     pub use crate::components::tool::*;
+    #[allow(unused_imports)]
     pub use crate::core::tool::execute;
 }
-pub use components::workspace;
-pub use core::provider;
+pub(crate) use components::workspace;
 /// Optional compile-time check that a function or component method can be
 /// registered as a Workflow Node. Ordinary functions work without the
 /// attribute. Components may use `call = method` or `signal = method` on an

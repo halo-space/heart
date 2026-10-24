@@ -2,16 +2,16 @@
 use futures_util::StreamExt;
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    checkpoint::Checkpoint,
-    event::Event,
-    message::Role,
-    model::content::part::Part,
+    agent::checkpoint::Checkpoint,
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::content::part::Part,
+    agent::tool::{Call, Evaluation, Tool, ToolDefinition},
     runtime::workflow::{
         CompiledWorkflow, RetryPolicy, Runtime, WorkflowBuilder,
         graph::{END, START},
         tool::ToolNode,
     },
-    tool::{Call, Evaluation, Tool, ToolDefinition},
 };
 use serde_json::{Value, json};
 use std::{
@@ -501,7 +501,7 @@ fn shared_nodes(log: Arc<Log>) -> CompiledWorkflow {
         builder.add_edge(START, source).unwrap();
         builder.add_edge(source, target).unwrap();
     }
-    builder.add_node("merge", halo::node::Echo).unwrap();
+    builder.add_node("merge", halo::agent::node::Echo).unwrap();
     builder.add_join(["a", "b"], "merge").unwrap();
     builder.add_edge("merge", END).unwrap();
     builder.compile().unwrap()

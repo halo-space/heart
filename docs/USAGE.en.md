@@ -326,7 +326,8 @@ The Qwen model in the VLLM example belongs to the VLLM server and is not mixed w
 ## 7. Workspace, Skill and MCP
 
 Workspace selects local-file or server-database behavior. Local Workspace provides basic file operations; shell execution requires an explicit Sandbox.
-Skills are loaded with `.skills(loader)`. MCP servers must be connected and discovered before they are mounted.
+Skills are loaded with `.skills(loader)`. A database-backed Loader can override `version` with a revision or content fingerprint;
+one Workspace instance reuses its discovered Skill snapshot and refreshes it only when that version changes. MCP servers must be connected and discovered before they are mounted.
 
 ```rust
 let workspace = halo::agent::core::workspace::Local::new("./workspace")?
@@ -382,7 +383,7 @@ It shows Provider initialization, model binding, the shared `Input`, Agent-to-`M
 ```rust
 use futures_util::StreamExt;
 use halo::agent::{self, Agent, Cancellation, Input, Payload};
-use halo::{event::Event, model::chat, provider::vllm::{Config, Vllm}};
+use halo::agent::{event::Event, model::chat, provider::vllm::{Config, Vllm}};
 use serde_json::json;
 
 #[tokio::main]
@@ -407,8 +408,8 @@ async fn main() -> Result<(), halo::agent::Error> {
 ### 10.2 ReAct with a Tool and Permission
 
 This offline recipe uses a deterministic model double to simulate one Tool call followed by an answer after the Tool message; it is not model
-reasoning. Replace the model double with the Provider Chat initialized in 10.1 for a real model. The public builder uses `.tools(...)`; `Toolkit`
-is an internal dispatch table, not an application API.
+reasoning. Replace the model double with the Provider Chat initialized in 10.1 for a real model. The public builder uses `.tools(...)`; the
+internal dispatch implementation is not an application API.
 
 ```rust
 use std::sync::{LazyLock, atomic::{AtomicUsize, Ordering}};

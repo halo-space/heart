@@ -5,26 +5,26 @@ use futures_executor::block_on;
 use futures_util::{StreamExt, poll, stream};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    agent::{self, Agent, Input, Payload, },
-    checkpoint::Checkpoint as _,
-    core,
-    event::Event,
-    memory::{
+    agent::checkpoint::Checkpoint as _,
+    agent::event::Event,
+    agent::memory::{
         self,
         short::{chat, session, trace},
     },
-    message::Role,
-    middleware::Middleware,
-    model::{
+    agent::message::Role,
+    agent::middleware::Middleware,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
         token::{InputDetails, OutputDetails, Usage},
     },
+    agent::tool::{Call, Tool, ToolDefinition},
+    agent::{self, Agent, Input, Payload},
+    core,
     runtime::workflow::{
         Runtime, WorkflowBuilder,
         graph::{END, START},
     },
-    tool::{Call, Tool, ToolDefinition},
 };
 use serde_json::{Map, Value, json};
 use session::Store as _;
@@ -980,7 +980,7 @@ struct FailingCheckpoint {
     saves: AtomicUsize,
     after_write: bool,
 }
-impl halo::checkpoint::Checkpoint for FailingCheckpoint {
+impl halo::agent::checkpoint::Checkpoint for FailingCheckpoint {
     async fn save(&self, id: i64, state: Value, c: &Cancellation) -> Result<(), Error> {
         assert!(!c.is_cancelled());
         self.saves.fetch_add(1, Ordering::SeqCst);

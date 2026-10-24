@@ -8,17 +8,17 @@ use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, },
-    event::Event,
-    mcp::{Definition as McpDefinition, Server},
-    message::Role,
-    middleware::Middleware,
-    model::{
+    agent::event::Event,
+    agent::mcp::{Definition as McpDefinition, Server},
+    agent::message::Role,
+    agent::middleware::Middleware,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
     },
-    permission::{Behavior, Decision, Permission, Request as PermissionRequest},
-    tool::{Call, Evaluation, Tool, ToolDefinition},
+    agent::permission::{Behavior, Decision, Permission, Request as PermissionRequest},
+    agent::tool::{Call, Evaluation, Tool, ToolDefinition},
+    agent::{self, Agent, Input},
 };
 use serde_json::{Value, json};
 
@@ -1143,7 +1143,7 @@ async fn check_ask<A: Agent>(
     log: Log,
     changed: bool,
 ) {
-    use halo::checkpoint::Checkpoint as _;
+    use halo::agent::checkpoint::Checkpoint as _;
     let events = collect(&agent, 70, Cancellation::new()).await;
     assert!(matches!(events.last(), Some(Err(error)) if error.code == "WAITING"));
     assert_eq!(model.requests.lock().unwrap().len(), 1);

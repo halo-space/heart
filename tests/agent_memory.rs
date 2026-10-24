@@ -9,19 +9,19 @@ use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, Payload, },
-    event::Event,
-    memory::{
+    agent::event::Event,
+    agent::memory::{
         self, Memory,
         short::{self, chat, session, trace},
     },
-    message::Role,
-    model::{
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
         token::Usage,
     },
-    tool::{Call, Tool, ToolDefinition},
+    agent::tool::{Call, Tool, ToolDefinition},
+    agent::{self, Agent, Input, Payload},
 };
 use serde_json::{Map, Value, json};
 

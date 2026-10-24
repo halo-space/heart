@@ -6,13 +6,13 @@ use std::{path::PathBuf, process::Command, time::Duration};
 
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    workspace::Workspace,
+    agent::tool::Call,
+    agent::workspace::Mode,
+    agent::workspace::Workspace,
     core::{
         sandbox,
         workspace::{Docker, docker::Config},
     },
-    tool::Call,
-    workspace::Mode,
 };
 use serde_json::{Value, json};
 
@@ -224,8 +224,11 @@ async fn shared_files_and_default_tools() {
     assert_eq!(workspace.definition().mode, Mode::Local);
     assert_eq!(workspace.definition().path.as_deref(), Some("/workspace"));
     let capabilities = workspace;
-    assert_eq!(halo::workspace::Workspace::tool(&capabilities).len(), 8);
-    for tool in halo::workspace::Workspace::tool(&capabilities) {
+    assert_eq!(
+        halo::agent::workspace::Workspace::tool(&capabilities).len(),
+        8
+    );
+    for tool in halo::agent::workspace::Workspace::tool(&capabilities) {
         tool.validate().unwrap();
     }
     assert!(operations().is_empty());
@@ -599,12 +602,12 @@ async fn configured_mount_and_env() {
 async fn custom_tool_and_harness_permission() {
     use futures_util::{StreamExt, stream};
     use halo::{
+        agent::event::Event,
+        agent::message::Role,
+        agent::model::chat::{Chat, Request},
+        agent::permission::{Behavior, Decision},
+        agent::tool::{Tool, ToolDefinition},
         agent::{Agent, Input},
-        event::Event,
-        message::Role,
-        model::chat::{Chat, Request},
-        permission::{Behavior, Decision},
-        tool::{Tool, ToolDefinition},
     };
     struct Echo(ToolDefinition);
     impl Tool for Echo {
@@ -628,17 +631,19 @@ async fn custom_tool_and_harness_permission() {
             assert!(request.tools.iter().any(|tool| tool.name == "echo"));
             let mut message = Message::new(Role::Assistant);
             if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
-                message.content.push(halo::model::content::part::Part {
-                    r#type: "tool_call".into(),
-                    data: serde_json::to_value(call(
-                        "write",
-                        json!({"path":"denied","content":"no"}),
-                    ))
-                    .unwrap()
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-                });
+                message
+                    .content
+                    .push(halo::agent::model::content::part::Part {
+                        r#type: "tool_call".into(),
+                        data: serde_json::to_value(call(
+                            "write",
+                            json!({"path":"denied","content":"no"}),
+                        ))
+                        .unwrap()
+                        .as_object()
+                        .unwrap()
+                        .clone(),
+                    });
             }
             Ok(stream::iter(vec![Ok(Event::Complete {
                 message,
@@ -652,15 +657,13 @@ async fn custom_tool_and_harness_permission() {
         description: "custom".into(),
         parameters: json!({"type":"object"}).as_object().unwrap().clone(),
     });
-    let workspace = Docker::new(config())
-        .unwrap()
-        .tools(echo);
+    let workspace = Docker::new(config()).unwrap().tools(echo);
     let agent = halo::harness::builder()
         .model(Model(Arc::clone(&calls)))
         .workspace(workspace)
         .permission(halo::core::permission::Permission::new({
             let checks = Arc::clone(&checks);
-            move |request: halo::permission::Request, _: Cancellation| {
+            move |request: halo::agent::permission::Request, _: Cancellation| {
                 let checks = Arc::clone(&checks);
                 async move {
                     assert_eq!(request.resource, "workspace_write");

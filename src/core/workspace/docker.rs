@@ -2,8 +2,8 @@
 //! Construction performs no Docker I/O. The first asynchronous operation starts
 //! the environment; it is never silently replaced by a fresh, empty container.
 
-use std::{collections::BTreeMap, path::PathBuf};
 use std::sync::Arc;
+use std::{collections::BTreeMap, path::PathBuf};
 
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, RwLock};
@@ -248,7 +248,9 @@ impl Docker {
         call: crate::tool::Call,
         cancellation: &Cancellation,
     ) -> Result<(crate::Message, crate::tool::Evaluation), Error> {
-        Toolkit::from(self.clone()).execute(call, cancellation).await
+        Toolkit::from(self.clone())
+            .execute(call, cancellation)
+            .await
     }
 }
 

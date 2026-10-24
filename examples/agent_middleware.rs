@@ -2,11 +2,11 @@
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
+    agent::event::Event,
+    agent::message::Role,
+    agent::middleware::Middleware,
+    agent::model::chat::{Chat, Request},
     agent::{self, Agent, Input, Payload},
-    event::Event,
-    message::Role,
-    middleware::Middleware,
-    model::chat::{Chat, Request},
 };
 use serde_json::{Value, json};
 

@@ -2,18 +2,18 @@
 use futures_util::{StreamExt, poll, stream};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    agent::{self, Agent, Input, },
-    checkpoint::Checkpoint,
-    core,
-    event::Event,
-    message::Role,
-    model::{
+    agent::checkpoint::Checkpoint,
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
         token::Usage,
     },
+    agent::tool::{Call, Tool, ToolDefinition},
+    agent::{self, Agent, Input},
+    core,
     runtime::agent::wait,
-    tool::{Call, Tool, ToolDefinition},
 };
 use serde_json::{Value, json};
 use std::{

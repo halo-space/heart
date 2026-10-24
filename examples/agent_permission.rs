@@ -7,16 +7,16 @@ use std::sync::{
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input},
-    core,
-    event::Event,
-    message::Role,
-    model::{
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
     },
-    permission::{Behavior, Decision, Request as PermissionRequest},
-    tool::{Call, Tool, ToolDefinition},
+    agent::permission::{Behavior, Decision, Request as PermissionRequest},
+    agent::tool::{Call, Tool, ToolDefinition},
+    agent::{self, Agent, Input},
+    core,
 };
 use serde_json::json;
 

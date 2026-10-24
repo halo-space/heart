@@ -4,20 +4,20 @@ use chat::Store as _;
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    agent::{self, Agent, Input, Payload},
-    compression::Compressor,
-    core,
-    event::Event,
-    memory::{
+    agent::compression::Compressor,
+    agent::event::Event,
+    agent::memory::{
         self, Memory,
         short::{self, chat, session},
     },
-    message::Role,
-    model::{
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
         token::Usage,
     },
+    agent::{self, Agent, Input, Payload},
+    core,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};

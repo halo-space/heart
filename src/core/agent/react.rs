@@ -34,7 +34,7 @@ use crate::core::memory::history::{History, Run};
 use crate::runtime::agent::checkpoint::{Backend, invalid as invalid_checkpoint};
 use crate::runtime::agent::graph::Graph;
 use crate::runtime::agent::node::Step;
-use crate::runtime::agent::{GraphState, State as AgentState};
+use crate::runtime::agent::{State as AgentState, graph};
 
 mod execution;
 mod tools;
@@ -1004,7 +1004,7 @@ fn checkpoint_snapshot<M: Chat>(state: &ReActState<M>, result: &Result<Event, Er
         .as_ref()
         .map(|graph| {
             (
-                Some(GraphState {
+                Some(graph::State {
                     plan: graph.plan.clone(),
                 }),
                 graph.nodes.clone(),
@@ -2953,7 +2953,7 @@ mod tests {
             r#type: "agent".into(),
             status: "running".into(),
             stream: true,
-            graph: graph.map(|graph| GraphState {
+            graph: graph.map(|graph| graph::State {
                 plan: graph.plan.clone(),
             }),
             nodes: graph.map(|graph| graph.nodes.clone()).unwrap_or_default(),

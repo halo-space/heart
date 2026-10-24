@@ -2,22 +2,22 @@
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    agent::{self, SubAgent, },
-    checkpoint::Checkpoint,
-    core,
-    event::Event,
-    message::Role,
-    model::{
+    agent::checkpoint::Checkpoint,
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
         token::Usage,
     },
-    permission::{Behavior, Decision, Permission, Request as PermissionRequest},
+    agent::permission::{Behavior, Decision, Permission, Request as PermissionRequest},
+    agent::tool::{Call, Tool, ToolDefinition},
+    agent::{self, SubAgent},
+    core,
     runtime::workflow::{
         CompiledWorkflow, Runtime, WorkflowBuilder,
         graph::{self, END, START},
     },
-    tool::{Call, Tool, ToolDefinition},
 };
 use serde_json::{Value, json};
 use std::sync::{

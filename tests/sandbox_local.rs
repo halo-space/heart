@@ -2,7 +2,7 @@
 #![cfg(unix)]
 
 use halo::agent::Cancellation;
-use halo::sandbox::{Local, Request, Sandbox, local::Config};
+use halo::agent::sandbox::{Local, Request, Sandbox, local::Config};
 use serde_json::json;
 use std::time::Duration;
 

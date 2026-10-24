@@ -16,14 +16,13 @@ use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
     agent::Agent,
-    workspace::Workspace,
-    core,
-    event::Event,
-    harness,
-    message::Role,
-    model::chat::{Chat, Request},
-    tool::{Call, Tool, ToolDefinition},
-    workspace::Mode,
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::chat::{Chat, Request},
+    agent::tool::{Call, Tool, ToolDefinition},
+    agent::workspace::Mode,
+    agent::workspace::Workspace,
+    core, harness,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -185,7 +184,7 @@ fn es_assembly_has_no_file_methods_config_layer_or_eager_network_access() {
     assert!(workspace.definition().path.is_none());
     assert!(workspace.definition().metadata.is_empty());
     let capabilities = workspace;
-    let definitions = halo::workspace::Workspace::tool(&capabilities);
+    let definitions = halo::agent::workspace::Workspace::tool(&capabilities);
     assert_eq!(
         definitions
             .iter()
@@ -370,13 +369,9 @@ async fn es_create_conflict_is_direct_error_and_never_overwrites() {
         (409, json!({"error":{"reason":"fixture-secret"}})),
     ])
     .await;
-    let error = run(
-        &fixture.workspace(),
-        "write",
-        json!({"data":{"id":1}}),
-    )
-    .await
-    .unwrap_err();
+    let error = run(&fixture.workspace(), "write", json!({"data":{"id":1}}))
+        .await
+        .unwrap_err();
     assert_eq!(error.code, "CONFLICT");
     assert!(
         !serde_json::to_string(&error)
@@ -421,8 +416,7 @@ async fn es_missing_index_is_error_not_empty_success_or_automatic_provisioning()
 
 #[tokio::test]
 async fn es_schema_and_i64_identity_validation_precede_network_access() {
-    let capabilities =
-        core::workspace::es::new(client("http://127.0.0.1:1"), "records").unwrap();
+    let capabilities = core::workspace::es::new(client("http://127.0.0.1:1"), "records").unwrap();
     for (name, args) in [
         ("write", json!({"data":{}})),
         ("write", json!({"data":{"id":"1"}})),
@@ -519,14 +513,10 @@ async fn es_invalid_success_envelopes_are_not_reported_as_empty_data() {
     let mut fixture =
         Fixture::new(vec![(200, Value::Null), (200, json!({"result":"created"}))]).await;
     assert_eq!(
-        run(
-            &fixture.workspace(),
-            "update",
-            json!({"id":1,"data":{}})
-        )
-        .await
-        .unwrap_err()
-        .code,
+        run(&fixture.workspace(), "update", json!({"id":1,"data":{}}))
+            .await
+            .unwrap_err()
+            .code,
         "INVALID_RESPONSE"
     );
     fixture.finish().await;
@@ -558,8 +548,7 @@ async fn es_update_preflight_failure_never_sends_mutation() {
 
 #[tokio::test]
 async fn es_cancellation_before_send_and_during_headers_or_body_does_not_hang() {
-    let capabilities =
-        core::workspace::es::new(client("http://127.0.0.1:1"), "records").unwrap();
+    let capabilities = core::workspace::es::new(client("http://127.0.0.1:1"), "records").unwrap();
     let cancellation = Cancellation::new();
     cancellation.cancel();
     assert_eq!(
@@ -572,12 +561,11 @@ async fn es_cancellation_before_send_and_during_headers_or_body_does_not_hang() 
     );
     for body_started in [false, true] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let capabilities =
-            core::workspace::es::new(
-                client(&format!("http://{}", listener.local_addr().unwrap())),
-                "records",
-            )
-            .unwrap();
+        let capabilities = core::workspace::es::new(
+            client(&format!("http://{}", listener.local_addr().unwrap())),
+            "records",
+        )
+        .unwrap();
         let (ready, received) = oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
@@ -635,12 +623,11 @@ async fn es_transport_failure_has_no_credentials_url_or_raw_driver_details() {
 async fn es_non_json_responses_preserve_http_errors_without_echoing_body() {
     for (status, code) in [(200, "INVALID_RESPONSE"), (403, "PERMISSION_DENIED")] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let capabilities =
-            core::workspace::es::new(
-                client(&format!("http://{}", listener.local_addr().unwrap())),
-                "records",
-            )
-            .unwrap();
+        let capabilities = core::workspace::es::new(
+            client(&format!("http://{}", listener.local_addr().unwrap())),
+            "records",
+        )
+        .unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             receive(&mut socket).await;
@@ -671,14 +658,10 @@ async fn es_write_readback_failure_is_direct_error_not_fabricated_inserted_data(
     ])
     .await;
     assert_eq!(
-        run(
-            &fixture.workspace(),
-            "write",
-            json!({"data":{"id":1}})
-        )
-        .await
-        .unwrap_err()
-        .code,
+        run(&fixture.workspace(), "write", json!({"data":{"id":1}}))
+            .await
+            .unwrap_err()
+            .code,
         "UNAVAILABLE"
     );
     fixture.finish().await;
@@ -768,10 +751,12 @@ impl Chat for Model {
 
 fn text(role: Role, value: &str) -> Message {
     let mut message = Message::new(role);
-    message.content.push(halo::model::content::part::Part {
-        r#type: "text".into(),
-        data: json!({"value":value}).as_object().unwrap().clone(),
-    });
+    message
+        .content
+        .push(halo::agent::model::content::part::Part {
+            r#type: "text".into(),
+            data: json!({"value":value}).as_object().unwrap().clone(),
+        });
     message
 }
 
@@ -796,14 +781,16 @@ async fn es_harness_uses_existing_model_loop_permission_and_custom_mounted_capab
         .await;
         let requests = Arc::new(Mutex::new(Vec::new()));
         let mut selection = Message::new(Role::Assistant);
-        selection.content.push(halo::model::content::part::Part {
-            r#type: "tool_call".into(),
-            data: serde_json::to_value(call("read", json!({"id":1})))
-                .unwrap()
-                .as_object()
-                .unwrap()
-                .clone(),
-        });
+        selection
+            .content
+            .push(halo::agent::model::content::part::Part {
+                r#type: "tool_call".into(),
+                data: serde_json::to_value(call("read", json!({"id":1})))
+                    .unwrap()
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            });
         let model = Model {
             output: Mutex::new(vec![selection, text(Role::Assistant, "done")].into()),
             requests: Arc::clone(&requests),
@@ -816,14 +803,14 @@ async fn es_harness_uses_existing_model_loop_permission_and_custom_mounted_capab
         let permission_calls = Arc::new(Mutex::new(Vec::new()));
         let checked = Arc::clone(&permission_calls);
         let permission = core::permission::Permission::new(
-            move |request: halo::permission::Request, _: Cancellation| {
+            move |request: halo::agent::permission::Request, _: Cancellation| {
                 checked.lock().unwrap().push(request);
                 async move {
-                    Ok(halo::permission::Decision {
+                    Ok(halo::agent::permission::Decision {
                         behavior: if allowed {
-                            halo::permission::Behavior::Allow
+                            halo::agent::permission::Behavior::Allow
                         } else {
-                            halo::permission::Behavior::Deny
+                            halo::agent::permission::Behavior::Deny
                         },
                         reason: None,
                     })

@@ -3,16 +3,16 @@ use futures_executor::block_on;
 use futures_util::{StreamExt, poll};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, Payload, },
-    evaluation::Evaluation,
-    event::Event,
-    message::Role,
-    model::{
+    agent::evaluation::Evaluation,
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request, ResponseFormat},
         content::part::Part,
         token::Usage,
     },
-    tool::{Call, Tool, ToolDefinition},
+    agent::tool::{Call, Tool, ToolDefinition},
+    agent::{self, Agent, Input, Payload},
 };
 use serde_json::{Value, json};
 use std::{
@@ -571,11 +571,7 @@ fn trigger_streams_planner_events_and_returns_validated_plan_without_running_too
         let requests = model.requests.clone();
         let search = Search::new("search");
         let calls = search.calls.clone();
-        let agent = agent::react()
-            .model(model)
-            .tools(search)
-            .build()
-            .unwrap();
+        let agent = agent::react().model(model).tools(search).build().unwrap();
         let events: Vec<_> = agent
             .run(input(), true, Cancellation::new())
             .await
@@ -991,11 +987,11 @@ fn missing_planner_complete_cannot_be_reconstructed_from_delta() {
 fn planner_usage_is_in_chat_total_but_control_ack_has_no_double_charge() {
     use chat::Store as _;
     use halo::{
-        core,
-        memory::{
+        agent::memory::{
             self,
             short::{chat, session, trace},
         },
+        core,
     };
     use session::Store as _;
     use trace::Store as _;
@@ -1094,13 +1090,13 @@ fn planner_usage_is_in_chat_total_but_control_ack_has_no_double_charge() {
 #[test]
 fn configured_plan_closure_persists_final_graph_and_agent_state_trace() {
     use chat::Store as _;
-    use halo::checkpoint::Checkpoint as _;
+    use halo::agent::checkpoint::Checkpoint as _;
     use halo::{
-        core,
-        memory::{
+        agent::memory::{
             self,
             short::{chat, session, trace},
         },
+        core,
     };
     use session::Store as _;
     use trace::Store as _;
@@ -1175,7 +1171,7 @@ fn configured_plan_closure_persists_final_graph_and_agent_state_trace() {
 
 #[test]
 fn checkpoint_backend_saves_an_ordinary_react_runtime_without_graph() {
-    use halo::checkpoint::Checkpoint as _;
+    use halo::agent::checkpoint::Checkpoint as _;
     block_on(async {
         let checkpoint = std::sync::Arc::new(halo::core::checkpoint::InMemory::new());
         let agent = agent::react()
@@ -1202,11 +1198,11 @@ fn checkpoint_backend_saves_an_ordinary_react_runtime_without_graph() {
 fn plan_failure_and_cancellation_persist_once_only_at_terminal_closeout() {
     use chat::Store as _;
     use halo::{
-        core,
-        memory::{
+        agent::memory::{
             self,
             short::{chat, session, trace},
         },
+        core,
     };
     use session::Store as _;
     use trace::Store as _;

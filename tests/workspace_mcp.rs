@@ -6,15 +6,15 @@ use std::sync::{
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-agent::{self, Agent, Input},
-event::Event,
-mcp::{Definition, Server},
-message::Role,
-model::{
+    agent::event::Event,
+    agent::mcp::{Definition, Server},
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
     },
-    tool::{Call, Tool, ToolDefinition},
+    agent::tool::{Call, Tool, ToolDefinition},
+    agent::{self, Agent, Input},
 };
 use serde_json::{Map, json};
 
@@ -101,7 +101,10 @@ async fn registration_uses_ready_definitions_and_standalone_execution_preserves_
     let (server, lists, calls) = server(Mode::Normal);
     let capabilities = workspace().mcps(vec![server]);
     assert_eq!(lists.load(Ordering::SeqCst), 0);
-    assert_eq!(halo::workspace::Workspace::tool(&capabilities)[0].name, "weather");
+    assert_eq!(
+        halo::agent::workspace::Workspace::tool(&capabilities)[0].name,
+        "weather"
+    );
     let (message, evaluation) = capabilities
         .execute(call(), &Cancellation::new())
         .await
@@ -112,7 +115,10 @@ async fn registration_uses_ready_definitions_and_standalone_execution_preserves_
     assert_eq!(message.metadata["origin"], "mcp");
     assert!(!message.values.contains_key("tool_result"));
     assert!(evaluation.passed);
-    assert_eq!(halo::workspace::Workspace::tool(&capabilities)[0].name, "weather");
+    assert_eq!(
+        halo::agent::workspace::Workspace::tool(&capabilities)[0].name,
+        "weather"
+    );
 }
 
 #[tokio::test]

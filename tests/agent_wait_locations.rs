@@ -7,12 +7,12 @@ use std::sync::{
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
+    agent::checkpoint::Checkpoint,
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::chat::{Chat, Request},
     agent::{self, Agent, Input},
-    checkpoint::Checkpoint,
     core,
-    event::Event,
-    message::Role,
-    model::chat::{Chat, Request},
     runtime::agent::{
         State,
         wait::{Node, Wait},

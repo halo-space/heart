@@ -29,6 +29,24 @@ pub trait Skill: Send + Sync {
 /// contract using database records. Names returned by `list` identify the
 /// exact instructions and resources subsequently read during this Agent run.
 pub trait Loader: Send + Sync {
+    /// Return a stable source version or fingerprint for the current Skill
+    /// catalog. Workspace-backed loaders use this value to reuse a parsed
+    /// snapshot across executions and refresh only after the source changes.
+    /// A default value derived from the definitions keeps existing loaders
+    /// source-compatible; database-backed loaders should override it with a
+    /// cheap revision or content fingerprint that also covers Skill bodies
+    /// and resources.
+    fn version(
+        &self,
+        cancellation: &Cancellation,
+    ) -> impl std::future::Future<Output = Result<String, Error>> + Send {
+        async move {
+            let definitions = self.list(cancellation).await?;
+            serde_json::to_string(&definitions)
+                .map_err(|_| Error::new("INTERNAL", "Skill definitions cannot be serialized"))
+        }
+    }
+
     fn list(
         &self,
         cancellation: &Cancellation,

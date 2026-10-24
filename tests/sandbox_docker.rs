@@ -1,8 +1,8 @@
 //! Opt-in real-container smoke test. No image pull or Docker daemon startup.
 use halo::agent::Cancellation;
 use halo::{
+    agent::sandbox::{Request, Sandbox},
     core::sandbox::docker::{Config, Docker},
-    sandbox::{Request, Sandbox},
 };
 use serde_json::json;
 

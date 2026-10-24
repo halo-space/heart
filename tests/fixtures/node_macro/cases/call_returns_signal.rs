@@ -6,7 +6,7 @@ impl Component {
         &self,
         _: Input,
         _: &Cancellation,
-    ) -> Result<heart::node::Signal<Output>, Error> {
+    ) -> Result<heart::agent::node::Signal<Output>, Error> {
         unimplemented!()
     }
 }

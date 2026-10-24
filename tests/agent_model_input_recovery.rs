@@ -2,18 +2,18 @@
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, Payload, },
-    checkpoint::Checkpoint,
-    core,
-    event::Event,
-    message::Role,
-    middleware::Middleware,
-    model::{
+    agent::checkpoint::Checkpoint,
+    agent::event::Event,
+    agent::message::Role,
+    agent::middleware::Middleware,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
         token::Usage,
     },
-    tool::{Call, Tool, ToolDefinition},
+    agent::tool::{Call, Tool, ToolDefinition},
+    agent::{self, Agent, Input, Payload},
+    core,
 };
 use serde_json::{Value, json};
 use std::sync::{
@@ -123,7 +123,7 @@ impl Tool for Lookup {
         Ok(message)
     }
 }
-fn capabilities(log: Arc<Log>) -> impl halo::tool::Tool {
+fn capabilities(log: Arc<Log>) -> impl halo::agent::tool::Tool {
     Lookup(
         log,
         ToolDefinition {
@@ -568,7 +568,7 @@ fn nested(react: bool, log: Arc<Log>) -> halo::runtime::workflow::CompiledWorkfl
         }
         child.add_edge(START, node).unwrap();
     }
-    child.add_node("merge", halo::node::Echo).unwrap();
+    child.add_node("merge", halo::agent::node::Echo).unwrap();
     child.add_join(["a", "b"], "merge").unwrap();
     child.add_edge("merge", END).unwrap();
     let child = child.compile().unwrap();

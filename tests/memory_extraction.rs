@@ -2,14 +2,14 @@ use futures_executor::block_on;
 use futures_util::stream;
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    core,
-    event::Event,
-    memory::{self, extraction::Extractor as _},
-    message::Role,
-    model::{
+    agent::event::Event,
+    agent::memory::{self, extraction::Extractor as _},
+    agent::message::Role,
+    agent::model::{
         chat::{self, Chat},
         content::part::Part,
     },
+    core,
 };
 use serde_json::{Value, json};
 use std::{
@@ -329,7 +329,7 @@ fn id_configuration_alone_does_not_enable_memory_transforms() {
 #[test]
 fn extraction_preserves_complete_usage_without_aggregating_it() {
     let model = Model::output(json!({"user":{"fact":"new fact"}}));
-    let usage = halo::model::token::Usage {
+    let usage = halo::agent::model::token::Usage {
         input: Some(7),
         output: Some(3),
         total: Some(10),

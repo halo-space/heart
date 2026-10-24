@@ -13,16 +13,16 @@ use futures_core::Stream;
 use futures_executor::block_on;
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    compression::Compressor as _,
-    core,
-    event::Event,
-    message::Role,
-    model::{
+    agent::compression::Compressor as _,
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::{
         chat::{self, Chat},
         content::part::Part,
         token::Usage,
     },
-    reason::Reasoner as _,
+    agent::reason::Reasoner as _,
+    core,
 };
 use serde_json::json;
 
@@ -207,7 +207,7 @@ fn custom_compressors_share_size_contract_and_legacy_standalone_remains_compatib
             self
         }
     }
-    impl halo::compression::Compressor for Custom {
+    impl halo::agent::compression::Compressor for Custom {
         fn size(&self) -> Option<u64> {
             self.size
         }
@@ -216,7 +216,7 @@ fn custom_compressors_share_size_contract_and_legacy_standalone_remains_compatib
         }
     }
     struct Standalone;
-    impl halo::compression::Compressor for Standalone {
+    impl halo::agent::compression::Compressor for Standalone {
         async fn compress(&self, input: Messages, _: &Cancellation) -> Result<Messages, Error> {
             Ok(input)
         }

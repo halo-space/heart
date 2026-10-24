@@ -7,17 +7,17 @@ use std::sync::{
 use futures_util::{StreamExt, poll, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, },
-    checkpoint::Checkpoint,
-    core,
-    event::Event,
-    message::Role,
-    model::{
+    agent::checkpoint::Checkpoint,
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
         token::Usage,
     },
-    tool::{Call, Evaluation, Tool, ToolDefinition},
+    agent::tool::{Call, Evaluation, Tool, ToolDefinition},
+    agent::{self, Agent, Input},
+    core,
 };
 use serde_json::{Value, json};
 
@@ -949,8 +949,7 @@ async fn after_technical_failure_preserves_raw_success_and_delivers_only_the_ori
     for react in [false, true] {
         let store = Arc::new(core::checkpoint::InMemory::new());
         let log = Arc::new(Mutex::new(Log::default()));
-        let capabilities =
-            FailingAfter(Operation::new(log.clone(), None, false));
+        let capabilities = FailingAfter(Operation::new(log.clone(), None, false));
         let events = if react {
             agent::react()
                 .model(Model(log.clone()))
@@ -1289,10 +1288,7 @@ async fn cancellation_keeps_raw_success_without_new_phase_checkpoint_writes() {
         let store = Arc::new(CountingStore::default());
         let log = Arc::new(Mutex::new(Log::default()));
         let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let capabilities = PendingAfter(
-            Operation::new(log.clone(), None, false),
-            entered.clone(),
-        );
+        let capabilities = PendingAfter(Operation::new(log.clone(), None, false), entered.clone());
         if react {
             let agent = agent::react()
                 .model(Model(log.clone()))

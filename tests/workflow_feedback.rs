@@ -2,17 +2,18 @@
 use futures_util::{StreamExt, poll, stream};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    agent::{self, SubAgent, },
-    checkpoint::Checkpoint,
-    core,
-    event::Event,
-    message::Role,
-    model::{
+    agent::checkpoint::Checkpoint,
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
         token::Usage,
     },
-    permission::{Behavior, Decision, Permission, Request as PermissionRequest},
+    agent::permission::{Behavior, Decision, Permission, Request as PermissionRequest},
+    agent::tool::{Call, Tool, ToolDefinition},
+    agent::{self, SubAgent},
+    core,
     runtime::{
         agent::wait,
         workflow::{
@@ -20,7 +21,6 @@ use halo::{
             graph::{END, START},
         },
     },
-    tool::{Call, Tool, ToolDefinition},
 };
 use serde_json::{Value, json};
 use std::{
@@ -420,7 +420,7 @@ impl Tool for Collect {
         Ok(Message::function(json!({"item":item})))
     }
 }
-fn capabilities(log: Arc<Log>, count: usize) -> impl halo::tool::Tool {
+fn capabilities(log: Arc<Log>, count: usize) -> impl halo::agent::tool::Tool {
     Collect{log,count,definition:ToolDefinition{name:"collect".into(),description:"collect feedback".into(),parameters:json!({"type":"object","properties":{"item":{"type":"string"}},"required":["item"],"additionalProperties":false}).as_object().unwrap().clone()}}
 }
 #[derive(Clone, Copy, Debug)]

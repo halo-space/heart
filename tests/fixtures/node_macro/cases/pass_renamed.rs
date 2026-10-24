@@ -40,8 +40,8 @@ impl Review {
         &self,
         _: Input,
         _: &Cancellation,
-    ) -> Result<heart::node::Signal<Output>, Error> {
-        Ok(heart::node::Signal::Wait(heart::node::Wait {
+    ) -> Result<heart::agent::node::Signal<Output>, Error> {
+        Ok(heart::agent::node::Signal::Wait(heart::agent::node::Wait {
             wait_id: "review".into(),
         }))
     }

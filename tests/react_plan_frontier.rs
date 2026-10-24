@@ -16,15 +16,15 @@ use futures_executor::block_on;
 use futures_util::{StreamExt, poll};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    agent::{self, Agent, Input, Payload},
-    checkpoint::Checkpoint as _,
-    event::Event,
-    message::Role,
-    model::{
+    agent::checkpoint::Checkpoint as _,
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
         token::Usage,
     },
+    agent::{self, Agent, Input, Payload},
     runtime::workflow::{
         Runtime, WorkflowBuilder,
         graph::{END, START},

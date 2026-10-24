@@ -1,13 +1,13 @@
 use futures_util::StreamExt;
 use halo::{
-    event::Event,
-    message::{Message, Messages, Role},
-    model::{
+    agent::event::Event,
+    agent::message::{Message, Messages, Role},
+    agent::model::{
         chat::{self, Chat as _},
         content::part::Part,
         embed::{self, Embed as _},
     },
-    provider::{
+    agent::provider::{
         deepseek::{self, DeepSeek},
         openai::{self, OpenAI},
     },

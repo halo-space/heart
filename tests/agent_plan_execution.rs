@@ -11,13 +11,13 @@ use futures_executor::block_on;
 use futures_util::{StreamExt, poll, stream::FuturesUnordered};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    function::Function,
-    plan::Plan,
+    agent::function::Function,
+    agent::plan::Plan,
+    agent::tool::{self, Call, Tool, ToolDefinition},
     runtime::agent::{
         graph::{Graph, Start},
         node::Status,
     },
-    tool::{self, Call, Tool, ToolDefinition},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;

@@ -5,7 +5,7 @@ use std::sync::{
 
 use futures_executor::block_on;
 use halo::agent::Cancellation;
-use halo::document::{self, Document, Loader as _, Parser as _, Transformer as _};
+use halo::agent::document::{self, Document, Loader as _, Parser as _, Transformer as _};
 use serde_json::{Map, json};
 
 fn parser(

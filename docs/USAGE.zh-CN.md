@@ -361,7 +361,8 @@ let workspace = halo::agent::core::workspace::Local::new("./workspace")?
     .skills(skills)?;
 ```
 
-Skill 使用 `.skills(loader)` 载入：Local Loader 从目录发现，Server Loader 从数据库读取。MCP Server 必须先连接并完成工具发现，
+Skill 使用 `.skills(loader)` 载入：Local Loader 从目录发现，Server Loader 从数据库读取。Loader 可以覆盖 `version` 返回数据库修订号或内容指纹；
+Workspace 会在同一实例内复用已发现的 Skill 快照，只有版本变化才重新读取。MCP Server 必须先连接并完成工具发现，
 再挂载到 Workspace 或 Agent。Provider Key 和 MCP 地址只放本地 `.env`，不要提交到 Git。
 
 ## 8. 取消、错误和测试
@@ -420,7 +421,7 @@ export HEART_VLLM_MODEL=Qwen3.5-122B-A10B
 ```rust
 use futures_util::StreamExt;
 use halo::agent::{self, Agent, Cancellation, Input, Payload};
-use halo::{event::Event, model::chat, provider::vllm::{Config, Vllm}};
+use halo::agent::{event::Event, model::chat, provider::vllm::{Config, Vllm}};
 use serde_json::json;
 
 #[tokio::main]
@@ -472,7 +473,7 @@ async fn main() -> Result<(), halo::agent::Error> {
 
 下面用确定性的模型替身模拟“第一次返回工具调用、第二次读取工具结果”的闭环，不代表真实模型推理。真实模型只需把模型替身替换为 10.1 中初始化的 Provider Chat。工具本身实现 `Tool` 契约；
 Permission 只在真正执行工具时检查，模型只负责选择工具和参数。把 `.tools(Lookup)` 改成多个工具时可以传
-`vec![Lookup, OtherTool]`，不需要 `Toolkit` 公共对象。
+`vec![Lookup, OtherTool]`，不需要额外的工具集合公共对象。
 
 ```rust
 use std::sync::{LazyLock, atomic::{AtomicUsize, Ordering}};

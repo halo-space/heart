@@ -309,7 +309,7 @@ fn check(io: &Io, value: Option<&Ident>, ty: Option<&Type>, root: &Tokens) -> To
         const _: fn() = || {
             #binding
             {
-            fn verify<#parameter: #root::node::Node<#input, #output, #error>>(
+            fn verify<#parameter: #root::agent::node::Node<#input, #output, #error>>(
                 #value_argument
             ) {
                 let _: fn(
@@ -371,14 +371,14 @@ fn expand_impl(
     let result = if signal {
         quote!(<#ty>::#method(self, input, &cancellation).await)
     } else {
-        quote!(<#ty>::#method(self, input, &cancellation).await.map(#root::node::Signal::Complete))
+        quote!(<#ty>::#method(self, input, &cancellation).await.map(#root::agent::node::Signal::Complete))
     };
     let assertion = check(&io, None, Some(ty), root);
     Ok(quote!(
         #implementation
-        impl #root::node::Node<#input, #output, #error> for #ty {
+        impl #root::agent::node::Node<#input, #output, #error> for #ty {
             async fn call(&self, input: #input, cancellation: &#root::Cancellation)
-                -> ::std::result::Result<#root::node::Signal<#output>, #error>
+                -> ::std::result::Result<#root::agent::node::Signal<#output>, #error>
             { #result }
         }
         #assertion

@@ -5,10 +5,10 @@
 //! the shared `think` content part and ordinary output to `text`.
 use futures_util::StreamExt;
 use halo::{
-    event::Event,
-    message::{Message, Messages, Role},
-    model::{chat, chat::Chat as _, content::part::Part},
-    provider::deepseek::DeepSeek,
+    agent::event::Event,
+    agent::message::{Message, Messages, Role},
+    agent::model::{chat, chat::Chat as _, content::part::Part},
+    agent::provider::deepseek::DeepSeek,
 };
 use serde_json::json;
 

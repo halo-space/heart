@@ -256,7 +256,7 @@ fn stateless_batch_workflow(
 
 #[test]
 fn restoring_full_runtime_reuses_successful_nodes_and_does_not_guess_internal_batch_facts() {
-    use halo::checkpoint::Checkpoint as _;
+    use halo::agent::checkpoint::Checkpoint as _;
     block_on(async {
         let original_calls = Arc::new(AtomicUsize::new(0));
         let workflow = stateless_batch_workflow(original_calls.clone(), Default::default());
@@ -407,7 +407,7 @@ fn failing_batch_workflow(
 
 #[test]
 fn failed_batch_checkpoint_is_terminal_and_never_replays_completed_or_failed_nodes() {
-    use halo::checkpoint::Checkpoint as _;
+    use halo::agent::checkpoint::Checkpoint as _;
     block_on(async {
         let source_calls = Arc::new(AtomicUsize::new(0));
         let item_calls = Arc::new(Mutex::new(Vec::new()));
@@ -476,7 +476,7 @@ fn failed_batch_checkpoint_is_terminal_and_never_replays_completed_or_failed_nod
 
 #[test]
 fn unfinished_batch_restore_preserves_failed_attempt_history_and_remaining_retry_budget() {
-    use halo::checkpoint::Checkpoint as _;
+    use halo::agent::checkpoint::Checkpoint as _;
     block_on(async {
         let original_calls = Arc::new(AtomicUsize::new(0));
         let mut original = Runtime::new(
@@ -523,7 +523,7 @@ fn unfinished_batch_restore_preserves_failed_attempt_history_and_remaining_retry
         );
         execution.attempts[0].created_time = Some(10);
         execution.attempts[0].finished_time = Some(20);
-        execution.attempts[0].usage = Some(halo::model::token::Usage {
+        execution.attempts[0].usage = Some(halo::agent::model::token::Usage {
             input: Some(7),
             output: Some(3),
             total: Some(10),

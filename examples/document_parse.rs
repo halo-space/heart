@@ -1,7 +1,7 @@
 //! Run with a local QA CSV path; no Runtime, database or model is required.
 use futures_executor::block_on;
 use halo::agent::Cancellation;
-use halo::document::{self, Loader, Parser, Transformer};
+use halo::agent::document::{self, Loader, Parser, Transformer};
 use serde_json::json;
 
 fn main() -> Result<(), document::Error> {

@@ -2,18 +2,18 @@
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, Payload, },
-    checkpoint::Checkpoint,
-    core,
-    event::Event,
-    message::Role,
-    middleware::Middleware,
-    model::{
+    agent::checkpoint::Checkpoint,
+    agent::event::Event,
+    agent::message::Role,
+    agent::middleware::Middleware,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
         token::Usage,
     },
-    tool::{Call, Tool, ToolDefinition},
+    agent::tool::{Call, Tool, ToolDefinition},
+    agent::{self, Agent, Input, Payload},
+    core,
 };
 use serde_json::{Value, json};
 use std::sync::{
@@ -182,7 +182,7 @@ impl Tool for Weather {
         Ok(message)
     }
 }
-fn capabilities() -> impl halo::tool::Tool {
+fn capabilities() -> impl halo::agent::tool::Tool {
     Weather(ToolDefinition {
         name: "weather".into(),
         description: "weather".into(),
@@ -644,7 +644,7 @@ fn graph(react: bool, phase: Phase, log: Arc<Log>) -> halo::runtime::workflow::C
         }
         builder.add_edge(START, node).unwrap();
     }
-    builder.add_node("merge", halo::node::Echo).unwrap();
+    builder.add_node("merge", halo::agent::node::Echo).unwrap();
     builder.add_join(["a", "b"], "merge").unwrap();
     builder.add_edge("merge", END).unwrap();
     let child = builder.compile().unwrap();

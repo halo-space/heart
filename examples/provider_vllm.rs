@@ -5,10 +5,10 @@
 //! `think` content part and ordinary deltas as `text` parts.
 use futures_util::StreamExt;
 use halo::{
-    event::Event,
-    message::{Message, Messages, Role},
-    model::{chat, chat::Chat as _, content::part::Part},
-    provider::vllm::{Config, Vllm},
+    agent::event::Event,
+    agent::message::{Message, Messages, Role},
+    agent::model::{chat, chat::Chat as _, content::part::Part},
+    agent::provider::vllm::{Config, Vllm},
 };
 use serde_json::json;
 

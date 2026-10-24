@@ -3,15 +3,15 @@ use futures_executor::block_on;
 use futures_util::stream::{self, Iter};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    document::{Document, raptor::Raptor},
-    event::Event,
-    message::Role,
-    model::{
+    agent::document::{Document, raptor::Raptor},
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
         embed::Embed,
     },
-    tool::{self, Call, Evaluation, Tool, ToolDefinition},
+    agent::tool::{self, Call, Evaluation, Tool, ToolDefinition},
 };
 use serde_json::{Map, json};
 use std::sync::{
@@ -50,12 +50,12 @@ struct Embedding {
     cancel: Option<Cancellation>,
 }
 impl Embed for Embedding {
-    async fn embed(&self, _request: halo::model::embed::Request) -> Result<Message, Error> {
+    async fn embed(&self, _request: halo::agent::model::embed::Request) -> Result<Message, Error> {
         self.calls.fetch_add(1, Ordering::SeqCst);
         if let Some(cancel) = &self.cancel {
             cancel.cancel();
         }
-        halo::model::embed::message(vec![1.0], "test", "test", None)
+        halo::agent::model::embed::message(vec![1.0], "test", "test", None)
     }
 }
 fn embed() -> Embedding {

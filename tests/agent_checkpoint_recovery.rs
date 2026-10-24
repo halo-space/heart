@@ -2,16 +2,16 @@
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, Payload},
-    checkpoint::Checkpoint as _,
-    core,
-    event::Event,
-    message::Role,
-    model::{
+    agent::checkpoint::Checkpoint as _,
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
         token::Usage,
     },
+    agent::{self, Agent, Input, Payload},
+    core,
 };
 use serde_json::json;
 use std::{
@@ -426,7 +426,7 @@ fn no_new_id() -> i64 {
 #[tokio::test]
 async fn chat_waiting_reuses_memory_chat_and_final_trace_is_an_independent_scene_copy() {
     use chat::Store as _;
-    use halo::memory::{
+    use halo::agent::memory::{
         self,
         short::{chat, session, trace},
     };

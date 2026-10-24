@@ -12,10 +12,36 @@ pub use crate::core::agent::{chat, react};
 /// namespace. The provider implementations themselves remain under `core`;
 /// this re-export keeps application code on the single `halo::agent` entry.
 pub use crate::core::provider;
-pub use crate::{
-    checkpoint, compression, document, event, function, knowledge, mcp, memory, message,
-    middleware, model, node, permission, plan, prompt, reason, sandbox, skill, tool, workspace,
+
+pub use crate::components::message;
+pub use crate::components::{
+    checkpoint, evaluation, event, function, knowledge, mcp, memory, model, permission, plan,
+    prompt, reason, sandbox, skill, workspace,
 };
+
+pub mod compression {
+    pub use crate::components::compression::*;
+}
+
+pub mod document {
+    pub use crate::components::document::*;
+    pub use crate::core::document::{LocalLoader, chunker, graph, parser, raptor, transformer};
+}
+
+pub mod middleware {
+    pub use crate::components::middleware::*;
+    pub use crate::core::middleware::Retry;
+}
+
+pub mod node {
+    pub use crate::components::node::*;
+    pub use crate::core::node::Echo;
+}
+
+pub mod tool {
+    pub use crate::components::tool::*;
+    pub use crate::core::tool::execute;
+}
 
 /// Public entry to the existing concrete implementation layer. The contents
 /// and hierarchy are exactly the same as `src/core`; this module only places

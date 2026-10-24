@@ -2,21 +2,21 @@
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    agent::{self, },
-    event::Event,
-    message::Role,
-    model::{
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
         token::Usage,
     },
-    node::{Node, Signal},
+    agent::node::{Node, Signal},
+    agent::tool::{Call, Evaluation, Tool, ToolDefinition},
+    agent::{self},
     runtime::workflow::{
         CompiledWorkflow, Runtime, WorkflowBuilder,
         graph::{END, START},
         tool::ToolNode,
     },
-    tool::{Call, Evaluation, Tool, ToolDefinition},
 };
 use serde_json::{Value, json};
 use std::{
@@ -162,7 +162,7 @@ fn graph(react: bool, tool: SharedTool) -> CompiledWorkflow {
         }
         builder.add_edge(START, id).unwrap();
     }
-    builder.add_node("merge", halo::node::Echo).unwrap();
+    builder.add_node("merge", halo::agent::node::Echo).unwrap();
     builder.add_join(["a", "b"], "merge").unwrap();
     builder.add_edge("merge", END).unwrap();
     builder.compile().unwrap()
@@ -320,9 +320,11 @@ async fn absent_hooks_pass_through_direct_tool_mounted_capabilities_and_workflow
         arguments: json!({"n":7}).as_object().unwrap().clone(),
     };
     let c = Cancellation::new();
-    let (direct, eval) = halo::tool::execute(&tool, call.clone(), &c).await.unwrap();
+    let (direct, eval) = halo::agent::tool::execute(&tool, call.clone(), &c)
+        .await
+        .unwrap();
     assert!(eval.passed);
-    let (capabilities, eval) = halo::tool::execute(&tool, call.clone(), &c)
+    let (capabilities, eval) = halo::agent::tool::execute(&tool, call.clone(), &c)
         .await
         .unwrap();
     assert!(eval.passed);

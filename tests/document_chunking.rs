@@ -1,6 +1,8 @@
 use futures_executor::block_on;
 use halo::agent::Cancellation;
-use halo::document::{self, Chunker as _, Document, Loader as _, Parser as _, Transformer as _};
+use halo::agent::document::{
+    self, Chunker as _, Document, Loader as _, Parser as _, Transformer as _,
+};
 use serde_json::{Value, json};
 
 fn document(content: &str) -> Document {

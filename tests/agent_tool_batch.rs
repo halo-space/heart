@@ -7,14 +7,14 @@ use futures_executor::block_on;
 use futures_util::{FutureExt, StreamExt, poll, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, },
-    event::Event,
-    message::{Messages, Role},
-    model::{
+    agent::event::Event,
+    agent::message::{Messages, Role},
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
     },
-    tool::{Call, Evaluation, Tool, ToolDefinition},
+    agent::tool::{Call, Evaluation, Tool, ToolDefinition},
+    agent::{self, Agent, Input},
 };
 use serde_json::json;
 use tokio::sync::oneshot;
@@ -320,11 +320,7 @@ fn failed_call_is_direct_context_and_does_not_repeat_successful_siblings() {
         let (model, mut tool, probe) = setup(3);
         tool.fail_call = Some(2);
         let requests = model.requests.clone();
-        let agent = agent::react()
-            .model(model)
-            .tools(tool)
-            .build()
-            .unwrap();
+        let agent = agent::react().model(model).tools(tool).build().unwrap();
         let events: Vec<_> = agent
             .run(input(), true, Cancellation::new())
             .await
@@ -394,11 +390,7 @@ fn dropping_stream_releases_pending_tool_resources() {
     block_on(async {
         let (model, tool, probe) = setup(2);
         let _releases = gates(&probe, 2);
-        let agent = agent::react()
-            .model(model)
-            .tools(tool)
-            .build()
-            .unwrap();
+        let agent = agent::react().model(model).tools(tool).build().unwrap();
         let mut events = agent.run(input(), true, Cancellation::new()).await.unwrap();
         message(events.next().await.unwrap());
         assert!(events.next().now_or_never().is_none());
@@ -417,11 +409,7 @@ fn eval_failure_keeps_success_event_and_never_repeats_call() {
         // Only call 2 blocks; call 1 finishes and then its eval fails.
         probe.lock().unwrap().calls.remove(&1);
         let requests = model.requests.clone();
-        let agent = agent::react()
-            .model(model)
-            .tools(tool)
-            .build()
-            .unwrap();
+        let agent = agent::react().model(model).tools(tool).build().unwrap();
         let mut events = agent.run(input(), true, Cancellation::new()).await.unwrap();
         message(events.next().await.unwrap());
         assert_eq!(message(events.next().await.unwrap()).values["index"], 1);
@@ -449,11 +437,7 @@ fn business_feedback_does_not_masquerade_as_tool_error_context() {
         let (model, mut tool, probe) = setup(2);
         tool.reject_eval = Some(1);
         let requests = model.requests.clone();
-        let agent = agent::react()
-            .model(model)
-            .tools(tool)
-            .build()
-            .unwrap();
+        let agent = agent::react().model(model).tools(tool).build().unwrap();
         let events: Vec<_> = agent
             .run(input(), true, Cancellation::new())
             .await
@@ -471,20 +455,20 @@ fn business_feedback_does_not_masquerade_as_tool_error_context() {
 }
 
 struct Allow;
-impl halo::permission::Permission for Allow {
+impl halo::agent::permission::Permission for Allow {
     async fn check(
         &self,
-        _: &halo::permission::Request,
+        _: &halo::agent::permission::Request,
         _: &Cancellation,
-    ) -> Result<halo::permission::Decision, Error> {
-        Ok(halo::permission::Decision {
-            behavior: halo::permission::Behavior::Allow,
+    ) -> Result<halo::agent::permission::Decision, Error> {
+        Ok(halo::agent::permission::Decision {
+            behavior: halo::agent::permission::Behavior::Allow,
             reason: None,
         })
     }
 }
 struct HookFailure(Mutex<Option<oneshot::Receiver<()>>>);
-impl halo::middleware::Middleware for HookFailure {
+impl halo::agent::middleware::Middleware for HookFailure {
     async fn before_permission(
         &self,
         value: &mut serde_json::Value,

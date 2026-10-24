@@ -17,14 +17,13 @@ use elasticsearch::{
 use futures_util::{StreamExt, future::join_all, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::chat::{Chat, Request},
+    agent::tool::{Call, Tool, ToolDefinition},
+    agent::workspace::Workspace,
     agent::{Agent, Input, Payload},
-    core,
-    workspace::Workspace,
-    event::Event,
-    harness,
-    message::Role,
-    model::chat::{Chat, Request},
-    tool::{Call, Tool, ToolDefinition},
+    core, harness,
 };
 use serde_json::{Value, json};
 
@@ -264,10 +263,12 @@ impl Chat for Model {
 
 fn text(role: Role, value: &str) -> Message {
     let mut message = Message::new(role);
-    message.content.push(halo::model::content::part::Part {
-        r#type: "text".into(),
-        data: json!({"value":value}).as_object().unwrap().clone(),
-    });
+    message
+        .content
+        .push(halo::agent::model::content::part::Part {
+            r#type: "text".into(),
+            data: json!({"value":value}).as_object().unwrap().clone(),
+        });
     message
 }
 
@@ -308,14 +309,16 @@ async fn real_harness_crud_and_permission_use_the_existing_tool_chain() {
                 // Each model-selected call has its own identity, including repeated read.
                 actual_call.call_id = format!("es_real_{idx}");
                 let mut message = Message::new(Role::Assistant);
-                message.content.push(halo::model::content::part::Part {
-                    r#type: "tool_call".into(),
-                    data: serde_json::to_value(actual_call)
-                        .unwrap()
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                });
+                message
+                    .content
+                    .push(halo::agent::model::content::part::Part {
+                        r#type: "tool_call".into(),
+                        data: serde_json::to_value(actual_call)
+                            .unwrap()
+                            .as_object()
+                            .unwrap()
+                            .clone(),
+                    });
                 message
             })
             .collect();
@@ -338,14 +341,14 @@ async fn real_harness_crud_and_permission_use_the_existing_tool_chain() {
                     })),
             )
             .permission(core::permission::Permission::new(
-                move |request: halo::permission::Request, _: Cancellation| {
+                move |request: halo::agent::permission::Request, _: Cancellation| {
                     checked.lock().unwrap().push(request.resource);
                     async move {
-                        Ok(halo::permission::Decision {
+                        Ok(halo::agent::permission::Decision {
                             behavior: if allowed {
-                                halo::permission::Behavior::Allow
+                                halo::agent::permission::Behavior::Allow
                             } else {
-                                halo::permission::Behavior::Deny
+                                halo::agent::permission::Behavior::Deny
                             },
                             reason: None,
                         })

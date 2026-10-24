@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 
 use halo::agent::{Message, Messages};
 use halo::{
-    message::Role,
+    agent::message::Role,
     runtime::agent::{
         State,
         node::{Step, Wait},

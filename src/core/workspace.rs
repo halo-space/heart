@@ -8,14 +8,14 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use tokio::{
-    io::AsyncWriteExt,
-    sync::RwLock,
-};
+use tokio::{io::AsyncWriteExt, sync::RwLock};
 
 use crate::{
     Cancellation, Error,
-    components::{mcp::Server, skill::{Definition as SkillDefinition, Skill}},
+    components::{
+        mcp::Server,
+        skill::{Definition as SkillDefinition, Skill},
+    },
     workspace::{Definition, Mode},
 };
 
@@ -55,19 +55,21 @@ impl Local {
         let Ok(entries) = std::fs::read_dir(root) else {
             return definitions;
         };
-        definitions.extend(entries
-            .filter_map(Result::ok)
-            .filter_map(|entry| {
-                let path = entry.path();
-                if !entry.file_type().ok()?.is_dir() {
-                    return None;
-                }
-                let markdown = std::fs::read_to_string(path.join("SKILL.md")).ok()?;
-                let skill = crate::core::skill::Skill::from_markdown(&markdown).ok()?;
-                let name = entry.file_name().to_str()?.to_owned();
-                (skill.definition().name == name).then(|| skill.definition().clone())
-            })
-            .collect::<Vec<_>>());
+        definitions.extend(
+            entries
+                .filter_map(Result::ok)
+                .filter_map(|entry| {
+                    let path = entry.path();
+                    if !entry.file_type().ok()?.is_dir() {
+                        return None;
+                    }
+                    let markdown = std::fs::read_to_string(path.join("SKILL.md")).ok()?;
+                    let skill = crate::core::skill::Skill::from_markdown(&markdown).ok()?;
+                    let name = entry.file_name().to_str()?.to_owned();
+                    (skill.definition().name == name).then(|| skill.definition().clone())
+                })
+                .collect::<Vec<_>>(),
+        );
         definitions
     }
 
@@ -218,7 +220,9 @@ impl Local {
         call: crate::tool::Call,
         cancellation: &Cancellation,
     ) -> Result<(crate::Message, crate::tool::Evaluation), Error> {
-        Toolkit::from(self.clone()).execute(call, cancellation).await
+        Toolkit::from(self.clone())
+            .execute(call, cancellation)
+            .await
     }
 }
 

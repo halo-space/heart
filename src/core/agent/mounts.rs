@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::Arc;
+use tokio::sync::RwLock;
 
 use crate::Cancellation;
 use crate::components::agent::Error;
@@ -25,6 +26,12 @@ type SkillFuture = Pin<Box<dyn Future<Output = Result<String, Error>> + Send + '
 type ResourceFuture = Pin<Box<dyn Future<Output = Result<Vec<u8>, Error>> + Send + 'static>>;
 type SkillDiscoveryFuture =
     Pin<Box<dyn Future<Output = Result<Vec<Arc<dyn SkillEntry>>, Error>> + Send + 'static>>;
+
+#[derive(Clone)]
+struct SkillSnapshot {
+    version: String,
+    entries: Vec<Arc<dyn SkillEntry>>,
+}
 
 trait SkillEntry: Send + Sync {
     fn definition(&self) -> &SkillDefinition;
@@ -45,14 +52,23 @@ trait SkillLoader: Send + Sync {
 
 struct TypedLoader<S> {
     loader: Arc<S>,
+    cache: Arc<RwLock<Option<SkillSnapshot>>>,
 }
 
 impl<S: Loader + 'static> SkillLoader for TypedLoader<S> {
     fn discover(&self, cancellation: Cancellation) -> SkillDiscoveryFuture {
         let loader = Arc::clone(&self.loader);
+        let cache = Arc::clone(&self.cache);
         Box::pin(async move {
+            let version = loader.version(&cancellation).await?;
+            if let Some(snapshot) = cache.read().await.as_ref()
+                && snapshot.version == version
+            {
+                return Ok(snapshot.entries.clone());
+            }
+
             let definitions = loader.list(&cancellation).await?;
-            Ok(definitions
+            let entries: Vec<Arc<dyn SkillEntry>> = definitions
                 .into_iter()
                 .map(|definition| {
                     Arc::new(SourcedSkill {
@@ -60,7 +76,12 @@ impl<S: Loader + 'static> SkillLoader for TypedLoader<S> {
                         definition,
                     }) as Arc<dyn SkillEntry>
                 })
-                .collect())
+                .collect();
+            *cache.write().await = Some(SkillSnapshot {
+                version,
+                entries: entries.clone(),
+            });
+            Ok(entries)
         })
     }
 }
@@ -511,6 +532,7 @@ impl Toolkit {
     pub(crate) fn skill<S: Loader + 'static>(mut self, loader: S) -> Self {
         self.skill_loaders.push(Arc::new(TypedLoader {
             loader: Arc::new(loader),
+            cache: Arc::new(RwLock::new(None)),
         }));
         self
     }
@@ -822,14 +844,22 @@ impl SkillEntry for WorkspaceSkill {
             };
             let (message, evaluation) = workspace.execute(call, &cancellation).await?;
             if !evaluation.passed {
-                return Err(Error::new("EXECUTION_FAILED", "Workspace Skill evaluation failed"));
+                return Err(Error::new(
+                    "EXECUTION_FAILED",
+                    "Workspace Skill evaluation failed",
+                ));
             }
             message
                 .values
                 .get("instructions")
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_owned)
-                .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "Workspace Skill returned no instructions"))
+                .ok_or_else(|| {
+                    Error::new(
+                        "INVALID_ARGUMENTS",
+                        "Workspace Skill returned no instructions",
+                    )
+                })
         })
     }
 
@@ -847,14 +877,19 @@ impl SkillEntry for WorkspaceSkill {
             };
             let (message, evaluation) = workspace.execute(call, &cancellation).await?;
             if !evaluation.passed {
-                return Err(Error::new("EXECUTION_FAILED", "Workspace Skill evaluation failed"));
+                return Err(Error::new(
+                    "EXECUTION_FAILED",
+                    "Workspace Skill evaluation failed",
+                ));
             }
             message
                 .values
                 .get("content")
                 .and_then(serde_json::Value::as_str)
                 .map(|content| content.as_bytes().to_vec())
-                .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "Workspace Skill returned no resource"))
+                .ok_or_else(|| {
+                    Error::new("INVALID_ARGUMENTS", "Workspace Skill returned no resource")
+                })
         })
     }
 }

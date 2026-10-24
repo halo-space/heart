@@ -13,16 +13,16 @@ use futures_core::Stream;
 use futures_util::{StreamExt, poll, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, SubAgent},
-    checkpoint::Checkpoint,
-    core,
-    event::Event,
-    message::Role,
-    model::{
+    agent::checkpoint::Checkpoint,
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::{
         chat::{Chat, Request},
         content::part::Part,
         token::Usage,
     },
+    agent::{self, Agent, Input, SubAgent},
+    core,
 };
 use serde_json::{Value, json};
 
@@ -763,8 +763,10 @@ fn finish_workflow(
         WorkflowBuilder,
         graph::{END, START},
     };
-    builder.add_node("sibling", halo::node::Echo).unwrap();
-    builder.add_node("merge", halo::node::Echo).unwrap();
+    builder
+        .add_node("sibling", halo::agent::node::Echo)
+        .unwrap();
+    builder.add_node("merge", halo::agent::node::Echo).unwrap();
     builder.add_edge(START, "agent").unwrap();
     builder.add_edge(START, "sibling").unwrap();
     builder.add_join(["agent", "sibling"], "merge").unwrap();

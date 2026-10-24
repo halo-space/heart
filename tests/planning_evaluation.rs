@@ -14,16 +14,16 @@ use futures_core::Stream;
 use futures_executor::block_on;
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    agent::{Input, Payload},
-    core,
-    evaluation::{Evaluation, Evaluator as _},
-    event::Event,
-    message::Role,
-    model::{
+    agent::evaluation::{Evaluation, Evaluator as _},
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::{
         chat::{self, Chat},
         content::part::Part,
     },
-    plan::{Plan, Planner as _},
+    agent::plan::{Plan, Planner as _},
+    agent::{Input, Payload},
+    core,
 };
 use serde_json::{Value, json};
 

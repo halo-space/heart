@@ -104,7 +104,9 @@ impl Workspace {
         call: crate::tool::Call,
         cancellation: &Cancellation,
     ) -> Result<(crate::Message, crate::tool::Evaluation), Error> {
-        Toolkit::from(self.clone()).execute(call, cancellation).await
+        Toolkit::from(self.clone())
+            .execute(call, cancellation)
+            .await
     }
 }
 

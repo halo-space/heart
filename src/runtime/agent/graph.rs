@@ -6,7 +6,7 @@ use crate::Error;
 use crate::components::message::Messages;
 use crate::components::model::token::Usage;
 use crate::components::plan::Plan;
-use crate::runtime::agent::node::{State, Status};
+use crate::runtime::agent::node::{State as NodeState, Status};
 
 /// Mutable execution-graph state for one Agent plan version.
 ///
@@ -15,14 +15,24 @@ use crate::runtime::agent::node::{State, Status};
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Graph {
     pub plan: Plan,
-    pub nodes: BTreeMap<String, State>,
+    pub nodes: BTreeMap<String, NodeState>,
     pub history: Vec<History>,
+}
+
+/// Static plan snapshot embedded in the canonical Agent State.
+///
+/// This is deliberately named by its module rather than exported as a second
+/// graph-state type.  The mutable [`Graph`] above owns execution facts;
+/// `graph::State` only preserves the static plan in the Agent checkpoint JSON.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct State {
+    pub plan: Plan,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct History {
     pub plan: Plan,
-    pub nodes: BTreeMap<String, State>,
+    pub nodes: BTreeMap<String, NodeState>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -48,7 +58,7 @@ impl Graph {
         let nodes = plan
             .nodes
             .keys()
-            .map(|node_id| (node_id.clone(), State::default()))
+            .map(|node_id| (node_id.clone(), NodeState::default()))
             .collect();
         let mut graph = Self {
             plan,
@@ -133,13 +143,13 @@ impl Graph {
         &self.history
     }
 
-    pub fn state(&self, node_id: &str) -> Result<&State, Error> {
+    pub fn state(&self, node_id: &str) -> Result<&NodeState, Error> {
         self.nodes
             .get(node_id)
             .ok_or_else(|| Error::new("NOT_FOUND", "execution graph node was not found"))
     }
 
-    pub fn state_mut(&mut self, node_id: &str) -> Result<&mut State, Error> {
+    pub fn state_mut(&mut self, node_id: &str) -> Result<&mut NodeState, Error> {
         self.nodes
             .get_mut(node_id)
             .ok_or_else(|| Error::new("NOT_FOUND", "execution graph node was not found"))

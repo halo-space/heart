@@ -11,12 +11,12 @@ use futures_executor::block_on;
 use futures_util::stream;
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
+    agent::checkpoint::Checkpoint as _,
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::token::Usage,
+    agent::node::{Node, Signal, Wait},
     agent::{Agent, Input},
-    checkpoint::Checkpoint as _,
-    event::Event,
-    message::Role,
-    model::token::Usage,
-    node::{Node, Signal, Wait},
     runtime::workflow::{
         CompiledWorkflow, RetryPolicy, Runtime, WorkflowBuilder,
         graph::{self, END, START},
@@ -46,11 +46,11 @@ impl Node<Messages, Messages, Error> for Approval {
 
 fn approval_workflow(approved: bool) -> CompiledWorkflow {
     let mut builder = WorkflowBuilder::new("restored-approval-downstream");
-    builder.add_node("source", halo::node::Echo).unwrap();
+    builder.add_node("source", halo::agent::node::Echo).unwrap();
     builder
         .add_node("approval", Approval(AtomicBool::new(approved)))
         .unwrap();
-    builder.add_node("next", halo::node::Echo).unwrap();
+    builder.add_node("next", halo::agent::node::Echo).unwrap();
     builder.add_edge(START, "source").unwrap();
     builder.add_edge("source", "approval").unwrap();
     builder.add_edge("approval", "next").unwrap();
@@ -194,7 +194,7 @@ fn workflow_at(
             )
             .unwrap();
     } else {
-        child.add_node("merge", halo::node::Echo).unwrap();
+        child.add_node("merge", halo::agent::node::Echo).unwrap();
     }
     child.add_edge(START, "a").unwrap();
     child.add_edge(START, "b").unwrap();
@@ -212,7 +212,7 @@ fn workflow_at(
     };
 
     let mut parent = WorkflowBuilder::new("retry-parent");
-    parent.add_node("source", halo::node::Echo).unwrap();
+    parent.add_node("source", halo::agent::node::Echo).unwrap();
     parent.add_graph_node("batch", &child).unwrap();
     parent
         .add_node("next", move |input: Messages, _: Cancellation| {

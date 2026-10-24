@@ -5,14 +5,17 @@ use std::sync::{Arc, Mutex};
 use futures_util::stream;
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
+    agent::checkpoint::Checkpoint as _,
+    agent::event::Event,
+    agent::message::Role,
+    agent::model::chat::{Chat, Request},
+    agent::plan::Plan,
     agent::{self, Agent, Input},
-    checkpoint::Checkpoint as _,
     core,
-    event::Event,
-    message::Role,
-    model::chat::{Chat, Request},
-    plan::Plan,
-    runtime::agent::{GraphState, State, graph::Graph},
+    runtime::agent::{
+        State,
+        graph::{Graph, State as PlanState},
+    },
 };
 use serde_json::json;
 
@@ -55,7 +58,7 @@ async fn one_external_reply_must_not_be_broadcast_to_multiple_waiting_nodes() {
         chat_id: Some(501),
         r#type: "agent".into(),
         status: "waiting".into(),
-        graph: Some(GraphState {
+        graph: Some(PlanState {
             plan: graph.plan.clone(),
         }),
         nodes: graph.nodes,
