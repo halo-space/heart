@@ -493,15 +493,11 @@ where
     }
     let mut compression_input = messages.clone();
     let mut extraction_input = Vec::new();
-    // The trigger uses the current summary's recorded Usage plus uncovered
-    // completed Chat Usage. Covered Chats and replaced summaries are not
-    // counted again; this is the agreed threshold policy, not tokenization
-    // of the next model request or an estimate of the summary's text length.
-    let mut total = if session.summary.is_some() {
-        compression::tokens(session.usage.as_ref())
-    } else {
-        0
-    };
+    // The trigger counts only completed Chat Usage after the summary's
+    // coverage endpoint. The summary's own Usage is a display field for the
+    // latest compression call; including it here would count the same history
+    // again on every rolling compression.
+    let mut total: u64 = 0;
     let mut endpoints = None;
     let mut blocked = false;
     for value in chats.into_iter().skip(after) {
