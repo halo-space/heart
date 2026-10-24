@@ -16,7 +16,7 @@ use crate::components::mcp::Server;
 use crate::core::agent::mounts::ToolInputs;
 use crate::core::{agent::mounts::Toolkit, operation::cancellable};
 use crate::tool::{Call, Tool, ToolDefinition};
-use crate::workspace::{Definition, Mode, Workspace as Contract};
+use crate::workspace::{Definition, Mode};
 use crate::{Cancellation, Error, Message};
 
 /// Binds an existing client to one concrete index. Performs no network I/O,
@@ -47,6 +47,7 @@ pub fn new(client: Elasticsearch, index: impl Into<String>) -> Result<Workspace,
     })
 }
 
+#[derive(Clone)]
 pub struct Workspace {
     backend: Arc<Backend>,
     definition: Definition,
@@ -54,15 +55,6 @@ pub struct Workspace {
 }
 
 impl Workspace {
-    /// Stores the application's existing capabilities without discovery or
-    /// database access. Public callers normally use the Workspace `tools`,
-    /// `mcps` and `skills` methods.
-    #[doc(hidden)]
-    pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
-        self.capabilities = self.capabilities.append(toolkit);
-        self
-    }
-
     /// Mount application Tools on this Server Workspace.
     #[allow(private_bounds)]
     pub fn tools<I>(mut self, tools: I) -> Self
@@ -92,9 +84,53 @@ impl Workspace {
     }
 }
 
-impl Contract for Workspace {
+impl Workspace {
+    /// Internal Tool catalog used to implement the Workspace contract.
+    pub(super) fn tool_catalog(&self) -> Vec<crate::tool::ToolDefinition> {
+        Toolkit::from(self.clone()).tool_catalog()
+    }
+
+    pub(super) fn mcp_catalog(&self) -> Vec<crate::mcp::Definition> {
+        Toolkit::from(self.clone()).mcp_catalog()
+    }
+
+    pub(super) fn skill_catalog(&self) -> Vec<crate::skill::Definition> {
+        self.capabilities.skill_catalog()
+    }
+
+    /// Execute one mounted or built-in Workspace Tool.
+    pub async fn execute(
+        &self,
+        call: crate::tool::Call,
+        cancellation: &Cancellation,
+    ) -> Result<(crate::Message, crate::tool::Evaluation), Error> {
+        Toolkit::from(self.clone()).execute(call, cancellation).await
+    }
+}
+
+impl crate::workspace::Workspace for Workspace {
     fn definition(&self) -> &Definition {
         &self.definition
+    }
+
+    fn tool(&self) -> Vec<crate::tool::ToolDefinition> {
+        self.tool_catalog()
+    }
+
+    fn mcp(&self) -> Vec<crate::mcp::Definition> {
+        self.mcp_catalog()
+    }
+
+    fn skill(&self) -> Vec<crate::skill::Definition> {
+        self.skill_catalog()
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: crate::tool::Call,
+        cancellation: &'a Cancellation,
+    ) -> crate::workspace::ToolFuture<'a> {
+        Box::pin(self.execute(call, cancellation))
     }
 }
 

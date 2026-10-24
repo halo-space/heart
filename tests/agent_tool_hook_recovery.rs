@@ -7,7 +7,7 @@ use std::sync::{
 use futures_util::{StreamExt, poll, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, toolkit::Toolkit},
+    agent::{self, Agent, Input, },
     checkpoint::Checkpoint,
     core,
     event::Event,
@@ -186,11 +186,11 @@ async fn run(
     pause: Option<Phase>,
     mode: bool,
 ) -> Vec<Result<Event, Error>> {
-    let capabilities = Toolkit::new().tools(Operation::new(log.clone(), pause, false));
+    let capabilities = Operation::new(log.clone(), pause, false);
     if react {
         agent::react()
             .model(Model(log))
-            .toolkit(capabilities)
+            .tools(capabilities)
             .checkpoint(checkpoint)
             .with_id_fn(next_id)
             .build()
@@ -203,7 +203,7 @@ async fn run(
     } else {
         agent::chat()
             .model(Model(log))
-            .toolkit(capabilities)
+            .tools(capabilities)
             .checkpoint(checkpoint)
             .with_id_fn(next_id)
             .build()
@@ -411,13 +411,13 @@ async fn after_feedback_restores_partial_collection_and_the_raw_call_result() {
         for react in [false, true] {
             let store = Arc::new(core::checkpoint::InMemory::new());
             let log = Arc::new(Mutex::new(Log::default()));
-            let capabilities = || Toolkit::new().tools(Operation::new(log.clone(), None, true));
+            let capabilities = || Operation::new(log.clone(), None, true);
             if react {
                 human_recovery(
                     || {
                         agent::react()
                             .model(Model(log.clone()))
-                            .toolkit(capabilities())
+                            .tools(capabilities())
                             .checkpoint(store.clone())
                             .with_id_fn(next_id)
                             .build()
@@ -433,7 +433,7 @@ async fn after_feedback_restores_partial_collection_and_the_raw_call_result() {
                     || {
                         agent::chat()
                             .model(Model(log.clone()))
-                            .toolkit(capabilities())
+                            .tools(capabilities())
                             .checkpoint(store.clone())
                             .with_id_fn(next_id)
                             .build()
@@ -506,12 +506,12 @@ fn graph(
     human: bool,
     log: Arc<Mutex<Log>>,
 ) -> halo::runtime::workflow::CompiledWorkflow {
-    let capabilities = Toolkit::new().tools(Operation::new(log.clone(), pause, human));
+    let capabilities = Operation::new(log.clone(), pause, human);
     if react {
         embedded(
             agent::react()
                 .model(Model(log))
-                .toolkit(capabilities)
+                .tools(capabilities)
                 .with_id_fn(next_id)
                 .build()
                 .unwrap(),
@@ -521,7 +521,7 @@ fn graph(
         embedded(
             agent::chat()
                 .model(Model(log))
-                .toolkit(capabilities)
+                .tools(capabilities)
                 .with_id_fn(next_id)
                 .build()
                 .unwrap(),
@@ -724,13 +724,13 @@ impl Chat for ParentModel {
     }
 }
 fn child(react: bool, pause: Option<Phase>, log: Arc<Mutex<Log>>) -> agent::SubAgent {
-    let capabilities = Toolkit::new().tools(Operation::new(log.clone(), pause, false));
+    let capabilities = Operation::new(log.clone(), pause, false);
     if react {
         agent::SubAgent::new(
             "worker",
             agent::react()
                 .model(Model(log))
-                .toolkit(capabilities)
+                .tools(capabilities)
                 .with_id_fn(next_id)
                 .build()
                 .unwrap(),
@@ -741,7 +741,7 @@ fn child(react: bool, pause: Option<Phase>, log: Arc<Mutex<Log>>) -> agent::SubA
             "worker",
             agent::chat()
                 .model(Model(log))
-                .toolkit(capabilities)
+                .tools(capabilities)
                 .with_id_fn(next_id)
                 .build()
                 .unwrap(),
@@ -847,11 +847,11 @@ async fn inconsistent_phase_results_fail_before_any_component_is_invoked() {
                 .save(1001, invalid.clone(), &Cancellation::new())
                 .await
                 .unwrap();
-            let capabilities = Toolkit::new().tools(Operation::new(log.clone(), None, false));
+            let capabilities = Operation::new(log.clone(), None, false);
             let result = if react {
                 agent::react()
                     .model(Model(log.clone()))
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .checkpoint(malformed.clone())
                     .build()
                     .unwrap()
@@ -861,7 +861,7 @@ async fn inconsistent_phase_results_fail_before_any_component_is_invoked() {
             } else {
                 agent::chat()
                     .model(Model(log.clone()))
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .checkpoint(malformed.clone())
                     .build()
                     .unwrap()
@@ -950,11 +950,11 @@ async fn after_technical_failure_preserves_raw_success_and_delivers_only_the_ori
         let store = Arc::new(core::checkpoint::InMemory::new());
         let log = Arc::new(Mutex::new(Log::default()));
         let capabilities =
-            Toolkit::new().tools(FailingAfter(Operation::new(log.clone(), None, false)));
+            FailingAfter(Operation::new(log.clone(), None, false));
         let events = if react {
             agent::react()
                 .model(Model(log.clone()))
-                .toolkit(capabilities)
+                .tools(capabilities)
                 .checkpoint(store.clone())
                 .build()
                 .unwrap()
@@ -966,7 +966,7 @@ async fn after_technical_failure_preserves_raw_success_and_delivers_only_the_ori
         } else {
             agent::chat()
                 .model(Model(log.clone()))
-                .toolkit(capabilities)
+                .tools(capabilities)
                 .checkpoint(store.clone())
                 .build()
                 .unwrap()
@@ -1141,15 +1141,15 @@ async fn a_failed_after_is_reused_as_error_context_while_a_sibling_after_resumes
         let log = Arc::new(Mutex::new(Log::default()));
         for waiting in [true, false] {
             let (sent, received) = tokio::sync::oneshot::channel();
-            let capabilities = Toolkit::new().tools(MixedAfter {
+            let capabilities = MixedAfter {
                 inner: Operation::new(log.clone(), waiting.then_some(Phase::After), false),
                 sent: Mutex::new(Some(sent)),
                 received: Mutex::new(Some(received)),
-            });
+            };
             let events = if react {
                 agent::react()
                     .model(MixedModel(log.clone()))
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .checkpoint(store.clone())
                     .build()
                     .unwrap()
@@ -1161,7 +1161,7 @@ async fn a_failed_after_is_reused_as_error_context_while_a_sibling_after_resumes
             } else {
                 agent::chat()
                     .model(MixedModel(log.clone()))
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .checkpoint(store.clone())
                     .build()
                     .unwrap()
@@ -1289,14 +1289,14 @@ async fn cancellation_keeps_raw_success_without_new_phase_checkpoint_writes() {
         let store = Arc::new(CountingStore::default());
         let log = Arc::new(Mutex::new(Log::default()));
         let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let capabilities = Toolkit::new().tools(PendingAfter(
+        let capabilities = PendingAfter(
             Operation::new(log.clone(), None, false),
             entered.clone(),
-        ));
+        );
         if react {
             let agent = agent::react()
                 .model(Model(log.clone()))
-                .toolkit(capabilities)
+                .tools(capabilities)
                 .checkpoint(store.clone())
                 .build()
                 .unwrap();
@@ -1304,7 +1304,7 @@ async fn cancellation_keeps_raw_success_without_new_phase_checkpoint_writes() {
         } else {
             let agent = agent::chat()
                 .model(Model(log.clone()))
-                .toolkit(capabilities)
+                .tools(capabilities)
                 .checkpoint(store.clone())
                 .build()
                 .unwrap();
@@ -1371,7 +1371,7 @@ async fn planned_tasks_restore_phases_in_the_same_attempt_independently_and_insi
             for pause in [Some(phase), None] {
                 let agent = agent::react()
                     .model(PlanModel(log.clone()))
-                    .toolkit(Toolkit::new().tools(Operation::new(log.clone(), pause, false)))
+                    .tools(Operation::new(log.clone(), pause, false))
                     .checkpoint(store.clone())
                     .with_id_fn(next_id)
                     .with_max_concurrency(1)

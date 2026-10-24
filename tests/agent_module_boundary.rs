@@ -152,7 +152,6 @@ fn react_and_mounted_capabilities_are_agent_assembly_not_runtime_kinds() {
         .model(Model {
             requests: Arc::clone(&requests),
         })
-        .toolkit(agent::toolkit::Toolkit::new())
         .build()
         .unwrap();
     block_on(check_runs(&agent, &requests));

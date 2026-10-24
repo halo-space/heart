@@ -2,7 +2,7 @@
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    agent::{self, toolkit::Toolkit},
+    agent::{self, },
     event::Event,
     message::Role,
     model::{
@@ -134,7 +134,7 @@ fn graph(react: bool, tool: SharedTool) -> CompiledWorkflow {
     let mut builder = WorkflowBuilder::new("shared-lifecycle-owners");
     let model = SharedModel(tool.0.counts.clone());
     for (id, owner) in [("a", "A"), ("b", "B")] {
-        let capabilities = Toolkit::new().tools(tool.clone());
+        let capabilities = tool.clone();
         if react {
             builder
                 .add_agent_node(
@@ -142,7 +142,7 @@ fn graph(react: bool, tool: SharedTool) -> CompiledWorkflow {
                     agent::react()
                         .model(model.clone())
                         .system_prompt(owner)
-                        .toolkit(capabilities)
+                        .tools(capabilities)
                         .build()
                         .unwrap(),
                 )
@@ -154,7 +154,7 @@ fn graph(react: bool, tool: SharedTool) -> CompiledWorkflow {
                     agent::chat()
                         .model(model.clone())
                         .system_prompt(owner)
-                        .toolkit(capabilities)
+                        .tools(capabilities)
                         .build()
                         .unwrap(),
                 )
@@ -322,9 +322,7 @@ async fn absent_hooks_pass_through_direct_tool_mounted_capabilities_and_workflow
     let c = Cancellation::new();
     let (direct, eval) = halo::tool::execute(&tool, call.clone(), &c).await.unwrap();
     assert!(eval.passed);
-    let (capabilities, eval) = Toolkit::new()
-        .tools(tool.clone())
-        .execute(call.clone(), &c)
+    let (capabilities, eval) = halo::tool::execute(&tool, call.clone(), &c)
         .await
         .unwrap();
     assert!(eval.passed);

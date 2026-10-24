@@ -5,8 +5,8 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::toolkit::Toolkit,
     core,
+    workspace::Workspace,
     message::Role,
     sandbox::{Local as Sandbox, local::Config},
     tool::Call,
@@ -42,8 +42,8 @@ fn call(name: &str, arguments: Value) -> Call {
     }
 }
 
-async fn run(capabilities: &Toolkit, name: &str, arguments: Value) -> Result<Message, Error> {
-    let (message, evaluation) = capabilities
+async fn run(workspace: &impl Workspace, name: &str, arguments: Value) -> Result<Message, Error> {
+    let (message, evaluation) = workspace
         .execute(call(name, arguments), &Cancellation::new())
         .await?;
     assert!(evaluation.passed);
@@ -59,10 +59,9 @@ async fn run(capabilities: &Toolkit, name: &str, arguments: Value) -> Result<Mes
 #[tokio::test]
 async fn local_defaults_include_delete_but_not_host_commands() {
     let directory = Directory::new();
-    let capabilities = Toolkit::from(directory.workspace());
+    let capabilities = directory.workspace();
     assert_eq!(
-        capabilities
-            .definitions()
+        halo::workspace::Workspace::tool(&capabilities)
             .iter()
             .map(|tool| tool.name.as_str())
             .collect::<Vec<_>>(),
@@ -76,7 +75,7 @@ async fn local_defaults_include_delete_but_not_host_commands() {
             "workspace_delete",
         ]
     );
-    for definition in capabilities.definitions() {
+    for definition in halo::workspace::Workspace::tool(&capabilities) {
         definition.validate().unwrap();
     }
     assert_eq!(
@@ -96,7 +95,7 @@ async fn local_defaults_include_delete_but_not_host_commands() {
 #[tokio::test]
 async fn deletion_is_relative_single_file_physical_and_cancel_safe() {
     let directory = Directory::new();
-    let capabilities = Toolkit::from(directory.workspace());
+    let capabilities = directory.workspace();
     run(
         &capabilities,
         "write",
@@ -170,7 +169,7 @@ async fn deletion_does_not_follow_symlink_resources_or_parents() {
     std::fs::write(outside.0.join("keep.txt"), "keep").unwrap();
     std::os::unix::fs::symlink(outside.0.join("keep.txt"), inside.0.join("file-link")).unwrap();
     std::os::unix::fs::symlink(&outside.0, inside.0.join("directory-link")).unwrap();
-    let capabilities = Toolkit::from(inside.workspace());
+    let capabilities = inside.workspace();
     for path in ["file-link", "directory-link/keep.txt"] {
         assert_eq!(
             run(&capabilities, "delete", json!({"path":path}))
@@ -196,8 +195,8 @@ async fn configured_sandbox_automatically_adds_command_and_uses_the_same_files()
         0,
         "configuration must not execute"
     );
-    let capabilities = Toolkit::from(workspace);
-    assert_eq!(capabilities.definitions().len(), 8);
+    let capabilities = workspace;
+    assert_eq!(halo::workspace::Workspace::tool(&capabilities).len(), 8);
     run(
         &capabilities,
         "write",
@@ -249,7 +248,7 @@ async fn configured_sandbox_automatically_adds_command_and_uses_the_same_files()
 #[tokio::test]
 async fn command_argv_is_literal_and_call_cannot_override_environment_configuration() {
     let directory = Directory::new();
-    let capabilities = Toolkit::from(directory.workspace().sandbox(Sandbox::default()));
+    let capabilities = directory.workspace().sandbox(Sandbox::default());
     let message = run(
         &capabilities,
         "exec_shell",
@@ -310,7 +309,7 @@ async fn command_argv_is_literal_and_call_cannot_override_environment_configurat
 #[tokio::test]
 async fn command_failure_is_direct_not_retried_and_does_not_undo_side_effects() {
     let directory = Directory::new();
-    let capabilities = Toolkit::from(directory.workspace().sandbox(Sandbox::default()));
+    let capabilities = directory.workspace().sandbox(Sandbox::default());
     let error = run(
         &capabilities,
         "exec_shell",
@@ -332,15 +331,14 @@ async fn command_failure_is_direct_not_retried_and_does_not_undo_side_effects() 
 #[tokio::test]
 async fn command_reuses_configured_output_limit_timeout_and_utf8_errors() {
     let directory = Directory::new();
-    let capabilities = Toolkit::from(
+    let capabilities =
         directory.workspace().sandbox(
             Sandbox::new(Config {
                 max_output: 3,
                 ..Default::default()
             })
             .unwrap(),
-        ),
-    );
+        );
     assert_eq!(
         run(
             &capabilities,
@@ -363,15 +361,14 @@ async fn command_reuses_configured_output_limit_timeout_and_utf8_errors() {
         .code,
         "INVALID_RESPONSE"
     );
-    let capabilities = Toolkit::from(
+    let capabilities =
         directory.workspace().sandbox(
             Sandbox::new(Config {
                 timeout: Duration::from_millis(50),
                 ..Default::default()
             })
             .unwrap(),
-        ),
-    );
+        );
     assert_eq!(
         tokio::time::timeout(
             Duration::from_secs(5),
@@ -403,8 +400,8 @@ async fn independent_workspaces_do_not_share_cwd_or_execution_configuration() {
     let second = Directory::new();
     std::fs::write(first.0.join("value.txt"), "first").unwrap();
     std::fs::write(second.0.join("value.txt"), "second").unwrap();
-    let first_mounted_capabilities = Toolkit::from(first.workspace().sandbox(Sandbox::default()));
-    let second_mounted_capabilities = Toolkit::from(second.workspace().sandbox(Sandbox::default()));
+    let first_mounted_capabilities = first.workspace().sandbox(Sandbox::default());
+    let second_mounted_capabilities = second.workspace().sandbox(Sandbox::default());
     let original_cwd = std::env::current_dir().unwrap();
     let (a, b) = tokio::join!(
         run(
@@ -427,9 +424,9 @@ async fn independent_workspaces_do_not_share_cwd_or_execution_configuration() {
 async fn cancellation_while_waiting_for_a_command_lock_never_runs_the_file_operation() {
     let directory = Directory::new();
     std::fs::write(directory.0.join("draft.txt"), "keep").unwrap();
-    let capabilities = Arc::new(Toolkit::from(
+    let capabilities = Arc::new(
         directory.workspace().sandbox(Sandbox::default()),
-    ));
+    );
     let cancellation = Cancellation::new();
     let signal = cancellation.clone();
     let running = Arc::clone(&capabilities);

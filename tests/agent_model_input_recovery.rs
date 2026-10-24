@@ -2,7 +2,7 @@
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, Payload, toolkit::Toolkit},
+    agent::{self, Agent, Input, Payload, },
     checkpoint::Checkpoint,
     core,
     event::Event,
@@ -123,8 +123,8 @@ impl Tool for Lookup {
         Ok(message)
     }
 }
-fn capabilities(log: Arc<Log>) -> Toolkit {
-    Toolkit::new().tools(Lookup(
+fn capabilities(log: Arc<Log>) -> impl halo::tool::Tool {
+    Lookup(
         log,
         ToolDefinition {
             name: "lookup".into(),
@@ -134,7 +134,7 @@ fn capabilities(log: Arc<Log>) -> Toolkit {
                 .unwrap()
                 .clone(),
         },
-    ))
+    )
 }
 fn input(text: &str) -> Input {
     Input {
@@ -159,7 +159,7 @@ async fn run(
     if react {
         Ok(agent::react()
             .model(Model(log.clone()))
-            .toolkit(capabilities(log.clone()))
+            .tools(capabilities(log.clone()))
             .middleware(First(log.clone()))
             .middleware(Gate(log))
             .with_max_iters(2)
@@ -172,7 +172,7 @@ async fn run(
     } else {
         Ok(agent::chat()
             .model(Model(log.clone()))
-            .toolkit(capabilities(log.clone()))
+            .tools(capabilities(log.clone()))
             .middleware(First(log.clone()))
             .middleware(Gate(log))
             .checkpoint(checkpoint)

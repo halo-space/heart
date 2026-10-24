@@ -86,12 +86,6 @@ impl<M> Builder<M> {
         self
     }
 
-    #[doc(hidden)]
-    pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
-        self.capabilities = Some(toolkit);
-        self
-    }
-
     /// Mount application Tools directly on this Agent.
     #[allow(private_bounds)]
     pub fn tools<I>(mut self, tools: I) -> Self
@@ -1548,7 +1542,7 @@ where
             }
             let tool_definitions = capabilities
                 .as_ref()
-                .map(Toolkit::definitions)
+                .map(Toolkit::tool_catalog)
                 .unwrap_or_default();
             let mut tool_definitions = tool_definitions;
             if !self.subagents.is_empty() {
@@ -3083,7 +3077,7 @@ mod tests {
             .model(SequenceChat {
                 calls: Arc::clone(&model_calls),
             })
-            .toolkit(Toolkit::new().tools(echo_tool(Arc::clone(&tool_called))))
+            .tools(echo_tool(Arc::clone(&tool_called)))
             .build()
             .expect("agent build");
         let mut stream =
@@ -3333,7 +3327,7 @@ mod tests {
             .model(SequenceChat {
                 calls: Arc::clone(&model_calls),
             })
-            .toolkit(Toolkit::new().tools(echo_tool(Arc::clone(&tool_called))))
+            .tools(echo_tool(Arc::clone(&tool_called)))
             .permission(DenyPermission)
             .build()
             .expect("agent build");

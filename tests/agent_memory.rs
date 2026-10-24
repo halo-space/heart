@@ -9,7 +9,7 @@ use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, Payload, toolkit::Toolkit},
+    agent::{self, Agent, Input, Payload, },
     event::Event,
     memory::{
         self, Memory,
@@ -862,14 +862,14 @@ fn react_model_iterations_reuse_one_initial_memory_snapshot() {
         .lock()
         .unwrap()
         .push(history(201, 1, "first", "a"));
-    let capabilities = Toolkit::new().tools(vec![Search {
+    let capabilities = vec![Search {
         definition: ToolDefinition {
             name: "search".into(),
             description: "search".into(),
             parameters: json!({"type":"object"}).as_object().unwrap().clone(),
         },
         state: state.clone(),
-    }]);
+    }];
     let model = Model {
         tool: true,
         ..Default::default()
@@ -877,7 +877,7 @@ fn react_model_iterations_reuse_one_initial_memory_snapshot() {
     let agent = agent::react()
         .model(model.clone())
         .memory(config(session(), &state).with_scopes(["user"]))
-        .toolkit(capabilities)
+        .tools(capabilities)
         .build()
         .unwrap();
     let output = block_on(agent.run(input(), true, Cancellation::new())).unwrap();

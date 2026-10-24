@@ -8,7 +8,7 @@ use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, toolkit::Toolkit},
+    agent::{self, Agent, Input, },
     event::Event,
     mcp::{Definition as McpDefinition, Server},
     message::Role,
@@ -271,8 +271,8 @@ fn input(chat_id: i64) -> Input {
         payload: vec![],
     }
 }
-fn capabilities(log: &Log) -> Toolkit {
-    Toolkit::new().tools(Lookup {
+fn capabilities(log: &Log) -> MountedCapability {
+    MountedCapability::Lookup(Lookup {
         definition: definition(),
         log: log.clone(),
     })
@@ -297,7 +297,7 @@ fn allowed_call_checks_actual_request_and_onion_hooks_before_tool() {
         .permission(policy.clone())
         .middleware(Hook::new("A", &log))
         .model(model)
-        .toolkit(capabilities(&log))
+        .tools(capabilities(&log))
         .middleware(Hook::new("B", &log))
         .build()
         .unwrap();
@@ -340,7 +340,7 @@ fn denial_is_a_normal_decision_and_skips_all_tool_hooks() {
     let policy = Policy::new(&log, Mode::Deny);
     let agent = agent::react()
         .model(model.clone())
-        .toolkit(capabilities(&log))
+        .tools(capabilities(&log))
         .permission(policy.clone())
         .middleware(Hook::new("A", &log))
         .build()
@@ -375,7 +375,7 @@ fn absent_policy_does_not_activate_permission_hooks() {
     hook.fail = Some("before");
     let agent = agent::react()
         .model(Model::new())
-        .toolkit(capabilities(&log))
+        .tools(capabilities(&log))
         .middleware(hook)
         .build()
         .unwrap();
@@ -403,7 +403,7 @@ fn invalid_call_never_checks_policy_or_enters_hooks() {
         }
         let agent = agent::react()
             .model(model.clone())
-            .toolkit(capabilities(&log))
+            .tools(capabilities(&log))
             .permission(policy.clone())
             .middleware(Hook::new("A", &log))
             .build()
@@ -441,7 +441,7 @@ fn hook_error_terminates_agent_instead_of_becoming_tool_error_context() {
         hook.fail = Some(stage);
         let agent = agent::react()
             .model(model.clone())
-            .toolkit(capabilities(&log))
+            .tools(capabilities(&log))
             .permission(policy.clone())
             .middleware(hook)
             .build()
@@ -467,7 +467,7 @@ fn hooks_cannot_authorize_a_different_resource_or_argument_set() {
         hook.change = Some(change);
         let agent = agent::react()
             .model(model.clone())
-            .toolkit(capabilities(&log))
+            .tools(capabilities(&log))
             .permission(policy.clone())
             .middleware(hook)
             .build()
@@ -492,7 +492,7 @@ fn reused_agent_checks_each_run_without_cached_decisions() {
     let policy = Policy::new(&log, Mode::Allow);
     let agent = agent::react()
         .model(Model::new())
-        .toolkit(capabilities(&log))
+        .tools(capabilities(&log))
         .permission(policy.clone())
         .build()
         .unwrap();
@@ -531,16 +531,16 @@ fn discovered_mcp_tools_use_the_same_permission_gate() {
     for mode in [Mode::Allow, Mode::Deny] {
         let log = Log::default();
         let policy = Policy::new(&log, mode);
-        let capabilities = Toolkit::new().mcps(vec![Remote {
+        let capabilities = vec![Remote {
             definition: McpDefinition {
                 name: "server-not-tool-name".into(),
                 ..Default::default()
             },
             log: log.clone(),
-        }]);
+        }];
         let agent = agent::react()
             .model(Model::new())
-            .toolkit(capabilities)
+            .mcps(capabilities)
             .permission(policy.clone())
             .build()
             .unwrap();
@@ -568,7 +568,7 @@ fn synchronous_policy_cancellation_never_enters_after_or_tool() {
     let policy = Policy::new(&log, Mode::Cancel);
     let agent = agent::react()
         .model(Model::new())
-        .toolkit(capabilities(&log))
+        .tools(capabilities(&log))
         .permission(policy)
         .middleware(Hook::new("A", &log))
         .build()
@@ -588,7 +588,7 @@ fn multiple_calls_are_authorized_individually_with_their_actual_arguments() {
     model.multiple = true;
     let agent = agent::react()
         .model(model)
-        .toolkit(capabilities(&log))
+        .tools(capabilities(&log))
         .permission(policy.clone())
         .build()
         .unwrap();
@@ -620,7 +620,7 @@ fn policy_backend_errors_are_direct_context_without_internal_retry() {
     let model = Model::new();
     let agent = agent::react()
         .model(model.clone())
-        .toolkit(capabilities(&log))
+        .tools(capabilities(&log))
         .permission(policy.clone())
         .build()
         .unwrap();
@@ -651,7 +651,7 @@ fn after_permission_cannot_redirect_an_already_checked_call() {
     hook.change_at = Some("after");
     let agent = agent::react()
         .model(Model::new())
-        .toolkit(capabilities(&log))
+        .tools(capabilities(&log))
         .permission(policy.clone())
         .middleware(hook)
         .build()
@@ -687,7 +687,7 @@ async fn pending_policy_and_permission_hooks_are_cancellable() {
         };
         let agent = agent::react()
             .model(Model::new())
-            .toolkit(capabilities(&log))
+            .tools(capabilities(&log))
             .permission(policy)
             .middleware(hook)
             .build()
@@ -769,8 +769,60 @@ impl Tool for RewritingLookup {
     }
 }
 
-fn rewriting_mounted_capabilities(log: &Log, city: Value, before: Before) -> Toolkit {
-    Toolkit::new().tools(RewritingLookup {
+enum MountedCapability {
+    Lookup(Lookup),
+    Rewriting(RewritingLookup),
+}
+
+impl Tool for MountedCapability {
+    fn definition(&self) -> &ToolDefinition {
+        match self {
+            Self::Lookup(tool) => tool.definition(),
+            Self::Rewriting(tool) => tool.definition(),
+        }
+    }
+
+    async fn before(&self, call: &mut Call, cancellation: &Cancellation) -> Result<(), Error> {
+        match self {
+            Self::Lookup(tool) => tool.before(call, cancellation).await,
+            Self::Rewriting(tool) => tool.before(call, cancellation).await,
+        }
+    }
+
+    async fn call(&self, call: &Call, cancellation: &Cancellation) -> Result<Message, Error> {
+        match self {
+            Self::Lookup(tool) => tool.call(call, cancellation).await,
+            Self::Rewriting(tool) => tool.call(call, cancellation).await,
+        }
+    }
+
+    async fn after(
+        &self,
+        call: &Call,
+        message: &mut Message,
+        cancellation: &Cancellation,
+    ) -> Result<(), Error> {
+        match self {
+            Self::Lookup(tool) => tool.after(call, message, cancellation).await,
+            Self::Rewriting(tool) => tool.after(call, message, cancellation).await,
+        }
+    }
+
+    async fn eval(
+        &self,
+        call: &Call,
+        message: &Message,
+        cancellation: &Cancellation,
+    ) -> Result<Evaluation, Error> {
+        match self {
+            Self::Lookup(tool) => tool.eval(call, message, cancellation).await,
+            Self::Rewriting(tool) => tool.eval(call, message, cancellation).await,
+        }
+    }
+}
+
+fn rewriting_mounted_capabilities(log: &Log, city: Value, before: Before) -> MountedCapability {
+    MountedCapability::Rewriting(RewritingLookup {
         inner: Lookup {
             definition: definition(),
             log: log.clone(),
@@ -787,7 +839,7 @@ fn before_cannot_bypass_policy_by_changing_authorized_arguments() {
     let policy = Policy::new(&log, Mode::DenyChanged);
     let agent = agent::react()
         .model(model.clone())
-        .toolkit(rewriting_mounted_capabilities(
+        .tools(rewriting_mounted_capabilities(
             &log,
             json!("Paris"),
             Before::Rewrite,
@@ -844,7 +896,7 @@ fn changed_arguments_are_authorized_then_executed_without_repeating_before() {
     let policy = Policy::new(&log, Mode::Allow);
     let agent = agent::react()
         .model(Model::new())
-        .toolkit(rewriting_mounted_capabilities(
+        .tools(rewriting_mounted_capabilities(
             &log,
             json!("Paris"),
             Before::Rewrite,
@@ -888,7 +940,7 @@ fn invalid_or_failed_before_never_reauthorizes_or_executes() {
         let policy = Policy::new(&log, Mode::Allow);
         let agent = agent::react()
             .model(model.clone())
-            .toolkit(rewriting_mounted_capabilities(&log, city, before))
+            .tools(rewriting_mounted_capabilities(&log, city, before))
             .permission(policy.clone())
             .build()
             .unwrap();
@@ -918,7 +970,7 @@ fn changed_arguments_without_policy_do_not_enable_permission_hooks() {
     hook.fail = Some("before");
     let agent = agent::react()
         .model(Model::new())
-        .toolkit(rewriting_mounted_capabilities(
+        .tools(rewriting_mounted_capabilities(
             &log,
             json!("Paris"),
             Before::Rewrite,
@@ -944,7 +996,7 @@ fn cancellation_during_before_or_second_check_does_not_execute_call() {
         let policy = Policy::new(&log, mode);
         let agent = agent::react()
             .model(Model::new())
-            .toolkit(rewriting_mounted_capabilities(&log, json!("Paris"), before))
+            .tools(rewriting_mounted_capabilities(&log, json!("Paris"), before))
             .permission(policy.clone())
             .middleware(Hook::new("A", &log))
             .build()
@@ -969,7 +1021,7 @@ async fn pending_reauthorization_is_cancellable() {
     let policy = Policy::new(&log, Mode::PendingSecond);
     let agent = agent::react()
         .model(Model::new())
-        .toolkit(rewriting_mounted_capabilities(
+        .tools(rewriting_mounted_capabilities(
             &log,
             json!("Paris"),
             Before::Rewrite,
@@ -1031,7 +1083,7 @@ fn second_permission_hook_failure_stops_agent_not_tool_error_context() {
         let policy = Policy::new(&log, Mode::Allow);
         let agent = agent::react()
             .model(model.clone())
-            .toolkit(rewriting_mounted_capabilities(
+            .tools(rewriting_mounted_capabilities(
                 &log,
                 json!("Paris"),
                 Before::Rewrite,
@@ -1067,7 +1119,7 @@ fn chat_executes_tool_calls_through_the_configured_mounted_capabilities() {
     hook.fail = Some("before");
     let agent = agent::chat()
         .model(model.clone())
-        .toolkit(capabilities(&log))
+        .tools(capabilities(&log))
         .middleware(hook)
         .build()
         .unwrap();
@@ -1203,7 +1255,7 @@ async fn normal_ask_pauses_both_agents_without_running_tools_or_granting_approva
                 check_ask(
                     agent::react()
                         .model(model.clone())
-                        .toolkit(capabilities)
+                        .tools(capabilities)
                         .permission(policy.clone())
                         .middleware(Hook::new("A", &log))
                         .checkpoint(checkpoint.clone())
@@ -1220,7 +1272,7 @@ async fn normal_ask_pauses_both_agents_without_running_tools_or_granting_approva
                 check_ask(
                     agent::chat()
                         .model(model.clone())
-                        .toolkit(capabilities)
+                        .tools(capabilities)
                         .permission(policy.clone())
                         .middleware(Hook::new("A", &log))
                         .checkpoint(checkpoint.clone())
@@ -1248,7 +1300,7 @@ fn chat_permission_hook_failures_are_not_tool_error_messages() {
             hook.fail = Some(stage);
             let agent = agent::chat()
                 .model(model.clone())
-                .toolkit(capabilities(&log))
+                .tools(capabilities(&log))
                 .permission(Policy::new(&log, mode))
                 .middleware(hook)
                 .build()

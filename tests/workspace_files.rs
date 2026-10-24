@@ -2,7 +2,7 @@ use std::{path::PathBuf, sync::Arc};
 
 use futures_util::future::join_all;
 use halo::agent::{Cancellation, Error, Message};
-use halo::{agent::toolkit::Toolkit, core, tool::Call};
+use halo::{core, tool::Call, workspace::Workspace};
 use serde_json::{Value, json};
 
 struct Directory(PathBuf);
@@ -23,8 +23,8 @@ impl Drop for Directory {
     }
 }
 
-async fn run(capabilities: &Toolkit, name: &str, arguments: Value) -> Result<Message, Error> {
-    capabilities
+async fn run(workspace: &impl Workspace, name: &str, arguments: Value) -> Result<Message, Error> {
+    workspace
         .execute(
             Call {
                 call_id: format!("call_{name}"),
@@ -119,7 +119,7 @@ async fn list_and_glob_filter_nested_files_and_paginate_in_stable_order() {
     let directory = Directory::new();
     let workspace = core::workspace::Local::new(&directory.0).unwrap();
     populate(&workspace).await;
-    let capabilities = Toolkit::from(workspace.toolkit(Toolkit::new()));
+    let capabilities = workspace;
     let result = run(&capabilities, "list", json!({"path":"src"}))
         .await
         .unwrap();
@@ -161,7 +161,7 @@ async fn grep_supports_modes_case_filtering_single_files_and_skips_binary_vcs_da
     let directory = Directory::new();
     let workspace = core::workspace::Local::new(&directory.0).unwrap();
     populate(&workspace).await;
-    let capabilities = Toolkit::from(workspace);
+    let capabilities = workspace;
     let result = run(
         &capabilities,
         "grep",
@@ -209,7 +209,7 @@ async fn grep_multiline_and_overlapping_context_keep_original_line_numbers() {
     let directory = Directory::new();
     let workspace = core::workspace::Local::new(&directory.0).unwrap();
     populate(&workspace).await;
-    let capabilities = Toolkit::from(workspace);
+    let capabilities = workspace;
     let result = run(&capabilities, "grep", json!({"path":"src/a.rs","pattern":"first.*second","multiline":true,"output_mode":"content","context":1})).await.unwrap();
     assert_eq!(
         result.values["matches"],
@@ -240,7 +240,7 @@ async fn grep_multiline_and_overlapping_context_keep_original_line_numbers() {
 #[tokio::test]
 async fn exact_edits_preserve_files_on_missing_or_ambiguous_matches() {
     let directory = Directory::new();
-    let capabilities = Toolkit::from(core::workspace::Local::new(&directory.0).unwrap());
+    let capabilities = core::workspace::Local::new(&directory.0).unwrap();
     run(
         &capabilities,
         "write",
@@ -284,9 +284,9 @@ async fn exact_edits_preserve_files_on_missing_or_ambiguous_matches() {
 #[tokio::test]
 async fn concurrent_local_edits_do_not_overwrite_each_others_successful_changes() {
     let directory = Directory::new();
-    let capabilities = Arc::new(Toolkit::from(
+    let capabilities = Arc::new(
         core::workspace::Local::new(&directory.0).unwrap(),
-    ));
+    );
     let original = (0..20)
         .map(|idx| format!("[token:{idx}]\n"))
         .collect::<String>();
@@ -318,7 +318,7 @@ async fn concurrent_local_edits_do_not_overwrite_each_others_successful_changes(
 #[tokio::test]
 async fn invalid_search_and_scope_arguments_return_errors_without_commands() {
     let directory = Directory::new();
-    let capabilities = Toolkit::from(core::workspace::Local::new(&directory.0).unwrap());
+    let capabilities = core::workspace::Local::new(&directory.0).unwrap();
     for (name, args) in [
         ("glob", json!({"pattern":"["})),
         ("glob", json!({"pattern":"../*"})),
@@ -372,7 +372,7 @@ async fn local_listing_glob_and_grep_do_not_follow_outside_symlinks() {
             .unwrap()
             .is_empty()
     );
-    let capabilities = Toolkit::from(workspace);
+    let capabilities = workspace;
     let result = run(&capabilities, "glob", json!({"pattern":"**/*"}))
         .await
         .unwrap();

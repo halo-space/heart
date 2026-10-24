@@ -12,7 +12,7 @@ use futures_core::Stream;
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, SubAgent, toolkit::Toolkit},
+    agent::{self, Agent, Input, SubAgent, },
     checkpoint::Checkpoint,
     core,
     event::Event,
@@ -173,7 +173,7 @@ async fn run(
         cancel: cancel.then(|| c.clone()),
         padding,
     };
-    let tools = Toolkit::new().tools(Lookup(
+    let tools = Lookup(
         log.clone(),
         ToolDefinition {
             name: "lookup".into(),
@@ -183,11 +183,11 @@ async fn run(
                 .unwrap()
                 .clone(),
         },
-    ));
+    );
     if react {
         agent::react()
             .model(model)
-            .toolkit(tools)
+            .tools(tools)
             .middleware(Hooks(log))
             .with_max_iters(2)
             .checkpoint(store)
@@ -201,7 +201,7 @@ async fn run(
     } else {
         agent::chat()
             .model(model)
-            .toolkit(tools)
+            .tools(tools)
             .middleware(Hooks(log))
             .checkpoint(store)
             .build()

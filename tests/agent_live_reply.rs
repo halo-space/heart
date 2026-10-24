@@ -2,7 +2,7 @@
 use futures_util::{StreamExt, poll, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, SubAgent, toolkit::Toolkit},
+    agent::{self, Agent, Input, SubAgent, },
     checkpoint::Checkpoint,
     core,
     event::Event,
@@ -182,13 +182,13 @@ fn waiting_children(react: bool) -> (Vec<SubAgent>, Vec<ChildProbe>) {
         };
         let log = Arc::new(Log::default());
         let checkpoint = Arc::new(Store::default());
-        let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+        let capabilities = [Lookup::new(log.clone(), false)];
         let child = if react {
             SubAgent::new(
                 name,
                 agent::react()
                     .model(model.clone())
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(checkpoint.clone())
                     .build()
@@ -200,7 +200,7 @@ fn waiting_children(react: bool) -> (Vec<SubAgent>, Vec<ChildProbe>) {
                 name,
                 agent::chat()
                     .model(model.clone())
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(checkpoint.clone())
                     .build()
@@ -764,7 +764,7 @@ async fn child_owned_plan_waits_keep_their_full_native_path_through_parent_reply
                 "left",
                 agent::react()
                     .model(PlannedModel::default())
-                    .toolkit(Toolkit::new().tools([Lookup::new(left.clone(), false)]))
+                    .tools([Lookup::new(left.clone(), false)])
                     .permission(Ask(left.clone()))
                     .build()
                     .unwrap(),
@@ -777,7 +777,7 @@ async fn child_owned_plan_waits_keep_their_full_native_path_through_parent_reply
                         requests: Default::default(),
                         multiple: false,
                     })
-                    .toolkit(Toolkit::new().tools([Lookup::new(right.clone(), false)]))
+                    .tools([Lookup::new(right.clone(), false)])
                     .permission(Ask(right.clone()))
                     .build()
                     .unwrap(),
@@ -1169,7 +1169,7 @@ async fn planned_child_own_plan_keeps_all_three_native_wait_coordinates() {
             "left",
             agent::react()
                 .model(PlannedModel::default())
-                .toolkit(Toolkit::new().tools([Lookup::new(left.clone(), false)]))
+                .tools([Lookup::new(left.clone(), false)])
                 .permission(Ask(left.clone()))
                 .with_max_concurrency(1)
                 .build()
@@ -1183,7 +1183,7 @@ async fn planned_child_own_plan_keeps_all_three_native_wait_coordinates() {
                     requests: Default::default(),
                     multiple: false,
                 })
-                .toolkit(Toolkit::new().tools([Lookup::new(right.clone(), false)]))
+                .tools([Lookup::new(right.clone(), false)])
                 .permission(Ask(right.clone()))
                 .build()
                 .unwrap(),
@@ -1470,7 +1470,7 @@ async fn child_wait_does_not_release_a_task_still_running_another_tool() {
                 gate: Mutex::new(Some(b_gate)),
                 started: b_started.clone(),
             }))
-            .toolkit(Toolkit::new().tools([busy]))
+            .tools([busy])
             .subagents(children)
             .with_max_concurrency(2)
             .with_id_fn(next_id)
@@ -1598,7 +1598,7 @@ async fn planned_questions_keep_native_owners_and_continue_only_the_answered_tas
         let checkpoint = Arc::new(core::checkpoint::InMemory::new());
         let agent = agent::react()
             .model(model.clone())
-            .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+            .tools([Lookup::new(log.clone(), false)])
             .permission(Ask(log.clone()))
             .with_max_concurrency(1)
             .with_id_fn(next_id)
@@ -1757,7 +1757,7 @@ async fn planned_waits_release_consumers_on_cancel_or_drop_without_fabricated_fe
         let model = PlannedModel::default();
         let agent = agent::react()
             .model(model.clone())
-            .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+            .tools([Lookup::new(log.clone(), false)])
             .permission(Ask(log.clone()))
             .checkpoint(checkpoint.clone())
             .with_id_fn(next_id)
@@ -1866,7 +1866,7 @@ async fn queued_tool_calls_do_not_keep_an_externally_waiting_task_admitted() {
     let log = Arc::new(Log::default());
     let agent = agent::react()
         .model(MultiPlannedModel(PlannedModel::default()))
-        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .tools([Lookup::new(log.clone(), false)])
         .permission(Ask(log.clone()))
         .with_max_concurrency(1)
         .with_id_fn(next_id)
@@ -1930,7 +1930,7 @@ async fn answered_task_reacquires_capacity_before_tool_execution() {
             gate: Mutex::new(Some(gate)),
             started: started.clone(),
         })
-        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .tools([Lookup::new(log.clone(), false)])
         .permission(Ask(log.clone()))
         .with_max_concurrency(1)
         .with_id_fn(next_id)
@@ -1998,7 +1998,7 @@ async fn planned_approval_save_failure_does_not_leave_actionable_orphan_waits() 
     let store = Arc::new(FailingStore::default());
     let agent = agent::react()
         .model(PlannedModel::default())
-        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .tools([Lookup::new(log.clone(), false)])
         .permission(Ask(log.clone()))
         .checkpoint(store.clone())
         .with_id_fn(next_id)
@@ -2043,7 +2043,7 @@ async fn restored_plan_save_failure_does_not_rebill_previous_task_usage() {
     let log = Arc::new(Log::default());
     let original = agent::react()
         .model(PlannedModel::default())
-        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .tools([Lookup::new(log.clone(), false)])
         .permission(Ask(log.clone()))
         .checkpoint(checkpoint.clone())
         .with_id_fn(next_id)
@@ -2087,7 +2087,7 @@ async fn restored_plan_save_failure_does_not_rebill_previous_task_usage() {
     let model = PlannedModel::default();
     let agent = agent::react()
         .model(model.clone())
-        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .tools([Lookup::new(log.clone(), false)])
         .permission(Ask(log.clone()))
         .checkpoint(store.clone())
         .with_id_fn(next_id)
@@ -2120,7 +2120,7 @@ async fn cancellation_during_planned_question_save_never_presents_that_question(
     });
     let agent = agent::react()
         .model(PlannedModel::default())
-        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .tools([Lookup::new(log.clone(), false)])
         .permission(Ask(log.clone()))
         .checkpoint(store.clone())
         .with_id_fn(next_id)
@@ -2373,12 +2373,12 @@ async fn root_chat_and_react_consume_approval_on_the_original_stream() {
                     multiple: false,
                 };
                 let checkpoint = Arc::new(core::checkpoint::InMemory::new());
-                let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+                let capabilities = [Lookup::new(log.clone(), false)];
                 if react {
                     exercise(
                         agent::react()
                             .model(model.clone())
-                            .toolkit(capabilities)
+                            .tools(capabilities)
                             .permission(Ask(log.clone()))
                             .checkpoint(checkpoint.clone())
                             .with_id_fn(next_id)
@@ -2395,7 +2395,7 @@ async fn root_chat_and_react_consume_approval_on_the_original_stream() {
                     exercise(
                         agent::chat()
                             .model(model.clone())
-                            .toolkit(capabilities)
+                            .tools(capabilities)
                             .permission(Ask(log.clone()))
                             .checkpoint(checkpoint.clone())
                             .with_id_fn(next_id)
@@ -2498,12 +2498,12 @@ async fn before_changed_arguments_need_their_own_question_without_reusing_approv
             multiple: false,
         };
         let checkpoint = Arc::new(core::checkpoint::InMemory::new());
-        let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), true)]);
+        let capabilities = [Lookup::new(log.clone(), true)];
         if react {
             changed(
                 agent::react()
                     .model(model.clone())
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(checkpoint.clone())
                     .with_id_fn(next_id)
@@ -2518,7 +2518,7 @@ async fn before_changed_arguments_need_their_own_question_without_reusing_approv
             changed(
                 agent::chat()
                     .model(model.clone())
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(checkpoint.clone())
                     .with_id_fn(next_id)
@@ -2584,12 +2584,12 @@ async fn concurrent_question_replies_are_consumed_in_fifo_order() {
             requests: Default::default(),
             multiple: true,
         };
-        let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+        let capabilities = [Lookup::new(log.clone(), false)];
         if react {
             parallel(
                 agent::react()
                     .model(model.clone())
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .permission(Ask(log.clone()))
                     .with_max_concurrency(2)
                     .with_id_fn(next_id)
@@ -2603,7 +2603,7 @@ async fn concurrent_question_replies_are_consumed_in_fifo_order() {
             parallel(
                 agent::chat()
                     .model(model.clone())
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .permission(Ask(log.clone()))
                     .with_max_concurrency(2)
                     .with_id_fn(next_id)
@@ -2715,12 +2715,12 @@ async fn cancellation_and_stream_drop_release_live_handoffs_without_running_tool
                 multiple: false,
             };
             let checkpoint = Arc::new(core::checkpoint::InMemory::new());
-            let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+            let capabilities = [Lookup::new(log.clone(), false)];
             if react {
                 cancelled(
                     agent::react()
                         .model(model)
-                        .toolkit(capabilities)
+                        .tools(capabilities)
                         .permission(Ask(log.clone()))
                         .checkpoint(checkpoint.clone())
                         .with_id_fn(next_id)
@@ -2735,7 +2735,7 @@ async fn cancellation_and_stream_drop_release_live_handoffs_without_running_tool
                 cancelled(
                     agent::chat()
                         .model(model)
-                        .toolkit(capabilities)
+                        .tools(capabilities)
                         .permission(Ask(log.clone()))
                         .checkpoint(checkpoint.clone())
                         .with_id_fn(next_id)
@@ -2775,13 +2775,13 @@ fn recovered_children(react: bool) -> (Vec<SubAgent>, Vec<RecoveredChild>) {
         let model = RecoveryOnlyModel::default();
         let log = Arc::new(Log::default());
         let checkpoint = Arc::new(Store::default());
-        let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+        let capabilities = [Lookup::new(log.clone(), false)];
         let child = if react {
             SubAgent::new(
                 name,
                 agent::react()
                     .model(model.clone())
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(checkpoint.clone())
                     .build()
@@ -2793,7 +2793,7 @@ fn recovered_children(react: bool) -> (Vec<SubAgent>, Vec<RecoveredChild>) {
                 name,
                 agent::chat()
                     .model(model.clone())
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(checkpoint.clone())
                     .build()
@@ -3195,7 +3195,7 @@ async fn saved_child_plan_approvals_restore_all_three_native_coordinates() {
             "left",
             agent::react()
                 .model(PlannedModel::default())
-                .toolkit(Toolkit::new().tools([Lookup::new(left, false)]))
+                .tools([Lookup::new(left, false)])
                 .permission(Ask(Default::default()))
                 .with_max_concurrency(1)
                 .build()
@@ -3209,7 +3209,7 @@ async fn saved_child_plan_approvals_restore_all_three_native_coordinates() {
                     requests: Default::default(),
                     multiple: false,
                 })
-                .toolkit(Toolkit::new().tools([Lookup::new(right, false)]))
+                .tools([Lookup::new(right, false)])
                 .permission(Ask(Default::default()))
                 .build()
                 .unwrap(),
@@ -3246,7 +3246,7 @@ async fn saved_child_plan_approvals_restore_all_three_native_coordinates() {
             "left",
             agent::react()
                 .model(inner_model.clone())
-                .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                .tools([Lookup::new(log.clone(), false)])
                 .permission(Ask(log.clone()))
                 .checkpoint(inner_store.clone())
                 .with_max_concurrency(1)
@@ -3259,7 +3259,7 @@ async fn saved_child_plan_approvals_restore_all_three_native_coordinates() {
             "right",
             agent::chat()
                 .model(right_model.clone())
-                .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                .tools([Lookup::new(log.clone(), false)])
                 .permission(Ask(log.clone()))
                 .checkpoint(inner_store.clone())
                 .build()
@@ -3856,7 +3856,7 @@ async fn saved_plan_questions(mode: bool) -> Value {
     let log = Arc::new(Log::default());
     let agent = agent::react()
         .model(PlannedModel::default())
-        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .tools([Lookup::new(log.clone(), false)])
         .permission(Ask(log.clone()))
         .checkpoint(store.clone())
         .with_max_concurrency(1)
@@ -3906,7 +3906,7 @@ async fn saved_planned_approval_rejects_bad_input_and_stale_native_targets_witho
     let model = RestoredPlanModel::default();
     let agent = agent::react()
         .model(model.clone())
-        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .tools([Lookup::new(log.clone(), false)])
         .permission(Ask(log.clone()))
         .checkpoint(store.clone())
         .with_id_fn(next_id)
@@ -3966,7 +3966,7 @@ async fn saved_planned_approval_reuses_a_successful_sibling_on_a_second_recovery
         let first_model = RestoredPlanModel::default();
         let original = agent::react()
             .model(first_model.clone())
-            .toolkit(Toolkit::new().tools([Lookup::new(first_log.clone(), false)]))
+            .tools([Lookup::new(first_log.clone(), false)])
             .permission(Ask(first_log.clone()))
             .checkpoint(store.clone())
             .with_max_concurrency(1)
@@ -3999,7 +3999,7 @@ async fn saved_planned_approval_reuses_a_successful_sibling_on_a_second_recovery
         let model = RestoredPlanModel::default();
         let restored = agent::react()
             .model(model.clone())
-            .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+            .tools([Lookup::new(log.clone(), false)])
             .permission(Ask(log.clone()))
             .checkpoint(store.clone())
             .with_max_concurrency(1)
@@ -4040,7 +4040,7 @@ async fn restored_planned_questions_reject_non_head_feedback_and_preserve_saved_
     let log = Arc::new(Log::default());
     let agent = agent::react()
         .model(RestoredPlanModel::default())
-        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .tools([Lookup::new(log.clone(), false)])
         .permission(Ask(log.clone()))
         .checkpoint(store.clone())
         .with_max_concurrency(1)
@@ -4084,7 +4084,7 @@ async fn restored_planned_approval_save_failure_and_cancellation_do_not_authoriz
     let model = RestoredPlanModel::default();
     let agent = agent::react()
         .model(model.clone())
-        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .tools([Lookup::new(log.clone(), false)])
         .permission(Ask(log.clone()))
         .checkpoint(failed.clone())
         .with_max_concurrency(1)
@@ -4132,7 +4132,7 @@ async fn restored_planned_approval_save_failure_and_cancellation_do_not_authoriz
         .unwrap();
     let agent = agent::react()
         .model(model.clone())
-        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .tools([Lookup::new(log.clone(), false)])
         .permission(Ask(log.clone()))
         .checkpoint(store.clone())
         .with_max_concurrency(1)
@@ -4199,7 +4199,7 @@ async fn planned_approval_recovery_worker() {
     let model = RestoredPlanModel::default();
     let agent = agent::react()
         .model(model.clone())
-        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+        .tools([Lookup::new(log.clone(), false)])
         .permission(Ask(log.clone()))
         .checkpoint(store.clone())
         .with_max_concurrency(1)
@@ -4354,7 +4354,7 @@ async fn saved_planned_approvals_route_same_call_ids_to_their_actual_tasks() {
             let original_log = Arc::new(Log::default());
             let original = agent::react()
                 .model(PlannedModel::default())
-                .toolkit(Toolkit::new().tools([Lookup::new(original_log.clone(), false)]))
+                .tools([Lookup::new(original_log.clone(), false)])
                 .permission(Ask(original_log.clone()))
                 .checkpoint(checkpoint.clone())
                 .with_max_concurrency(1)
@@ -4386,7 +4386,7 @@ async fn saved_planned_approvals_route_same_call_ids_to_their_actual_tasks() {
             let model = RestoredPlanModel::default();
             let restored = agent::react()
                 .model(model.clone())
-                .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                .tools([Lookup::new(log.clone(), false)])
                 .permission(Ask(log.clone()))
                 .checkpoint(checkpoint.clone())
                 .with_max_concurrency(1)
@@ -4593,7 +4593,7 @@ async fn recovery_reserves_historical_question_ids_without_reusing_their_approva
                 |restored| {
                     agent::react()
                         .model(model.clone())
-                        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), restored)]))
+                        .tools([Lookup::new(log.clone(), restored)])
                         .permission(Ask(log.clone()))
                         .checkpoint(store.clone())
                         .with_id_fn(if restored {
@@ -4613,7 +4613,7 @@ async fn recovery_reserves_historical_question_ids_without_reusing_their_approva
                 |restored| {
                     agent::chat()
                         .model(model.clone())
-                        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), restored)]))
+                        .tools([Lookup::new(log.clone(), restored)])
                         .permission(Ask(log.clone()))
                         .checkpoint(store.clone())
                         .with_id_fn(if restored {
@@ -4728,7 +4728,7 @@ async fn late_saved_replies_are_idempotent_without_approving_the_next_question_o
                 |restored| {
                     agent::react()
                         .model(model.clone())
-                        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                        .tools([Lookup::new(log.clone(), false)])
                         .permission(Ask(log.clone()))
                         .checkpoint(store.clone())
                         .with_id_fn(if restored { no_new_restore_id } else { next_id })
@@ -4745,7 +4745,7 @@ async fn late_saved_replies_are_idempotent_without_approving_the_next_question_o
                 |restored| {
                     agent::chat()
                         .model(model.clone())
-                        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                        .tools([Lookup::new(log.clone(), false)])
                         .permission(Ask(log.clone()))
                         .checkpoint(store.clone())
                         .with_id_fn(if restored { no_new_restore_id } else { next_id })
@@ -4865,7 +4865,7 @@ async fn saved_root_approvals_resume_only_the_addressed_call_and_keep_other_cons
                     |restored| {
                         agent::react()
                             .model(model.clone())
-                            .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                            .tools([Lookup::new(log.clone(), false)])
                             .permission(Ask(log.clone()))
                             .checkpoint(store.clone())
                             .with_id_fn(if restored { no_new_restore_id } else { next_id })
@@ -4883,7 +4883,7 @@ async fn saved_root_approvals_resume_only_the_addressed_call_and_keep_other_cons
                     |restored| {
                         agent::chat()
                             .model(model.clone())
-                            .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                            .tools([Lookup::new(log.clone(), false)])
                             .permission(Ask(log.clone()))
                             .checkpoint(store.clone())
                             .with_id_fn(if restored { no_new_restore_id } else { next_id })
@@ -4968,7 +4968,7 @@ async fn invalid_saved_approval_preserves_checkpoint_and_never_invokes_model_hoo
                 |restored| {
                     agent::react()
                         .model(model.clone())
-                        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                        .tools([Lookup::new(log.clone(), false)])
                         .permission(Ask(log.clone()))
                         .checkpoint(store.clone())
                         .with_id_fn(if restored { no_new_restore_id } else { next_id })
@@ -4985,7 +4985,7 @@ async fn invalid_saved_approval_preserves_checkpoint_and_never_invokes_model_hoo
                 |restored| {
                     agent::chat()
                         .model(model.clone())
-                        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                        .tools([Lookup::new(log.clone(), false)])
                         .permission(Ask(log.clone()))
                         .checkpoint(store.clone())
                         .with_id_fn(if restored { no_new_restore_id } else { next_id })
@@ -5082,7 +5082,7 @@ async fn a_changed_operation_after_recovery_cannot_reuse_the_old_approval() {
                 |restored| {
                     agent::react()
                         .model(model.clone())
-                        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), restored)]))
+                        .tools([Lookup::new(log.clone(), restored)])
                         .permission(Ask(log.clone()))
                         .checkpoint(store.clone())
                         .with_id_fn(next_id)
@@ -5098,7 +5098,7 @@ async fn a_changed_operation_after_recovery_cannot_reuse_the_old_approval() {
                 |restored| {
                     agent::chat()
                         .model(model.clone())
-                        .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), restored)]))
+                        .tools([Lookup::new(log.clone(), restored)])
                         .permission(Ask(log.clone()))
                         .checkpoint(store.clone())
                         .with_id_fn(next_id)
@@ -5241,7 +5241,7 @@ async fn root_approval_recovery_worker() {
             finish_root_worker(
                 agent::react()
                     .model(model.clone())
-                    .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                    .tools([Lookup::new(log.clone(), false)])
                     .permission(Ask(log.clone()))
                     .checkpoint(store.clone())
                     .with_id_fn(no_new_restore_id)
@@ -5258,7 +5258,7 @@ async fn root_approval_recovery_worker() {
             finish_root_worker(
                 agent::chat()
                     .model(model.clone())
-                    .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                    .tools([Lookup::new(log.clone(), false)])
                     .permission(Ask(log.clone()))
                     .checkpoint(store.clone())
                     .with_id_fn(no_new_restore_id)
@@ -5281,7 +5281,7 @@ async fn root_approval_recovery_worker() {
             write_root_wait(
                 agent::react()
                     .model(model)
-                    .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                    .tools([Lookup::new(log.clone(), false)])
                     .permission(Ask(log))
                     .checkpoint(store.clone())
                     .with_id_fn(next_id)
@@ -5296,7 +5296,7 @@ async fn root_approval_recovery_worker() {
             write_root_wait(
                 agent::chat()
                     .model(model)
-                    .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                    .tools([Lookup::new(log.clone(), false)])
                     .permission(Ask(log))
                     .checkpoint(store.clone())
                     .with_id_fn(next_id)
@@ -5480,7 +5480,7 @@ async fn saved_root_approval_resumes_on_a_fresh_agent_without_replaying_the_sele
                         |restored| {
                             agent::react()
                                 .model(model.clone())
-                                .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                                .tools([Lookup::new(log.clone(), false)])
                                 .permission(Ask(log.clone()))
                                 .checkpoint(store.clone())
                                 .with_id_fn(if restored { no_new_restore_id } else { next_id })
@@ -5499,7 +5499,7 @@ async fn saved_root_approval_resumes_on_a_fresh_agent_without_replaying_the_sele
                         |restored| {
                             agent::chat()
                                 .model(model.clone())
-                                .toolkit(Toolkit::new().tools([Lookup::new(log.clone(), false)]))
+                                .tools([Lookup::new(log.clone(), false)])
                                 .permission(Ask(log.clone()))
                                 .checkpoint(store.clone())
                                 .with_id_fn(if restored { no_new_restore_id } else { next_id })
@@ -5573,12 +5573,12 @@ async fn live_submission_and_duplicate_run_do_not_reload_checkpoint() {
             multiple: false,
         };
         let store = Arc::new(Store::default());
-        let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+        let capabilities = [Lookup::new(log.clone(), false)];
         if react {
             no_reload(
                 agent::react()
                     .model(model)
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .permission(Ask(log))
                     .checkpoint(store.clone())
                     .with_id_fn(next_id)
@@ -5591,7 +5591,7 @@ async fn live_submission_and_duplicate_run_do_not_reload_checkpoint() {
             no_reload(
                 agent::chat()
                     .model(model)
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .permission(Ask(log))
                     .checkpoint(store.clone())
                     .with_id_fn(next_id)
@@ -5672,12 +5672,12 @@ async fn cancellation_during_question_save_never_presents_a_cancelled_question()
             blocked: AtomicUsize::new(0),
             gate: Mutex::new(Some(gate)),
         });
-        let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+        let capabilities = [Lookup::new(log.clone(), false)];
         if react {
             cancel_before_presentation(
                 agent::react()
                     .model(model)
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(store.clone())
                     .with_id_fn(next_id)
@@ -5692,7 +5692,7 @@ async fn cancellation_during_question_save_never_presents_a_cancelled_question()
             cancel_before_presentation(
                 agent::chat()
                     .model(model)
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(store.clone())
                     .with_id_fn(next_id)
@@ -5757,12 +5757,12 @@ async fn question_save_failure_is_not_presented_and_terminal_error_is_still_reco
             multiple: false,
         };
         let store = Arc::new(FailingStore::default());
-        let capabilities = Toolkit::new().tools([Lookup::new(log.clone(), false)]);
+        let capabilities = [Lookup::new(log.clone(), false)];
         if react {
             failed_save(
                 agent::react()
                     .model(model)
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(store.clone())
                     .with_id_fn(next_id)
@@ -5776,7 +5776,7 @@ async fn question_save_failure_is_not_presented_and_terminal_error_is_still_reco
             failed_save(
                 agent::chat()
                     .model(model)
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .permission(Ask(log.clone()))
                     .checkpoint(store.clone())
                     .with_id_fn(next_id)

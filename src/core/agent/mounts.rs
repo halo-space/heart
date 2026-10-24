@@ -16,6 +16,7 @@ use crate::components::skill::{Definition as SkillDefinition, Loader, Skill};
 use crate::components::tool::{
     Call, Evaluation, Tool, ToolDefinition, prepare_call, validate_call,
 };
+use crate::workspace::Workspace;
 
 type CallFuture = Pin<Box<dyn Future<Output = Result<(Call, Message), Error>> + Send + 'static>>;
 type PrepareFuture = Pin<Box<dyn Future<Output = Result<Call, Error>> + Send + 'static>>;
@@ -321,6 +322,7 @@ where
 #[doc(hidden)]
 pub struct Toolkit {
     entries: Vec<Arc<dyn Entry>>,
+    mcp_catalog: Vec<crate::mcp::Definition>,
     skills: Vec<Arc<dyn SkillEntry>>,
     skill_loaders: Vec<Arc<dyn SkillLoader>>,
     skill_reader: bool,
@@ -382,10 +384,55 @@ impl Toolkit {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
+            mcp_catalog: Vec::new(),
             skills: Vec::new(),
             skill_loaders: Vec::new(),
             skill_reader: false,
         }
+    }
+
+    /// Adapt one concrete Workspace to the internal heterogeneous dispatch
+    /// table. The Workspace remains the public execution entrance; this
+    /// adapter is only used while assembling an Agent or Harness.
+    pub(crate) fn workspace<W>(workspace: W) -> Self
+    where
+        W: Workspace + 'static,
+    {
+        let workspace: Arc<dyn Workspace> = Arc::new(workspace);
+        let skills = workspace
+            .skill()
+            .into_iter()
+            .map(|definition| {
+                Arc::new(WorkspaceSkill {
+                    workspace: Arc::clone(&workspace),
+                    definition,
+                }) as Arc<dyn SkillEntry>
+            })
+            .collect::<Vec<_>>();
+        let entries = workspace
+            .tool()
+            .into_iter()
+            .map(|definition| {
+                Arc::new(WorkspaceEntry {
+                    workspace: Arc::clone(&workspace),
+                    definition,
+                }) as Arc<dyn Entry>
+            })
+            .collect();
+        let mut toolkit = Self {
+            entries,
+            mcp_catalog: workspace.mcp(),
+            skills: skills.clone(),
+            skill_loaders: Vec::new(),
+            skill_reader: false,
+        };
+        if !skills.is_empty() {
+            toolkit.entries.push(Arc::new(TypedEntry {
+                tool: Arc::new(SkillReader::new(skills)),
+            }));
+            toolkit.skill_reader = true;
+        }
+        toolkit
     }
 
     /// Combine two independently assembled capability sets. Local Tool and
@@ -400,6 +447,7 @@ impl Toolkit {
 
     pub(crate) fn append(mut self, other: Self) -> Self {
         self.entries.extend(other.entries);
+        self.mcp_catalog.extend(other.mcp_catalog);
         self.skills.extend(other.skills);
         self.skill_loaders.extend(other.skill_loaders);
         self.skill_reader |= other.skill_reader;
@@ -427,6 +475,7 @@ impl Toolkit {
             let mounted = TypedMcp {
                 server: Arc::new(server),
             };
+            self.mcp_catalog.push(mounted.server.definition().clone());
             self.entries.extend(mounted.entries());
         }
         self
@@ -476,6 +525,7 @@ impl Toolkit {
         }
         let view = Self {
             entries: self.entries.clone(),
+            mcp_catalog: self.mcp_catalog.clone(),
             skills,
             skill_loaders: Vec::new(),
             skill_reader: self.skill_reader,
@@ -570,6 +620,7 @@ impl Toolkit {
         }
         Ok(Self {
             entries,
+            mcp_catalog: discovered.mcp_catalog,
             skills: discovered.skills,
             skill_loaders: Vec::new(),
             skill_reader,
@@ -580,7 +631,7 @@ impl Toolkit {
     /// definitions are available as soon as the server is attached; Skill
     /// sources are still loaded when an Agent obtains its private prepared
     /// view.
-    pub fn definitions(&self) -> Vec<ToolDefinition> {
+    pub(crate) fn tool_catalog(&self) -> Vec<ToolDefinition> {
         self.entries
             .iter()
             .map(|entry| entry.definition())
@@ -593,6 +644,17 @@ impl Toolkit {
             .iter()
             .map(|entry| entry.definition().name)
             .collect()
+    }
+
+    pub(crate) fn skill_catalog(&self) -> Vec<SkillDefinition> {
+        self.skills
+            .iter()
+            .map(|skill| skill.definition().clone())
+            .collect()
+    }
+
+    pub(crate) fn mcp_catalog(&self) -> Vec<crate::mcp::Definition> {
+        self.mcp_catalog.clone()
     }
 
     pub async fn execute(
@@ -734,6 +796,102 @@ impl Toolkit {
     }
 }
 
+struct WorkspaceEntry {
+    workspace: Arc<dyn Workspace>,
+    definition: ToolDefinition,
+}
+
+struct WorkspaceSkill {
+    workspace: Arc<dyn Workspace>,
+    definition: SkillDefinition,
+}
+
+impl SkillEntry for WorkspaceSkill {
+    fn definition(&self) -> &SkillDefinition {
+        &self.definition
+    }
+
+    fn read(&self, cancellation: Cancellation) -> SkillFuture {
+        let workspace = Arc::clone(&self.workspace);
+        let name = self.definition.name.clone();
+        Box::pin(async move {
+            let call = Call {
+                call_id: format!("skill_{name}"),
+                name: SKILL_TOOL_NAME.into(),
+                arguments: serde_json::Map::from_iter([("skill".into(), name.into())]),
+            };
+            let (message, evaluation) = workspace.execute(call, &cancellation).await?;
+            if !evaluation.passed {
+                return Err(Error::new("EXECUTION_FAILED", "Workspace Skill evaluation failed"));
+            }
+            message
+                .values
+                .get("instructions")
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "Workspace Skill returned no instructions"))
+        })
+    }
+
+    fn read_resource(&self, path: String, cancellation: Cancellation) -> ResourceFuture {
+        let workspace = Arc::clone(&self.workspace);
+        let name = self.definition.name.clone();
+        Box::pin(async move {
+            let call = Call {
+                call_id: format!("skill_{name}_resource"),
+                name: SKILL_TOOL_NAME.into(),
+                arguments: serde_json::Map::from_iter([
+                    ("skill".into(), name.into()),
+                    ("resource".into(), path.into()),
+                ]),
+            };
+            let (message, evaluation) = workspace.execute(call, &cancellation).await?;
+            if !evaluation.passed {
+                return Err(Error::new("EXECUTION_FAILED", "Workspace Skill evaluation failed"));
+            }
+            message
+                .values
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .map(|content| content.as_bytes().to_vec())
+                .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "Workspace Skill returned no resource"))
+        })
+    }
+}
+
+impl Entry for WorkspaceEntry {
+    fn definition(&self) -> ToolDefinition {
+        self.definition.clone()
+    }
+
+    fn prepare(&self, call: Call, _cancellation: Cancellation) -> PrepareFuture {
+        Box::pin(async move { Ok(call) })
+    }
+
+    fn call(&self, call: Call, cancellation: Cancellation) -> CallFuture {
+        let workspace = Arc::clone(&self.workspace);
+        Box::pin(async move {
+            let (message, evaluation) = workspace.execute(call.clone(), &cancellation).await?;
+            if !evaluation.passed {
+                return Err(Error::new(
+                    "EXECUTION_FAILED",
+                    "Workspace Tool evaluation failed",
+                ));
+            }
+            Ok((call, message))
+        })
+    }
+
+    fn evaluate(
+        &self,
+        _call: Call,
+        _message: Message,
+        _cancellation: Cancellation,
+    ) -> EvaluationFuture {
+        Box::pin(async { Ok(Evaluation::passed()) })
+    }
+}
+
 async fn await_stage<T>(
     future: impl Future<Output = Result<T, Error>>,
     cancellation: &Cancellation,
@@ -821,7 +979,7 @@ mod tests {
         let called = Arc::new(AtomicBool::new(false));
         let toolkit = Toolkit::new().tools(weather(called.clone()));
         assert_eq!(toolkit.len(), 1);
-        assert_eq!(toolkit.definitions()[0].name, "weather");
+        assert_eq!(toolkit.tool_catalog()[0].name, "weather");
         let (message, evaluation) = block_on(toolkit.execute(
             Call {
                 call_id: "call_1".into(),
@@ -870,7 +1028,7 @@ mod tests {
             .unwrap();
         let cancellation = Cancellation::new();
         let prepared = block_on(toolkit.prepared(&cancellation)).unwrap();
-        let definitions = prepared.definitions();
+        let definitions = prepared.tool_catalog();
         assert_eq!(definitions.len(), 2);
         assert_eq!(definitions[0].name, "weather");
         assert_eq!(definitions[1].name, SKILL_TOOL_NAME);
@@ -892,7 +1050,7 @@ mod tests {
 
         // Preparing an already prepared view remains idempotent.
         let prepared_again = block_on(prepared.prepared(&cancellation)).unwrap();
-        assert_eq!(prepared_again.definitions().len(), 2);
+        assert_eq!(prepared_again.tool_catalog().len(), 2);
     }
 
     struct RetryingEval {

@@ -72,7 +72,54 @@ impl Graph {
                 "cannot update the plan while agent nodes are running or waiting",
             ));
         }
+        let old_plan = self.plan.clone();
+        let old_nodes = self.nodes.clone();
         let mut candidate = Graph::from_plan(plan)?;
+
+        // A successful result is reusable only when its logical node definition
+        // and all upstream dependencies are unchanged.  If a planner changes a
+        // node or rewires an edge, invalidate that node and its complete
+        // downstream closure; unrelated successful branches remain available.
+        let changed: BTreeSet<String> = candidate
+            .plan
+            .nodes
+            .keys()
+            .filter(|node_id| old_plan.nodes.get(*node_id) != candidate.plan.nodes.get(*node_id))
+            .cloned()
+            .chain(
+                old_plan
+                    .edges
+                    .iter()
+                    .chain(candidate.plan.edges.iter())
+                    .filter(|edge| {
+                        !old_plan.edges.contains(edge) || !candidate.plan.edges.contains(edge)
+                    })
+                    .flat_map(|edge| [edge.from.clone(), edge.to.clone()]),
+            )
+            .collect();
+        let mut invalidated = changed;
+        let mut frontier: Vec<String> = invalidated.iter().cloned().collect();
+        while let Some(source) = frontier.pop() {
+            for edge in candidate
+                .plan
+                .edges
+                .iter()
+                .filter(|edge| edge.from == source)
+            {
+                if invalidated.insert(edge.to.clone()) {
+                    frontier.push(edge.to.clone());
+                }
+            }
+        }
+        for (node_id, state) in old_nodes {
+            if !invalidated.contains(&node_id)
+                && candidate.plan.nodes.contains_key(&node_id)
+                && state.status == Status::Succeeded
+            {
+                candidate.nodes.insert(node_id, state);
+            }
+        }
+        candidate.activate_ready()?;
         candidate.history = self.history.clone();
         candidate.history.push(History {
             plan: self.plan.clone(),
@@ -689,6 +736,29 @@ mod tests {
     }
 
     #[test]
+    fn plan_update_reuses_independent_success_and_invalidates_downstream_closure() {
+        let mut graph = Graph::new(plan(&[("a", "c")])).unwrap();
+        graph.start("a", 101).unwrap();
+        graph.succeed("a", Messages::default(), None).unwrap();
+        graph.start("b", 102).unwrap();
+        graph.succeed("b", Messages::default(), None).unwrap();
+
+        let mut replacement = plan(&[("a", "c")]);
+        replacement.version = 2;
+        replacement.nodes.get_mut("a").unwrap().objective = "changed".into();
+        graph.update(replacement).unwrap();
+
+        assert_eq!(graph.state("b").unwrap().status, Status::Succeeded);
+        assert_eq!(
+            graph.state("b").unwrap().messages,
+            Some(Messages::default())
+        );
+        assert_eq!(graph.state("a").unwrap().status, Status::Ready);
+        assert_eq!(graph.state("c").unwrap().status, Status::Pending);
+        assert!(graph.state("c").unwrap().execution.is_none());
+    }
+
+    #[test]
     fn restored_graph_accepts_task_names_without_mounted_capabilities_validation() {
         let graph = Graph::new(plan(&[])).unwrap();
         let snapshot = serde_json::to_value(&graph).unwrap();
@@ -834,7 +904,10 @@ mod tests {
         let mut graph = Graph::from_plan(plan(&[])).unwrap();
         graph.start("a", 101).unwrap();
         graph.succeed("a", Messages::default(), None).unwrap();
-        graph.update(plan(&[])).unwrap();
+        let mut replacement = plan(&[]);
+        replacement.version = 2;
+        replacement.nodes.get_mut("a").unwrap().objective = "changed".into();
+        graph.update(replacement).unwrap();
         let mut graph: Graph =
             serde_json::from_value(serde_json::to_value(graph).unwrap()).unwrap();
         let before = graph.clone();

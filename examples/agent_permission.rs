@@ -7,7 +7,7 @@ use std::sync::{
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, toolkit::Toolkit},
+    agent::{self, Agent, Input},
     core,
     event::Event,
     message::Role,
@@ -80,7 +80,7 @@ async fn main() -> Result<(), Error> {
     );
     let agent = agent::react()
         .model(Model(AtomicUsize::new(0)))
-        .toolkit(Toolkit::new().tools(Lookup))
+        .tools(Lookup)
         .permission(policy)
         .build()?;
     let mut events = agent

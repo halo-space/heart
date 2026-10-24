@@ -15,14 +15,15 @@ use elasticsearch::{
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{Agent, toolkit::Toolkit},
+    agent::Agent,
+    workspace::Workspace,
     core,
     event::Event,
     harness,
     message::Role,
     model::chat::{Chat, Request},
     tool::{Call, Tool, ToolDefinition},
-    workspace::{Mode, Workspace},
+    workspace::Mode,
 };
 use serde_json::{Value, json};
 use tokio::{
@@ -157,8 +158,8 @@ fn call(name: &str, arguments: Value) -> Call {
     }
 }
 
-async fn run(capabilities: &Toolkit, name: &str, args: Value) -> Result<Message, Error> {
-    let (message, evaluation) = capabilities
+async fn run(workspace: &impl Workspace, name: &str, args: Value) -> Result<Message, Error> {
+    let (message, evaluation) = workspace
         .execute(call(name, args), &Cancellation::new())
         .await?;
     assert!(evaluation.passed);
@@ -183,8 +184,8 @@ fn es_assembly_has_no_file_methods_config_layer_or_eager_network_access() {
     assert_eq!(workspace.definition().mode, Mode::Server);
     assert!(workspace.definition().path.is_none());
     assert!(workspace.definition().metadata.is_empty());
-    let capabilities = Toolkit::from(workspace);
-    let definitions = capabilities.definitions();
+    let capabilities = workspace;
+    let definitions = halo::workspace::Workspace::tool(&capabilities);
     assert_eq!(
         definitions
             .iter()
@@ -240,7 +241,7 @@ async fn es_crud_uses_atomic_create_partial_update_physical_delete_and_stored_so
         (404, json!({"found":false})),
     ])
     .await;
-    let capabilities = Toolkit::from(fixture.workspace().toolkit(Toolkit::new()));
+    let capabilities = fixture.workspace();
     assert_eq!(
         run(
             &capabilities,
@@ -331,7 +332,7 @@ async fn es_noop_and_missing_records_return_zero_without_upsert_or_soft_delete()
         (404, json!({"found":false})),
     ])
     .await;
-    let capabilities = Toolkit::from(fixture.workspace());
+    let capabilities = fixture.workspace();
     for _ in 0..2 {
         assert_eq!(
             run(
@@ -370,7 +371,7 @@ async fn es_create_conflict_is_direct_error_and_never_overwrites() {
     ])
     .await;
     let error = run(
-        &Toolkit::from(fixture.workspace()),
+        &fixture.workspace(),
         "write",
         json!({"data":{"id":1}}),
     )
@@ -404,7 +405,7 @@ async fn es_missing_index_is_error_not_empty_success_or_automatic_provisioning()
         )])
         .await;
         assert_eq!(
-            run(&Toolkit::from(fixture.workspace()), name, args)
+            run(&fixture.workspace(), name, args)
                 .await
                 .unwrap_err()
                 .code,
@@ -421,7 +422,7 @@ async fn es_missing_index_is_error_not_empty_success_or_automatic_provisioning()
 #[tokio::test]
 async fn es_schema_and_i64_identity_validation_precede_network_access() {
     let capabilities =
-        Toolkit::from(core::workspace::es::new(client("http://127.0.0.1:1"), "records").unwrap());
+        core::workspace::es::new(client("http://127.0.0.1:1"), "records").unwrap();
     for (name, args) in [
         ("write", json!({"data":{}})),
         ("write", json!({"data":{"id":"1"}})),
@@ -445,7 +446,7 @@ async fn es_schema_and_i64_identity_validation_precede_network_access() {
 #[tokio::test]
 async fn es_ids_do_not_round_through_floats_or_get_positive_only_restrictions() {
     let mut fixture = Fixture::new(vec![(404, json!({"found":false})); 3]).await;
-    let capabilities = Toolkit::from(fixture.workspace());
+    let capabilities = fixture.workspace();
     for id in [i64::MIN, 0, i64::MAX] {
         run(&capabilities, "read", json!({"id":id})).await.unwrap();
     }
@@ -482,7 +483,7 @@ async fn es_http_errors_are_categorized_sanitized_and_not_retried() {
             json!({"error":{"type":"secret","reason":"fixture-secret"},"found":false}),
         )])
         .await;
-        let error = run(&Toolkit::from(fixture.workspace()), "read", json!({"id":1}))
+        let error = run(&fixture.workspace(), "read", json!({"id":1}))
             .await
             .unwrap_err();
         assert_eq!(error.code, code);
@@ -507,7 +508,7 @@ async fn es_invalid_success_envelopes_are_not_reported_as_empty_data() {
     ] {
         let mut fixture = Fixture::new(vec![(200, body)]).await;
         assert_eq!(
-            run(&Toolkit::from(fixture.workspace()), "read", json!({"id":1}))
+            run(&fixture.workspace(), "read", json!({"id":1}))
                 .await
                 .unwrap_err()
                 .code,
@@ -519,7 +520,7 @@ async fn es_invalid_success_envelopes_are_not_reported_as_empty_data() {
         Fixture::new(vec![(200, Value::Null), (200, json!({"result":"created"}))]).await;
     assert_eq!(
         run(
-            &Toolkit::from(fixture.workspace()),
+            &fixture.workspace(),
             "update",
             json!({"id":1,"data":{}})
         )
@@ -540,7 +541,7 @@ async fn es_update_preflight_failure_never_sends_mutation() {
     ] {
         let mut fixture = Fixture::new(vec![(status, Value::Null)]).await;
         let error = run(
-            &Toolkit::from(fixture.workspace()),
+            &fixture.workspace(),
             "update",
             json!({"id":1,"data":{"content":"must not dispatch"}}),
         )
@@ -558,7 +559,7 @@ async fn es_update_preflight_failure_never_sends_mutation() {
 #[tokio::test]
 async fn es_cancellation_before_send_and_during_headers_or_body_does_not_hang() {
     let capabilities =
-        Toolkit::from(core::workspace::es::new(client("http://127.0.0.1:1"), "records").unwrap());
+        core::workspace::es::new(client("http://127.0.0.1:1"), "records").unwrap();
     let cancellation = Cancellation::new();
     cancellation.cancel();
     assert_eq!(
@@ -571,13 +572,12 @@ async fn es_cancellation_before_send_and_during_headers_or_body_does_not_hang() 
     );
     for body_started in [false, true] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let capabilities = Toolkit::from(
+        let capabilities =
             core::workspace::es::new(
                 client(&format!("http://{}", listener.local_addr().unwrap())),
                 "records",
             )
-            .unwrap(),
-        );
+            .unwrap();
         let (ready, received) = oneshot::channel();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
@@ -620,7 +620,7 @@ async fn es_transport_failure_has_no_credentials_url_or_raw_driver_details() {
     let client = client(&format!("http://{}", listener.local_addr().unwrap()));
     drop(listener);
     let error = run(
-        &Toolkit::from(core::workspace::es::new(client, "records").unwrap()),
+        &core::workspace::es::new(client, "records").unwrap(),
         "read",
         json!({"id":1}),
     )
@@ -635,13 +635,12 @@ async fn es_transport_failure_has_no_credentials_url_or_raw_driver_details() {
 async fn es_non_json_responses_preserve_http_errors_without_echoing_body() {
     for (status, code) in [(200, "INVALID_RESPONSE"), (403, "PERMISSION_DENIED")] {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let capabilities = Toolkit::from(
+        let capabilities =
             core::workspace::es::new(
                 client(&format!("http://{}", listener.local_addr().unwrap())),
                 "records",
             )
-            .unwrap(),
-        );
+            .unwrap();
         let server = tokio::spawn(async move {
             let (mut socket, _) = listener.accept().await.unwrap();
             receive(&mut socket).await;
@@ -673,7 +672,7 @@ async fn es_write_readback_failure_is_direct_error_not_fabricated_inserted_data(
     .await;
     assert_eq!(
         run(
-            &Toolkit::from(fixture.workspace()),
+            &fixture.workspace(),
             "write",
             json!({"data":{"id":1}})
         )
@@ -707,7 +706,7 @@ async fn es_real_cluster_crud_smoke() {
         transport = transport.auth(Credentials::EncodedApiKey(key));
     }
     let client = Elasticsearch::new(transport.build().unwrap());
-    let capabilities = Toolkit::from(core::workspace::es::new(client, index).unwrap());
+    let capabilities = core::workspace::es::new(client, index).unwrap();
     // Test/application supplies identity; the framework does not allocate it.
     let id = rand::random::<i64>();
     let data = json!({"id":id,"content":"heart workspace smoke","metadata":{"kept":true}});
@@ -833,7 +832,7 @@ async fn es_harness_uses_existing_model_loop_permission_and_custom_mounted_capab
         );
         let agent = harness::builder()
             .model(model)
-            .workspace(fixture.workspace().toolkit(Toolkit::new().tools(custom)))
+            .workspace(fixture.workspace().tools(custom))
             .permission(permission)
             .build()
             .unwrap();

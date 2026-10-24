@@ -4,15 +4,19 @@
 use sha2::{Digest, Sha256};
 use std::{
     path::{Component, Path, PathBuf},
+    sync::Arc,
     sync::atomic::{AtomicU64, Ordering},
 };
 
-use tokio::io::AsyncWriteExt;
+use tokio::{
+    io::AsyncWriteExt,
+    sync::RwLock,
+};
 
 use crate::{
     Cancellation, Error,
-    components::{mcp::Server, skill::Skill},
-    workspace::{Definition, Mode, Workspace},
+    components::{mcp::Server, skill::{Definition as SkillDefinition, Skill}},
+    workspace::{Definition, Mode},
 };
 
 use super::agent::mounts::{ToolInputs, Toolkit};
@@ -34,14 +38,39 @@ impl Drop for Temporary {
     }
 }
 
+#[derive(Clone)]
 pub struct Local {
     root: PathBuf,
     definition: Definition,
     capabilities: Toolkit,
     sandbox: Option<crate::sandbox::Local>,
+    pub(super) access: Arc<RwLock<()>>,
+    pub(super) skill_cache: tools::SkillCache,
 }
 
 impl Local {
+    pub(super) fn skill_catalog(&self) -> Vec<SkillDefinition> {
+        let mut definitions = self.capabilities.skill_catalog();
+        let root = self.root.join("skills");
+        let Ok(entries) = std::fs::read_dir(root) else {
+            return definitions;
+        };
+        definitions.extend(entries
+            .filter_map(Result::ok)
+            .filter_map(|entry| {
+                let path = entry.path();
+                if !entry.file_type().ok()?.is_dir() {
+                    return None;
+                }
+                let markdown = std::fs::read_to_string(path.join("SKILL.md")).ok()?;
+                let skill = crate::core::skill::Skill::from_markdown(&markdown).ok()?;
+                let name = entry.file_name().to_str()?.to_owned();
+                (skill.definition().name == name).then(|| skill.definition().clone())
+            })
+            .collect::<Vec<_>>());
+        definitions
+    }
+
     /// Opens an existing application-owned directory. Does not invent or
     /// initialize an application workspace layout.
     pub fn new(root: impl AsRef<Path>) -> Result<Self, Error> {
@@ -65,17 +94,13 @@ impl Local {
             },
             capabilities: Toolkit::new(),
             sandbox: None,
+            access: Arc::new(RwLock::new(())),
+            skill_cache: Arc::new(RwLock::new(None)),
         })
     }
 
     /// Mount the application's Tools, MCP servers and Skills in this workspace.
     /// This only stores configuration; it performs no tool calls or discovery.
-    #[doc(hidden)]
-    pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
-        self.capabilities = self.capabilities.append(toolkit);
-        self
-    }
-
     /// Mount application Tools on this Workspace. Standard local file tools
     /// are added when the Workspace is consumed by an Agent or Harness.
     #[allow(private_bounds)]
@@ -177,9 +202,49 @@ impl From<Local> for Toolkit {
     }
 }
 
-impl Workspace for Local {
+impl Local {
+    /// Internal Tool catalog used to implement the Workspace contract.
+    pub(super) fn tool_catalog(&self) -> Vec<crate::tool::ToolDefinition> {
+        Toolkit::from(self.clone()).tool_catalog()
+    }
+
+    pub(super) fn mcp_catalog(&self) -> Vec<crate::mcp::Definition> {
+        Toolkit::from(self.clone()).mcp_catalog()
+    }
+
+    /// Execute one mounted or built-in Workspace Tool.
+    pub async fn execute(
+        &self,
+        call: crate::tool::Call,
+        cancellation: &Cancellation,
+    ) -> Result<(crate::Message, crate::tool::Evaluation), Error> {
+        Toolkit::from(self.clone()).execute(call, cancellation).await
+    }
+}
+
+impl crate::workspace::Workspace for Local {
     fn definition(&self) -> &Definition {
         &self.definition
+    }
+
+    fn tool(&self) -> Vec<crate::tool::ToolDefinition> {
+        self.tool_catalog()
+    }
+
+    fn mcp(&self) -> Vec<crate::mcp::Definition> {
+        self.mcp_catalog()
+    }
+
+    fn skill(&self) -> Vec<SkillDefinition> {
+        self.skill_catalog()
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: crate::tool::Call,
+        cancellation: &'a Cancellation,
+    ) -> crate::workspace::ToolFuture<'a> {
+        Box::pin(self.execute(call, cancellation))
     }
 }
 

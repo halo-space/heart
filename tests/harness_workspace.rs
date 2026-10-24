@@ -11,7 +11,7 @@ use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{Agent, Input, Payload, toolkit::Toolkit},
+    agent::{Agent, Input, Payload},
     core,
     event::Event,
     harness,
@@ -183,7 +183,9 @@ impl Drop for Directory {
 
 #[tokio::test]
 async fn workspace_preserves_ready_tools_mcps_and_skills() {
-    let capabilities = Toolkit::new()
+    let directory = Directory::new();
+    let workspace = core::workspace::Local::new(&directory.0)
+        .unwrap()
         .tools(Echo(definition("echo")))
         .mcps([Remote {
             definition: McpDefinition {
@@ -197,15 +199,10 @@ async fn workspace_preserves_ready_tools_mcps_and_skills() {
             ..Default::default()
         })])
         .unwrap();
-    let directory = Directory::new();
-    let workspace = core::workspace::Local::new(&directory.0)
-        .unwrap()
-        .toolkit(capabilities);
+
     assert_eq!(workspace.definition().mode, Mode::Local);
     assert!(workspace.definition().path.is_some());
-    let capabilities = Toolkit::from(workspace);
-    let names: Vec<_> = capabilities
-        .definitions()
+    let names: Vec<_> = halo::workspace::Workspace::tool(&workspace)
         .into_iter()
         .map(|definition| definition.name)
         .collect();
@@ -227,12 +224,11 @@ async fn workspace_preserves_ready_tools_mcps_and_skills() {
     // Skill metadata stays in the Toolkit catalog and does not become a
     // separate executable definition before the model view is prepared.
     assert!(
-        capabilities
-            .definitions()
+        halo::workspace::Workspace::tool(&workspace)
             .iter()
             .all(|definition| definition.name != "research")
     );
-    let (result, _) = capabilities
+    let (result, _) = workspace
         .execute(call("remote", json!({})), &cancellation)
         .await
         .unwrap();
@@ -242,11 +238,7 @@ async fn workspace_preserves_ready_tools_mcps_and_skills() {
 #[tokio::test]
 async fn bound_file_tools_share_one_backend_and_preserve_direct_errors() {
     let directory = Directory::new();
-    let capabilities = Toolkit::from(
-        core::workspace::Local::new(&directory.0)
-            .unwrap()
-            .toolkit(Toolkit::new()),
-    );
+    let capabilities = core::workspace::Local::new(&directory.0).unwrap();
     let cancellation = Cancellation::new();
     capabilities
         .execute(
@@ -268,11 +260,7 @@ async fn bound_file_tools_share_one_backend_and_preserve_direct_errors() {
     assert_eq!(result.role, Role::Tool);
     assert_eq!(result.values["content"], "draft");
     let other_directory = Directory::new();
-    let other = Toolkit::from(
-        core::workspace::Local::new(&other_directory.0)
-            .unwrap()
-            .toolkit(Toolkit::new()),
-    );
+    let other = core::workspace::Local::new(&other_directory.0).unwrap();
     let error = other
         .execute(
             call("workspace_read", json!({"path":"notes/draft.txt"})),
@@ -326,7 +314,7 @@ async fn harness_uses_workspace_mounted_tools_in_the_existing_model_loop() {
     ]);
     let workspace = core::workspace::Local::new(&directory.0)
         .unwrap()
-        .toolkit(Toolkit::new().tools(Echo(definition("echo"))));
+        .tools(Echo(definition("echo")));
     let agent = harness::builder()
         .model(model)
         .workspace(workspace)
@@ -412,7 +400,7 @@ async fn permission_denial_stops_a_workspace_write_before_side_effects() {
     );
     let workspace = core::workspace::Local::new(&directory.0)
         .unwrap()
-        .toolkit(Toolkit::new());
+        ;
     let agent = harness::builder()
         .model(model)
         .workspace(workspace)
@@ -441,7 +429,7 @@ fn conflicting_workspace_tool_names_are_rejected_before_model_execution() {
     let directory = Directory::new();
     let workspace = core::workspace::Local::new(&directory.0)
         .unwrap()
-        .toolkit(Toolkit::new().tools(Echo(definition("workspace_read"))));
+        .tools(Echo(definition("workspace_read")));
     let result = harness::builder().model(model).workspace(workspace).build();
     let Err(error) = result else {
         panic!("duplicate tool name was accepted")
@@ -475,18 +463,41 @@ fn harness_without_workspace_does_not_install_file_tools() {
 // methods, path parameter, filesystem or in-memory file store.
 struct DatabaseWorkspace {
     definition: halo::workspace::Definition,
-    capabilities: Toolkit,
+    query: Query,
 }
 
 impl Workspace for DatabaseWorkspace {
     fn definition(&self) -> &halo::workspace::Definition {
         &self.definition
     }
-}
 
-impl From<DatabaseWorkspace> for Toolkit {
-    fn from(workspace: DatabaseWorkspace) -> Self {
-        workspace.capabilities
+    fn tool(&self) -> Vec<ToolDefinition> {
+        vec![self.query.definition.clone()]
+    }
+
+    fn mcp(&self) -> Vec<McpDefinition> {
+        Vec::new()
+    }
+
+    fn skill(&self) -> Vec<SkillDefinition> {
+        Vec::new()
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: Call,
+        cancellation: &'a Cancellation,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(Message, halo::tool::Evaluation), Error>> + Send + 'a>> {
+        Box::pin(async move {
+            if cancellation.is_cancelled() {
+                return Err(Error::new("CANCELLED", "operation cancelled"));
+            }
+            if call.name != self.query.definition.name || !call.arguments.contains_key("filter") {
+                return Err(Error::new("INVALID_ARGUMENTS", "invalid records_read arguments"));
+            }
+            let message = self.query.call(&call, cancellation).await?;
+            Ok((message, halo::tool::Evaluation::passed()))
+        })
     }
 }
 
@@ -518,7 +529,7 @@ fn database_workspace(calls: Arc<AtomicUsize>) -> DatabaseWorkspace {
             path: None,
             metadata: Default::default(),
         },
-        capabilities: Toolkit::new().tools(Query {
+        query: Query {
             definition: ToolDefinition {
                 name: "records_read".into(),
                 description: "Read a bound database record using a filter, not a path".into(),
@@ -538,7 +549,7 @@ fn database_workspace(calls: Arc<AtomicUsize>) -> DatabaseWorkspace {
                 .clone(),
             },
             calls,
-        }),
+        },
     }
 }
 
@@ -604,7 +615,7 @@ async fn definition_only_server_uses_its_own_schema_and_the_original_harness_loo
 #[tokio::test]
 async fn definition_only_server_keeps_tool_validation_cancellation_and_results() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let capabilities = Toolkit::from(database_workspace(Arc::clone(&calls)));
+    let capabilities = database_workspace(Arc::clone(&calls));
     let error = capabilities
         .execute(
             call("records_read", json!({"path":"fake/file"})),
@@ -795,7 +806,7 @@ fn automatically_bound_operations_still_reject_custom_name_collisions() {
         let workspace = core::workspace::Local::new(&directory.0)
             .unwrap()
             .sandbox(halo::sandbox::Local::default())
-            .toolkit(Toolkit::new().tools(Echo(definition(name))));
+            .tools(Echo(definition(name)));
         let Err(error) = harness::builder().model(model).workspace(workspace).build() else {
             panic!("built-in operation collision was accepted");
         };

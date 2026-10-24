@@ -2,7 +2,7 @@
 use futures_util::{StreamExt, poll, stream};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    agent::{self, Agent, Input, toolkit::Toolkit},
+    agent::{self, Agent, Input, },
     checkpoint::Checkpoint,
     core,
     event::Event,
@@ -182,7 +182,7 @@ fn build<C: Checkpoint + 'static>(
 ) -> impl Agent {
     agent::react()
         .model(model)
-        .toolkit(Toolkit::new().tools(Collect::new(log, count)))
+        .tools(Collect::new(log, count))
         .checkpoint(checkpoint)
         .with_id_fn(ids)
         .with_max_concurrency(capacity)

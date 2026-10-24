@@ -1720,30 +1720,10 @@ impl CompiledWorkflow {
     }
 }
 
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-pub struct GraphError {
-    pub code: String,
-    pub message: String,
-    pub details: Option<String>,
-}
-
-impl GraphError {
-    fn new(code: &str, message: impl Into<String>) -> Self {
-        Self {
-            code: code.into(),
-            message: message.into(),
-            details: None,
-        }
-    }
-}
-
-impl std::fmt::Display for GraphError {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(formatter, "{}: {}", self.code, self.message)
-    }
-}
-
-impl std::error::Error for GraphError {}
+/// Workflow APIs use the same public `code/message/details` error contract as
+/// every other component.  This alias keeps the workflow namespace readable
+/// without introducing a second error representation.
+pub type GraphError = Error;
 
 pub struct WorkflowBuilder {
     definition_id: String,

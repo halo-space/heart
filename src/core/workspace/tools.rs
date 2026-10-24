@@ -147,12 +147,19 @@ pub(super) fn attach(workspace: Files, capabilities: Toolkit) -> Toolkit {
         Files::Local(_) => true,
         Files::Docker(docker) => docker.discover_skills,
     };
+    let access = match &workspace {
+        Files::Local(local) => Arc::clone(&local.access),
+        Files::Docker(docker) => Arc::clone(&docker.access),
+    };
+    let skill_cache = match &workspace {
+        Files::Local(local) => Arc::clone(&local.skill_cache),
+        Files::Docker(docker) => Arc::clone(&docker.skill_cache),
+    };
     let workspace = Arc::new(workspace);
-    let access = Arc::new(RwLock::new(()));
     let capabilities = if discover_skills {
         capabilities.skill(DirectoryLoader {
             workspace: Arc::clone(&workspace),
-            cache: Arc::new(RwLock::new(None)),
+            cache: skill_cache,
         })
     } else {
         capabilities
@@ -195,12 +202,14 @@ pub(super) fn attach(workspace: Files, capabilities: Toolkit) -> Toolkit {
 /// Load standard `skills/<name>/SKILL.md` directories in the same file
 /// environment as the Workspace tools. No second host path is introduced for
 /// Docker, and resource reads remain confined by the Workspace path checks.
-struct DirectoryLoader {
+pub(crate) type SkillCache = Arc<RwLock<Option<DirectorySnapshot>>>;
+
+pub(super) struct DirectoryLoader {
     workspace: Arc<Files>,
     /// Shared by every Agent assembled from this Workspace. A new Agent gets
     /// an immutable prepared view, while subsequent Agents reuse the same
     /// parsed snapshot until the backend fingerprint changes.
-    cache: Arc<RwLock<Option<DirectorySnapshot>>>,
+    cache: SkillCache,
 }
 
 impl DirectoryLoader {
@@ -259,13 +268,13 @@ impl DirectoryLoader {
 }
 
 #[derive(Clone)]
-struct CachedSkill {
+pub(super) struct CachedSkill {
     definition: SkillDefinition,
     instructions: String,
 }
 
 #[derive(Clone)]
-struct DirectorySnapshot {
+pub(crate) struct DirectorySnapshot {
     fingerprint: String,
     skills: BTreeMap<String, CachedSkill>,
 }

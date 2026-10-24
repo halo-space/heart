@@ -48,9 +48,9 @@ impl<M> Builder<M> {
     #[allow(private_bounds)]
     pub fn workspace<W>(mut self, workspace: W) -> Self
     where
-        W: Workspace + Into<Toolkit> + 'static,
+        W: Workspace + 'static,
     {
-        self.workspace = Some(workspace.into());
+        self.workspace = Some(Toolkit::workspace(workspace));
         self
     }
 
@@ -112,7 +112,7 @@ where
 {
     pub fn build(self) -> Result<Agent<M>, Error> {
         let toolkit = Toolkit::new().merge(self.workspace.unwrap_or_default())?;
-        let inner = self.inner.toolkit(toolkit).build()?;
+        let inner = self.inner.with_toolkit(toolkit).build()?;
         Ok(Agent { inner })
     }
 }

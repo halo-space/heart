@@ -2,7 +2,7 @@
 use futures_util::{StreamExt, poll, stream};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    agent::{self, SubAgent, toolkit::Toolkit},
+    agent::{self, SubAgent, },
     checkpoint::Checkpoint,
     core,
     event::Event,
@@ -94,7 +94,7 @@ fn repeated_graph(
                 delegate: false,
                 requests: requests.clone(),
             })
-            .toolkit(capabilities(log.clone(), 3))
+            .tools(capabilities(log.clone(), 3))
             .with_id_fn(id_fn)
             .build()
             .unwrap();
@@ -420,8 +420,8 @@ impl Tool for Collect {
         Ok(Message::function(json!({"item":item})))
     }
 }
-fn capabilities(log: Arc<Log>, count: usize) -> Toolkit {
-    Toolkit::new().tools(Collect{log,count,definition:ToolDefinition{name:"collect".into(),description:"collect feedback".into(),parameters:json!({"type":"object","properties":{"item":{"type":"string"}},"required":["item"],"additionalProperties":false}).as_object().unwrap().clone()}})
+fn capabilities(log: Arc<Log>, count: usize) -> impl halo::tool::Tool {
+    Collect{log,count,definition:ToolDefinition{name:"collect".into(),description:"collect feedback".into(),parameters:json!({"type":"object","properties":{"item":{"type":"string"}},"required":["item"],"additionalProperties":false}).as_object().unwrap().clone()}}
 }
 #[derive(Clone, Copy, Debug)]
 enum Kind {
@@ -458,7 +458,7 @@ fn compiled(
                     label,
                     agent::chat()
                         .model(model)
-                        .toolkit(capabilities(log.clone(), case.count))
+                        .tools(capabilities(log.clone(), case.count))
                         .checkpoint(own.clone())
                         .with_id_fn(case.ids)
                         .with_max_concurrency(1)
@@ -479,7 +479,7 @@ fn compiled(
                                 delegate: false,
                                 requests: requests.clone(),
                             })
-                            .toolkit(capabilities(log.clone(), case.count))
+                            .tools(capabilities(log.clone(), case.count))
                             .checkpoint(own.clone())
                             .with_max_concurrency(1)
                             .with_max_iters(40)
@@ -494,7 +494,7 @@ fn compiled(
                     label,
                     agent::react()
                         .model(model)
-                        .toolkit(capabilities(log.clone(), case.count))
+                        .tools(capabilities(log.clone(), case.count))
                         .subagents(children)
                         .checkpoint(own.clone())
                         .with_id_fn(case.ids)
@@ -1600,7 +1600,7 @@ fn mixed_graph(log: Arc<Log>, requests: Arc<Mutex<Vec<Request>>>) -> CompiledWor
                 delegate: false,
                 requests: requests.clone(),
             })
-            .toolkit(capabilities(log.clone(), if label == "b" { 3 } else { 1 }))
+            .tools(capabilities(log.clone(), if label == "b" { 3 } else { 1 }))
             .with_id_fn(next_id);
         if label == "a" {
             agent = agent.permission(Ask);

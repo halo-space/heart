@@ -2,7 +2,7 @@
 use futures_util::{StreamExt, poll, stream};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    agent::{self, Agent, Input, SubAgent, toolkit::Toolkit},
+    agent::{self, Agent, Input, SubAgent, },
     checkpoint::Checkpoint,
     core,
     event::Event,
@@ -153,7 +153,7 @@ fn child(
             "worker",
             agent::react()
                 .model(model)
-                .toolkit(Toolkit::new().tools(tool))
+                .tools(tool)
                 .checkpoint(checkpoint)
                 .build()
                 .unwrap(),
@@ -164,7 +164,7 @@ fn child(
             "worker",
             agent::chat()
                 .model(model)
-                .toolkit(Toolkit::new().tools(tool))
+                .tools(tool)
                 .checkpoint(checkpoint)
                 .build()
                 .unwrap(),

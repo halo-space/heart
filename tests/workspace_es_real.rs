@@ -17,8 +17,9 @@ use elasticsearch::{
 use futures_util::{StreamExt, future::join_all, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{Agent, Input, Payload, toolkit::Toolkit},
+    agent::{Agent, Input, Payload},
     core,
+    workspace::Workspace,
     event::Event,
     harness,
     message::Role,
@@ -47,8 +48,8 @@ fn call(name: &str, args: Value) -> Call {
     }
 }
 
-async fn run(capabilities: &Toolkit, name: &str, args: Value) -> Result<Message, Error> {
-    let (message, evaluation) = capabilities
+async fn run(workspace: &impl Workspace, name: &str, args: Value) -> Result<Message, Error> {
+    let (message, evaluation) = workspace
         .execute(call(name, args), &Cancellation::new())
         .await?;
     assert!(evaluation.passed);
@@ -64,7 +65,7 @@ async fn run(capabilities: &Toolkit, name: &str, args: Value) -> Result<Message,
 #[ignore = "requires application-prepared HEART_ES_URL and isolated HEART_ES_TEST_INDEX"]
 async fn real_i64_extremes_noop_and_physical_delete() {
     let (client, index) = environment();
-    let capabilities = Toolkit::from(core::workspace::es::new(client, index).unwrap());
+    let capabilities = core::workspace::es::new(client, index).unwrap();
     for id in [i64::MIN, i64::MAX, -1, 0] {
         let data = json!({"id":id,"content":"边界测试","metadata":{"kept":true}});
         // A conflicting pre-existing record is NOT owned by this test. Stop
@@ -134,7 +135,7 @@ async fn real_i64_extremes_noop_and_physical_delete() {
 #[ignore = "requires application-prepared HEART_ES_URL and isolated HEART_ES_TEST_INDEX"]
 async fn real_concurrent_create_has_one_winner() {
     let (client, index) = environment();
-    let capabilities = Toolkit::from(core::workspace::es::new(client, index).unwrap());
+    let capabilities = core::workspace::es::new(client, index).unwrap();
     let id = rand::random::<i64>();
     let results = join_all((0..8).map(|writer| {
         run(
@@ -183,7 +184,7 @@ async fn real_missing_index_is_error_without_provisioning() {
             .as_u16(),
         404
     );
-    let capabilities = Toolkit::from(core::workspace::es::new(client.clone(), &index).unwrap());
+    let capabilities = core::workspace::es::new(client.clone(), &index).unwrap();
     for (name, args) in [
         ("read", json!({"id":1})),
         ("write", json!({"data":{"id":1}})),
@@ -221,7 +222,7 @@ async fn real_write_returns_pipeline_transformed_source() {
     let (client, _) = environment();
     let index =
         std::env::var("HEART_ES_PIPELINE_TEST_INDEX").expect("provide a dedicated pipeline index");
-    let capabilities = Toolkit::from(core::workspace::es::new(client, index).unwrap());
+    let capabilities = core::workspace::es::new(client, index).unwrap();
     let id = rand::random::<i64>();
     let data = json!({"id":id,"content":"MiXeD Text","metadata":{"kept":true}});
     let written = run(&capabilities, "write", json!({"data":data}))
@@ -285,7 +286,7 @@ impl Tool for Custom {
 async fn real_harness_crud_and_permission_use_the_existing_tool_chain() {
     let (client, index) = environment();
     for allowed in [true, false] {
-        let capabilities = Toolkit::from(core::workspace::es::new(client.clone(), &index).unwrap());
+        let capabilities = core::workspace::es::new(client.clone(), &index).unwrap();
         let id = rand::random::<i64>();
         let data = json!({"id":id,"content":"original","metadata":{"kept":true}});
         let operations = if allowed {
@@ -330,11 +331,11 @@ async fn real_harness_crud_and_permission_use_the_existing_tool_chain() {
             .workspace(
                 core::workspace::es::new(client.clone(), &index)
                     .unwrap()
-                    .toolkit(Toolkit::new().tools(Custom(ToolDefinition {
+                    .tools(Custom(ToolDefinition {
                         name: "custom_query".into(),
                         description: "application query".into(),
                         parameters: json!({"type":"object"}).as_object().unwrap().clone(),
-                    }))),
+                    })),
             )
             .permission(core::permission::Permission::new(
                 move |request: halo::permission::Request, _: Cancellation| {

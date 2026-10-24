@@ -37,7 +37,7 @@ impl Default for Config {
 /// Ordinary local execution. Construction does not start a process or enable
 /// Agent tools. Cancellation/drop kills the direct child, not its descendants;
 /// it does not roll back filesystem, network or other external side effects.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct Local {
     config: Config,
 }

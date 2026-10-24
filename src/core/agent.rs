@@ -13,7 +13,7 @@ pub(crate) mod hooks;
 pub(crate) mod input;
 mod lifecycle;
 #[doc(hidden)]
-pub mod mounts;
+pub(crate) mod mounts;
 mod preparation;
 pub mod react;
 pub mod subagent;

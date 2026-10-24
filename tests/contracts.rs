@@ -291,6 +291,31 @@ fn mcp_and_workspace_are_explicit_adapters() {
                 metadata: Default::default(),
             })
         }
+
+        fn tool(&self) -> Vec<halo::tool::ToolDefinition> {
+            Vec::new()
+        }
+
+        fn mcp(&self) -> Vec<halo::mcp::Definition> {
+            Vec::new()
+        }
+
+        fn skill(&self) -> Vec<halo::skill::Definition> {
+            Vec::new()
+        }
+
+        fn execute<'a>(
+            &'a self,
+            _call: halo::tool::Call,
+            _cancellation: &'a Cancellation,
+        ) -> halo::workspace::ToolFuture<'a> {
+            Box::pin(async {
+                Err(halo::Error::new(
+                    "NOT_IMPLEMENTED",
+                    "contract fixture has no workspace tools",
+                ))
+            })
+        }
     }
 
     let cancellation = Cancellation::new();

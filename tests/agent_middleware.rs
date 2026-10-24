@@ -8,7 +8,7 @@ use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, Payload, toolkit::Toolkit},
+    agent::{self, Agent, Input, Payload, },
     event::Event,
     message::Role,
     middleware::Middleware,
@@ -216,7 +216,7 @@ async fn run(
         let mut builder = agent::react()
             .model(model)
             .system_prompt("system")
-            .toolkit(Toolkit::new().tools(Lookup));
+            .tools(Lookup);
         for hook in hooks {
             builder = builder.middleware(hook);
         }

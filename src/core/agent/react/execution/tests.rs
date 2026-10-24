@@ -203,7 +203,7 @@ fn planned_eval_wait_resumes_the_same_attempt_and_keeps_feedback_local() {
         let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
         let agent = crate::agent::react()
             .model(Model(probe.clone()))
-            .toolkit(
+            .with_toolkit(
                 Toolkit::new()
                     .tools(CheckedTool::new("lookup", probe.clone()))
                     .tools(CheckedTool::new("clock", probe.clone())),
@@ -238,7 +238,7 @@ fn planned_eval_wait_resumes_the_same_attempt_and_keeps_feedback_local() {
         drop(agent);
         let restored = crate::agent::react()
             .model(Model(probe.clone()))
-            .toolkit(
+            .with_toolkit(
                 Toolkit::new()
                     .tools(CheckedTool::new("lookup", probe.clone()))
                     .tools(CheckedTool::new("clock", probe.clone())),
@@ -319,7 +319,7 @@ fn tool_business_feedback_repairs_only_its_plan_node_and_keeps_successful_calls(
         let evaluator_probe = probe.clone();
         let agent = crate::agent::react()
             .model(Model(probe.clone()))
-            .toolkit(
+            .with_toolkit(
                 Toolkit::new()
                     .tools(CheckedTool::new("lookup", probe.clone()))
                     .tools(CheckedTool::new("clock", probe.clone())),
@@ -403,7 +403,7 @@ fn tool_eval_technical_failure_keeps_call_results_and_finishes_independent_nodes
         let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
         let agent = crate::agent::react()
             .model(Model(probe.clone()))
-            .toolkit(
+            .with_toolkit(
                 Toolkit::new()
                     .tools(CheckedTool::new("lookup", probe.clone()))
                     .tools(CheckedTool::new("clock", probe.clone())),

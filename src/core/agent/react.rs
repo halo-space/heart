@@ -110,8 +110,7 @@ impl<M> Builder<M> {
         self
     }
 
-    #[doc(hidden)]
-    pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
+    pub(crate) fn with_toolkit(mut self, toolkit: Toolkit) -> Self {
         self.capabilities = toolkit;
         self
     }
@@ -2500,9 +2499,9 @@ async fn next_react_event_inner<M: Chat + 'static>(
             request
         } else {
             let mut tools = if state.is_plan_task {
-                state.capabilities.definitions()
+                state.capabilities.tool_catalog()
             } else {
-                let mut tools = state.capabilities.definitions();
+                let mut tools = state.capabilities.tool_catalog();
                 tools.push(plan_definition());
                 if !state.subagents.is_empty() {
                     tools.push(state.subagents[0].definition());
@@ -3954,7 +3953,7 @@ mod tests {
                 calls: model_calls.clone(),
                 require_tool_error: false,
             })
-            .toolkit(Toolkit::new().tools(EvalFailingTool {
+            .with_toolkit(Toolkit::new().tools(EvalFailingTool {
                 inner: WeatherTool {
                     calls: tool_calls.clone(),
                     definition: ToolDefinition {
@@ -4029,7 +4028,7 @@ mod tests {
             .model(EvalFeedbackChat {
                 calls: model_calls.clone(),
             })
-            .toolkit(
+            .with_toolkit(
                 Toolkit::new().tools(EvalRejectingTool {
                     inner: WeatherTool {
                         calls: tool_calls.clone(),
@@ -4096,7 +4095,7 @@ mod tests {
                 calls: model_calls.clone(),
                 require_tool_error: false,
             })
-            .toolkit(capabilities)
+            .with_toolkit(capabilities)
             .with_max_iters(2)
             .build()
             .expect("react agent build");
@@ -4137,7 +4136,7 @@ mod tests {
                 require_tool_error: false,
             })
             .with_max_iters(1)
-            .toolkit(
+            .with_toolkit(
                 Toolkit::new().tools(WeatherTool {
                     calls: Arc::new(Mutex::new(0)),
                     definition: ToolDefinition {
@@ -4172,7 +4171,7 @@ mod tests {
                 calls: Arc::new(Mutex::new(0)),
                 require_tool_error: true,
             })
-            .toolkit(
+            .with_toolkit(
                 Toolkit::new().tools(FailingTool {
                     definition: ToolDefinition {
                         name: "weather".into(),

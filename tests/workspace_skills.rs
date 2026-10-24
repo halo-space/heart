@@ -2,14 +2,14 @@ use std::sync::Arc;
 
 use elasticsearch::{Elasticsearch, http::transport::Transport};
 use futures_util::{StreamExt, stream};
-use halo_agents::{
-    Cancellation, Error, Message,
-    agent::{self, Agent, Input, toolkit::Toolkit},
-    event::Event,
-    mcp::{Definition as McpDefinition, Server},
-    model::chat::{Chat, Request},
-    skill::{Definition, Loader, Skill},
-    tool::{Call, Tool, ToolDefinition},
+use halo::agent::{Cancellation, Error, Message};
+use halo::{
+agent::{self, Agent, Input},
+event::Event,
+mcp::{Definition as McpDefinition, Server},
+model::chat::{Chat, Request},
+skill::{Definition, Loader, Skill},
+tool::{Call, Tool, ToolDefinition}
 };
 use serde_json::json;
 use tokio::sync::Mutex;
@@ -105,9 +105,13 @@ impl Chat for Model {
 }
 
 #[tokio::test]
-async fn toolkit_provides_skill_catalog_and_all_tool_mcp_definitions_to_model() {
+async fn mounted_capabilities_provides_skill_catalog_and_all_tool_mcp_definitions_to_model() {
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let toolkit = Toolkit::new()
+    let agent = agent::chat()
+        .model(Model {
+            requests: Arc::clone(&requests),
+        })
+        .system_prompt("Answer clearly.")
         .tools(LocalTool(definition("weather", "Look up current weather.")))
         .mcps([Remote {
             definition: McpDefinition {
@@ -117,13 +121,7 @@ async fn toolkit_provides_skill_catalog_and_all_tool_mcp_definitions_to_model() 
             tools: vec![definition("remote_search", "Search the remote index.")],
         }])
         .skills([research()])
-        .unwrap();
-    let agent = agent::chat()
-        .model(Model {
-            requests: Arc::clone(&requests),
-        })
-        .system_prompt("Answer clearly.")
-        .toolkit(toolkit)
+        .unwrap()
         .build()
         .unwrap();
 
@@ -155,13 +153,14 @@ async fn toolkit_provides_skill_catalog_and_all_tool_mcp_definitions_to_model() 
 
 #[test]
 fn skill_names_do_not_replace_tool_names() {
-    let toolkit = Toolkit::new()
+    let directory = Directory::new();
+    let workspace = halo::core::workspace::Local::new(&directory.0)
+        .unwrap()
         .tools(LocalTool(definition("research", "A normal business tool.")))
         .skills([research()])
         .unwrap();
     assert!(
-        toolkit
-            .definitions()
+        halo::workspace::Workspace::tool(&workspace)
             .iter()
             .any(|tool| tool.name == "research")
     );
@@ -172,7 +171,7 @@ struct Directory(std::path::PathBuf);
 impl Directory {
     fn new() -> Self {
         let path = std::env::temp_dir().join(format!(
-            "heart-toolkit-skills-{}-{}",
+            "heart-capabilities-skills-{}-{}",
             std::process::id(),
             rand::random::<u64>()
         ));
@@ -202,7 +201,7 @@ fn skill_call(resource: Option<&str>) -> Call {
 #[tokio::test]
 async fn local_workspace_discovers_skills_and_reads_adjacent_resources() {
     let directory = Directory::new();
-    let workspace = halo_agents::core::workspace::Local::new(&directory.0).unwrap();
+    let workspace = halo::core::workspace::Local::new(&directory.0).unwrap();
     let cancellation = Cancellation::new();
     workspace
         .write(
@@ -221,13 +220,12 @@ async fn local_workspace_discovers_skills_and_reads_adjacent_resources() {
         )
         .await
         .unwrap();
-    let toolkit = Toolkit::from(workspace);
     let requests = Arc::new(Mutex::new(Vec::new()));
-    let agent = agent::chat()
+    let agent = halo::harness::builder()
         .model(Model {
             requests: Arc::clone(&requests),
         })
-        .toolkit(toolkit)
+        .workspace(workspace)
         .build()
         .unwrap();
     let events = agent
@@ -245,8 +243,8 @@ async fn local_workspace_discovers_skills_and_reads_adjacent_resources() {
     assert!(requests[0].tools.iter().any(|tool| tool.name == "skill"));
     drop(requests);
 
-    let toolkit = Toolkit::from(halo_agents::core::workspace::Local::new(&directory.0).unwrap());
-    let (instructions, _) = toolkit
+    let workspace = halo::core::workspace::Local::new(&directory.0).unwrap();
+    let (instructions, _) = workspace
         .execute(skill_call(None), &cancellation)
         .await
         .unwrap();
@@ -254,12 +252,12 @@ async fn local_workspace_discovers_skills_and_reads_adjacent_resources() {
         instructions.values["instructions"],
         "Read references/guide.md.\n"
     );
-    let (resource, _) = toolkit
+    let (resource, _) = workspace
         .execute(skill_call(Some("references/guide.md")), &cancellation)
         .await
         .unwrap();
     assert_eq!(resource.values["content"], "Use primary sources.");
-    let error = toolkit
+    let error = workspace
         .execute(skill_call(Some("../other/SKILL.md")), &cancellation)
         .await
         .unwrap_err();
@@ -269,7 +267,7 @@ async fn local_workspace_discovers_skills_and_reads_adjacent_resources() {
 #[tokio::test]
 async fn local_workspace_refreshes_shared_skill_snapshot_when_files_change() {
     let directory = Directory::new();
-    let workspace = halo_agents::core::workspace::Local::new(&directory.0).unwrap();
+    let workspace = halo::core::workspace::Local::new(&directory.0).unwrap();
     let cancellation = Cancellation::new();
     workspace
         .write(
@@ -280,9 +278,7 @@ async fn local_workspace_refreshes_shared_skill_snapshot_when_files_change() {
         )
         .await
         .unwrap();
-    let toolkit = Toolkit::from(workspace);
-
-    let (first, _) = toolkit
+    let (first, _) = workspace
         .execute(skill_call(None), &cancellation)
         .await
         .unwrap();
@@ -296,7 +292,7 @@ async fn local_workspace_refreshes_shared_skill_snapshot_when_files_change() {
         b"---\nname: research\ndescription: Research with sources.\n---\nVersion two.\n",
     )
     .unwrap();
-    let (second, _) = toolkit
+    let (second, _) = workspace
         .execute(skill_call(None), &cancellation)
         .await
         .unwrap();
@@ -329,12 +325,10 @@ impl Loader for DatabaseSkills {
 #[tokio::test]
 async fn server_workspace_uses_database_skill_loader_without_file_paths() {
     let client = Elasticsearch::new(Transport::single_node("http://127.0.0.1:9200").unwrap());
-    let workspace = halo_agents::core::workspace::es::new(client, "workspace")
+    let workspace = halo::core::workspace::es::new(client, "workspace")
         .unwrap()
-        .skills(DatabaseSkills)
-        .toolkit(Toolkit::new());
-    let toolkit = Toolkit::from(workspace);
-    let (instructions, _) = toolkit
+        .skills(DatabaseSkills);
+    let (instructions, _) = workspace
         .execute(skill_call(None), &Cancellation::new())
         .await
         .unwrap();
@@ -342,7 +336,7 @@ async fn server_workspace_uses_database_skill_loader_without_file_paths() {
         instructions.values["instructions"],
         "Use the database skill."
     );
-    let (resource, _) = toolkit
+    let (resource, _) = workspace
         .execute(skill_call(Some("guide.md")), &Cancellation::new())
         .await
         .unwrap();

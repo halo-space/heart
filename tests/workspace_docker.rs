@@ -6,13 +6,13 @@ use std::{path::PathBuf, process::Command, time::Duration};
 
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::toolkit::Toolkit,
+    workspace::Workspace,
     core::{
         sandbox,
         workspace::{Docker, docker::Config},
     },
     tool::Call,
-    workspace::{Mode, Workspace},
+    workspace::Mode,
 };
 use serde_json::{Value, json};
 
@@ -185,8 +185,8 @@ fn call(name: &str, args: Value) -> Call {
         arguments: args.as_object().unwrap().clone(),
     }
 }
-async fn run(capabilities: &Toolkit, name: &str, args: Value) -> Result<Message, Error> {
-    capabilities
+async fn run(workspace: &impl Workspace, name: &str, args: Value) -> Result<Message, Error> {
+    workspace
         .execute(call(name, args), &Cancellation::new())
         .await
         .map(|(message, _)| message)
@@ -223,9 +223,9 @@ async fn shared_files_and_default_tools() {
     let workspace = Docker::new(config()).unwrap();
     assert_eq!(workspace.definition().mode, Mode::Local);
     assert_eq!(workspace.definition().path.as_deref(), Some("/workspace"));
-    let capabilities = Toolkit::from(workspace);
-    assert_eq!(capabilities.definitions().len(), 8);
-    for tool in capabilities.definitions() {
+    let capabilities = workspace;
+    assert_eq!(halo::workspace::Workspace::tool(&capabilities).len(), 8);
+    for tool in halo::workspace::Workspace::tool(&capabilities) {
         tool.validate().unwrap();
     }
     assert!(operations().is_empty());
@@ -323,7 +323,7 @@ async fn literal_paths_and_binary_data() {
         workspace.list(".", true, &cancellation).await.unwrap(),
         [path]
     );
-    let capabilities = Toolkit::from(workspace);
+    let capabilities = workspace;
     assert_eq!(
         run(&capabilities, "read", json!({"path":path}))
             .await
@@ -396,7 +396,7 @@ async fn concurrent_init_and_isolated_workspaces() {
 }
 
 async fn failures_do_not_recreate_environment() {
-    let capabilities = Toolkit::from(Docker::new(config()).unwrap());
+    let capabilities = Docker::new(config()).unwrap();
     assert_eq!(
         run(&capabilities, "read", json!({"path":"missing"}))
             .await
@@ -541,7 +541,7 @@ async fn drop_in_flight_future_cleans_up() {
 }
 
 async fn drop_mounted_capabilities_releases_environment() {
-    let capabilities = Toolkit::from(Docker::new(config()).unwrap());
+    let capabilities = Docker::new(config()).unwrap();
     run(&capabilities, "write", json!({"path":"x","content":"kept"}))
         .await
         .unwrap();
@@ -654,7 +654,7 @@ async fn custom_tool_and_harness_permission() {
     });
     let workspace = Docker::new(config())
         .unwrap()
-        .toolkit(Toolkit::new().tools(echo));
+        .tools(echo);
     let agent = halo::harness::builder()
         .model(Model(Arc::clone(&calls)))
         .workspace(workspace)
@@ -726,7 +726,7 @@ async fn pre_cancel_and_invalid_arguments_are_no_io() {
             "INVALID_ARGUMENTS"
         );
     }
-    let capabilities = Toolkit::from(workspace);
+    let capabilities = workspace;
     assert_eq!(
         run(
             &capabilities,
@@ -769,7 +769,7 @@ async fn limits_and_startup_failure() {
     std::fs::remove_file(state().join("start_fail")).unwrap();
     let mut config = config();
     config.sandbox.max_output = 4;
-    let capabilities = Toolkit::from(Docker::new(config).unwrap());
+    let capabilities = Docker::new(config).unwrap();
     assert_eq!(
         run(
             &capabilities,
@@ -805,7 +805,7 @@ async fn docker_workspace_real_container_smoke() {
         ..Default::default()
     })
     .unwrap();
-    let capabilities = Toolkit::from(workspace);
+    let capabilities = workspace;
     let mut id = None;
     let result = async {
         let hostname=run(&capabilities,"exec_shell",json!({"args":["/bin/cat","/etc/hostname"]})).await?;
@@ -872,7 +872,7 @@ async fn docker_workspace_real_bind_mount_smoke() {
         ..Default::default()
     })
     .unwrap();
-    let capabilities = Toolkit::from(workspace);
+    let capabilities = workspace;
     let mut id = None;
     let result=async {
         let hostname=run(&capabilities,"exec_shell",json!({"args":["/bin/cat","/etc/hostname"]})).await?;
@@ -916,7 +916,7 @@ async fn docker_workspace_real_cancellation_smoke() {
         ..Default::default()
     })
     .unwrap();
-    let capabilities = Toolkit::from(workspace);
+    let capabilities = workspace;
     let hostname = run(
         &capabilities,
         "exec_shell",

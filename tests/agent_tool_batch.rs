@@ -7,7 +7,7 @@ use futures_executor::block_on;
 use futures_util::{FutureExt, StreamExt, poll, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, toolkit::Toolkit},
+    agent::{self, Agent, Input, },
     event::Event,
     message::{Messages, Role},
     model::{
@@ -215,7 +215,7 @@ fn bounded_overlap_emits_completed_results_but_model_sees_original_order() {
         let mut releases = gates(&probe, 3);
         let agent = agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tools(tool))
+            .tools(tool)
             .with_max_concurrency(2)
             .build()
             .unwrap();
@@ -265,7 +265,7 @@ fn one_slot_keeps_calls_serial_without_eagerly_starting_the_queue() {
         let mut releases = gates(&probe, 2);
         let agent = agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tools(tool))
+            .tools(tool)
             .with_max_concurrency(1)
             .build()
             .unwrap();
@@ -296,7 +296,7 @@ fn pending_eval_holds_the_slot_and_blocks_next_inference() {
         probe.lock().unwrap().evals.insert(1, receiver);
         let agent = agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tools(tool))
+            .tools(tool)
             .with_max_concurrency(1)
             .build()
             .unwrap();
@@ -322,7 +322,7 @@ fn failed_call_is_direct_context_and_does_not_repeat_successful_siblings() {
         let requests = model.requests.clone();
         let agent = agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tools(tool))
+            .tools(tool)
             .build()
             .unwrap();
         let events: Vec<_> = agent
@@ -362,7 +362,7 @@ fn cancellation_releases_admitted_futures_without_starting_queued_calls() {
         let requests = model.requests.clone();
         let agent = agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tools(tool))
+            .tools(tool)
             .with_max_concurrency(2)
             .build()
             .unwrap();
@@ -396,7 +396,7 @@ fn dropping_stream_releases_pending_tool_resources() {
         let _releases = gates(&probe, 2);
         let agent = agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tools(tool))
+            .tools(tool)
             .build()
             .unwrap();
         let mut events = agent.run(input(), true, Cancellation::new()).await.unwrap();
@@ -419,7 +419,7 @@ fn eval_failure_keeps_success_event_and_never_repeats_call() {
         let requests = model.requests.clone();
         let agent = agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tools(tool))
+            .tools(tool)
             .build()
             .unwrap();
         let mut events = agent.run(input(), true, Cancellation::new()).await.unwrap();
@@ -451,7 +451,7 @@ fn business_feedback_does_not_masquerade_as_tool_error_context() {
         let requests = model.requests.clone();
         let agent = agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tools(tool))
+            .tools(tool)
             .build()
             .unwrap();
         let events: Vec<_> = agent
@@ -513,7 +513,7 @@ fn permission_hook_failure_releases_siblings_and_never_enters_model_context() {
         let requests = model.requests.clone();
         let agent = agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tools(tool))
+            .tools(tool)
             .permission(Allow)
             .middleware(HookFailure(Mutex::new(Some(receive_started))))
             .with_max_concurrency(2)
@@ -542,7 +542,7 @@ fn reusing_agent_does_not_reuse_prior_batch_results_or_pending_work() {
         let requests = model.requests.clone();
         let agent = agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tools(tool))
+            .tools(tool)
             .with_max_concurrency(2)
             .build()
             .unwrap();

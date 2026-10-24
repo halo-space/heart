@@ -2,7 +2,7 @@
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, Payload, toolkit::Toolkit},
+    agent::{self, Agent, Input, Payload, },
     checkpoint::Checkpoint,
     core,
     event::Event,
@@ -213,8 +213,8 @@ impl Tool for Lookup {
         Ok(result)
     }
 }
-fn capabilities(log: Arc<Log>) -> Toolkit {
-    Toolkit::new().tools(Lookup(
+fn capabilities(log: Arc<Log>) -> impl halo::tool::Tool {
+    Lookup(
         log,
         ToolDefinition {
             name: "lookup".into(),
@@ -225,7 +225,7 @@ fn capabilities(log: Arc<Log>) -> Toolkit {
                     .unwrap()
                     .clone(),
         },
-    ))
+    )
 }
 fn input(text: &str) -> Input {
     Input {
@@ -255,7 +255,7 @@ async fn run(
         if react {
             Ok(agent::react()
                 .model(Model(log.clone()))
-                .toolkit(capabilities(log.clone()))
+                .tools(capabilities(log.clone()))
                 .permission(Policy(log.clone()))
                 .middleware(Before(log.clone()))
                 .middleware(Gate(log.clone()))
@@ -271,7 +271,7 @@ async fn run(
         } else {
             Ok(agent::chat()
                 .model(Model(log.clone()))
-                .toolkit(capabilities(log.clone()))
+                .tools(capabilities(log.clone()))
                 .permission(Policy(log.clone()))
                 .middleware(Before(log.clone()))
                 .middleware(Gate(log.clone()))
@@ -530,7 +530,7 @@ async fn pending_permission_cannot_silently_restore_without_its_policy() {
         let result = if react {
             agent::react()
                 .model(Model(log.clone()))
-                .toolkit(capabilities(log.clone()))
+                .tools(capabilities(log.clone()))
                 .middleware(Before(log.clone()))
                 .middleware(Gate(log.clone()))
                 .middleware(After(log.clone()))
@@ -543,7 +543,7 @@ async fn pending_permission_cannot_silently_restore_without_its_policy() {
         } else {
             agent::chat()
                 .model(Model(log.clone()))
-                .toolkit(capabilities(log.clone()))
+                .tools(capabilities(log.clone()))
                 .middleware(Before(log.clone()))
                 .middleware(Gate(log.clone()))
                 .middleware(After(log.clone()))
@@ -621,7 +621,7 @@ async fn planned_permission_wait_keeps_native_attempt_and_same_call_sibling_isol
     let build = || {
         agent::react()
             .model(Planned(log.clone()))
-            .toolkit(capabilities(log.clone()))
+            .tools(capabilities(log.clone()))
             .permission(Policy(log.clone()))
             .middleware(Before(log.clone()))
             .middleware(Gate(log.clone()))
@@ -692,7 +692,7 @@ fn nested(react: bool, log: Arc<Log>) -> halo::runtime::workflow::CompiledWorkfl
                     agent::react()
                         .model(Model(log.clone()))
                         .system_prompt(prompt)
-                        .toolkit(capabilities(log.clone()))
+                        .tools(capabilities(log.clone()))
                         .permission(Policy(log.clone()))
                         .middleware(Before(log.clone()))
                         .middleware(Gate(log.clone()))
@@ -708,7 +708,7 @@ fn nested(react: bool, log: Arc<Log>) -> halo::runtime::workflow::CompiledWorkfl
                     agent::chat()
                         .model(Model(log.clone()))
                         .system_prompt(prompt)
-                        .toolkit(capabilities(log.clone()))
+                        .tools(capabilities(log.clone()))
                         .permission(Policy(log.clone()))
                         .middleware(Before(log.clone()))
                         .middleware(Gate(log.clone()))

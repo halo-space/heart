@@ -2,7 +2,7 @@
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, Payload, toolkit::Toolkit},
+    agent::{self, Agent, Input, Payload, },
     checkpoint::Checkpoint,
     core,
     event::Event,
@@ -182,15 +182,15 @@ impl Tool for Weather {
         Ok(message)
     }
 }
-fn capabilities() -> Toolkit {
-    Toolkit::new().tools(Weather(ToolDefinition {
+fn capabilities() -> impl halo::tool::Tool {
+    Weather(ToolDefinition {
         name: "weather".into(),
         description: "weather".into(),
         parameters: json!({"type":"object","properties":{}})
             .as_object()
             .unwrap()
             .clone(),
-    }))
+    })
 }
 fn input(text: &str) -> Input {
     Input {
@@ -221,7 +221,7 @@ async fn run(
     if react {
         agent::react()
             .model(model)
-            .toolkit(capabilities())
+            .tools(capabilities())
             .middleware(Block {
                 log: log.clone(),
                 phase,
@@ -238,7 +238,7 @@ async fn run(
     } else {
         agent::chat()
             .model(model)
-            .toolkit(capabilities())
+            .tools(capabilities())
             .middleware(Block {
                 log: log.clone(),
                 phase,
@@ -556,7 +556,7 @@ async fn new_call_after_restored_selection_settles_its_reported_partial_usage() 
                 agent::react()
                     .model(model)
                     .middleware(WaitSelection(log.clone()))
-                    .toolkit(capabilities())
+                    .tools(capabilities())
                     .checkpoint(checkpoint.clone())
                     .build()
                     .unwrap()
@@ -569,7 +569,7 @@ async fn new_call_after_restored_selection_settles_its_reported_partial_usage() 
                 agent::chat()
                     .model(model)
                     .middleware(WaitSelection(log.clone()))
-                    .toolkit(capabilities())
+                    .tools(capabilities())
                     .checkpoint(checkpoint.clone())
                     .build()
                     .unwrap()

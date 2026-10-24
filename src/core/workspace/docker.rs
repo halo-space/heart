@@ -3,9 +3,10 @@
 //! the environment; it is never silently replaced by a fresh, empty container.
 
 use std::{collections::BTreeMap, path::PathBuf};
+use std::sync::Arc;
 
 use serde_json::{Value, json};
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, RwLock};
 
 use super::tools;
 use crate::{
@@ -16,7 +17,7 @@ use crate::{
         operation::{cancellable, check},
         sandbox::docker as sandbox,
     },
-    workspace::{Definition, Mode, Workspace},
+    workspace::{Definition, Mode},
 };
 
 mod files;
@@ -44,11 +45,14 @@ impl Default for Config {
     }
 }
 
+#[derive(Clone)]
 pub struct Docker {
-    backend: Box<Backend>,
+    backend: std::sync::Arc<Backend>,
     definition: Definition,
     capabilities: Toolkit,
     pub(super) discover_skills: bool,
+    pub(super) access: Arc<RwLock<()>>,
+    pub(super) skill_cache: tools::SkillCache,
 }
 
 impl Docker {
@@ -90,12 +94,14 @@ impl Docker {
                 path: Some(config.workdir.clone()),
                 metadata: serde_json::Map::from_iter([("environment".into(), json!("docker"))]),
             },
-            backend: Box::new(Backend {
+            backend: std::sync::Arc::new(Backend {
                 config,
                 state: Mutex::new(State::New),
             }),
             capabilities: Toolkit::new(),
             discover_skills: false,
+            access: Arc::new(RwLock::new(())),
+            skill_cache: Arc::new(RwLock::new(None)),
         })
     }
 
@@ -104,12 +110,6 @@ impl Docker {
     /// Tool permission checks; the default preserves no-I/O construction.
     pub fn with_skill_discovery(mut self) -> Self {
         self.discover_skills = true;
-        self
-    }
-
-    #[doc(hidden)]
-    pub fn toolkit(mut self, toolkit: Toolkit) -> Self {
-        self.capabilities = self.capabilities.append(toolkit);
         self
     }
 
@@ -221,16 +221,60 @@ impl Docker {
     }
 }
 
-impl Workspace for Docker {
-    fn definition(&self) -> &Definition {
-        &self.definition
-    }
-}
-
 impl From<Docker> for Toolkit {
     fn from(mut workspace: Docker) -> Self {
         let capabilities = std::mem::take(&mut workspace.capabilities);
         tools::attach(tools::Files::Docker(workspace), capabilities)
+    }
+}
+
+impl Docker {
+    /// Internal Tool catalog used to implement the Workspace contract.
+    pub(super) fn tool_catalog(&self) -> Vec<crate::tool::ToolDefinition> {
+        Toolkit::from(self.clone()).tool_catalog()
+    }
+
+    pub(super) fn mcp_catalog(&self) -> Vec<crate::mcp::Definition> {
+        Toolkit::from(self.clone()).mcp_catalog()
+    }
+
+    pub(super) fn skill_catalog(&self) -> Vec<crate::skill::Definition> {
+        self.capabilities.skill_catalog()
+    }
+
+    /// Execute one mounted or built-in Workspace Tool.
+    pub async fn execute(
+        &self,
+        call: crate::tool::Call,
+        cancellation: &Cancellation,
+    ) -> Result<(crate::Message, crate::tool::Evaluation), Error> {
+        Toolkit::from(self.clone()).execute(call, cancellation).await
+    }
+}
+
+impl crate::workspace::Workspace for Docker {
+    fn definition(&self) -> &Definition {
+        &self.definition
+    }
+
+    fn tool(&self) -> Vec<crate::tool::ToolDefinition> {
+        self.tool_catalog()
+    }
+
+    fn mcp(&self) -> Vec<crate::mcp::Definition> {
+        self.mcp_catalog()
+    }
+
+    fn skill(&self) -> Vec<crate::skill::Definition> {
+        self.skill_catalog()
+    }
+
+    fn execute<'a>(
+        &'a self,
+        call: crate::tool::Call,
+        cancellation: &'a Cancellation,
+    ) -> crate::workspace::ToolFuture<'a> {
+        Box::pin(self.execute(call, cancellation))
     }
 }
 

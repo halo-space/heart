@@ -2,7 +2,7 @@
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    agent::{self, SubAgent, toolkit::Toolkit},
+    agent::{self, SubAgent, },
     checkpoint::Checkpoint,
     core,
     event::Event,
@@ -118,14 +118,14 @@ fn compiled(react: bool, depth: usize, count: usize) -> (CompiledWorkflow, Vec<P
         let model = Model::default();
         let calls = Arc::new(Mutex::new(Vec::new()));
         let checkpoint = Arc::new(Store::default());
-        let capabilities=Toolkit::new().tools([Lookup{definition:ToolDefinition{name:"lookup".into(),description:"lookup weather".into(),parameters:json!({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}).as_object().unwrap().clone()},calls:calls.clone()}]);
+        let capabilities=[Lookup{definition:ToolDefinition{name:"lookup".into(),description:"lookup weather".into(),parameters:json!({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}).as_object().unwrap().clone()},calls:calls.clone()}];
         if react {
             builder
                 .add_agent_node(
                     name,
                     agent::react()
                         .model(model.clone())
-                        .toolkit(capabilities)
+                        .tools(capabilities)
                         .permission(Ask)
                         .checkpoint(checkpoint.clone())
                         .with_id_fn(next_id)
@@ -139,7 +139,7 @@ fn compiled(react: bool, depth: usize, count: usize) -> (CompiledWorkflow, Vec<P
                     name,
                     agent::chat()
                         .model(model.clone())
-                        .toolkit(capabilities)
+                        .tools(capabilities)
                         .permission(Ask)
                         .checkpoint(checkpoint.clone())
                         .with_id_fn(next_id)
@@ -777,7 +777,7 @@ async fn workflow_reply_reaches_a_delegated_child_without_exposing_internal_coor
             let calls = Arc::new(Mutex::new(Vec::new()));
             let child_checkpoint = Arc::new(Store::default());
             let parent_checkpoint = Arc::new(Store::default());
-            let child=SubAgent::new("worker",agent::chat().model(Model::default()).toolkit(Toolkit::new().tools([Lookup{definition:ToolDefinition{name:"lookup".into(),description:"lookup weather".into(),parameters:json!({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}).as_object().unwrap().clone()},calls:calls.clone()}]))
+            let child=SubAgent::new("worker",agent::chat().model(Model::default()).tools([Lookup{definition:ToolDefinition{name:"lookup".into(),description:"lookup weather".into(),parameters:json!({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}).as_object().unwrap().clone()},calls:calls.clone()}])
             .permission(Ask).checkpoint(child_checkpoint.clone()).build().unwrap()).unwrap();
             let mut builder = WorkflowBuilder::new("delegating-embedded");
             if react {
@@ -1214,7 +1214,7 @@ async fn workflow_reply_targets_actual_agent_plan_tasks_even_when_node_names_rep
     for depth in [0, 2] {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let child_checkpoint = Arc::new(Store::default());
-        let agent=agent::react().model(PlanningModel::default()).toolkit(Toolkit::new().tools([Lookup{definition:ToolDefinition{name:"lookup".into(),description:"lookup weather".into(),parameters:json!({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}).as_object().unwrap().clone()},calls:calls.clone()}]))
+        let agent=agent::react().model(PlanningModel::default()).tools([Lookup{definition:ToolDefinition{name:"lookup".into(),description:"lookup weather".into(),parameters:json!({"type":"object","properties":{"city":{"type":"string"}},"required":["city"]}).as_object().unwrap().clone()},calls:calls.clone()}])
             .permission(Ask).with_max_concurrency(1).with_id_fn(next_id).checkpoint(child_checkpoint.clone()).build().unwrap();
         let mut builder = WorkflowBuilder::new("planned-agent-live");
         builder.add_agent_node("a", agent).unwrap();

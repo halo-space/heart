@@ -2,7 +2,7 @@
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, Payload, toolkit::Toolkit},
+    agent::{self, Agent, Input, Payload, },
     checkpoint::Checkpoint as _,
     core,
     event::Event,
@@ -234,7 +234,7 @@ async fn graphless_roots_keep_canonical_child_identity_and_do_not_duplicate_pare
         let counts = Arc::new(Mutex::new(Counts::default()));
         let child = agent::chat()
             .model(ContextualChildModel)
-            .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+            .tools(Weather::new(counts.clone()))
             .build()
             .unwrap();
         let child = agent::SubAgent::new("reviewer", child).unwrap();
@@ -296,7 +296,7 @@ async fn graphless_roots_keep_canonical_child_identity_and_do_not_duplicate_pare
 
         let child = agent::chat()
             .model(ContextualChildModel)
-            .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+            .tools(Weather::new(counts.clone()))
             .build()
             .unwrap();
         let child = agent::SubAgent::new("reviewer", child).unwrap();
@@ -415,12 +415,12 @@ async fn cached_root_child_and_waiting_tool_restore_in_original_call_order() {
             .build()
             .unwrap();
         let child = agent::SubAgent::new("reviewer", child).unwrap();
-        let capabilities = Toolkit::new().tools(Weather::new(counts.clone()));
+        let capabilities = Weather::new(counts.clone());
         let model = Metered(Model::new(selection), 3);
         let events = if react {
             agent::react()
                 .model(model)
-                .toolkit(capabilities)
+                .tools(capabilities)
                 .subagents([child])
                 .with_id_fn(next_plan_id)
                 .checkpoint(checkpoint.clone())
@@ -434,7 +434,7 @@ async fn cached_root_child_and_waiting_tool_restore_in_original_call_order() {
         } else {
             agent::chat()
                 .model(model)
-                .toolkit(capabilities)
+                .tools(capabilities)
                 .subagents([child])
                 .with_id_fn(next_plan_id)
                 .checkpoint(checkpoint.clone())
@@ -458,11 +458,11 @@ async fn cached_root_child_and_waiting_tool_restore_in_original_call_order() {
         .unwrap();
         let model = Model::new(Message::new(Role::Assistant));
         let requests = model.requests.clone();
-        let capabilities = Toolkit::new().tools(Weather::new(counts.clone()));
+        let capabilities = Weather::new(counts.clone());
         let events = if react {
             agent::react()
                 .model(model)
-                .toolkit(capabilities)
+                .tools(capabilities)
                 .subagents([child])
                 .with_id_fn(|| panic!("cached child must not allocate IDs"))
                 .checkpoint(checkpoint.clone())
@@ -476,7 +476,7 @@ async fn cached_root_child_and_waiting_tool_restore_in_original_call_order() {
         } else {
             agent::chat()
                 .model(model)
-                .toolkit(capabilities)
+                .tools(capabilities)
                 .subagents([child])
                 .with_id_fn(|| panic!("cached child must not allocate IDs"))
                 .checkpoint(checkpoint.clone())
@@ -521,10 +521,7 @@ async fn planned_pending_eval_cancellation_keeps_attempt_result_and_never_admits
         embedded_workflow(
             agent::react()
                 .model(PlannedModel::default())
-                .toolkit(
-                    Toolkit::new()
-                        .tools(PendingEval(Weather::new(counts.clone()), entered.clone())),
-                )
+                .tools(PendingEval(Weather::new(counts.clone()), entered.clone()))
                 .with_id_fn(next_plan_id)
                 .with_max_concurrency(1)
                 .build()
@@ -627,7 +624,7 @@ async fn terminal_child_scene_delivery_is_not_billed_as_another_model_call() {
         let counts = Arc::new(Mutex::new(Counts::default()));
         let child = agent::chat()
             .model(Metered(Model::new(calls(&["weather_001"])), 3))
-            .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+            .tools(Weather::new(counts.clone()))
             .build()
             .unwrap();
         let child = SubAgent::new("reviewer", child).unwrap();
@@ -674,7 +671,7 @@ async fn terminal_child_scene_delivery_is_not_billed_as_another_model_call() {
             .unwrap();
         let child = agent::chat()
             .model(Metered(Model::new(Message::new(Role::Assistant)), 4))
-            .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+            .tools(Weather::new(counts.clone()))
             .checkpoint(child_checkpoint.clone())
             .build()
             .unwrap();
@@ -722,7 +719,7 @@ async fn terminal_child_scene_delivery_is_not_billed_as_another_model_call() {
             "reviewer",
             agent::chat()
                 .model(model)
-                .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+                .tools(Weather::new(counts.clone()))
                 .build()
                 .unwrap(),
         )
@@ -984,7 +981,7 @@ async fn planned_subagent_wait_must_not_replay_child_tool_after_checkpoint_resto
     let counts = Arc::new(Mutex::new(Counts::default()));
     let child = agent::chat()
         .model(ContextualChildModel)
-        .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+        .tools(Weather::new(counts.clone()))
         .build()
         .unwrap();
     let first = agent::react()
@@ -1040,7 +1037,7 @@ async fn planned_subagent_wait_must_not_replay_child_tool_after_checkpoint_resto
     );
     let child = agent::chat()
         .model(ContextualChildModel)
-        .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+        .tools(Weather::new(counts.clone()))
         .build()
         .unwrap();
     let restored = agent::react()
@@ -1272,7 +1269,7 @@ async fn planned_subagent_inherits_id_function_for_its_own_plan_and_restores_tha
         // function. Memory has no role in execution identity allocation.
         let child = agent::react()
             .model(PlannedModel::default())
-            .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+            .tools(Weather::new(counts.clone()))
             .build()
             .unwrap();
         let parent = agent::react()
@@ -1439,7 +1436,7 @@ async fn real_subagent_eval_wait_retains_child_consumption_and_does_not_reselect
         let counts = Arc::new(Mutex::new(Counts::default()));
         let child = agent::chat()
             .model(Metered(Model::new(calls(&["weather_001"])), 3))
-            .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+            .tools(Weather::new(counts.clone()))
             .build()
             .unwrap();
         let child = SubAgent::new("reviewer", child).unwrap();
@@ -1512,7 +1509,7 @@ async fn real_subagent_eval_wait_retains_child_consumption_and_does_not_reselect
         let saved = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
         let child = agent::chat()
             .model(Metered(Model::new(Message::new(Role::Assistant)), 5))
-            .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+            .tools(Weather::new(counts.clone()))
             .build()
             .unwrap();
         let child = SubAgent::new("reviewer", child).unwrap();
@@ -1587,7 +1584,7 @@ async fn planned_eval_in_nested_workflow_keeps_successful_sibling_and_current_at
         embedded_workflow(
             agent::react()
                 .model(model)
-                .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+                .tools(Weather::new(counts.clone()))
                 .with_id_fn(next_plan_id)
                 .with_max_concurrency(2)
                 .build()
@@ -1645,7 +1642,7 @@ async fn planned_eval_in_nested_workflow_keeps_successful_sibling_and_current_at
         embedded_workflow(
             agent::react()
                 .model(model)
-                .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+                .tools(Weather::new(counts.clone()))
                 .with_id_fn(next_plan_id)
                 .with_max_concurrency(2)
                 .build()
@@ -1825,12 +1822,12 @@ async fn embedded_reply_identity_conflict_keeps_previous_scene_and_consumption()
     for react in [false, true] {
         let counts = Arc::new(Mutex::new(Counts::default()));
         let model = Metered(Model::new(calls(&["weather_001"])), 3);
-        let capabilities = Toolkit::new().tools(Weather::new(counts.clone()));
+        let capabilities = Weather::new(counts.clone());
         let compiled = if react {
             embedded_workflow(
                 agent::react()
                     .model(model)
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .build()
                     .unwrap(),
             )
@@ -1838,7 +1835,7 @@ async fn embedded_reply_identity_conflict_keeps_previous_scene_and_consumption()
             embedded_workflow(
                 agent::chat()
                     .model(model)
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .build()
                     .unwrap(),
             )
@@ -1899,12 +1896,12 @@ async fn embedded_chat_and_react_resume_eval_in_the_original_workflow_attempt() 
         let child_checkpoint = Arc::new(core::checkpoint::InMemory::new());
         let counts = Arc::new(Mutex::new(Counts::default()));
         let model = Metered(Model::new(calls(&["weather_002", "weather_001"])), 3);
-        let capabilities = Toolkit::new().tools(Weather::new(counts.clone()));
+        let capabilities = Weather::new(counts.clone());
         let compiled = if react {
             embedded_workflow(
                 agent::react()
                     .model(model)
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .checkpoint(child_checkpoint.clone())
                     .build()
                     .unwrap(),
@@ -1913,7 +1910,7 @@ async fn embedded_chat_and_react_resume_eval_in_the_original_workflow_attempt() 
             embedded_workflow(
                 agent::chat()
                     .model(model)
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .checkpoint(child_checkpoint.clone())
                     .build()
                     .unwrap(),
@@ -1978,12 +1975,12 @@ async fn embedded_chat_and_react_resume_eval_in_the_original_workflow_attempt() 
         answer.values.insert("answer".into(), json!(42));
         let model = Metered(Model::new(answer), 5);
         let requests = model.0.requests.clone();
-        let capabilities = Toolkit::new().tools(Weather::new(counts.clone()));
+        let capabilities = Weather::new(counts.clone());
         let compiled = if react {
             embedded_workflow(
                 agent::react()
                     .model(model)
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .checkpoint(child_checkpoint.clone())
                     .build()
                     .unwrap(),
@@ -1992,7 +1989,7 @@ async fn embedded_chat_and_react_resume_eval_in_the_original_workflow_attempt() 
             embedded_workflow(
                 agent::chat()
                     .model(model)
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .checkpoint(child_checkpoint.clone())
                     .build()
                     .unwrap(),
@@ -2290,7 +2287,7 @@ async fn react_waiting_eval_resumes_eval_without_repeating_before_or_call() {
     });
     let first = agent::react()
         .model(Model::new(response))
-        .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+        .tools(Weather::new(counts.clone()))
         .checkpoint(checkpoint.clone())
         .build()
         .unwrap();
@@ -2354,7 +2351,7 @@ async fn react_waiting_eval_resumes_eval_without_repeating_before_or_call() {
     let model = Model::new(Message::new(Role::Assistant));
     let restored = agent::react()
         .model(model.clone())
-        .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+        .tools(Weather::new(counts.clone()))
         .checkpoint(checkpoint.clone())
         .build()
         .unwrap();
@@ -2430,7 +2427,7 @@ async fn completed_sibling_eval_is_reused_and_context_keeps_selection_order() {
     let counts = Arc::new(Mutex::new(Counts::default()));
     let first = agent::react()
         .model(Model::new(calls(&["weather_002", "weather_001"])))
-        .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+        .tools(Weather::new(counts.clone()))
         .with_max_concurrency(1)
         .checkpoint(checkpoint.clone())
         .build()
@@ -2465,7 +2462,7 @@ async fn completed_sibling_eval_is_reused_and_context_keeps_selection_order() {
     let model = Model::new(Message::new(Role::Assistant));
     let restored = agent::react()
         .model(model.clone())
-        .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+        .tools(Weather::new(counts.clone()))
         .checkpoint(checkpoint.clone())
         .build()
         .unwrap();
@@ -2498,7 +2495,7 @@ async fn chat_batch_restores_results_and_evals_without_parent_model_reselection(
     let counts = Arc::new(Mutex::new(Counts::default()));
     let first = agent::chat()
         .model(Model::new(calls(&["weather_002", "weather_001"])))
-        .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+        .tools(Weather::new(counts.clone()))
         .with_max_concurrency(2)
         .checkpoint(checkpoint.clone())
         .build()
@@ -2539,7 +2536,7 @@ async fn chat_batch_restores_results_and_evals_without_parent_model_reselection(
     let model = Model::new(Message::new(Role::Assistant));
     let restored = agent::chat()
         .model(model.clone())
-        .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+        .tools(Weather::new(counts.clone()))
         .checkpoint(checkpoint.clone())
         .build()
         .unwrap();
@@ -2597,7 +2594,7 @@ async fn chat_invalid_eval_scene_is_not_overwritten_or_given_to_model() {
     let counts = Arc::new(Mutex::new(Counts::default()));
     let first = agent::chat()
         .model(Model::new(calls(&["weather_001"])))
-        .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+        .tools(Weather::new(counts.clone()))
         .checkpoint(checkpoint.clone())
         .build()
         .unwrap();
@@ -2624,7 +2621,7 @@ async fn chat_invalid_eval_scene_is_not_overwritten_or_given_to_model() {
     let model = Model::new(Message::new(Role::Assistant));
     let restored = agent::chat()
         .model(model.clone())
-        .toolkit(Toolkit::new().tools(Weather::new(counts)))
+        .tools(Weather::new(counts))
         .checkpoint(checkpoint.clone())
         .build()
         .unwrap();
@@ -2646,7 +2643,7 @@ async fn chat_running_batch_checkpoint_reuses_success_and_retains_usage() {
     let counts = Arc::new(Mutex::new(Counts::default()));
     let first = agent::chat()
         .model(Metered(Model::new(calls(&["weather_002"])), 3))
-        .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+        .tools(Weather::new(counts.clone()))
         .checkpoint(checkpoint.clone())
         .build()
         .unwrap();
@@ -2674,7 +2671,7 @@ async fn chat_running_batch_checkpoint_reuses_success_and_retains_usage() {
     let model = Model::new(Message::new(Role::Assistant));
     let restored = agent::chat()
         .model(Metered(model.clone(), 5))
-        .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+        .tools(Weather::new(counts.clone()))
         .checkpoint(checkpoint.clone())
         .build()
         .unwrap();
@@ -2715,7 +2712,7 @@ async fn chat_cancellation_drops_pending_followup_provider_and_keeps_previous_us
     let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let first = agent::chat()
         .model(PendingFinal(calls.clone()))
-        .toolkit(Toolkit::new().tools(Weather::new(counts)))
+        .tools(Weather::new(counts))
         .checkpoint(checkpoint.clone())
         .build()
         .unwrap();
@@ -2771,7 +2768,7 @@ async fn cancelling_pending_chat_eval_keeps_call_result_and_marks_only_unfinishe
     let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let agent = agent::chat()
         .model(Metered(Model::new(calls(&["weather_002"])), 3))
-        .toolkit(Toolkit::new().tools(PendingEval(Weather::new(counts.clone()), entered.clone())))
+        .tools(PendingEval(Weather::new(counts.clone()), entered.clone()))
         .checkpoint(checkpoint.clone())
         .build()
         .unwrap();
@@ -2835,7 +2832,7 @@ async fn missing_eval_result_is_rejected_before_model_or_state_writes() {
     let counts = Arc::new(Mutex::new(Counts::default()));
     let first = agent::react()
         .model(Model::new(calls(&["weather_001"])))
-        .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+        .tools(Weather::new(counts.clone()))
         .checkpoint(checkpoint.clone())
         .build()
         .unwrap();
@@ -2862,7 +2859,7 @@ async fn missing_eval_result_is_rejected_before_model_or_state_writes() {
     let model = Model::new(Message::new(Role::Assistant));
     let restored = agent::react()
         .model(model.clone())
-        .toolkit(Toolkit::new().tools(Weather::new(counts)))
+        .tools(Weather::new(counts))
         .checkpoint(checkpoint.clone())
         .build()
         .unwrap();
@@ -2934,7 +2931,7 @@ async fn eval_worker() {
     let events = if chat {
         agent::chat()
             .model(model)
-            .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+            .tools(Weather::new(counts.clone()))
             .checkpoint(checkpoint.clone())
             .build()
             .unwrap()
@@ -2946,7 +2943,7 @@ async fn eval_worker() {
     } else {
         agent::react()
             .model(model)
-            .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+            .tools(Weather::new(counts.clone()))
             .checkpoint(checkpoint.clone())
             .build()
             .unwrap()
@@ -3030,7 +3027,7 @@ async fn subagent_worker() {
             }),
             if wait { 3 } else { 5 },
         ))
-        .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+        .tools(Weather::new(counts.clone()))
         .checkpoint(child_checkpoint)
         .build()
         .unwrap();
@@ -3170,12 +3167,12 @@ async fn embedded_eval_worker() {
         }),
         if phase == "wait" { 3 } else { 5 },
     );
-    let capabilities = Toolkit::new().tools(Weather::new(counts.clone()));
+    let capabilities = Weather::new(counts.clone());
     let compiled = if react {
         embedded_workflow(
             agent::react()
                 .model(model)
-                .toolkit(capabilities)
+                .tools(capabilities)
                 .checkpoint(child_checkpoint)
                 .build()
                 .unwrap(),
@@ -3184,7 +3181,7 @@ async fn embedded_eval_worker() {
         embedded_workflow(
             agent::chat()
                 .model(model)
-                .toolkit(capabilities)
+                .tools(capabilities)
                 .checkpoint(child_checkpoint)
                 .build()
                 .unwrap(),
@@ -3307,12 +3304,12 @@ async fn embedded_chat_and_react_cancel_pending_eval_preserving_the_agent_scene(
         let entered = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let model = Metered(Model::new(calls(&["weather_002"])), 3);
         let capabilities =
-            Toolkit::new().tools(PendingEval(Weather::new(counts.clone()), entered.clone()));
+            PendingEval(Weather::new(counts.clone()), entered.clone());
         let compiled = if react {
             embedded_workflow(
                 agent::react()
                     .model(model)
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .build()
                     .unwrap(),
             )
@@ -3320,7 +3317,7 @@ async fn embedded_chat_and_react_cancel_pending_eval_preserving_the_agent_scene(
             embedded_workflow(
                 agent::chat()
                     .model(model)
-                    .toolkit(capabilities)
+                    .tools(capabilities)
                     .build()
                     .unwrap(),
             )
@@ -3419,7 +3416,7 @@ async fn planned_child_worker() {
     let checkpoint = Disk(root.join("scene.json"));
     let child = agent::chat()
         .model(ContextualChildModel)
-        .toolkit(Toolkit::new().tools(Weather::new(counts.clone())))
+        .tools(Weather::new(counts.clone()))
         .checkpoint(Disk(root.join("child.json")))
         .build()
         .unwrap();

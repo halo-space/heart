@@ -12,7 +12,7 @@ use futures_core::Stream;
 use futures_util::{StreamExt, poll, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::{self, Agent, Input, SubAgent, toolkit::Toolkit},
+    agent::{self, Agent, Input, SubAgent, },
     checkpoint::Checkpoint,
     core,
     event::Event,
@@ -179,12 +179,12 @@ async fn both_modes_retain_each_model_and_tool_complete_and_same_usage() {
             let model = Model::default();
             let requests = model.0.clone();
             let checkpoint = Arc::new(core::checkpoint::InMemory::new());
-            let capabilities = Toolkit::new().tools(vec![Lookup]);
+            let capabilities = vec![Lookup];
             let events = if react {
                 collect(
                     agent::react()
                         .model(model)
-                        .toolkit(capabilities)
+                        .tools(capabilities)
                         .checkpoint(checkpoint.clone())
                         .build()
                         .unwrap(),
@@ -195,7 +195,7 @@ async fn both_modes_retain_each_model_and_tool_complete_and_same_usage() {
                 collect(
                     agent::chat()
                         .model(model)
-                        .toolkit(capabilities)
+                        .tools(capabilities)
                         .checkpoint(checkpoint.clone())
                         .build()
                         .unwrap(),
