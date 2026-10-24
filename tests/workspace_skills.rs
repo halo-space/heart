@@ -342,3 +342,35 @@ async fn server_workspace_uses_database_skill_loader_without_file_paths() {
         .unwrap();
     assert_eq!(resource.values["content"], "Database reference");
 }
+
+#[tokio::test]
+async fn server_workspace_loader_is_discovered_before_agent_prompt() {
+    let client = Elasticsearch::new(Transport::single_node("http://127.0.0.1:9200").unwrap());
+    let workspace = halo::core::workspace::es::new(client, "workspace")
+        .unwrap()
+        .skills(DatabaseSkills);
+    let requests = Arc::new(Mutex::new(Vec::new()));
+    let agent = halo::harness::builder()
+        .model(Model {
+            requests: Arc::clone(&requests),
+        })
+        .workspace(workspace)
+        .build()
+        .unwrap();
+
+    let events = agent
+        .run(Input::default(), true, Cancellation::new())
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.iter().all(Result::is_ok));
+
+    let requests = requests.lock().await;
+    let prompt = requests[0].messages.0[0].content[0].data["value"]
+        .as_str()
+        .unwrap();
+    assert!(prompt.contains("research"));
+    assert!(prompt.contains("Find and cite reliable sources."));
+    assert!(requests[0].tools.iter().any(|tool| tool.name == "skill"));
+}

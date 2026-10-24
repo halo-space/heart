@@ -3,6 +3,7 @@
 //! component contract; callers use the Agent and Workspace `.tools(...)`,
 //! `.mcps(...)` and `.skills(...)` methods.
 
+use std::any::Any;
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
@@ -158,6 +159,29 @@ impl SkillReader {
             },
         }
     }
+}
+
+fn core_workspace_skill_loaders<W>(workspace: &W) -> Vec<Arc<dyn SkillLoader>>
+where
+    W: Workspace + 'static,
+{
+    let any = workspace as &dyn Any;
+
+    // ES Workspace keeps application-provided database Loaders in its
+    // internal Toolkit. Reusing that Toolkit preserves the Loader's shared
+    // version cache while avoiding any public Workspace API expansion.
+    if let Some(workspace) = any.downcast_ref::<crate::core::workspace::es::Workspace>() {
+        return Toolkit::from(workspace.clone()).skill_loaders;
+    }
+
+    // Docker's directory discovery is opt-in and is attached by its normal
+    // `From<Docker>` adapter. Copy only those internal Loader entries; the
+    // public Workspace catalog still comes from `workspace.skill()`.
+    if let Some(workspace) = any.downcast_ref::<crate::core::workspace::Docker>() {
+        return Toolkit::from(workspace.clone()).skill_loaders;
+    }
+
+    Vec::new()
 }
 
 impl Tool for SkillReader {
@@ -419,6 +443,16 @@ impl Toolkit {
     where
         W: Workspace + 'static,
     {
+        // Workspace::skill() is intentionally synchronous and remains the
+        // public catalog for already-known Skills. Built-in Server/Docker
+        // Workspaces may also own async Loaders, so copy those internal
+        // sources into this Agent-facing table before the first run. The
+        // normal `prepared` phase then discovers them and injects only their
+        // definitions into the system prompt, just like explicitly mounted
+        // Loaders. This downcast is an implementation detail; custom
+        // Workspace implementations continue to use their synchronous
+        // `skill()` catalog without a new public hook.
+        let workspace_loaders = core_workspace_skill_loaders(&workspace);
         let workspace: Arc<dyn Workspace> = Arc::new(workspace);
         let skills = workspace
             .skill()
@@ -444,7 +478,7 @@ impl Toolkit {
             entries,
             mcp_catalog: workspace.mcp(),
             skills: skills.clone(),
-            skill_loaders: Vec::new(),
+            skill_loaders: workspace_loaders,
             skill_reader: false,
         };
         if !skills.is_empty() {
