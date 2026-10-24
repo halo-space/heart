@@ -180,3 +180,17 @@ fn runtime_graph_keeps_execution_state_and_its_existing_json_shape() {
     assert_eq!(json["nodes"]["a"]["execution"], serde_json::Value::Null);
     assert_eq!(serde_json::from_value::<Graph>(json).unwrap(), graph);
 }
+
+#[test]
+fn workflow_public_entry_uses_agent_namespace() {
+    use halo::agent::core::node::Echo;
+    use halo::agent::workflow::{graph::{END, START}, WorkflowBuilder};
+
+    let mut builder = WorkflowBuilder::new("public-workflow-entry");
+    builder.add_node("echo", Echo).unwrap();
+    builder.add_edge(START, "echo").unwrap();
+    builder.add_edge("echo", END).unwrap();
+    let workflow = builder.compile().unwrap();
+
+    assert_eq!(workflow.definition().definition_id, "public-workflow-entry");
+}
