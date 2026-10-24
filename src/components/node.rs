@@ -35,6 +35,8 @@ where
     Fut: Future<Output = Result<O, E>> + Send + 'static,
 {
     async fn call(&self, input: I, cancellation: &Cancellation) -> Result<Signal<O>, E> {
-        (self)(input, cancellation.clone()).await.map(Signal::Complete)
+        (self)(input, cancellation.clone())
+            .await
+            .map(Signal::Complete)
     }
 }
