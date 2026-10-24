@@ -4,6 +4,10 @@ Heart 是一个用 Rust 构建的 Agent 与 Workflow 执行内核。它把公共
 
 Heart 提供的是可嵌入的库，不是带页面、账号系统或托管服务的完整应用。能力按配置启用：没有配置 Model、Sandbox、Memory 或 Checkpoint，就不会自动获得对应能力。
 
+> **版本状态：Alpha（0.1.x 开发阶段）**
+>
+> 当前版本是早期开发版，尚未正式发布，也不承诺 API 稳定性。公共契约、组件实现和运行时行为仍可能在后续版本中调整；Cargo 中的 `0.1.0` 仅表示当前开发版本号。
+
 ## 当前定位
 
 - `components`：公共契约，例如 Agent、Model、Message、Event、Tool、Memory、Checkpoint 和 Workspace。
