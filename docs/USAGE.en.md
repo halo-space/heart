@@ -16,6 +16,37 @@ schemars = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
+### 1.1 Run the complete examples first
+
+The repository `examples/` directory contains complete programs that compile and run; the snippets in this guide are not pseudocode. Start with the
+offline examples:
+
+```bash
+cargo check --offline --examples
+cargo run --offline --example agent_middleware
+cargo run --offline --example node_macro
+cargo run --offline --example workflow_events
+```
+
+In your own Cargo project, add the dependencies above and copy any example to `src/main.rs`. Every row below is a runnable entry point:
+
+| Capability | Complete example | Command |
+| --- | --- | --- |
+| Chat Agent and Memory | [`examples/agent_memory.rs`](../examples/agent_memory.rs) | `cargo run --example agent_memory` |
+| ReAct, Tool and Permission | [`examples/agent_permission.rs`](../examples/agent_permission.rs) | `cargo run --example agent_permission` |
+| Middleware | [`examples/agent_middleware.rs`](../examples/agent_middleware.rs) | `cargo run --example agent_middleware` |
+| Workflow event stream | [`examples/workflow_events.rs`](../examples/workflow_events.rs) | `cargo run --example workflow_events` |
+| `#[node]` and typed nodes | [`examples/node_macro.rs`](../examples/node_macro.rs) | `cargo run --example node_macro` |
+| Planner and Evaluator | [`examples/planning_evaluation.rs`](../examples/planning_evaluation.rs) | `cargo run --example planning_evaluation` |
+| Prompt and compression | [`examples/compress.rs`](../examples/compress.rs) | `HALO_API_KEY=... cargo run --example compress` |
+| Session/Memory CRUD | [`examples/short_memory.rs`](../examples/short_memory.rs) | `cargo run --example short_memory` |
+| Document Loader/Parser/Transformer | [`examples/document_parse.rs`](../examples/document_parse.rs) | `cargo run --example document_parse -- ./input.csv` |
+| OpenAI-compatible Chat | [`examples/provider_chat.rs`](../examples/provider_chat.rs) | `OPENAI_API_KEY=... cargo run --example provider_chat` |
+| VLLM Chat Completions | [`examples/provider_vllm.rs`](../examples/provider_vllm.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example provider_vllm` |
+
+Network examples contact external services only when their command is explicitly run. Credentials are read from environment variables and never
+written to source. `cargo check --examples` validates all example code without making model or MCP requests.
+
 The package and Rust crate are `halo`, and Rust 1.99.1 or newer is required.
 
 ```text

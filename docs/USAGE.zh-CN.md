@@ -18,6 +18,36 @@ schemars = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
+### 1.1 从零运行第一个示例
+
+仓库中的 `examples/` 是可直接编译运行的完整程序，不是伪代码。进入 Heart 仓库后，可以先用不需要网络和密钥的示例验证环境：
+
+```bash
+cargo check --offline --examples
+cargo run --offline --example agent_middleware
+cargo run --offline --example node_macro
+cargo run --offline --example workflow_events
+```
+
+如果是在自己的 Cargo 项目中使用，把上面的依赖加入 `Cargo.toml`，再把任意示例复制到 `src/main.rs`。示例与本手册的对应关系如下，
+每一行都可以直接作为运行入口：
+
+| 能力 | 可运行示例 | 命令 |
+| --- | --- | --- |
+| Chat Agent、Memory | [`examples/agent_memory.rs`](../examples/agent_memory.rs) | `cargo run --example agent_memory` |
+| ReAct、Tool、Permission | [`examples/agent_permission.rs`](../examples/agent_permission.rs) | `cargo run --example agent_permission` |
+| Middleware | [`examples/agent_middleware.rs`](../examples/agent_middleware.rs) | `cargo run --example agent_middleware` |
+| Workflow 事件流 | [`examples/workflow_events.rs`](../examples/workflow_events.rs) | `cargo run --example workflow_events` |
+| `#[node]` 和强类型节点 | [`examples/node_macro.rs`](../examples/node_macro.rs) | `cargo run --example node_macro` |
+| Planner、Evaluator | [`examples/planning_evaluation.rs`](../examples/planning_evaluation.rs) | `cargo run --example planning_evaluation` |
+| Prompt、压缩 | [`examples/compress.rs`](../examples/compress.rs) | `HALO_API_KEY=... cargo run --example compress` |
+| Session/Memory CRUD | [`examples/short_memory.rs`](../examples/short_memory.rs) | `cargo run --example short_memory` |
+| Document Loader/Parser/Transformer | [`examples/document_parse.rs`](../examples/document_parse.rs) | `cargo run --example document_parse -- ./input.csv` |
+| OpenAI-compatible Chat | [`examples/provider_chat.rs`](../examples/provider_chat.rs) | `OPENAI_API_KEY=... cargo run --example provider_chat` |
+| VLLM Chat Completions | [`examples/provider_vllm.rs`](../examples/provider_vllm.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example provider_vllm` |
+
+网络示例只在明确执行命令时访问外部服务；密钥只从环境变量读取，不写入源码。`cargo check --examples` 不会发起模型或 MCP 请求，适合先验证代码。
+
 目录职责：
 
 ```text
