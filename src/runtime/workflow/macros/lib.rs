@@ -377,7 +377,7 @@ fn expand_impl(
     Ok(quote!(
         #implementation
         impl #root::node::Node<#input, #output, #error> for #ty {
-            async fn call(&self, input: #input, cancellation: #root::Cancellation)
+            async fn call(&self, input: #input, cancellation: &#root::Cancellation)
                 -> ::std::result::Result<#root::node::Signal<#output>, #error>
             { #result }
         }

@@ -553,7 +553,7 @@ fn final_error_is_direct_and_checkpoint_is_saved_before_it_is_delivered() {
 
 struct Review;
 impl Node<Messages, Messages, Error> for Review {
-    async fn call(&self, _: Messages, _: Cancellation) -> Result<Signal<Messages>, Error> {
+    async fn call(&self, _: Messages, _: &Cancellation) -> Result<Signal<Messages>, Error> {
         Ok(Signal::Wait(Wait {
             wait_id: "review".into(),
         }))

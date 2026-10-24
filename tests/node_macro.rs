@@ -136,7 +136,7 @@ fn original_functions_and_methods_remain_directly_callable() {
             Output { value: 6 }
         );
         assert_eq!(
-            Node::call(&component, Input { value: 4 }, Cancellation::new())
+            Node::call(&component, Input { value: 4 }, &Cancellation::new())
                 .await
                 .unwrap(),
             Signal::Complete(Output { value: 8 })
@@ -152,7 +152,7 @@ fn original_component_errors_and_cancellation_are_not_wrapped_or_retried() {
         let component = Compute {
             calls: calls.clone(),
         };
-        let error = Node::call(&component, Input { value: -1 }, Cancellation::new())
+        let error = Node::call(&component, Input { value: -1 }, &Cancellation::new())
             .await
             .unwrap_err();
         assert_eq!(
@@ -164,7 +164,7 @@ fn original_component_errors_and_cancellation_are_not_wrapped_or_retried() {
         let cancellation = Cancellation::new();
         cancellation.cancel();
         assert_eq!(
-            Node::call(&component, Input { value: 1 }, cancellation.clone())
+            Node::call(&component, Input { value: 1 }, &cancellation)
                 .await
                 .unwrap_err(),
             ComponentError {
@@ -186,7 +186,7 @@ fn original_component_errors_and_cancellation_are_not_wrapped_or_retried() {
 fn signal_glue_preserves_wait_complete_and_error() {
     block_on(async {
         assert_eq!(
-            Node::call(&Approval, Input { value: 0 }, Cancellation::new())
+            Node::call(&Approval, Input { value: 0 }, &Cancellation::new())
                 .await
                 .unwrap(),
             Signal::Wait(Wait {
@@ -194,13 +194,13 @@ fn signal_glue_preserves_wait_complete_and_error() {
             })
         );
         assert_eq!(
-            Node::call(&Approval, Input { value: 1 }, Cancellation::new())
+            Node::call(&Approval, Input { value: 1 }, &Cancellation::new())
                 .await
                 .unwrap(),
             Signal::Complete(Output { value: 1 })
         );
         assert_eq!(
-            Node::call(&Approval, Input { value: -1 }, Cancellation::new())
+            Node::call(&Approval, Input { value: -1 }, &Cancellation::new())
                 .await
                 .unwrap_err(),
             Error::new("DENIED", "original signal error")

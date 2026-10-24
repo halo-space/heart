@@ -72,7 +72,7 @@ fn cancellation_is_shared_and_node_returns_complete() {
     assert!(cancellation.is_cancelled());
 
     let input = Messages::new([Message::new(Role::User)]);
-    let result = block_on(Echo.call(input.clone(), cancellation));
+    let result = block_on(Echo.call(input.clone(), &cancellation));
     assert_eq!(result, Ok(Signal::Complete(input)));
 }
 

@@ -339,7 +339,7 @@ async fn absent_hooks_pass_through_direct_tool_mounted_capabilities_and_workflow
             .clone(),
     });
     let Signal::Complete(messages) = ToolNode::new(tool)
-        .call(Messages::new([selection]), c)
+        .call(Messages::new([selection]), &c)
         .await
         .unwrap()
     else {

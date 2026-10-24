@@ -3091,7 +3091,7 @@ mod tests {
         async fn call(
             &self,
             input: Messages,
-            _cancellation: Cancellation,
+            _cancellation: &Cancellation,
         ) -> Result<Signal<Messages>, crate::Error> {
             if !self.0.swap(true, Ordering::AcqRel) {
                 Ok(Signal::Wait(NodeWait {
@@ -3109,7 +3109,7 @@ mod tests {
         async fn call(
             &self,
             input: Messages,
-            _cancellation: Cancellation,
+            _cancellation: &Cancellation,
         ) -> Result<Signal<Messages>, crate::Error> {
             if !self.0.swap(true, Ordering::AcqRel) {
                 Err(crate::Error::new("TIMEOUT", "temporary"))

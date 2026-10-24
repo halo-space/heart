@@ -466,7 +466,7 @@ where
         Box::pin(async move {
             let input: I = serde_json::from_value(input)
                 .map_err(|error| Error::new("INVALID_ARGUMENTS", error.to_string()))?;
-            match node.call(input, cancellation).await.map_err(Into::into)? {
+            match node.call(input, &cancellation).await.map_err(Into::into)? {
                 Signal::Complete(output) => {
                     let value = serde_json::to_value(output)
                         .map_err(|error| Error::new("INVALID_OUTPUT", error.to_string()))?;

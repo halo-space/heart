@@ -33,7 +33,7 @@ struct CountedAgent {
 struct Approval(AtomicBool);
 
 impl Node<Messages, Messages, Error> for Approval {
-    async fn call(&self, input: Messages, _: Cancellation) -> Result<Signal<Messages>, Error> {
+    async fn call(&self, input: Messages, _: &Cancellation) -> Result<Signal<Messages>, Error> {
         if self.0.swap(true, Ordering::SeqCst) {
             Ok(Signal::Complete(input))
         } else {

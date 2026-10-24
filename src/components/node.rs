@@ -21,7 +21,7 @@ pub trait Node<I, O, E>: Send + Sync + 'static {
     fn call(
         &self,
         input: I,
-        cancellation: Cancellation,
+        cancellation: &Cancellation,
     ) -> impl Future<Output = Result<Signal<O>, E>> + Send;
 }
 
@@ -34,7 +34,7 @@ where
     F: Fn(I, Cancellation) -> Fut + Send + Sync + 'static,
     Fut: Future<Output = Result<O, E>> + Send + 'static,
 {
-    async fn call(&self, input: I, cancellation: Cancellation) -> Result<Signal<O>, E> {
-        (self)(input, cancellation).await.map(Signal::Complete)
+    async fn call(&self, input: I, cancellation: &Cancellation) -> Result<Signal<O>, E> {
+        (self)(input, cancellation.clone()).await.map(Signal::Complete)
     }
 }

@@ -215,7 +215,7 @@ impl ToolNode {
         &self,
         call: Call,
         facts: Facts,
-        cancellation: Cancellation,
+        cancellation: &Cancellation,
     ) -> Result<Message, Error> {
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "tool node cancelled"));
@@ -259,7 +259,7 @@ impl ToolNode {
             }
         }
         acknowledge(facts.clone(), step.clone()).await?;
-        entry.execute(step, facts, cancellation).await
+        entry.execute(step, facts, cancellation.clone()).await
     }
 
     fn merge_parallel_errors(errors: Vec<(Call, Error)>) -> Error {
@@ -320,7 +320,7 @@ impl ToolNode {
                 let mut output = committed_by_id;
                 for call in pending {
                     match self
-                        .execute_call(call.clone(), facts.clone(), cancellation.clone())
+                        .execute_call(call.clone(), facts.clone(), &cancellation)
                         .await
                     {
                         Ok(message) => {
@@ -356,7 +356,7 @@ impl ToolNode {
                     pending
                         .iter()
                         .cloned()
-                        .map(|call| self.execute_call(call, facts.clone(), cancellation.clone())),
+                        .map(|call| self.execute_call(call, facts.clone(), &cancellation)),
                 )
                 .await;
                 let mut output = committed_by_id;
@@ -472,9 +472,9 @@ impl Node<Messages, Messages, Error> for ToolNode {
     async fn call(
         &self,
         input: Messages,
-        cancellation: Cancellation,
+        cancellation: &Cancellation,
     ) -> Result<Signal<Messages>, Error> {
-        self.call_with_recovery(input, cancellation, Attempt::default())
+        self.call_with_recovery(input, cancellation.clone(), Attempt::default())
             .await
             .map(|(signal, _)| signal)
             .map_err(|failure| failure.error)
@@ -805,7 +805,7 @@ mod tests {
             reject: false,
         });
         let result =
-            block_on(node.call(request(json!({"city": "Beijing"})), Cancellation::new())).unwrap();
+            block_on(node.call(request(json!({"city": "Beijing"})), &Cancellation::new())).unwrap();
         let Signal::Complete(messages) = result else {
             panic!("ToolNode unexpectedly returned Wait");
         };
@@ -819,7 +819,7 @@ mod tests {
     fn workflow_tool_node_does_not_run_eval_hook() {
         let evaluated = Arc::new(AtomicBool::new(false));
         let node = ToolNode::new(eval_search(evaluated.clone()));
-        let result = block_on(node.call(request(json!({})), Cancellation::new())).unwrap();
+        let result = block_on(node.call(request(json!({})), &Cancellation::new())).unwrap();
         assert!(matches!(result, Signal::Complete(_)));
         assert!(!evaluated.load(Ordering::SeqCst));
     }
@@ -833,7 +833,7 @@ mod tests {
         });
         let error = block_on(node.call(
             request(Value::String("not-json".into())),
-            Cancellation::new(),
+            &Cancellation::new(),
         ))
         .unwrap_err();
         assert!(!called.load(Ordering::SeqCst));
@@ -848,7 +848,7 @@ mod tests {
             called: called.clone(),
             reject: true,
         });
-        let error = block_on(node.call(request(json!({"city": "Beijing"})), Cancellation::new()))
+        let error = block_on(node.call(request(json!({"city": "Beijing"})), &Cancellation::new()))
             .unwrap_err();
         assert_eq!(error.code, "INVALID_ARGUMENTS");
         assert!(!called.load(Ordering::SeqCst));
@@ -869,7 +869,7 @@ mod tests {
                 ("call_weather", "weather", json!({"city": "Beijing"})),
                 ("call_search", "search", json!({"query": "rust"})),
             ]),
-            Cancellation::new(),
+            &Cancellation::new(),
         ))
         .unwrap();
         let Signal::Complete(messages) = result else {
@@ -974,7 +974,7 @@ mod tests {
                 ("call_weather", "weather", json!({"city": "Beijing"})),
                 ("call_missing", "missing", json!({})),
             ]),
-            Cancellation::new(),
+            &Cancellation::new(),
         ))
         .unwrap_err();
         assert_eq!(error.code, "NOT_FOUND");
@@ -992,7 +992,7 @@ mod tests {
             called: called.clone(),
             reject: false,
         });
-        let error = block_on(node.call(request(json!({"city": "Beijing"})), Cancellation::new()))
+        let error = block_on(node.call(request(json!({"city": "Beijing"})), &Cancellation::new()))
             .unwrap_err();
         assert_eq!(error.code, "INVALID_ARGUMENTS");
         assert!(!called.load(Ordering::SeqCst));

@@ -12,7 +12,7 @@ impl Node<Messages, Messages, Error> for Echo {
     async fn call(
         &self,
         input: Messages,
-        _cancellation: Cancellation,
+        _cancellation: &Cancellation,
     ) -> Result<Signal<Messages>, Error> {
         Ok(Signal::Complete(input))
     }
