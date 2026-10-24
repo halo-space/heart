@@ -61,6 +61,7 @@ cargo run --example provider_vllm
 | Prompt 与压缩 | [`examples/compress.rs`](examples/compress.rs) |
 | Session/Memory CRUD | [`examples/short_memory.rs`](examples/short_memory.rs) |
 | OpenAI-compatible Chat | [`examples/provider_chat.rs`](examples/provider_chat.rs) |
+| DeepSeek Chat Completions | [`examples/provider_deepseek.rs`](examples/provider_deepseek.rs) |
 | VLLM Chat Completions | [`examples/provider_vllm.rs`](examples/provider_vllm.rs) |
 
 更多示例命令、依赖说明和故障排查见[中文使用手册](docs/USAGE.zh-CN.md)。
