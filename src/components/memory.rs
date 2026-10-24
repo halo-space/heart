@@ -210,7 +210,7 @@ where
     ///
     /// A fixed value is not a valid configuration:
     /// ```compile_fail
-    /// use halo::{core::memory, memory::Config};
+    /// use halo::agent::{core::memory, memory::Config};
     /// let config = Config::new(memory::short::session::InMemory::new(),
     ///     memory::short::chat::InMemory::new(), memory::short::trace::InMemory::new(),
     ///     memory::InMemory::new());
@@ -218,7 +218,7 @@ where
     /// ```
     /// Capturing closures are not function pointers:
     /// ```compile_fail
-    /// use halo::{core::memory, memory::Config};
+    /// use halo::agent::{core::memory, memory::Config};
     /// use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
     /// let config = Config::new(memory::short::session::InMemory::new(),
     ///     memory::short::chat::InMemory::new(), memory::short::trace::InMemory::new(),
