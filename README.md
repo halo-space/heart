@@ -29,6 +29,8 @@ cargo run --offline --example agent_middleware
 cargo run --offline --example workflow_events
 ```
 
+上面的离线示例使用确定性的本地替身，只用于验证 Agent/Workflow 契约，不会产生大模型回答。要调用真实模型，请使用 OpenAI-compatible Provider 示例：
+
 需要模型或外部服务的示例只从环境变量读取地址和密钥，不把 Secret 写入源码。VLLM 示例使用 OpenAI-compatible `/v1/chat/completions` 接口：
 
 ```bash

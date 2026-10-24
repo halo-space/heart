@@ -112,6 +112,9 @@ Chat Agent 是普通对话循环。它可以使用已挂载的 Tool、MCP 和 Sk
 
 ### 3.1 构造和运行
 
+下面是 Agent 入口的最小结构片段；其中 `chat` 和 `input` 需要由应用按第 6 节初始化。它不是模型实现，也不会自行产生回答。
+需要真实大模型的完整程序见[10.1 真实 VLLM Chat Agent](#101-真实-vllm-chat-agent从-input-到-deltacomplete)。
+
 ```rust
 use futures_util::StreamExt;
 use halo::agent::{Cancellation};
@@ -394,68 +397,56 @@ cd heart-guide-demo
 cargo run
 ```
 
-示例只使用当前公开契约。需要网络、凭据或外部服务的示例会在标题中明确标出；其余示例离线即可运行。
+示例只使用当前公开契约。需要网络、凭据或外部服务的示例会在标题中明确标出；离线示例中的本地 Chat 仅用于测试 Agent 契约，不代表大模型能力。
 
-### 10.1 离线 Chat Agent：从 Input 到 Delta/Complete
+### 10.1 真实 VLLM Chat Agent：从 Input 到 Delta/Complete
 
-这个例子使用一个确定性的本地 Chat 实现，因此不需要 API Key。它展示了四件事：
+下面使用真实的 OpenAI-compatible VLLM Chat Completions 服务，不伪造模型输出。先设置服务地址、密钥和模型名：
 
-1. `Input.metadata` 放业务身份，`payload` 放有序用户输入；
-2. Agent 的输入不是模型 `Messages`，Agent 内部才把 Input 组织成模型消息；
-3. `stream = true` 同时观察 Delta 和 Complete；
-4. `Complete.message` 才是该次调用的完整结果，不能用 Delta 反推 Runtime State。
+```bash
+export HEART_VLLM_BASE_URL=http://127.0.0.1:8000/v1
+export HEART_VLLM_API_KEY=replace-me
+export HEART_VLLM_MODEL=Qwen3.5-122B-A10B
+```
+
+这个例子展示：
+
+1. `Vllm::new` 初始化 Provider，`provider.chat(...)` 绑定具体模型；
+2. Agent 的输入仍然是 `Input`，由 Agent 内部组织模型 `Messages`；
+3. `stream = true` 同时观察模型返回的 `Delta` 和 `Complete`；
+4. 模型的思考内容由 Provider 统一映射为 `think`，普通回答映射为 `text`。
 
 ```rust
-use futures_util::{StreamExt, stream};
-use halo::agent::{Cancellation, Error};
-use halo::agent::{
-    event::Event,
-    message::{Message, Role},
-    model::{chat::{Chat, Request}, content::part::Part},
-};
+use futures_util::StreamExt;
+use halo::agent::{self, Agent, Cancellation, Input, Payload};
+use halo::{event::Event, model::chat, provider::vllm::{Config, Vllm}};
 use serde_json::json;
 
-struct DemoChat;
-
-impl Chat for DemoChat {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-
-    async fn stream(&self, _request: Request) -> Result<Self::Stream, Error> {
-        let mut delta = Message::new(Role::Assistant);
-        delta.content.push(Part {
-            r#type: "text".into(),
-            data: json!({"value": "北京今天晴朗。"}).as_object().unwrap().clone(),
-        });
-        let mut complete = Message::new(Role::Assistant);
-        complete.content.push(Part {
-            r#type: "text".into(),
-            data: json!({"value": "北京今天晴朗，适合出行。"}).as_object().unwrap().clone(),
-        });
-        Ok(stream::iter(vec![
-            Ok(Event::Delta { message: delta }),
-            Ok(Event::Complete {
-                message: complete,
-                usage: None,
-                finish_reason: Some("stop".into()),
-            }),
-        ]))
-    }
-}
-
 #[tokio::main]
-async fn main() -> Result<(), Error> {
+async fn main() -> Result<(), halo::agent::Error> {
+    let provider = Vllm::new(Config {
+        base_url: std::env::var("HEART_VLLM_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000/v1".into()),
+        api_key: std::env::var("HEART_VLLM_API_KEY").expect("HEART_VLLM_API_KEY is required"),
+        ..Config::default()
+    })?;
+    let chat = provider.chat(chat::Config {
+        model_name: std::env::var("HEART_VLLM_MODEL").expect("HEART_VLLM_MODEL is required"),
+        options: serde_json::Map::from_iter([
+            ("chat_template_kwargs".into(), json!({"enable_thinking": true})),
+        ]),
+    })?;
     let agent = agent::chat()
-        .model(DemoChat)
+        .model(chat)
         .system_prompt("你是一个简洁的中文助手")
         .build()?;
 
-    let input = agent::Input {
+    let input = Input {
         metadata: serde_json::Map::from_iter([
             ("chat_id".into(), json!(1001)),
             ("session_id".into(), json!(2001)),
             ("agent_id".into(), json!(3001)),
         ]),
-        payload: vec![agent::Payload {
+        payload: vec![Payload {
             r#type: "text".into(),
             data: json!({"value": "北京今天适合出门吗？"}),
             mime_type: None,

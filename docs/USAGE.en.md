@@ -105,6 +105,10 @@ Events are observations, not Runtime State. Workflow downstream nodes read their
 Chat Agent is the ordinary conversation loop. It can use mounted Tool, MCP and Skill capabilities. Use ReAct when a task needs iterations,
 planning or replanning.
 
+The following is the smallest Agent entry-point fragment; the application must initialize `chat` and `input` as described in section 6.
+It is not a model implementation and does not fabricate a response. For a complete real-model program, see
+[10.1 Real VLLM Chat Agent](#101-real-vllm-chat-agent).
+
 ```rust
 use futures_util::StreamExt;
 use halo::agent::{Cancellation};
@@ -358,39 +362,41 @@ cargo new heart-guide-demo
 cd heart-guide-demo
 ```
 
-The first recipes are offline and deterministic. VLLM and MCP recipes explicitly require external services and environment variables.
+The basic recipes may use deterministic local Chat doubles to test contracts. They are not model capabilities. VLLM and MCP recipes explicitly
+require external services and environment variables.
 
-### 10.1 Offline Chat Agent
+### 10.1 Real VLLM Chat Agent
 
-This program uses a deterministic local Chat implementation, so it needs no credentials. It shows the shared `Input`, the separation between
-Agent input and model `Messages`, and the fixed `Delta`/`Complete` event stream.
+This program calls a real OpenAI-compatible VLLM Chat Completions service; it does not fabricate a model response. Set the service address,
+credential and model first:
+
+```bash
+export HEART_VLLM_BASE_URL=http://127.0.0.1:8000/v1
+export HEART_VLLM_API_KEY=replace-me
+export HEART_VLLM_MODEL=Qwen3.5-122B-A10B
+```
+
+It shows Provider initialization, model binding, the shared `Input`, Agent-to-`Messages` organization, and the fixed `Delta`/`Complete` stream.
 
 ```rust
-use futures_util::{StreamExt, stream};
-use halo::agent::{Cancellation, Error};
-use halo::agent::{
-    event::Event,
-    message::{Message, Role},
-    model::{chat::{Chat, Request}, content::part::Part},
-};
+use futures_util::StreamExt;
+use halo::agent::{self, Agent, Cancellation, Input, Payload};
+use halo::{event::Event, model::chat, provider::vllm::{Config, Vllm}};
 use serde_json::json;
 
-struct DemoChat;
-impl Chat for DemoChat {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-    async fn stream(&self, _: Request) -> Result<Self::Stream, Error> {
-        let mut delta = Message::new(Role::Assistant);
-        delta.content.push(Part { r#type: "text".into(), data: json!({"value":"Beijing is sunny."}).as_object().unwrap().clone() });
-        let mut complete = Message::new(Role::Assistant);
-        complete.content.push(Part { r#type: "text".into(), data: json!({"value":"Beijing is sunny and suitable for going out."}).as_object().unwrap().clone() });
-        Ok(stream::iter(vec![Ok(Event::Delta { message: delta }), Ok(Event::Complete { message: complete, usage: None, finish_reason: Some("stop".into()) })]))
-    }
-}
-
 #[tokio::main]
-async fn main() -> Result<(), Error> {
-    let agent = agent::chat().model(DemoChat).system_prompt("You are concise").build()?;
-    let input = agent::Input { metadata: serde_json::Map::from_iter([("chat_id".into(), json!(1001)), ("session_id".into(), json!(2001)), ("agent_id".into(), json!(3001))]), payload: vec![agent::Payload { r#type: "text".into(), data: json!({"value":"Can I go outside in Beijing today?"}), mime_type: None }] };
+async fn main() -> Result<(), halo::agent::Error> {
+    let provider = Vllm::new(Config {
+        base_url: std::env::var("HEART_VLLM_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000/v1".into()),
+        api_key: std::env::var("HEART_VLLM_API_KEY").expect("HEART_VLLM_API_KEY is required"),
+        ..Config::default()
+    })?;
+    let chat = provider.chat(chat::Config {
+        model_name: std::env::var("HEART_VLLM_MODEL").expect("HEART_VLLM_MODEL is required"),
+        options: serde_json::Map::from_iter([("chat_template_kwargs".into(), json!({"enable_thinking": true}))]),
+    })?;
+    let agent = agent::chat().model(chat).system_prompt("You are concise").build()?;
+    let input = Input { metadata: serde_json::Map::from_iter([("chat_id".into(), json!(1001)), ("session_id".into(), json!(2001)), ("agent_id".into(), json!(3001))]), payload: vec![Payload { r#type: "text".into(), data: json!({"value":"Can I go outside in Beijing today?"}), mime_type: None }] };
     let mut events = agent.run(input, true, Cancellation::new()).await?;
     while let Some(event) = events.next().await { println!("{:?}", event?); }
     Ok(())
