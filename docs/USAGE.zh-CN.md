@@ -157,8 +157,8 @@ Permission 只在实际 Tool/MCP 调用前检查；Tool 的 `before/call/after/e
 
 ### 3.3 Memory 和 Checkpoint
 
-Memory 由应用配置后传给 Agent，负责短期 Session/Chat/Trace 和长期 `summary`/`fact`/`preference`。
-Checkpoint 保存一次 Agent 运行的完整恢复现场，不是 Trace 审计副本：
+Memory 由应用配置后传给 Agent，负责短期 Session/Chat（Chat.state 保存最终完整 State）和长期
+`summary`/`fact`/`preference`。Checkpoint 保存一次 Agent 运行的完整恢复现场；Chat.state 是收口审计快照，不是恢复来源：
 
 ```rust
 let agent = agent::chat()
@@ -369,7 +369,7 @@ Workspace 会在同一实例内复用已发现的 Skill 快照，只有版本变
 
 - `Cancellation` 是一次独立运行的取消范围；每个独立 Agent/Workflow 运行创建新的实例。
 - `Complete` 是一次模型、工具或节点的可观察结果，不等同于整个 Runtime 成功。
-- Checkpoint 是恢复真相；Trace 是最终审计投影。
+- Checkpoint 是恢复真相；Chat.state 是最终审计快照。
 - 工具错误保留为工具错误并反馈给当前 Agent，不伪装成正常结果。
 
 ```bash
@@ -655,7 +655,7 @@ async fn main() -> Result<(), Error> {
 
 ### 10.5 Workflow Checkpoint：保存现场后恢复
 
-Checkpoint 保存的是完整 Runtime State，而不是 Trace。生产环境通常让 Runtime 在成功或最终异常收口时写一次快照；示例使用
+Checkpoint 保存的是完整 Runtime State，而不是 Chat.state 审计快照。生产环境通常让 Runtime 在成功或最终异常收口时写一次快照；示例使用
 内存后端演示同一进程内的保存和恢复，跨进程时只需替换 `core::checkpoint::InMemory`。
 
 ```rust
@@ -778,10 +778,12 @@ impl Chat for Model {
 #[tokio::main]
 async fn main() -> Result<(), Error> {
     let cancellation = Cancellation::new();
-    let config = memory::Config::new(core::memory::short::session::InMemory::new(), core::memory::short::chat::InMemory::new(), core::memory::short::trace::InMemory::new(), core::memory::InMemory::new()).with_scopes(["user", "agent"]);
-    config.session.create(session::Session { id: 1, tenant_id: 1, user_id: 2, r#type: short::Type::Agent, title: Some("天气".into()), summary: None, usage: None, status: session::Status::Active, metadata: Map::new(), created_time: 0, updated_time: 0 }, &cancellation).await?;
-    config.chat.create(chat::Chat { id: 2, tenant_id: 1, user_id: 2, agent_id: 3, session_id: 1, r#type: short::Type::Agent, status: chat::Status::Completed, input: Some(chat::Request { metadata: Map::new(), payload: vec![chat::Payload { r#type: "text".into(), data: json!({"value":"北京天气？"}), mime_type: None }] }), message: None, usage: None, graph: None, metadata: Map::new(), started_time: None, completed_time: None, created_time: 0, updated_time: 0 }, &cancellation).await?;
-    config.long.write(memory::Request { id: 3, r#type: memory::Type::Preference, user_id: 2, agent_id: None, session_id: None, from: 1, to: 2, content: "用户喜欢露营".into(), metadata: None, vector: None }, &cancellation).await?;
+    let short = core::memory::short::InMemory::new();
+    let long = core::memory::InMemory::new();
+    let config = memory::Config::new(short, long).with_scopes(["user", "agent"]);
+    config.session().create(session::Session { id: 1, tenant_id: 1, user_id: 2, r#type: short::Type::Agent, title: Some("天气".into()), summary: None, usage: None, status: session::Status::Active, metadata: Map::new(), created_time: 0, updated_time: 0 }, &cancellation).await?;
+    config.chat().create(chat::Chat { id: 2, tenant_id: 1, user_id: 2, agent_id: 3, session_id: 1, r#type: short::Type::Agent, status: chat::Status::Completed, input: Some(chat::Request { metadata: Map::new(), payload: vec![chat::Payload { r#type: "text".into(), data: json!({"value":"北京天气？"}), mime_type: None }] }), message: None, usage: None, graph: None, state: None, metadata: Map::new(), started_time: None, completed_time: None, created_time: 0, updated_time: 0 }, &cancellation).await?;
+    config.long().write(memory::Request { id: 3, r#type: memory::Type::Preference, user_id: 2, agent_id: None, session_id: None, from: 1, to: 2, content: "用户喜欢露营".into(), metadata: None, vector: None }, &cancellation).await?;
     let agent = agent::chat().model(Model).memory(config).build()?;
     let input = Input { metadata: Map::from_iter([("chat_id".into(), json!(3)), ("session_id".into(), json!(1)), ("user_id".into(), json!(2)), ("agent_id".into(), json!(3))]), payload: vec![Payload { r#type: "text".into(), data: json!({"value":"天气好就去露营"}), mime_type: None }] };
     let mut events = agent.run(input, false, Cancellation::new()).await?;

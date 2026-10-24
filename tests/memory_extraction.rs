@@ -231,9 +231,10 @@ fn extraction_without_trigger_is_rejected_without_allocating_ids() {
         core::memory::extraction::Extractor::new(Model::default(), chat::Request::default())
             .unwrap();
     let config = memory::Config::new(
-        core::memory::short::session::InMemory::new(),
-        core::memory::short::chat::InMemory::new(),
-        core::memory::short::trace::InMemory::new(),
+        memory::short::Pair::new(
+            core::memory::short::session::InMemory::new(),
+            core::memory::short::chat::InMemory::new(),
+        ),
         core::memory::InMemory::new(),
     )
     .with_extractor(extractor)
@@ -248,15 +249,17 @@ fn extraction_without_trigger_is_rejected_without_allocating_ids() {
 }
 
 fn memory_config() -> memory::Config<
-    core::memory::short::session::InMemory,
-    core::memory::short::chat::InMemory,
-    core::memory::short::trace::InMemory,
+    memory::short::Pair<
+        core::memory::short::session::InMemory,
+        core::memory::short::chat::InMemory,
+    >,
     core::memory::InMemory,
 > {
     memory::Config::new(
-        core::memory::short::session::InMemory::new(),
-        core::memory::short::chat::InMemory::new(),
-        core::memory::short::trace::InMemory::new(),
+        memory::short::Pair::new(
+            core::memory::short::session::InMemory::new(),
+            core::memory::short::chat::InMemory::new(),
+        ),
         core::memory::InMemory::new(),
     )
 }

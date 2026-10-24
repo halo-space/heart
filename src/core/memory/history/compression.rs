@@ -10,13 +10,14 @@ use crate::{
     Cancellation, Error, Message, Messages,
     memory::{
         self, Memory,
-        short::{chat, session, trace},
+        short::{self, session},
     },
     message::Role,
     model::token::Usage,
 };
 
 use super::{extraction, progress};
+use crate::components::memory::short::session::Store as _;
 use crate::core::agent::hooks::Hooks;
 
 type Key = (usize, i64);
@@ -57,8 +58,8 @@ pub(super) fn tokens(usage: Option<&Usage>) -> u64 {
 }
 
 #[allow(clippy::too_many_arguments)]
-pub(super) fn start<S, C, T, L>(
-    config: Arc<memory::Config<S, C, T, L>>,
+pub(super) fn start<S, L>(
+    config: Arc<memory::Config<S, L>>,
     snapshot: session::Session,
     input: Vec<Message>,
     endpoints: Option<(i64, i64)>,
@@ -66,9 +67,7 @@ pub(super) fn start<S, C, T, L>(
     hooks: Hooks,
     extraction: extraction::Work,
 ) where
-    S: session::Store + 'static,
-    C: chat::Store + 'static,
-    T: trace::Store + 'static,
+    S: short::Store + 'static,
     L: Memory + 'static,
 {
     let Some(component) = config.compression.clone() else {
@@ -84,7 +83,7 @@ pub(super) fn start<S, C, T, L>(
     }
     // Actual shared backend identity, not agent name or a second namespace.
     // Hold its Arc for the entire claim lifetime to prevent pointer reuse.
-    let key = (Arc::as_ptr(&config.session) as usize, snapshot.id);
+    let key = (Arc::as_ptr(&config.short) as usize, snapshot.id);
     let Some(claim) = Claim::take(key) else {
         return;
     };
@@ -101,13 +100,13 @@ pub(super) fn start<S, C, T, L>(
                     // Independent of cancellation of the foreground Chat. Backend
                     // timeouts remain the backend's responsibility.
                     let cancellation = Cancellation::new();
-                    let current = config.session.read(snapshot.id, &cancellation).await?;
+                    let current = config.short.session().read(snapshot.id, &cancellation).await?;
                     if current != snapshot {
                         // Another writer already advanced the snapshot. Only a
                         // subsequent request may start work from the latest state.
                         return Ok(());
                     }
-                    let mut journal = progress::Journal::new(config.session.clone(), current);
+                    let mut journal = progress::Journal::new(config.short.clone(), current);
                     let state = match progress::read(&journal.current)? {
                         Some(state) => state,
                         None if compress => {

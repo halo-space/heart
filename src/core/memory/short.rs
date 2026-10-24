@@ -1,19 +1,66 @@
 pub mod chat;
+/// Elasticsearch implementations of the short-memory stores.
+pub mod es {
+    use elasticsearch::Elasticsearch;
+
+    pub use super::super::es::short::Config;
+
+    /// Construct one short-memory store. Session and Chat remain internal to
+    /// the backend and are not split in the application-facing API.
+    pub fn new(
+        client: Elasticsearch,
+        config: Config,
+    ) -> Result<impl crate::components::memory::short::Store, crate::Error> {
+        super::super::es::short::Memory::new(client, config)
+    }
+}
 pub mod session;
-pub mod trace;
+
+/// Zero-configuration short-memory store. It owns the Session and Chat
+/// records internally and is passed to `memory::Config` as one capability.
+pub struct InMemory {
+    inner: crate::components::memory::short::Pair<session::InMemory, chat::InMemory>,
+}
+
+impl InMemory {
+    pub fn new() -> Self {
+        Self {
+            inner: crate::components::memory::short::Pair::new(
+                session::InMemory::new(),
+                chat::InMemory::new(),
+            ),
+        }
+    }
+}
+
+impl Default for InMemory {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl crate::components::memory::short::Store for InMemory {
+    type Session = session::InMemory;
+    type Chat = chat::InMemory;
+
+    fn session(&self) -> &Self::Session {
+        self.inner.session()
+    }
+
+    fn chat(&self) -> &Self::Chat {
+        self.inner.chat()
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
 
-    use futures_executor::block_on;
-    use serde_json::Value;
-
     use crate::Cancellation;
     use crate::components::memory::short::chat::Store as _;
     use crate::components::memory::short::session::Store as _;
-    use crate::components::memory::short::trace::Store as _;
-    use crate::components::memory::short::{Type, chat, session, trace};
+    use crate::components::memory::short::{Type, chat, session};
+    use futures_executor::block_on;
 
     #[test]
     fn short_memory_stores_keep_their_own_crud_boundaries() {
@@ -68,6 +115,7 @@ mod tests {
                 message: None,
                 usage: None,
                 graph: None,
+                state: None,
                 metadata: BTreeMap::new().into_iter().collect(),
                 started_time: None,
                 completed_time: None,
@@ -83,21 +131,5 @@ mod tests {
             block_on(chats.read(201, &cancellation)).unwrap_err().code,
             "NOT_FOUND"
         );
-
-        let traces = super::trace::InMemory::new();
-        block_on(traces.create(
-            trace::Trace {
-                chat_id: 201,
-                user_id: Some(2),
-                session_id: Some(101),
-                agent_id: Some(3),
-                state: Value::Object(Default::default()),
-                created_time: 0,
-                updated_time: 0,
-            },
-            &cancellation,
-        ))
-        .expect("trace create");
-        block_on(traces.read(201, &cancellation)).expect("trace read");
     }
 }

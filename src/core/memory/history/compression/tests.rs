@@ -9,7 +9,7 @@ use serde_json::{Map, Value, json};
 use tokio::sync::Semaphore;
 
 use super::*;
-use crate::memory::short::{chat::Store as _, session::Store as _};
+use crate::memory::short::{chat, chat::Store as _, session};
 use crate::{
     agent::{self, Agent, Input, Payload},
     core,
@@ -22,9 +22,7 @@ use crate::{
 };
 
 type WithSession<S> = memory::Config<
-    S,
-    core::memory::short::chat::InMemory,
-    core::memory::short::trace::InMemory,
+    memory::short::Pair<S, core::memory::short::chat::InMemory>,
     core::memory::InMemory,
 >;
 type Config = WithSession<core::memory::short::session::InMemory>;
@@ -124,9 +122,10 @@ impl Chat for Model {
 
 async fn config() -> Config {
     let config = Config::new(
-        core::memory::short::session::InMemory::new(),
-        core::memory::short::chat::InMemory::new(),
-        core::memory::short::trace::InMemory::new(),
+        memory::short::Pair::new(
+            core::memory::short::session::InMemory::new(),
+            core::memory::short::chat::InMemory::new(),
+        ),
         core::memory::InMemory::new(),
     );
     add_session(&config, 101).await;
@@ -135,7 +134,7 @@ async fn config() -> Config {
 
 async fn add_session<S: session::Store>(config: &WithSession<S>, id: i64) {
     config
-        .session
+        .session()
         .create(
             session::Session {
                 id,
@@ -164,7 +163,7 @@ async fn seed<S: session::Store>(
     usage: Option<Usage>,
 ) {
     config
-        .chat
+        .chat()
         .create(
             chat::Chat {
                 id,
@@ -186,6 +185,7 @@ async fn seed<S: session::Store>(
                     .then(|| text(Role::Assistant, &format!("reply {id}"))),
                 usage,
                 graph: None,
+                state: None,
                 metadata: Map::new(),
                 started_time: None,
                 completed_time: None,
@@ -227,7 +227,7 @@ async fn run(config: Config, model: Model, id: i64, session_id: i64) {
 }
 
 async fn idle<S>(config: &WithSession<S>, id: i64) {
-    let key = (Arc::as_ptr(&config.session) as usize, id);
+    let key = (Arc::as_ptr(&config.short) as usize, id);
     tokio::time::timeout(Duration::from_secs(3), async {
         loop {
             if !ACTIVE
@@ -257,7 +257,7 @@ async fn entered(component: &Compressor, count: usize) {
 
 async fn stored<S: session::Store>(config: &WithSession<S>) -> session::Session {
     config
-        .session
+        .session()
         .read(101, &Cancellation::new())
         .await
         .unwrap()
@@ -406,13 +406,14 @@ async fn committed_summary_with_lost_ack_retains_extraction_without_recompressio
         let compressor = Compressor::new(Some(100));
         let extractor = LongExtractor::default();
         let config = memory::Config::new(
-            LostAckSession {
-                inner: core::memory::short::session::InMemory::new(),
-                fail: std::sync::atomic::AtomicBool::new(true),
-                malformed,
-            },
-            core::memory::short::chat::InMemory::new(),
-            core::memory::short::trace::InMemory::new(),
+            memory::short::Pair::new(
+                LostAckSession {
+                    inner: core::memory::short::session::InMemory::new(),
+                    fail: std::sync::atomic::AtomicBool::new(true),
+                    malformed,
+                },
+                core::memory::short::chat::InMemory::new(),
+            ),
             core::memory::InMemory::new(),
         )
         .with_compression(compressor.clone())
@@ -513,7 +514,7 @@ async fn background_does_not_block_switch_foreground_or_duplicate_a_session() {
     let compressor = Compressor::new(Some(10)).gated();
     let config = config().await.with_compression(compressor.clone());
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
-    let original_chat = config.chat.read(201, &Cancellation::new()).await.unwrap();
+    let original_chat = config.chat().read(201, &Cancellation::new()).await.unwrap();
     let model = Model::default();
     run(config.clone(), model.clone(), 301, 101).await;
     entered(&compressor, 1).await;
@@ -537,7 +538,7 @@ async fn background_does_not_block_switch_foreground_or_duplicate_a_session() {
     assert_eq!(summary.title.as_deref(), Some("keep title"));
     assert_eq!(summary.usage, Some(usage(12)));
     assert_eq!(
-        config.chat.read(201, &Cancellation::new()).await.unwrap(),
+        config.chat().read(201, &Cancellation::new()).await.unwrap(),
         original_chat
     );
     assert!(
@@ -584,7 +585,7 @@ async fn rolling_summary_threshold_and_usage_are_replaced_not_accumulated() {
     old.metadata.insert("from".into(), 201.into());
     old.metadata.insert("to".into(), 201.into());
     config
-        .session
+        .session()
         .update(old, &Cancellation::new())
         .await
         .unwrap();
@@ -615,7 +616,7 @@ async fn covered_chat_usage_is_not_added_to_the_current_summary_threshold() {
     old.metadata
         .extend([("from".into(), 201.into()), ("to".into(), 201.into())]);
     let old = config
-        .session
+        .session()
         .update(old, &Cancellation::new())
         .await
         .unwrap();
@@ -639,7 +640,7 @@ async fn no_new_pairs_never_recompresses_summary_alone() {
     old.metadata
         .extend([("from".into(), 201.into()), ("to".into(), 201.into())]);
     config
-        .session
+        .session()
         .update(old, &Cancellation::new())
         .await
         .unwrap();
@@ -658,7 +659,7 @@ async fn concurrent_writer_wins_without_stale_overwrite_or_retry() {
     let mut latest = stored(&config).await;
     latest.title = Some("concurrent edit".into());
     let latest = config
-        .session
+        .session()
         .update(latest, &Cancellation::new())
         .await
         .unwrap();
@@ -746,7 +747,7 @@ async fn independent_sessions_can_compress_in_parallel() {
     assert!(stored(&config).await.summary.is_some());
     assert!(
         config
-            .session
+            .session()
             .read(102, &Cancellation::new())
             .await
             .unwrap()
@@ -998,7 +999,7 @@ async fn newer_snapshot_is_skipped_before_compressor_io() {
     let mut latest = old.clone();
     latest.title = Some("newer".into());
     let latest = config
-        .session
+        .session()
         .update(latest, &Cancellation::new())
         .await
         .unwrap();
@@ -1043,10 +1044,10 @@ async fn incomplete_completed_pair_does_not_create_a_coverage_hole() {
     let compressor = Compressor::new(Some(1));
     let config = config().await.with_compression(compressor.clone());
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
-    let mut incomplete = config.chat.read(201, &Cancellation::new()).await.unwrap();
+    let mut incomplete = config.chat().read(201, &Cancellation::new()).await.unwrap();
     incomplete.message = None;
     config
-        .chat
+        .chat()
         .update(incomplete, &Cancellation::new())
         .await
         .unwrap();

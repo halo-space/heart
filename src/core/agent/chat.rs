@@ -159,11 +159,9 @@ impl<M> Builder<M> {
     }
 
     /// Compose short history with explicitly selected long recall scopes.
-    pub fn memory<S, C, T, L>(mut self, config: crate::memory::Config<S, C, T, L>) -> Self
+    pub fn memory<S, L>(mut self, config: crate::memory::Config<S, L>) -> Self
     where
-        S: crate::memory::short::session::Store + 'static,
-        C: crate::memory::short::chat::Store + 'static,
-        T: crate::memory::short::trace::Store + 'static,
+        S: crate::memory::short::Store + 'static,
         L: crate::memory::Memory + 'static,
     {
         self.history.set(config);
@@ -590,8 +588,8 @@ impl<S> Events<S> {
                     .save(id, state.clone(), Cancellation::new())
                     .await?;
             }
-            // Separate persistence copies of the same scene. Trace is written
-            // only at terminal closeout and is never read for restoration.
+            // Chat.state is written only at terminal closeout and is never
+            // read for restoration.
             run.close_with_state(result, None, Some(state)).await
         }));
     }
@@ -1728,7 +1726,7 @@ where
                     Ok(events)
                 } else {
                     // Preserve preparation-error return behavior, but save
-                    // the same scene and terminal Trace as an in-stream error.
+                    // the same scene and terminal Chat.state as an in-stream error.
                     events.close(Err(error.clone()));
                     if let Some(close) = events.pending.take()
                         && let Err(error) = close.await

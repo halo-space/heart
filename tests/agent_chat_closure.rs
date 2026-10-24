@@ -1,4 +1,4 @@
-//! Per-run Chat closure uses actual backends, not an Event log as Trace.
+//! Per-run Chat closure uses the Chat record's final state, not an Event log.
 use chat::Store as _;
 use futures_core::Stream;
 use futures_executor::block_on;
@@ -9,7 +9,7 @@ use halo::{
     agent::event::Event,
     agent::memory::{
         self,
-        short::{chat, session, trace},
+        short::{chat, session},
     },
     agent::message::Role,
     agent::middleware::Middleware,
@@ -36,7 +36,6 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
-use trace::Store as _;
 
 #[derive(Default)]
 struct Chats {
@@ -94,55 +93,19 @@ fn storage_error() -> Error {
     Error::new("BACKEND", "original storage failure").with_details("original details")
 }
 
-#[derive(Default)]
-struct Traces {
-    inner: core::memory::short::trace::InMemory,
-    creates: AtomicUsize,
-    fail_before: bool,
-    fail_after: bool,
-}
-impl trace::Store for Traces {
-    async fn create(&self, value: trace::Trace, c: &Cancellation) -> Result<trace::Trace, Error> {
-        assert!(
-            !c.is_cancelled(),
-            "Trace closeout owns its cancellation scope"
-        );
-        self.creates.fetch_add(1, Ordering::SeqCst);
-        if self.fail_before {
-            return Err(storage_error());
-        }
-        let value = self.inner.create(value, c).await?;
-        if self.fail_after {
-            return Err(storage_error());
-        }
-        Ok(value)
-    }
-    async fn read(&self, id: i64, c: &Cancellation) -> Result<trace::Trace, Error> {
-        self.inner.read(id, c).await
-    }
-    async fn update(&self, value: trace::Trace, c: &Cancellation) -> Result<trace::Trace, Error> {
-        self.inner.update(value, c).await
-    }
-    async fn delete(&self, id: i64, c: &Cancellation) -> Result<(), Error> {
-        self.inner.delete(id, c).await
-    }
-}
-type Config =
-    memory::Config<core::memory::short::session::InMemory, Chats, Traces, core::memory::InMemory>;
+type Config = memory::Config<
+    memory::short::Pair<core::memory::short::session::InMemory, Chats>,
+    core::memory::InMemory,
+>;
 fn config(chats: Chats) -> Config {
-    config_with_trace(chats, Traces::default())
+    config_for(chats, memory::short::Type::Agent)
 }
-fn config_with_trace(chats: Chats, traces: Traces) -> Config {
-    config_for(chats, traces, memory::short::Type::Agent)
-}
-fn config_for(chats: Chats, traces: Traces, owner: memory::short::Type) -> Config {
+fn config_for(chats: Chats, owner: memory::short::Type) -> Config {
     let config = Config::new(
-        core::memory::short::session::InMemory::new(),
-        chats,
-        traces,
+        memory::short::Pair::new(core::memory::short::session::InMemory::new(), chats),
         core::memory::InMemory::new(),
     );
-    block_on(config.session.create(
+    block_on(config.session().create(
         session::Session {
             id: 10,
             tenant_id: 1,
@@ -302,23 +265,23 @@ fn capabilities(cancel: bool) -> Vec<Lookup> {
     vec![Lookup::new(cancel)]
 }
 fn saved(config: &Config, id: i64) -> chat::Chat {
-    block_on(config.chat.read(id, &Cancellation::new())).unwrap()
+    block_on(config.chat().read(id, &Cancellation::new())).unwrap()
 }
-fn assert_no_trace(config: &Config, id: i64) {
-    assert_eq!(
-        block_on(config.trace.read(id, &Cancellation::new()))
-            .unwrap_err()
-            .code,
-        "NOT_FOUND"
-    );
-    let session = block_on(config.session.read(10, &Cancellation::new())).unwrap();
+fn assert_no_state(config: &Config, id: i64) {
+    match block_on(config.chat().read(id, &Cancellation::new())) {
+        Ok(record) => assert!(record.state.is_none()),
+        Err(error) => assert_eq!(error.code, "NOT_FOUND"),
+    }
+    let session = block_on(config.session().read(10, &Cancellation::new())).unwrap();
     assert!(session.summary.is_none());
 }
 
-fn assert_trace(config: &Config, id: i64) {
-    let trace = block_on(config.trace.read(id, &Cancellation::new())).unwrap();
-    assert_eq!(trace.chat_id, id);
-    assert!(trace.state.is_object());
+fn assert_state(config: &Config, id: i64) {
+    assert!(
+        saved(config, id)
+            .state
+            .is_some_and(|state| state.is_object())
+    );
 }
 
 #[test]
@@ -366,10 +329,10 @@ fn chat_creates_once_and_saves_provider_complete_not_deltas() {
     assert!(saved.started_time.is_some() && saved.completed_time.is_some());
     assert!(block_on(events.next()).is_none());
     assert_eq!(
-        *config.chat.writes.lock().unwrap(),
+        *config.chat().writes.lock().unwrap(),
         [chat::Status::Running, chat::Status::Completed]
     );
-    assert_trace(&config, 100);
+    assert_state(&config, 100);
 }
 
 #[test]
@@ -409,8 +372,8 @@ fn react_aggregates_two_model_calls_but_keeps_per_call_usage() {
     assert_eq!(sum.input_details.unwrap().cached, Some(4));
     assert_eq!(sum.output_details.unwrap().think, Some(2));
     assert!(sum.details.is_empty());
-    assert_eq!(config.chat.writes.lock().unwrap().len(), 2);
-    assert_trace(&config, 101);
+    assert_eq!(config.chat().writes.lock().unwrap().len(), 2);
+    assert_state(&config, 101);
 }
 
 #[test]
@@ -556,13 +519,13 @@ fn model_creation_failure_closes_chat_as_failed() {
     let record = saved(&config, 107);
     assert_eq!(record.status, chat::Status::Failed);
     assert!(record.message.is_none() && record.usage.is_none());
-    let trace = block_on(config.trace.read(107, &Cancellation::new())).unwrap();
-    assert_eq!(trace.state["chat_id"], 107);
-    assert_eq!(trace.state["status"], "failed");
-    assert_eq!(trace.state["query"], json!(input(107)));
-    assert_eq!(trace.state["error"]["code"], "TRANSPORT");
-    assert_eq!(trace.state["error"]["details"], "unchanged");
-    assert!(trace.state["usage"].is_null());
+    let state = saved(&config, 107).state.unwrap();
+    assert_eq!(state["chat_id"], 107);
+    assert_eq!(state["status"], "failed");
+    assert_eq!(state["query"], json!(input(107)));
+    assert_eq!(state["error"]["code"], "TRANSPORT");
+    assert_eq!(state["error"]["details"], "unchanged");
+    assert!(state["usage"].is_null());
 }
 
 #[test]
@@ -596,11 +559,11 @@ fn stream_failure_does_not_persist_delta_as_a_final_answer() {
         usage.total,
         Some(usage.input.unwrap() + usage.output.unwrap())
     );
-    let trace = block_on(config.trace.read(108, &Cancellation::new())).unwrap();
-    assert!(trace.state["final_message"].is_null());
-    assert_eq!(trace.state["steps"][0]["status"], "failed");
+    let state = saved(&config, 108).state.unwrap();
+    assert!(state["final_message"].is_null());
+    assert_eq!(state["steps"][0]["status"], "failed");
     assert_eq!(
-        trace.state["steps"][0]["attempts"][0]["message"]["content"][0]["data"]["value"],
+        state["steps"][0]["attempts"][0]["message"]["content"][0]["data"]["value"],
         "unfinished"
     );
 }
@@ -805,7 +768,7 @@ fn storage_create_and_update_errors_are_direct_and_not_retried() {
             assert_eq!(events[0], Err(storage_error()));
             assert_eq!(saved(&config, 113).status, chat::Status::Running);
         }
-        assert_no_trace(&config, 113);
+        assert_no_state(&config, 113);
     }
 }
 
@@ -819,21 +782,12 @@ fn failing_closeout_for(stage: usize, owner: memory::short::Type) -> Config {
             fail_after_update: stage == 1,
             ..Default::default()
         },
-        Traces {
-            fail_before: stage == 2,
-            fail_after: stage == 3,
-            ..Default::default()
-        },
         owner,
     )
 }
 
 fn assert_closeout_failure(config: &Config, stage: usize, scene: &Value, status: chat::Status) {
-    assert_eq!(config.chat.updates.load(Ordering::SeqCst), 1);
-    assert_eq!(
-        config.trace.creates.load(Ordering::SeqCst),
-        usize::from(stage >= 2)
-    );
+    assert_eq!(config.chat().updates.load(Ordering::SeqCst), 1);
     let record = saved(config, 130);
     if stage == 0 {
         assert_eq!(record.status, chat::Status::Running);
@@ -844,11 +798,10 @@ fn assert_closeout_failure(config: &Config, stage: usize, scene: &Value, status:
         assert_eq!(record.usage.as_ref().unwrap().total, Some(13));
         assert!(record.completed_time.is_some());
     }
-    let trace = block_on(config.trace.read(130, &Cancellation::new()));
-    if stage == 3 {
-        assert_eq!(trace.unwrap().state, *scene);
+    if stage == 0 {
+        assert!(record.state.is_none());
     } else {
-        assert_eq!(trace.unwrap_err().code, "NOT_FOUND");
+        assert_eq!(record.state.unwrap(), *scene);
     }
 }
 
@@ -924,7 +877,7 @@ async fn audit_write_failures_do_not_replace_chat_or_react_checkpoint_facts() {
     for react in [false, true] {
         for streaming in [false, true] {
             for cancelled in [false, true] {
-                for stage in 0..4 {
+                for stage in 0..2 {
                     let config = failing_closeout(stage);
                     let checkpoint = Arc::new(core::checkpoint::InMemory::new());
                     let model = Model::new(vec![if cancelled {
@@ -1040,10 +993,9 @@ async fn checkpoint_write_failure_does_not_create_a_false_failed_audit() {
             assert!(events.next().await.is_none());
             assert_eq!(checkpoint.saves.load(Ordering::SeqCst), 1);
             assert_eq!(model.requests.lock().unwrap().len(), 1);
-            assert_eq!(config.chat.updates.load(Ordering::SeqCst), 0);
+            assert_eq!(config.chat().updates.load(Ordering::SeqCst), 0);
             assert_eq!(saved(&config, 130).status, chat::Status::Running);
-            assert_eq!(config.trace.creates.load(Ordering::SeqCst), 0);
-            assert_no_trace(&config, 130);
+            assert_no_state(&config, 130);
             let saved = checkpoint.load(130, &Cancellation::new()).await;
             if after_write {
                 let scene = saved.unwrap();
@@ -1061,7 +1013,7 @@ async fn checkpoint_write_failure_does_not_create_a_false_failed_audit() {
 async fn workflow_audit_failure_preserves_outer_state_without_replaying_nodes() {
     for nested in [false, true] {
         for failed in [false, true] {
-            for stage in 0..4 {
+            for stage in 0..2 {
                 let config = failing_closeout_for(stage, memory::short::Type::Workflow);
                 let checkpoint = Arc::new(core::checkpoint::InMemory::new());
                 let model = Model::new(vec![if failed {
@@ -1112,16 +1064,12 @@ async fn workflow_audit_failure_preserves_outer_state_without_replaying_nodes() 
                             chat::Status::Failed
                         }
                     );
-                    assert_eq!(config.chat.updates.load(Ordering::SeqCst), 1);
-                    assert_eq!(
-                        config.trace.creates.load(Ordering::SeqCst),
-                        usize::from(stage >= 2)
-                    );
-                    let saved_trace = config.trace.read(130, &Cancellation::new()).await;
-                    if stage == 3 {
-                        assert_eq!(saved_trace.unwrap().state, scene);
+                    assert_eq!(config.chat().updates.load(Ordering::SeqCst), 1);
+                    let saved_state = saved(&config, 130).state;
+                    if stage == 0 {
+                        assert!(saved_state.is_none());
                     } else {
-                        assert_eq!(saved_trace.unwrap_err().code, "NOT_FOUND");
+                        assert_eq!(saved_state.unwrap(), scene);
                     }
                 } else {
                     assert_closeout_failure(&config, stage, &scene, chat::Status::Completed);
@@ -1144,11 +1092,7 @@ async fn workflow_audit_failure_preserves_outer_state_without_replaying_nodes() 
                     assert!(restored.iter().all(Result::is_ok));
                 }
                 assert_eq!(model.requests.lock().unwrap().len(), 1);
-                assert_eq!(config.chat.updates.load(Ordering::SeqCst), 1);
-                assert_eq!(
-                    config.trace.creates.load(Ordering::SeqCst),
-                    usize::from(stage >= 2)
-                );
+                assert_eq!(config.chat().updates.load(Ordering::SeqCst), 1);
                 assert_eq!(runtime.snapshot().unwrap(), scene);
             }
         }
@@ -1167,8 +1111,11 @@ fn abandoned_stream_does_not_spawn_background_closure() {
     block_on(events.next()).unwrap().unwrap();
     drop(events);
     assert_eq!(saved(&config, 114).status, chat::Status::Running);
-    assert_eq!(*config.chat.writes.lock().unwrap(), [chat::Status::Running]);
-    assert_no_trace(&config, 114);
+    assert_eq!(
+        *config.chat().writes.lock().unwrap(),
+        [chat::Status::Running]
+    );
+    assert_no_state(&config, 114);
 }
 
 #[test]
@@ -1334,15 +1281,15 @@ fn known_usage_on_a_failed_stream_is_retained_and_missing_consumption_is_estimat
         assert_eq!(usage.input, Some(77));
         assert!(usage.output.unwrap() > 0);
         assert_eq!(usage.total, Some(77 + usage.output.unwrap()));
-        let trace = block_on(config.trace.read(124, &Cancellation::new())).unwrap();
-        let attempt = &trace.state["steps"][0]["attempts"][0];
+        let state = saved(&config, 124).state.unwrap();
+        let attempt = &state["steps"][0]["attempts"][0];
         assert_eq!(attempt["usage"]["input"], 77);
         assert_eq!(attempt["usage"]["total"], usage.total.unwrap());
         assert_eq!(
             attempt["message"]["content"][0]["data"]["value"],
             "unfinished"
         );
-        assert!(trace.state["final_message"].is_null());
+        assert!(state["final_message"].is_null());
     }
 }
 
@@ -1369,7 +1316,7 @@ fn hooks_cannot_redirect_the_persisted_chat_to_a_different_owner() {
             .code,
         "INVALID_ARGUMENTS"
     );
-    assert!(config.chat.writes.lock().unwrap().is_empty());
+    assert!(config.chat().writes.lock().unwrap().is_empty());
     assert!(model.requests.lock().unwrap().is_empty());
 }
 
@@ -1421,7 +1368,7 @@ fn cancellation_during_final_write_does_not_spin_or_restart_the_update() {
     ));
     assert_eq!(saved(&config, 126).status, chat::Status::Completed);
     assert_eq!(
-        *config.chat.writes.lock().unwrap(),
+        *config.chat().writes.lock().unwrap(),
         [chat::Status::Running, chat::Status::Completed]
     );
 }

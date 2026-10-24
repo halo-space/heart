@@ -342,7 +342,7 @@ Keep provider keys and MCP endpoints in a local `.env`; never commit secrets.
 ## 8. Cancellation, errors and tests
 
 `Cancellation` scopes one independent run. `Complete` is one observable model, tool or node result, not the entire Runtime status. Checkpoint is the
-recovery source; Trace is an audit projection. Run the normal checks with:
+recovery source; the final Chat.state is the audit snapshot. Run the normal checks with:
 
 ```bash
 cargo fmt --all --check
@@ -514,7 +514,7 @@ fn ge(e: GraphError) -> Error { Error { code:e.code, message:e.message, details:
 }
 ```
 
-The snapshot is the full recovery scene: node State, errors, waits, graph version and business data. Trace is an audit projection, not recovery truth.
+The snapshot is the full recovery scene: node State, errors, waits, graph version and business data. Chat.state is an audit snapshot, not recovery truth.
 
 ### 10.6 VLLM Chat Completions
 
@@ -552,7 +552,7 @@ The current adapter targets `/v1/chat/completions`, not Responses API. VLLM reas
 
 ### 10.7 Memory and explicit recall
 
-Use `core::memory::short::{session, chat, trace}::InMemory` for short history and `core::memory::InMemory` for long-term
+Use `core::memory::short::InMemory` for short history and `core::memory::InMemory` for long-term
 `summary/fact/preference`. Pass the resulting `memory::Config` through `.memory(config)`. Without that call, the Agent has no automatic history
 or long-memory capability. This complete offline program writes a Session and one long-term Preference before running:
 
@@ -573,9 +573,12 @@ use memory::short::session::Store as _;
 struct Model;
 impl Chat for Model { type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>; async fn stream(&self, _: Request) -> Result<Self::Stream, Error> { let mut m=Message::new(Role::Assistant); m.content.push(Part{r#type:"text".into(),data:json!({"value":"Sunny; camping is fine."}).as_object().unwrap().clone()}); Ok(stream::iter(vec![Ok(Event::Complete{message:m,usage:None,finish_reason:Some("stop".into())})])) } }
 #[tokio::main] async fn main() -> Result<(), Error> {
-    let cancel=Cancellation::new(); let config=memory::Config::new(core::memory::short::session::InMemory::new(),core::memory::short::chat::InMemory::new(),core::memory::short::trace::InMemory::new(),core::memory::InMemory::new()).with_scopes(["user","agent"]);
-    config.session.create(session::Session{id:1,tenant_id:1,user_id:2,r#type:short::Type::Agent,title:Some("weather".into()),summary:None,usage:None,status:session::Status::Active,metadata:Map::new(),created_time:0,updated_time:0},&cancel).await?;
-    config.long.write(memory::Request{id:3,r#type:memory::Type::Preference,user_id:2,agent_id:None,session_id:None,from:1,to:2,content:"User likes camping".into(),metadata:None,vector:None},&cancel).await?;
+    let cancel=Cancellation::new();
+    let short=core::memory::short::InMemory::new();
+    let long=core::memory::InMemory::new();
+    let config=memory::Config::new(short,long).with_scopes(["user","agent"]);
+    config.session().create(session::Session{id:1,tenant_id:1,user_id:2,r#type:short::Type::Agent,title:Some("weather".into()),summary:None,usage:None,status:session::Status::Active,metadata:Map::new(),created_time:0,updated_time:0},&cancel).await?;
+    config.long().write(memory::Request{id:3,r#type:memory::Type::Preference,user_id:2,agent_id:None,session_id:None,from:1,to:2,content:"User likes camping".into(),metadata:None,vector:None},&cancel).await?;
     let agent=agent::chat().model(Model).memory(config).build()?; let mut events=agent.run(Input::default(),false,Cancellation::new()).await?; while let Some(e)=events.next().await { println!("{:?}",e?); } Ok(())
 }
 ```

@@ -30,8 +30,9 @@ use crate::components::model::token::Usage;
 
 /// Canonical serialized state for one independent Agent run.
 ///
-/// Checkpoint and Trace each serialize an independent copy of this state. The
-/// type does not own persistence and does not make Trace part of recovery.
+/// Checkpoint and Chat.state serialize independent copies of this state. The
+/// type does not own persistence; Chat.state is an audit snapshot, not a
+/// recovery source.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct State {
     pub chat_id: Option<i64>,

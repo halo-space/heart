@@ -10,9 +10,39 @@ use crate::components::memory::{
     Error, Filter, HybridRequest, Item, KeywordRequest, Memory, Request, Type, VectorRequest,
 };
 
+// The Elasticsearch adapter is kept private at the implementation root. It is
+// re-exported below through the semantic `long` and `short` memory paths so
+// callers always choose the memory kind before the backend.
+mod es;
 pub mod extraction;
 pub(crate) mod history;
 pub mod short;
+
+/// Long-term memory implementations grouped by backend.
+pub mod long {
+    /// Elasticsearch implementation of the long-term Memory contract.
+    pub mod es {
+        use elasticsearch::Elasticsearch;
+
+        /// Construct the long-memory ES backend without exposing an additional
+        /// public type in the application-facing path.
+        pub fn new(
+            client: Elasticsearch,
+            index: impl Into<String>,
+        ) -> Result<impl crate::components::memory::Memory, crate::Error> {
+            super::super::es::Memory::new(client, index)
+        }
+
+        /// Construct a long-memory ES backend with an explicit fixed vector dimension.
+        pub fn with_vector_dimension(
+            client: Elasticsearch,
+            index: impl Into<String>,
+            dimension: usize,
+        ) -> Result<impl crate::components::memory::Memory, crate::Error> {
+            super::super::es::Memory::with_vector_dimension(client, index, dimension)
+        }
+    }
+}
 
 #[derive(Clone)]
 struct Stored {

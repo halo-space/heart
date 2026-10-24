@@ -142,14 +142,9 @@ impl Runtime {
         self.engine_mut().max_concurrency = max_concurrency;
         Ok(self)
     }
-    pub fn memory<S, C, T, L>(
-        mut self,
-        config: crate::memory::Config<S, C, T, L>,
-    ) -> Result<Self, Error>
+    pub fn memory<S, L>(mut self, config: crate::memory::Config<S, L>) -> Result<Self, Error>
     where
-        S: crate::memory::short::session::Store + 'static,
-        C: crate::memory::short::chat::Store + 'static,
-        T: crate::memory::short::trace::Store + 'static,
+        S: crate::memory::short::Store + 'static,
         L: crate::memory::Memory + 'static,
     {
         config.validate()?;
@@ -792,7 +787,7 @@ impl Engine {
     ) -> Result<Messages, Error> {
         self.validate_run_input(&initial_messages)?;
         // A terminal snapshot is already closed. Re-running it is a read of
-        // the committed result and must not create another Chat/Trace record
+        // the committed result and must not create another Chat record
         // or invoke any node again.
         if matches!(
             self.state.status,
@@ -3348,25 +3343,26 @@ mod tests {
     }
 
     type WorkflowMemoryConfig = crate::memory::Config<
-        crate::core::memory::short::session::InMemory,
-        crate::core::memory::short::chat::InMemory,
-        crate::core::memory::short::trace::InMemory,
+        crate::memory::short::Pair<
+            crate::core::memory::short::session::InMemory,
+            crate::core::memory::short::chat::InMemory,
+        >,
         crate::core::memory::InMemory,
     >;
 
     fn workflow_memory() -> (
         WorkflowMemoryConfig,
         Arc<crate::core::memory::short::chat::InMemory>,
-        Arc<crate::core::memory::short::trace::InMemory>,
     ) {
         use crate::memory::short::session::Store as _;
         let config = WorkflowMemoryConfig::new(
-            crate::core::memory::short::session::InMemory::new(),
-            crate::core::memory::short::chat::InMemory::new(),
-            crate::core::memory::short::trace::InMemory::new(),
+            crate::memory::short::Pair::new(
+                crate::core::memory::short::session::InMemory::new(),
+                crate::core::memory::short::chat::InMemory::new(),
+            ),
             crate::core::memory::InMemory::new(),
         );
-        block_on(config.session.create(
+        block_on(config.session().create(
             crate::memory::short::session::Session {
                 id: 4,
                 tenant_id: 1,
@@ -3383,7 +3379,7 @@ mod tests {
             &Cancellation::new(),
         ))
         .unwrap();
-        (config.clone(), config.chat.clone(), config.trace.clone())
+        (config.clone(), config.short.chat_arc())
     }
 
     #[test]
@@ -3822,8 +3818,8 @@ mod tests {
     }
 
     #[test]
-    fn workflow_memory_writes_chat_graph_and_trace_state_only_at_closeout() {
-        use crate::memory::short::{chat::Store as _, trace::Store as _};
+    fn workflow_memory_writes_chat_graph_and_state_only_at_closeout() {
+        use crate::memory::short::chat::Store as _;
 
         let mut builder = WorkflowBuilder::new("workflow-memory-closeout");
         builder
@@ -3832,7 +3828,7 @@ mod tests {
         builder.add_edge(START, "agent").unwrap();
         builder.add_edge("agent", END).unwrap();
         let workflow = builder.compile().unwrap();
-        let (config, chats, traces) = workflow_memory();
+        let (config, chats) = workflow_memory();
         let mut runtime = Runtime::new(5, workflow.clone())
             .unwrap()
             .memory(config)
@@ -3852,16 +3848,15 @@ mod tests {
             chat.message.as_ref().map(|message| message.role.clone()),
             Some(Role::Assistant)
         );
-        let trace = block_on(traces.read(5, &Cancellation::new())).unwrap();
-        assert_eq!(trace.state, runtime.snapshot().unwrap());
-        assert_eq!(trace.state["chat_id"], 5);
-        assert_eq!(trace.state["type"], "workflow");
-        assert_eq!(trace.state["status"], "succeeded");
+        assert_eq!(chat.state, Some(runtime.snapshot().unwrap()));
+        assert_eq!(chat.state.as_ref().unwrap()["chat_id"], 5);
+        assert_eq!(chat.state.as_ref().unwrap()["type"], "workflow");
+        assert_eq!(chat.state.as_ref().unwrap()["status"], "succeeded");
     }
 
     #[test]
     fn terminal_workflow_snapshot_is_idempotent_with_memory() {
-        use crate::memory::short::{chat::Store as _, trace::Store as _};
+        use crate::memory::short::chat::Store as _;
 
         let mut builder = WorkflowBuilder::new("workflow-terminal-restore");
         builder
@@ -3870,7 +3865,7 @@ mod tests {
         builder.add_edge(START, "agent").unwrap();
         builder.add_edge("agent", END).unwrap();
         let workflow = builder.compile().unwrap();
-        let (config, chats, traces) = workflow_memory();
+        let (config, chats) = workflow_memory();
         let mut first = Runtime::new(5, workflow.clone())
             .unwrap()
             .memory(config.clone())
@@ -3892,9 +3887,10 @@ mod tests {
             crate::memory::short::chat::Status::Completed
         );
         assert_eq!(
-            block_on(traces.read(5, &Cancellation::new()))
+            block_on(chats.read(5, &Cancellation::new()))
                 .unwrap()
-                .state["chat_id"],
+                .state
+                .unwrap()["chat_id"],
             5
         );
     }
@@ -3916,7 +3912,7 @@ mod tests {
 
     #[test]
     fn workflow_memory_keeps_waiting_chat_open_until_resume_closeout() {
-        use crate::memory::short::{chat::Store as _, trace::Store as _};
+        use crate::memory::short::chat::Store as _;
 
         let mut builder = WorkflowBuilder::new("workflow-memory-wait");
         builder
@@ -3925,7 +3921,7 @@ mod tests {
         builder.add_edge(START, "approval").unwrap();
         builder.add_edge("approval", END).unwrap();
         let workflow = builder.compile().unwrap();
-        let (config, chats, traces) = workflow_memory();
+        let (config, chats) = workflow_memory();
         let mut runtime = Runtime::new(5, workflow).unwrap().memory(config).unwrap();
         let initial = workflow_input();
 
@@ -3941,11 +3937,11 @@ mod tests {
                 .status,
             crate::memory::short::chat::Status::Running
         );
-        assert_eq!(
-            block_on(traces.read(5, &Cancellation::new()))
-                .unwrap_err()
-                .code,
-            "NOT_FOUND"
+        assert!(
+            block_on(chats.read(5, &Cancellation::new()))
+                .unwrap()
+                .state
+                .is_none()
         );
 
         runtime
@@ -3963,12 +3959,17 @@ mod tests {
                 .status,
             crate::memory::short::chat::Status::Completed
         );
-        assert!(block_on(traces.read(5, &Cancellation::new())).is_ok());
+        assert!(
+            block_on(chats.read(5, &Cancellation::new()))
+                .unwrap()
+                .state
+                .is_some()
+        );
     }
 
     #[test]
-    fn workflow_memory_closes_failed_and_cancelled_runs_with_trace_state() {
-        use crate::memory::short::{chat::Store as _, trace::Store as _};
+    fn workflow_memory_closes_failed_and_cancelled_runs_with_state() {
+        use crate::memory::short::chat::Store as _;
 
         for (mode, expected_chat_status, expected_state) in [
             (
@@ -3987,7 +3988,7 @@ mod tests {
             builder.add_edge(START, "agent").unwrap();
             builder.add_edge("agent", END).unwrap();
             let workflow = builder.compile().unwrap();
-            let (config, chats, traces) = workflow_memory();
+            let (config, chats) = workflow_memory();
             let mut runtime = Runtime::new(5, workflow).unwrap().memory(config).unwrap();
             let error = block_on(runtime.execute(
                 workflow_input(),
@@ -4010,9 +4011,10 @@ mod tests {
                 expected_chat_status
             );
             assert_eq!(
-                block_on(traces.read(5, &Cancellation::new()))
+                block_on(chats.read(5, &Cancellation::new()))
                     .unwrap()
-                    .state["status"],
+                    .state
+                    .unwrap()["status"],
                 expected_state
             );
         }

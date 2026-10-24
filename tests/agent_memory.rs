@@ -12,7 +12,7 @@ use halo::{
     agent::event::Event,
     agent::memory::{
         self, Memory,
-        short::{self, chat, session, trace},
+        short::{self, chat, session},
     },
     agent::message::Role,
     agent::model::{
@@ -122,22 +122,6 @@ impl chat::Store for Chats {
         Ok(self.0.chats.lock().unwrap().clone())
     }
 }
-struct Traces;
-impl trace::Store for Traces {
-    async fn create(&self, value: trace::Trace, _: &Cancellation) -> Result<trace::Trace, Error> {
-        Ok(value)
-    }
-    async fn read(&self, _: i64, _: &Cancellation) -> Result<trace::Trace, Error> {
-        Err(Error::new("NOT_FOUND", "trace not found"))
-    }
-    async fn update(&self, value: trace::Trace, _: &Cancellation) -> Result<trace::Trace, Error> {
-        Ok(value)
-    }
-    async fn delete(&self, _: i64, _: &Cancellation) -> Result<(), Error> {
-        Ok(())
-    }
-}
-
 struct Long {
     state: State,
     wrong: bool,
@@ -222,7 +206,7 @@ impl Memory for Long {
     }
 }
 
-type Config = memory::Config<Sessions, Chats, Traces, Long>;
+type Config = memory::Config<memory::short::Pair<Sessions, Chats>, Long>;
 fn session() -> session::Session {
     session::Session {
         id: 101,
@@ -240,12 +224,13 @@ fn session() -> session::Session {
 }
 fn config(value: session::Session, state: &State) -> Config {
     memory::Config::new(
-        Sessions {
-            value,
-            state: state.clone(),
-        },
-        Chats(state.clone()),
-        Traces,
+        memory::short::Pair::new(
+            Sessions {
+                value,
+                state: state.clone(),
+            },
+            Chats(state.clone()),
+        ),
         Long {
             state: state.clone(),
             wrong: false,
@@ -280,6 +265,7 @@ fn history(id: i64, time: i64, question: &str, answer: &str) -> chat::Chat {
         message: Some(text(Role::Assistant, answer)),
         usage: None,
         graph: None,
+        state: None,
         metadata: Map::new(),
         started_time: None,
         completed_time: None,
@@ -809,9 +795,14 @@ fn config_clone_shares_stores_and_each_run_reads_a_fresh_snapshot() {
         .push(history(201, 1, "first", "a"));
     let configured = config(session(), &state);
     let retained = configured.clone();
-    assert!(Arc::ptr_eq(&configured.session, &retained.session));
-    assert!(Arc::ptr_eq(&configured.chat, &retained.chat));
-    assert!(Arc::ptr_eq(&configured.trace, &retained.trace));
+    assert!(Arc::ptr_eq(
+        &configured.short.session_arc(),
+        &retained.short.session_arc()
+    ));
+    assert!(Arc::ptr_eq(
+        &configured.short.chat_arc(),
+        &retained.short.chat_arc()
+    ));
     assert!(Arc::ptr_eq(&configured.long, &retained.long));
     let model = Model::default();
     let agent = agent::chat()
@@ -1016,12 +1007,10 @@ fn synchronous_backend_cancellation_stops_later_reads_and_model() {
 #[test]
 fn in_memory_backends_remain_directly_usable_through_the_config() {
     let configured = memory::Config::new(
-        halo::core::memory::short::session::InMemory::new(),
-        halo::core::memory::short::chat::InMemory::new(),
-        halo::core::memory::short::trace::InMemory::new(),
+        halo::core::memory::short::InMemory::new(),
         halo::core::memory::InMemory::new(),
     );
-    block_on(configured.session.create(session(), &Cancellation::new())).unwrap();
+    block_on(configured.session().create(session(), &Cancellation::new())).unwrap();
     let model = Model::default();
     let agent = agent::chat()
         .model(model.clone())

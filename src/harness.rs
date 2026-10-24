@@ -79,11 +79,9 @@ impl<M> Builder<M> {
         self
     }
 
-    pub fn memory<S, C, T, L>(mut self, config: crate::memory::Config<S, C, T, L>) -> Self
+    pub fn memory<S, L>(mut self, config: crate::memory::Config<S, L>) -> Self
     where
-        S: crate::memory::short::session::Store + 'static,
-        C: crate::memory::short::chat::Store + 'static,
-        T: crate::memory::short::trace::Store + 'static,
+        S: crate::memory::short::Store + 'static,
         L: crate::memory::Memory + 'static,
     {
         self.inner = self.inner.memory(config);

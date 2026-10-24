@@ -989,22 +989,22 @@ fn planner_usage_is_in_chat_total_but_control_ack_has_no_double_charge() {
     use halo::{
         agent::memory::{
             self,
-            short::{chat, session, trace},
+            short::{chat, session},
         },
         core,
     };
     use session::Store as _;
-    use trace::Store as _;
     block_on(async {
         for invalid in [false, true] {
             let memory = memory::Config::new(
-                core::memory::short::session::InMemory::new(),
-                core::memory::short::chat::InMemory::new(),
-                core::memory::short::trace::InMemory::new(),
+                memory::short::Pair::new(
+                    core::memory::short::session::InMemory::new(),
+                    core::memory::short::chat::InMemory::new(),
+                ),
                 core::memory::InMemory::new(),
             );
             memory
-                .session
+                .session()
                 .create(
                     session::Session {
                         id: 102,
@@ -1055,7 +1055,7 @@ fn planner_usage_is_in_chat_total_but_control_ack_has_no_double_charge() {
                 .collect()
                 .await;
             assert_eq!(events.last().unwrap().is_err(), invalid);
-            let record = memory.chat.read(101, &Cancellation::new()).await.unwrap();
+            let record = memory.chat().read(101, &Cancellation::new()).await.unwrap();
             assert_eq!(
                 record.usage.unwrap().total,
                 Some(if invalid { 30 } else { 45 })
@@ -1070,46 +1070,46 @@ fn planner_usage_is_in_chat_total_but_control_ack_has_no_double_charge() {
             );
             if invalid {
                 assert!(record.graph.is_none());
-                let trace = memory.trace.read(101, &Cancellation::new()).await.unwrap();
-                assert_eq!(trace.state["type"], "agent");
-                assert_eq!(trace.state["status"], "failed");
+                let state = record.state.unwrap();
+                assert_eq!(state["type"], "agent");
+                assert_eq!(state["status"], "failed");
             } else {
                 assert_eq!(
                     record.graph.as_ref().unwrap()["nodes"]["a"]["name"],
                     "search"
                 );
-                let trace = memory.trace.read(101, &Cancellation::new()).await.unwrap();
-                assert_eq!(trace.state["type"], "agent");
-                assert_eq!(trace.state["status"], "succeeded");
-                assert_eq!(trace.state["nodes"]["a"]["status"], "ready");
+                let state = record.state.unwrap();
+                assert_eq!(state["type"], "agent");
+                assert_eq!(state["status"], "succeeded");
+                assert_eq!(state["nodes"]["a"]["status"], "ready");
             }
         }
     });
 }
 
 #[test]
-fn configured_plan_closure_persists_final_graph_and_agent_state_trace() {
+fn configured_plan_closure_persists_final_graph_and_agent_state() {
     use chat::Store as _;
     use halo::agent::checkpoint::Checkpoint as _;
     use halo::{
         agent::memory::{
             self,
-            short::{chat, session, trace},
+            short::{chat, session},
         },
         core,
     };
     use session::Store as _;
-    use trace::Store as _;
     block_on(async {
         let memory = memory::Config::new(
-            core::memory::short::session::InMemory::new(),
-            core::memory::short::chat::InMemory::new(),
-            core::memory::short::trace::InMemory::new(),
+            memory::short::Pair::new(
+                core::memory::short::session::InMemory::new(),
+                core::memory::short::chat::InMemory::new(),
+            ),
             core::memory::InMemory::new(),
         );
         let checkpoint = std::sync::Arc::new(core::checkpoint::InMemory::new());
         memory
-            .session
+            .session()
             .create(
                 session::Session {
                     id: 102,
@@ -1154,14 +1154,14 @@ fn configured_plan_closure_persists_final_graph_and_agent_state_trace() {
             .collect()
             .await;
         assert!(events.iter().all(Result::is_ok));
-        let chat = memory.chat.read(101, &Cancellation::new()).await.unwrap();
+        let chat = memory.chat().read(101, &Cancellation::new()).await.unwrap();
         assert_eq!(chat.status, chat::Status::Completed);
         assert_eq!(chat.graph.unwrap()["nodes"]["a"]["name"], "search");
-        let trace = memory.trace.read(101, &Cancellation::new()).await.unwrap();
-        assert_eq!(trace.state["type"], "agent");
-        assert_eq!(trace.state["status"], "succeeded");
-        assert_eq!(trace.state["nodes"]["a"]["status"], "succeeded");
-        assert_eq!(trace.state["nodes"]["a"]["execution"]["exec_id"], 9001);
+        let state = chat.state.clone().unwrap();
+        assert_eq!(state["type"], "agent");
+        assert_eq!(state["status"], "succeeded");
+        assert_eq!(state["nodes"]["a"]["status"], "succeeded");
+        assert_eq!(state["nodes"]["a"]["execution"]["exec_id"], 9001);
         let checkpoint_state = checkpoint.load(101, &Cancellation::new()).await.unwrap();
         assert_eq!(checkpoint_state["type"], "agent");
         assert_eq!(checkpoint_state["status"], "succeeded");
@@ -1200,22 +1200,22 @@ fn plan_failure_and_cancellation_persist_once_only_at_terminal_closeout() {
     use halo::{
         agent::memory::{
             self,
-            short::{chat, session, trace},
+            short::{chat, session},
         },
         core,
     };
     use session::Store as _;
-    use trace::Store as _;
     block_on(async {
         for cancelled in [false, true] {
             let memory = memory::Config::new(
-                core::memory::short::session::InMemory::new(),
-                core::memory::short::chat::InMemory::new(),
-                core::memory::short::trace::InMemory::new(),
+                memory::short::Pair::new(
+                    core::memory::short::session::InMemory::new(),
+                    core::memory::short::chat::InMemory::new(),
+                ),
                 core::memory::InMemory::new(),
             );
             memory
-                .session
+                .session()
                 .create(
                     session::Session {
                         id: 102,
@@ -1267,25 +1267,17 @@ fn plan_failure_and_cancellation_persist_once_only_at_terminal_closeout() {
             );
             let mut events = agent.run(query, true, Cancellation::new()).await.unwrap();
             // Trigger, real planner Complete and acknowledgement are visible,
-            // but neither Chat.graph nor a per-event Trace is written yet.
+            // but neither Chat.graph nor Chat.state is written yet.
             for _ in 0..3 {
                 events.next().await.unwrap().unwrap();
-                let chat = memory.chat.read(101, &Cancellation::new()).await.unwrap();
+                let chat = memory.chat().read(101, &Cancellation::new()).await.unwrap();
                 assert_eq!(chat.status, chat::Status::Running);
                 assert!(chat.graph.is_none());
-                assert_eq!(
-                    memory
-                        .trace
-                        .read(101, &Cancellation::new())
-                        .await
-                        .unwrap_err()
-                        .code,
-                    "NOT_FOUND"
-                );
+                assert!(chat.state.is_none());
             }
             let remaining: Vec<_> = events.by_ref().collect().await;
             assert!(remaining.last().unwrap().is_err());
-            let chat = memory.chat.read(101, &Cancellation::new()).await.unwrap();
+            let chat = memory.chat().read(101, &Cancellation::new()).await.unwrap();
             assert_eq!(
                 chat.status,
                 if cancelled {
@@ -1295,28 +1287,21 @@ fn plan_failure_and_cancellation_persist_once_only_at_terminal_closeout() {
                 }
             );
             assert_eq!(chat.graph.unwrap(), plan(1));
-            let trace = memory.trace.read(101, &Cancellation::new()).await.unwrap();
+            let state = chat.state.clone().unwrap();
             assert_eq!(
-                trace.state["status"],
+                state["status"],
                 if cancelled { "stopped" } else { "failed" }
             );
             assert_eq!(
-                trace.state["nodes"]["a"]["status"],
+                state["nodes"]["a"]["status"],
                 if cancelled { "cancelled" } else { "failed" }
             );
-            assert_eq!(trace.state["nodes"]["a"]["execution"]["exec_id"], 9001);
+            assert_eq!(state["nodes"]["a"]["execution"]["exec_id"], 9001);
             assert_eq!(
-                trace.state["error"]["code"],
+                state["error"]["code"],
                 if cancelled { "CANCELLED" } else { "TRANSPORT" }
             );
-            assert_eq!(
-                trace.state["usage"],
-                serde_json::to_value(chat.usage).unwrap()
-            );
-            assert_eq!(
-                memory.trace.read(101, &Cancellation::new()).await.unwrap(),
-                trace
-            );
+            assert_eq!(state["usage"], serde_json::to_value(chat.usage).unwrap());
         }
     });
 }

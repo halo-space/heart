@@ -6,7 +6,12 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::{Cancellation, Error, memory::short::session, model::token::Usage};
+use crate::components::memory::short::session::Store as _;
+use crate::{
+    Cancellation, Error,
+    memory::short::{self, session},
+    model::token::Usage,
+};
 
 use super::extraction::{self, Job};
 
@@ -99,7 +104,7 @@ pub(super) struct Journal<S> {
     pub(super) current: session::Session,
 }
 
-impl<S: session::Store> Journal<S> {
+impl<S: short::Store> Journal<S> {
     pub(super) fn new(store: Arc<S>, current: session::Session) -> Self {
         Self { store, current }
     }
@@ -108,7 +113,11 @@ impl<S: session::Store> Journal<S> {
         value: session::Session,
         cancellation: &Cancellation,
     ) -> Result<(), Error> {
-        let committed = self.store.update(value.clone(), cancellation).await?;
+        let committed = self
+            .store
+            .session()
+            .update(value.clone(), cancellation)
+            .await?;
         let mut acknowledged = committed.clone();
         acknowledged.updated_time = value.updated_time;
         if acknowledged != value || committed.updated_time <= value.updated_time {
@@ -133,7 +142,7 @@ impl<S: session::Store> Journal<S> {
     }
 }
 
-impl<S: session::Store> extraction::Progress for Journal<S> {
+impl<S: short::Store> extraction::Progress for Journal<S> {
     async fn save(&mut self, job: &Job, cancellation: &Cancellation) -> Result<(), Error> {
         Journal::save(
             self,

@@ -468,6 +468,7 @@ fn chat(id: i64, session_id: i64) -> chat::Chat {
         message: None,
         usage: None,
         graph: None,
+        state: None,
         metadata: Map::new(),
         started_time: None,
         completed_time: None,

@@ -12,7 +12,7 @@ use halo::{
     agent::event::Event,
     agent::memory::{
         self,
-        short::{chat, session, trace},
+        short::{chat, session},
     },
     agent::message::Role,
     agent::middleware::Middleware,
@@ -26,7 +26,6 @@ use halo::{
 };
 use serde_json::{Value, json};
 use session::Store as _;
-use trace::Store as _;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Stage {
@@ -148,23 +147,22 @@ impl session::Store for Sessions {
     }
 }
 type Memory = memory::Config<
-    Sessions,
-    core::memory::short::chat::InMemory,
-    core::memory::short::trace::InMemory,
+    memory::short::Pair<Sessions, core::memory::short::chat::InMemory>,
     core::memory::InMemory,
 >;
 async fn memory(gate: Gate) -> Memory {
     let memory = Memory::new(
-        Sessions {
-            inner: Default::default(),
-            gate,
-        },
-        Default::default(),
-        Default::default(),
+        memory::short::Pair::new(
+            Sessions {
+                inner: Default::default(),
+                gate,
+            },
+            Default::default(),
+        ),
         Default::default(),
     );
     memory
-        .session
+        .session()
         .create(
             session::Session {
                 id: 4,
@@ -276,21 +274,21 @@ async fn waiting_preparation_resumes_only_unfinished_methods_without_consuming_f
             assert!(saved["waits"].as_array().unwrap().is_empty());
             assert_eq!(
                 memory
-                    .chat
+                    .chat()
                     .read(1001, &Cancellation::new())
                     .await
                     .unwrap()
                     .status,
                 chat::Status::Running
             );
-            assert_eq!(
+            assert!(
                 memory
-                    .trace
+                    .chat()
                     .read(1001, &Cancellation::new())
                     .await
-                    .unwrap_err()
-                    .code,
-                "NOT_FOUND"
+                    .unwrap()
+                    .state
+                    .is_none()
             );
             let mut continuation = input();
             continuation.payload[0].data = json!({"value":"not a model message"});
@@ -375,7 +373,11 @@ async fn preparation_failures_and_cancellation_close_the_original_chat_and_check
                         "failed"
                     }
                 );
-                let chat = memory.chat.read(1001, &Cancellation::new()).await.unwrap();
+                let chat = memory
+                    .chat()
+                    .read(1001, &Cancellation::new())
+                    .await
+                    .unwrap();
                 assert_eq!(
                     chat.status,
                     if stop == Stop::Cancel {
@@ -388,8 +390,7 @@ async fn preparation_failures_and_cancellation_close_the_original_chat_and_check
                     chat.input.unwrap().payload[0].data,
                     json!({"value":"original input"})
                 );
-                let trace = memory.trace.read(1001, &Cancellation::new()).await.unwrap();
-                assert_eq!(trace.state["preparation"], saved["preparation"]);
+                assert_eq!(chat.state.unwrap()["preparation"], saved["preparation"]);
                 assert!(model.0.lock().unwrap().is_empty());
                 let hits = gate.hits.load(Ordering::SeqCst);
                 let _ = run(
@@ -470,7 +471,7 @@ async fn invalid_preparation_is_rejected_before_hooks_or_memory_writeback() {
             assert!(model.0.lock().unwrap().is_empty());
             assert_eq!(
                 memory
-                    .chat
+                    .chat()
                     .read(1001, &Cancellation::new())
                     .await
                     .unwrap()

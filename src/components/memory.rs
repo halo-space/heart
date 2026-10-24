@@ -91,10 +91,8 @@ pub mod short;
 
 /// Agent-local composition of existing short and long memory components.
 /// This is configuration, not another storage contract or execution state.
-pub struct Config<S, C, T, L> {
-    pub session: std::sync::Arc<S>,
-    pub chat: std::sync::Arc<C>,
-    pub trace: std::sync::Arc<T>,
+pub struct Config<S, L> {
+    pub short: std::sync::Arc<S>,
     pub long: std::sync::Arc<L>,
     pub(crate) scopes: Vec<String>,
     pub(crate) compression: Option<compression::Configured>,
@@ -102,12 +100,10 @@ pub struct Config<S, C, T, L> {
     pub(crate) id_fn: Option<fn() -> i64>,
 }
 
-impl<S, C, T, L> Clone for Config<S, C, T, L> {
+impl<S, L> Clone for Config<S, L> {
     fn clone(&self) -> Self {
         Self {
-            session: self.session.clone(),
-            chat: self.chat.clone(),
-            trace: self.trace.clone(),
+            short: self.short.clone(),
             long: self.long.clone(),
             scopes: self.scopes.clone(),
             compression: self.compression.clone(),
@@ -117,24 +113,40 @@ impl<S, C, T, L> Clone for Config<S, C, T, L> {
     }
 }
 
-impl<S, C, T, L> Config<S, C, T, L>
+impl<S, L> Config<S, L>
 where
-    S: short::session::Store,
-    C: short::chat::Store,
-    T: short::trace::Store,
+    S: short::Store,
     L: Memory,
 {
-    pub fn new(session: S, chat: C, trace: T, long: L) -> Self {
+    /// Compose two already-initialized memory capabilities.
+    ///
+    /// The short backend owns its Session/Chat implementation and the long
+    /// backend owns its long-memory implementation. This constructor does not
+    /// create, split, or configure either backend.
+    pub fn new(short: S, long: L) -> Self {
         Self {
-            session: std::sync::Arc::new(session),
-            chat: std::sync::Arc::new(chat),
-            trace: std::sync::Arc::new(trace),
+            short: std::sync::Arc::new(short),
             long: std::sync::Arc::new(long),
             scopes: Vec::new(),
             compression: None,
             extraction: None,
             id_fn: None,
         }
+    }
+
+    /// Access the Session store through the unified short-memory backend.
+    pub fn session(&self) -> &S::Session {
+        self.short.session()
+    }
+
+    /// Access the Chat store through the unified short-memory backend.
+    pub fn chat(&self) -> &S::Chat {
+        self.short.chat()
+    }
+
+    /// Access the configured long-memory backend.
+    pub fn long(&self) -> &L {
+        self.long.as_ref()
     }
 
     /// Select long-memory recall levels only. Empty means short history only;
@@ -211,18 +223,14 @@ where
     /// A fixed value is not a valid configuration:
     /// ```compile_fail
     /// use halo::agent::{core::memory, memory::Config};
-    /// let config = Config::new(memory::short::session::InMemory::new(),
-    ///     memory::short::chat::InMemory::new(), memory::short::trace::InMemory::new(),
-    ///     memory::InMemory::new());
+    /// let config = Config::new(memory::short::InMemory::new(), memory::InMemory::new());
     /// config.with_id_fn(123_i64);
     /// ```
     /// Capturing closures are not function pointers:
     /// ```compile_fail
     /// use halo::agent::{core::memory, memory::Config};
     /// use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
-    /// let config = Config::new(memory::short::session::InMemory::new(),
-    ///     memory::short::chat::InMemory::new(), memory::short::trace::InMemory::new(),
-    ///     memory::InMemory::new());
+    /// let config = Config::new(memory::short::InMemory::new(), memory::InMemory::new());
     /// let counter = Arc::new(AtomicI64::new(1));
     /// config.with_id_fn(move || counter.fetch_add(1, Ordering::SeqCst));
     /// ```

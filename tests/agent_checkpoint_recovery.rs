@@ -424,22 +424,22 @@ fn no_new_id() -> i64 {
 }
 
 #[tokio::test]
-async fn chat_waiting_reuses_memory_chat_and_final_trace_is_an_independent_scene_copy() {
+async fn chat_waiting_reuses_memory_chat_and_final_state_is_saved_on_chat() {
     use chat::Store as _;
     use halo::agent::memory::{
         self,
-        short::{chat, session, trace},
+        short::{chat, session},
     };
     use session::Store as _;
-    use trace::Store as _;
     let memory = memory::Config::new(
-        core::memory::short::session::InMemory::new(),
-        core::memory::short::chat::InMemory::new(),
-        core::memory::short::trace::InMemory::new(),
+        memory::short::Pair::new(
+            core::memory::short::session::InMemory::new(),
+            core::memory::short::chat::InMemory::new(),
+        ),
         core::memory::InMemory::new(),
     );
     memory
-        .session
+        .session()
         .create(
             session::Session {
                 id: 4,
@@ -475,17 +475,21 @@ async fn chat_waiting_reuses_memory_chat_and_final_trace_is_an_independent_scene
         .collect::<Vec<_>>()
         .await;
     assert!(matches!(events.last(), Some(Err(error)) if error.code == "WAITING"));
-    let open = memory.chat.read(1001, &Cancellation::new()).await.unwrap();
+    let open = memory
+        .chat()
+        .read(1001, &Cancellation::new())
+        .await
+        .unwrap();
     assert_eq!(open.status, chat::Status::Running);
     assert!(open.completed_time.is_none());
-    assert_eq!(
+    assert!(
         memory
-            .trace
+            .chat()
             .read(1001, &Cancellation::new())
             .await
-            .unwrap_err()
-            .code,
-        "NOT_FOUND"
+            .unwrap()
+            .state
+            .is_none()
     );
     drop(first);
 
@@ -503,25 +507,32 @@ async fn chat_waiting_reuses_memory_chat_and_final_trace_is_an_independent_scene
         .collect::<Vec<_>>()
         .await;
     assert!(events.iter().all(Result::is_ok));
-    let closed = memory.chat.read(1001, &Cancellation::new()).await.unwrap();
+    let closed = memory
+        .chat()
+        .read(1001, &Cancellation::new())
+        .await
+        .unwrap();
     assert_eq!(closed.status, chat::Status::Completed);
     assert_eq!(closed.created_time, open.created_time);
     assert_eq!(closed.input, open.input);
     assert_eq!(closed.usage, Some(usage(7)));
     let snapshot = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
-    let audit = memory.trace.read(1001, &Cancellation::new()).await.unwrap();
-    assert_eq!(audit.state, snapshot);
-    assert_eq!(audit.state["chat_id"], 1001);
-    assert_eq!(
-        audit.state["query"],
-        serde_json::to_value(&original).unwrap()
-    );
+    let audit = closed.state.clone().unwrap();
+    assert_eq!(audit, snapshot);
+    assert_eq!(audit["chat_id"], 1001);
+    assert_eq!(audit["query"], serde_json::to_value(&original).unwrap());
     checkpoint.delete(1001, &Cancellation::new()).await.unwrap();
     assert_eq!(
-        memory.trace.read(1001, &Cancellation::new()).await.unwrap(),
+        memory
+            .chat()
+            .read(1001, &Cancellation::new())
+            .await
+            .unwrap()
+            .state
+            .unwrap(),
         audit
     );
-    // The Trace remains unchanged when the independent recovery store changes.
+    // The closeout state remains unchanged when the independent recovery store changes.
     checkpoint
         .save(1001, snapshot, &Cancellation::new())
         .await
@@ -535,7 +546,13 @@ async fn chat_waiting_reuses_memory_chat_and_final_trace_is_an_independent_scene
     assert!(events.iter().all(Result::is_ok));
     assert_eq!(model.requests.lock().unwrap().len(), 1);
     assert_eq!(
-        memory.trace.read(1001, &Cancellation::new()).await.unwrap(),
+        memory
+            .chat()
+            .read(1001, &Cancellation::new())
+            .await
+            .unwrap()
+            .state
+            .unwrap(),
         audit
     );
 }

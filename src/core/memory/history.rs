@@ -12,13 +12,14 @@ use crate::{
     Cancellation, Error, Message, Messages,
     memory::{
         self, Memory,
-        short::{self, chat, session, trace},
+        short::{self, chat, session},
     },
     message::Role,
     model::content::part::Part,
 };
 
 use crate::agent::{Input, Payload};
+use crate::components::memory::short::{chat::Store as _, session::Store as _};
 use crate::core::agent::hooks::Hooks;
 use crate::runtime::agent::usage::Ledger;
 use crate::runtime::cancellation::cancellable;
@@ -44,13 +45,11 @@ trait Entry: Send + Sync {
     fn save(&self, value: chat::Chat, state: Option<Value>) -> SaveFuture;
 }
 
-struct Typed<S, C, T, L>(Arc<memory::Config<S, C, T, L>>);
+struct Typed<S, L>(Arc<memory::Config<S, L>>);
 
-impl<S, C, T, L> Entry for Typed<S, C, T, L>
+impl<S, L> Entry for Typed<S, L>
 where
-    S: session::Store + 'static,
-    C: chat::Store + 'static,
-    T: trace::Store + 'static,
+    S: short::Store + 'static,
     L: Memory + 'static,
 {
     fn validate(&self) -> Result<(), Error> {
@@ -96,13 +95,14 @@ where
                 message: None,
                 usage: None,
                 graph: None,
+                state: None,
                 metadata,
                 started_time: Some(now),
                 completed_time: None,
                 created_time: now,
                 updated_time: now,
             };
-            let record = config.chat.create(request.clone(), &cancellation).await?;
+            let record = config.chat().create(request.clone(), &cancellation).await?;
             if record.id != request.id
                 || !id.matches(&record, &owner)
                 || record.input != request.input
@@ -121,7 +121,7 @@ where
         let config = self.0.clone();
         Box::pin(async move {
             let id = Identity::parse(&input.metadata)?;
-            let record = config.chat.read(id.chat_id, &cancellation).await?;
+            let record = config.chat().read(id.chat_id, &cancellation).await?;
             if !id.matches(&record, &owner) {
                 return Err(Error::new(
                     "CONFLICT",
@@ -137,27 +137,9 @@ where
         Box::pin(async move {
             // Cancellation of execution must not cancel its final Stopped write.
             // Backend I/O deadlines remain the backend's responsibility.
-            config
-                .chat
-                .update(value.clone(), &Cancellation::new())
-                .await?;
-            if let Some(state) = state {
-                config
-                    .trace
-                    .create(
-                        trace::Trace {
-                            chat_id: value.id,
-                            user_id: Some(value.user_id),
-                            session_id: Some(value.session_id),
-                            agent_id: Some(value.agent_id),
-                            state,
-                            created_time: value.created_time,
-                            updated_time: value.updated_time,
-                        },
-                        &Cancellation::new(),
-                    )
-                    .await?;
-            }
+            let mut value = value;
+            value.state = state;
+            config.chat().update(value, &Cancellation::new()).await?;
             Ok(())
         })
     }
@@ -205,11 +187,9 @@ impl History {
         }
         Ok(())
     }
-    pub(crate) fn set<S, C, T, L>(&mut self, config: memory::Config<S, C, T, L>)
+    pub(crate) fn set<S, L>(&mut self, config: memory::Config<S, L>)
     where
-        S: session::Store + 'static,
-        C: chat::Store + 'static,
-        T: trace::Store + 'static,
+        S: short::Store + 'static,
         L: Memory + 'static,
     {
         self.0 = Some(Arc::new(Typed(Arc::new(config))));
@@ -360,8 +340,8 @@ impl Run {
                 record.completed_time = Some(now_ms());
             }
             // Waiting only suspends this invocation. Checkpoint owns the
-            // resumable scene; the final audit Trace is written once when
-            // the same Chat actually terminates.
+            // resumable scene; the complete runtime state is written into
+            // the same Chat record once that Chat actually terminates.
             entry
                 .save(record, if terminal_status { state } else { None })
                 .await?;
@@ -369,10 +349,10 @@ impl Run {
         result
     }
 
-    /// Workflow closeout uses the same Chat/Trace persistence path but does
+    /// Workflow closeout uses the same Chat persistence path but does
     /// not require its terminal output to be an Assistant message. A
     /// Workflow may intentionally finish with a Function or Tool message;
-    /// Chat.message remains optional while Trace.state retains the complete
+    /// Chat.message remains optional while Chat.state retains the complete
     /// runtime scene.
     pub(crate) async fn close_workflow(
         &self,
@@ -438,21 +418,19 @@ impl Identity {
     }
 }
 
-async fn load<S, C, T, L>(
-    config: Arc<memory::Config<S, C, T, L>>,
+async fn load<S, L>(
+    config: Arc<memory::Config<S, L>>,
     metadata: Map<String, Value>,
     hooks: Hooks,
     cancellation: &Cancellation,
 ) -> Result<Vec<Message>, Error>
 where
-    S: session::Store + 'static,
-    C: chat::Store + 'static,
-    T: trace::Store + 'static,
+    S: short::Store + 'static,
     L: Memory + 'static,
 {
     let identity = Identity::parse(&metadata)?;
     let session = cancellable(
-        config.session.read(identity.session_id, cancellation),
+        config.session().read(identity.session_id, cancellation),
         cancellation,
     )
     .await?;
@@ -473,7 +451,7 @@ where
     .as_object()
     .unwrap()
     .clone();
-    let mut chats = cancellable(config.chat.list(options, cancellation), cancellation).await?;
+    let mut chats = cancellable(config.chat().list(options, cancellation), cancellation).await?;
     let mut ids = std::collections::BTreeSet::new();
     for value in &chats {
         if value.id <= 0 || !identity.matches(value, &short::Type::Agent) || !ids.insert(value.id) {

@@ -189,11 +189,9 @@ impl<M> Builder<M> {
         self
     }
 
-    pub fn memory<S, C, T, L>(mut self, config: crate::memory::Config<S, C, T, L>) -> Self
+    pub fn memory<S, L>(mut self, config: crate::memory::Config<S, L>) -> Self
     where
-        S: crate::memory::short::session::Store + 'static,
-        C: crate::memory::short::chat::Store + 'static,
-        T: crate::memory::short::trace::Store + 'static,
+        S: crate::memory::short::Store + 'static,
         L: crate::memory::Memory + 'static,
     {
         self.history.set(config);
@@ -613,7 +611,7 @@ where
             .is_some_and(|error| !matches!(error.code.as_str(), "WAITING" | "CANCELLED"))
         {
             // Preserve direct preparation errors, but close the same native
-            // scene/Chat/Trace as an error emitted later from the run stream.
+            // scene/Chat.state as an error emitted later from the run stream.
             let (result, _) = Box::pin(next_react_event(state))
                 .await
                 .expect("preparation error closeout");
@@ -932,9 +930,9 @@ async fn next_react_progress<M: Chat + 'static>(
         if let Some(run) = &state.interaction {
             run.close();
         }
-        // Serialize the actual terminal scene once for both independent
-        // persistence destinations. An I/O failure is not an execution failure
-        // and must not produce a second, rewritten runtime scene for Trace.
+        // Serialize the actual terminal scene once for Checkpoint and Chat.state.
+        // An I/O failure is not an execution failure and must not produce a
+        // second, rewritten runtime scene.
         let snapshot = checkpoint_snapshot(&state, &result);
         let saved = save_checkpoint(&state, snapshot.clone()).await;
         let graph = state
@@ -996,8 +994,8 @@ fn result_status(result: &Result<Event, Error>) -> &'static str {
     }
 }
 
-/// Serialize the canonical Agent Runtime scene. Checkpoint and Trace store
-/// independent copies; neither a graph nor configured storage is required.
+/// Serialize the canonical Agent Runtime scene. Checkpoint and Chat.state
+/// store independent copies; neither a graph nor configured storage is required.
 fn checkpoint_snapshot<M: Chat>(state: &ReActState<M>, result: &Result<Event, Error>) -> Value {
     let (graph, nodes, history) = state
         .graph
@@ -3131,22 +3129,23 @@ mod tests {
     }
 
     #[test]
-    fn waiting_with_memory_keeps_chat_open_and_writes_trace_only_at_final_closeout() {
+    fn waiting_with_memory_keeps_chat_open_and_writes_state_only_at_final_closeout() {
         use crate::checkpoint::Checkpoint as _;
-        use crate::memory::short::{chat, session, trace};
-        use crate::memory::short::{chat::Store as _, session::Store as _, trace::Store as _};
+        use crate::memory::short::{chat, session};
+        use crate::memory::short::{chat::Store as _, session::Store as _};
 
         block_on(async {
             // Both Agent implementations use the same Memory waiting boundary.
             for react in [false, true] {
                 let memory = crate::memory::Config::new(
-                    crate::core::memory::short::session::InMemory::new(),
-                    crate::core::memory::short::chat::InMemory::new(),
-                    crate::core::memory::short::trace::InMemory::new(),
+                    crate::memory::short::Pair::new(
+                        crate::core::memory::short::session::InMemory::new(),
+                        crate::core::memory::short::chat::InMemory::new(),
+                    ),
                     crate::core::memory::InMemory::new(),
                 );
                 memory
-                    .session
+                    .session()
                     .create(
                         session::Session {
                             id: 900,
@@ -3202,17 +3201,17 @@ mod tests {
                 };
                 let first = agent.events(input.clone()).await;
                 assert!(matches!(first.as_slice(), [Err(error)] if error.code == "WAITING"));
-                let open = memory.chat.read(902, &Cancellation::new()).await.unwrap();
+                let open = memory.chat().read(902, &Cancellation::new()).await.unwrap();
                 assert_eq!(open.status, chat::Status::Running);
                 assert!(open.completed_time.is_none());
-                assert_eq!(
+                assert!(
                     memory
-                        .trace
+                        .chat()
                         .read(902, &Cancellation::new())
                         .await
-                        .unwrap_err()
-                        .code,
-                    "NOT_FOUND"
+                        .unwrap()
+                        .state
+                        .is_none()
                 );
                 assert_eq!(
                     checkpoint.load(902, &Cancellation::new()).await.unwrap()["status"],
@@ -3221,13 +3220,11 @@ mod tests {
 
                 let second = agent.events(input).await;
                 assert!(second.iter().all(Result::is_ok), "{second:?}");
-                let closed = memory.chat.read(902, &Cancellation::new()).await.unwrap();
+                let closed = memory.chat().read(902, &Cancellation::new()).await.unwrap();
                 assert_eq!(closed.status, chat::Status::Completed);
                 assert_eq!(closed.created_time, open.created_time);
                 assert!(closed.completed_time.is_some());
-                let trace: trace::Trace =
-                    memory.trace.read(902, &Cancellation::new()).await.unwrap();
-                assert_eq!(trace.state["status"], "succeeded");
+                assert_eq!(closed.state.as_ref().unwrap()["status"], "succeeded");
             }
         });
     }
@@ -3526,12 +3523,13 @@ mod tests {
                         );
                         assert!(typed.usage.as_ref().unwrap().input.is_some());
                     }
-                    // Empty Memory backends would fail if recovery read Session/Chat/Trace.
+                    // Empty Memory backends would fail if recovery read Session/Chat.
                     // A terminal Checkpoint must return before any audit/history I/O.
                     let memory = crate::memory::Config::new(
-                        crate::core::memory::short::session::InMemory::new(),
-                        crate::core::memory::short::chat::InMemory::new(),
-                        crate::core::memory::short::trace::InMemory::new(),
+                        crate::memory::short::Pair::new(
+                            crate::core::memory::short::session::InMemory::new(),
+                            crate::core::memory::short::chat::InMemory::new(),
+                        ),
                         crate::core::memory::InMemory::new(),
                     );
                     let restored = crate::agent::react()

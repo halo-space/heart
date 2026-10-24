@@ -49,16 +49,14 @@ impl Chat for Model {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let memory = memory::Config::new(
-        core::memory::short::session::InMemory::new(),
-        core::memory::short::chat::InMemory::new(),
-        core::memory::short::trace::InMemory::new(),
-        core::memory::InMemory::new(),
-    )
-    .with_scopes(["user", "agent"]);
+    // Each backend initializes its own internal storage. The composition step
+    // only combines the already-created short and long capabilities.
+    let short = core::memory::short::InMemory::new();
+    let long = core::memory::InMemory::new();
+    let memory = memory::Config::new(short, long).with_scopes(["user", "agent"]);
     let cancellation = Cancellation::new();
     memory
-        .session
+        .session()
         .create(
             session::Session {
                 id: 101,
@@ -82,7 +80,7 @@ async fn main() -> Result<(), Error> {
         data: json!({"value":"北京今天晴。"}).as_object().unwrap().clone(),
     });
     memory
-        .chat
+        .chat()
         .create(
             chat::Chat {
                 id: 201,
@@ -103,6 +101,7 @@ async fn main() -> Result<(), Error> {
                 message: Some(answer),
                 usage: None,
                 graph: None,
+                state: None,
                 metadata: Map::new(),
                 started_time: None,
                 completed_time: None,
@@ -113,7 +112,7 @@ async fn main() -> Result<(), Error> {
         )
         .await?;
     memory
-        .long
+        .long()
         .write(
             memory::Request {
                 id: 401,
@@ -147,9 +146,9 @@ async fn main() -> Result<(), Error> {
     while let Some(event) = events.next().await {
         println!("{:?}", event?);
     }
-    let saved = memory.chat.read(202, &Cancellation::new()).await?;
+    let saved = memory.chat().read(202, &Cancellation::new()).await?;
     assert_eq!(saved.status, chat::Status::Completed);
     println!("Saved Chat {}: {:?}", saved.id, saved.status);
-    // Graph/Trace require the actual integrated Runtime State; no fake logs.
+    // Graph/state require the actual integrated Runtime State; no fake logs.
     Ok(())
 }

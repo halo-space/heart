@@ -386,16 +386,14 @@ async fn memory_worker() {
     IDS.store(if phase == 1 { 7001 } else { 9001 }, Ordering::SeqCst);
     let disk = Disk::open(path);
     let config = memory::Config::new(
-        disk.clone(),
-        core::memory::short::chat::InMemory::new(),
-        core::memory::short::trace::InMemory::new(),
+        memory::short::Pair::new(disk.clone(), core::memory::short::chat::InMemory::new()),
         disk.clone(),
     )
     .with_compression(Compression(disk.clone()))
     .with_extractor(Extraction(disk.clone()))
     .with_id_fn(next_id);
     config
-        .chat
+        .chat()
         .create(
             chat::Chat {
                 id: 201,
@@ -416,6 +414,7 @@ async fn memory_worker() {
                 message: Some(text(Role::Assistant, "historical answer")),
                 usage: Some(usage()),
                 graph: None,
+                state: None,
                 metadata: Map::new(),
                 started_time: None,
                 completed_time: None,

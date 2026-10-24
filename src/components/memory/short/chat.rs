@@ -43,6 +43,8 @@ pub struct Chat {
     pub message: Option<Message>,
     pub usage: Option<Usage>,
     pub graph: Option<Value>,
+    /// Complete Agent/Workflow state captured at closeout.
+    pub state: Option<Value>,
     pub metadata: Map<String, Value>,
     pub started_time: Option<i64>,
     pub completed_time: Option<i64>,

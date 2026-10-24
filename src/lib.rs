@@ -51,7 +51,7 @@ pub(crate) use components::workspace;
 /// inherent impl, without a wrapping Node object.
 ///
 /// ```
-/// use halo::agent::{Cancellation, Error, node, workflow::WorkflowBuilder};
+/// use halo::{node, agent::{Cancellation, Error, workflow::WorkflowBuilder}};
 /// use schemars::JsonSchema;
 /// use serde::{Deserialize, Serialize};
 ///
@@ -71,7 +71,7 @@ pub(crate) use components::workspace;
 /// ```
 ///
 /// ```compile_fail
-/// use halo::agent::{Cancellation, Error, node};
+/// use halo::{node, agent::{Cancellation, Error}};
 /// #[node]
 /// fn synchronous(_: i64, _: Cancellation) -> Result<i64, Error> { Ok(1) }
 /// ```
