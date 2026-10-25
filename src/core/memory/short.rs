@@ -17,7 +17,7 @@ pub mod es {
 pub mod session;
 
 /// Zero-configuration short-memory store. It owns the Session and Chat
-/// records internally and is passed to `memory::Config` as one capability.
+/// records internally and is passed to `memory::Config` as one backend.
 pub struct InMemory {
     inner: crate::components::memory::short::Pair<session::InMemory, chat::InMemory>,
 }

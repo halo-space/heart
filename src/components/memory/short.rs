@@ -52,14 +52,6 @@ impl<S, C> Pair<S, C> {
             chat: std::sync::Arc::new(chat),
         }
     }
-
-    pub fn session_arc(&self) -> std::sync::Arc<S> {
-        self.session.clone()
-    }
-
-    pub fn chat_arc(&self) -> std::sync::Arc<C> {
-        self.chat.clone()
-    }
 }
 
 impl<S, C> Store for Pair<S, C>

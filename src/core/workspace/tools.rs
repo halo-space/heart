@@ -17,7 +17,7 @@ use crate::components::message::{Message, Role};
 use crate::components::model::content::part::{Part, object as part_data};
 use crate::components::skill::{Definition as SkillDefinition, Loader as SkillLoader, Skill as _};
 use crate::components::tool::{Call, Tool, ToolDefinition};
-use crate::core::agent::mounts::Toolkit;
+use crate::core::agent::dispatch::Dispatch;
 use crate::core::operation::check;
 use crate::{Cancellation, Error};
 
@@ -140,8 +140,8 @@ impl Files {
     }
 }
 
-/// Bind the default file tools to one shared backend and the existing capability set.
-pub(super) fn attach(workspace: Files, capabilities: Toolkit) -> Toolkit {
+/// Bind the default file tools to one shared backend and the existing dispatch table.
+pub(super) fn attach(workspace: Files, dispatch: Dispatch) -> Dispatch {
     let command_enabled = workspace.command_enabled();
     let discover_skills = match &workspace {
         Files::Local(_) => true,
@@ -156,15 +156,15 @@ pub(super) fn attach(workspace: Files, capabilities: Toolkit) -> Toolkit {
         Files::Docker(docker) => Arc::clone(&docker.skill_cache),
     };
     let workspace = Arc::new(workspace);
-    let capabilities = if discover_skills {
-        capabilities.skill(DirectoryLoader {
+    let dispatch = if discover_skills {
+        dispatch.skill(DirectoryLoader {
             workspace: Arc::clone(&workspace),
             cache: skill_cache,
         })
     } else {
-        capabilities
+        dispatch
     };
-    let capabilities = capabilities
+    let dispatch = dispatch
         .tools(Read {
             workspace: Arc::clone(&workspace),
             access: Arc::clone(&access),
@@ -193,9 +193,9 @@ pub(super) fn attach(workspace: Files, capabilities: Toolkit) -> Toolkit {
             Arc::clone(&access),
         ));
     if command_enabled {
-        capabilities.tools(operations::Command::new(workspace, access))
+        dispatch.tools(operations::Command::new(workspace, access))
     } else {
-        capabilities
+        dispatch
     }
 }
 

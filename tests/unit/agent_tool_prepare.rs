@@ -59,9 +59,9 @@ impl Middleware for BrokenPermissionHook {
     }
 }
 
-fn fixture(fail: bool) -> (Toolkit, Access, Log, Step, Call) {
+fn fixture(fail: bool) -> (Dispatch, Access, Log, Step, Call) {
     let log: Log = Default::default();
-    let toolkit = Toolkit::new().tools(Lookup {
+    let dispatch = Dispatch::new().tools(Lookup {
         definition: ToolDefinition {
             name: "lookup".into(),
             description: "find weather".into(),
@@ -88,19 +88,19 @@ fn fixture(fail: bool) -> (Toolkit, Access, Log, Step, Call) {
         call: Some(call.clone()),
         ..Default::default()
     };
-    (toolkit, access, log, saved, call)
+    (dispatch, access, log, saved, call)
 }
 
 #[test]
 fn both_strategies_share_reauthorization_and_native_before_acknowledgement() {
     block_on(async {
-        let (toolkit, access, log, mut saved, call) = fixture(false);
+        let (dispatch, access, log, mut saved, call) = fixture(false);
         let hooks = Hooks::default();
         let metadata = Map::new();
         let cancellation = Cancellation::new();
         let starting = saved.clone();
         let effective = tool_prepare(
-            &toolkit,
+            &dispatch,
             &access,
             &hooks,
             &metadata,
@@ -127,7 +127,7 @@ fn both_strategies_share_reauthorization_and_native_before_acknowledgement() {
         log.lock().unwrap().clear();
 
         let restored = tool_prepare(
-            &toolkit,
+            &dispatch,
             &access,
             &hooks,
             &metadata,
@@ -148,7 +148,7 @@ fn both_strategies_share_reauthorization_and_native_before_acknowledgement() {
             log.lock().unwrap().clear();
             saved.stage = Some(stage.into());
             let restored = tool_prepare(
-                &toolkit,
+                &dispatch,
                 &access,
                 &hooks,
                 &metadata,
@@ -171,10 +171,10 @@ fn both_strategies_share_reauthorization_and_native_before_acknowledgement() {
 #[test]
 fn business_before_error_keeps_original_native_facts() {
     block_on(async {
-        let (toolkit, access, log, saved, call) = fixture(true);
+        let (dispatch, access, log, saved, call) = fixture(true);
         let original = saved.clone();
         let result = tool_prepare(
-            &toolkit,
+            &dispatch,
             &access,
             &Hooks::default(),
             &Map::new(),
@@ -196,11 +196,11 @@ fn business_before_error_keeps_original_native_facts() {
 #[test]
 fn permission_middleware_error_is_control_failure_not_tool_feedback() {
     block_on(async {
-        let (toolkit, access, log, saved, call) = fixture(false);
+        let (dispatch, access, log, saved, call) = fixture(false);
         let mut hooks = Hooks::default();
         hooks.add(BrokenPermissionHook);
         let result = tool_prepare(
-            &toolkit,
+            &dispatch,
             &access,
             &hooks,
             &Map::new(),
@@ -221,9 +221,9 @@ fn permission_middleware_error_is_control_failure_not_tool_feedback() {
 #[test]
 fn failed_native_handoff_is_control_failure_without_second_authorization() {
     block_on(async {
-        let (toolkit, access, log, saved, call) = fixture(false);
+        let (dispatch, access, log, saved, call) = fixture(false);
         let result = tool_prepare(
-            &toolkit,
+            &dispatch,
             &access,
             &Hooks::default(),
             &Map::new(),

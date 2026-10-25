@@ -220,7 +220,7 @@ async fn workspace_preserves_ready_tools_mcps_and_skills() {
         ]
     );
     let cancellation = Cancellation::new();
-    // Skill metadata stays in the Toolkit catalog and does not become a
+    // Skill metadata stays in the tool dispatcher catalog and does not become a
     // separate executable definition before the model view is prepared.
     assert!(
         halo::agent::workspace::Workspace::tool(&workspace)

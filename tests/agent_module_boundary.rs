@@ -146,7 +146,7 @@ fn chat_is_constructed_and_run_from_agent_without_a_runtime_owner() {
 }
 
 #[test]
-fn react_and_mounted_capabilities_are_agent_assembly_not_runtime_kinds() {
+fn react_and_configured_tools_are_agent_assembly_not_runtime_kinds() {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let agent: halo::core::agent::react::Agent<Model> = agent::react()
         .model(Model {

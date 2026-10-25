@@ -13,8 +13,8 @@ use serde_json::{Map, Value, json};
 
 use super::tools::{definition, tool_message};
 use crate::components::mcp::Server;
-use crate::core::agent::mounts::ToolInputs;
-use crate::core::{agent::mounts::Toolkit, operation::cancellable};
+use crate::core::agent::dispatch::ToolInputs;
+use crate::core::{agent::dispatch::Dispatch, operation::cancellable};
 use crate::tool::{Call, Tool, ToolDefinition};
 use crate::workspace::{Definition, Mode};
 use crate::{Cancellation, Error, Message};
@@ -43,7 +43,7 @@ pub fn new(client: Elasticsearch, index: impl Into<String>) -> Result<Workspace,
             path: None,
             metadata: Map::new(),
         },
-        capabilities: Toolkit::new(),
+        dispatch: Dispatch::new(),
     })
 }
 
@@ -51,27 +51,27 @@ pub fn new(client: Elasticsearch, index: impl Into<String>) -> Result<Workspace,
 pub struct Workspace {
     backend: Arc<Backend>,
     definition: Definition,
-    capabilities: Toolkit,
+    dispatch: Dispatch,
 }
 
 impl Workspace {
-    /// Mount application Tools on this Server Workspace.
+    /// Register application Tools on this Server Workspace.
     #[allow(private_bounds)]
     pub fn tools<I>(mut self, tools: I) -> Self
     where
         I: ToolInputs,
     {
-        self.capabilities = self.capabilities.tools(tools);
+        self.dispatch = self.dispatch.tools(tools);
         self
     }
 
-    /// Mount already connected and discovered MCP servers on this Workspace.
+    /// Register already connected and discovered MCP servers on this Workspace.
     #[allow(private_bounds)]
     pub fn mcps<S>(mut self, servers: impl IntoIterator<Item = S>) -> Self
     where
         S: Server + 'static,
     {
-        self.capabilities = self.capabilities.mcps(servers);
+        self.dispatch = self.dispatch.mcps(servers);
         self
     }
 
@@ -79,7 +79,7 @@ impl Workspace {
     /// database). The loader reads instructions and associated resources by
     /// Skill name; Server Workspace does not expose fictional file paths.
     pub fn skills<S: crate::skill::Loader + 'static>(mut self, loader: S) -> Self {
-        self.capabilities = self.capabilities.skill(loader);
+        self.dispatch = self.dispatch.skill(loader);
         self
     }
 }
@@ -87,24 +87,24 @@ impl Workspace {
 impl Workspace {
     /// Internal Tool catalog used to implement the Workspace contract.
     pub(super) fn tool_catalog(&self) -> Vec<crate::tool::ToolDefinition> {
-        Toolkit::from(self.clone()).tool_catalog()
+        Dispatch::from(self.clone()).tool_catalog()
     }
 
     pub(super) fn mcp_catalog(&self) -> Vec<crate::mcp::Definition> {
-        Toolkit::from(self.clone()).mcp_catalog()
+        Dispatch::from(self.clone()).mcp_catalog()
     }
 
     pub(super) fn skill_catalog(&self) -> Vec<crate::skill::Definition> {
-        self.capabilities.skill_catalog()
+        self.dispatch.skill_catalog()
     }
 
-    /// Execute one mounted or built-in Workspace Tool.
+    /// Execute one configured or built-in Workspace Tool.
     pub async fn execute(
         &self,
         call: crate::tool::Call,
         cancellation: &Cancellation,
     ) -> Result<(crate::Message, crate::tool::Evaluation), Error> {
-        Toolkit::from(self.clone())
+        Dispatch::from(self.clone())
             .execute(call, cancellation)
             .await
     }
@@ -136,17 +136,17 @@ impl crate::workspace::Workspace for Workspace {
     }
 }
 
-impl From<Workspace> for Toolkit {
+impl From<Workspace> for Dispatch {
     fn from(workspace: Workspace) -> Self {
-        let mut capabilities = workspace.capabilities;
+        let mut dispatch = workspace.dispatch;
         for kind in [Kind::Write, Kind::Read, Kind::Update, Kind::Delete] {
-            capabilities = capabilities.tools(Operation {
+            dispatch = dispatch.tools(Operation {
                 backend: Arc::clone(&workspace.backend),
                 kind,
                 definition: kind.definition(),
             });
         }
-        capabilities
+        dispatch
     }
 }
 

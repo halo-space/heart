@@ -118,7 +118,7 @@ where
     S: short::Store,
     L: Memory,
 {
-    /// Compose two already-initialized memory capabilities.
+    /// Compose two already-initialized memory stores.
     ///
     /// The short backend owns its Session/Chat implementation and the long
     /// backend owns its long-memory implementation. This constructor does not

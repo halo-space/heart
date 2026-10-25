@@ -36,7 +36,7 @@ pub struct Definition {
 
 /// Common workspace identity, catalog and execution boundary. The selected
 /// concrete implementation owns file or database operations. Its catalog is
-/// deliberately expressed as the three capabilities the Agent can mount:
+/// deliberately expressed as the three resource kinds the Agent can mount:
 /// ordinary Tools, connected MCP servers and Skills. The public names are
 /// simply `tool`, `mcp` and `skill`; the heterogeneous dispatch table stays
 /// inside the concrete implementation.

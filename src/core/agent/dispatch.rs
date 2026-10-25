@@ -1,4 +1,4 @@
-//! Internal mounted Tool/MCP/Skill dispatch used by the concrete Agent
+//! Internal Tool/MCP/Skill dispatch used by the concrete Agent
 //! implementations. This module is deliberately hidden from the public
 //! component contract; callers use the Agent and Workspace `.tools(...)`,
 //! `.mcps(...)` and `.skills(...)` methods.
@@ -139,7 +139,7 @@ impl SkillReader {
             skills,
             definition: ToolDefinition {
                 name: SKILL_TOOL_NAME.into(),
-                description: "Read a Skill's full instructions by exact name, or a text resource relative to that Skill with `resource`. Skills explain how to use available capabilities; reading does not execute them.".into(),
+                description: "Read a Skill's full instructions by exact name, or a text resource relative to that Skill with `resource`. Skills explain how to use available Tools and MCP servers; reading does not execute them.".into(),
                 parameters: serde_json::from_value(serde_json::json!({
                     "type": "object",
                     "properties": {
@@ -168,17 +168,17 @@ where
     let any = workspace as &dyn Any;
 
     // ES Workspace keeps application-provided database Loaders in its
-    // internal Toolkit. Reusing that Toolkit preserves the Loader's shared
+    // internal Dispatch. Reusing that Dispatch preserves the Loader's shared
     // version cache while avoiding any public Workspace API expansion.
     if let Some(workspace) = any.downcast_ref::<crate::core::workspace::es::Workspace>() {
-        return Toolkit::from(workspace.clone()).skill_loaders;
+        return Dispatch::from(workspace.clone()).skill_loaders;
     }
 
     // Docker's directory discovery is opt-in and is attached by its normal
     // `From<Docker>` adapter. Copy only those internal Loader entries; the
     // public Workspace catalog still comes from `workspace.skill()`.
     if let Some(workspace) = any.downcast_ref::<crate::core::workspace::Docker>() {
-        return Toolkit::from(workspace.clone()).skill_loaders;
+        return Dispatch::from(workspace.clone()).skill_loaders;
     }
 
     Vec::new()
@@ -353,19 +353,19 @@ where
     }
 }
 
-/// Internal Toolkit for heterogeneous Tools, MCP servers and Skills.
+/// Internal dispatch table for heterogeneous Tools, MCP servers and Skills.
 ///
 /// This type is an implementation detail. It is never the public way to
 /// configure an Agent or Workspace. Public callers mount each concrete kind
 /// with `.tools(...)`, `.mcps(...)` and `.skills(...)`; this table only keeps
-/// their dispatch entries together while an Agent runs. One shared `skill`
+/// their entries together while an Agent runs. One shared `skill`
 /// Tool can return a selected Skill's full instructions; the other Tools and
 /// MCP servers remain independently defined and executable. Cloning the table
-/// shares mounted entries and Workspace-owned Skill loader caches; it does not
+/// shares configured entries and Workspace-owned Skill loader caches; it does not
 /// copy or materialize files.
 #[derive(Clone)]
 #[doc(hidden)]
-pub struct Toolkit {
+pub struct Dispatch {
     entries: Vec<Arc<dyn Entry>>,
     mcp_catalog: Vec<crate::mcp::Definition>,
     skills: Vec<Arc<dyn SkillEntry>>,
@@ -375,19 +375,19 @@ pub struct Toolkit {
 
 /// Internal inputs accepted by the public Agent/Workspace `.tools(...)`
 /// methods. The public entry point is plural
-/// even when one concrete Tool is mounted; this keeps the assembly API
+/// even when one concrete Tool is registered; this keeps the assembly API
 /// consistent for one or many Tools.
 #[doc(hidden)]
 pub trait ToolInputs {
-    fn append_to(self, toolkit: &mut Toolkit);
+    fn append_to(self, dispatch: &mut Dispatch);
 }
 
 impl<T> ToolInputs for T
 where
     T: Tool + 'static,
 {
-    fn append_to(self, toolkit: &mut Toolkit) {
-        toolkit.entries.push(Arc::new(TypedEntry {
+    fn append_to(self, dispatch: &mut Dispatch) {
+        dispatch.entries.push(Arc::new(TypedEntry {
             tool: Arc::new(self),
         }));
     }
@@ -397,9 +397,9 @@ impl<T, const N: usize> ToolInputs for [T; N]
 where
     T: Tool + 'static,
 {
-    fn append_to(self, toolkit: &mut Toolkit) {
+    fn append_to(self, dispatch: &mut Dispatch) {
         for tool in self {
-            toolkit.entries.push(Arc::new(TypedEntry {
+            dispatch.entries.push(Arc::new(TypedEntry {
                 tool: Arc::new(tool),
             }));
         }
@@ -410,22 +410,22 @@ impl<T> ToolInputs for Vec<T>
 where
     T: Tool + 'static,
 {
-    fn append_to(self, toolkit: &mut Toolkit) {
+    fn append_to(self, dispatch: &mut Dispatch) {
         for tool in self {
-            toolkit.entries.push(Arc::new(TypedEntry {
+            dispatch.entries.push(Arc::new(TypedEntry {
                 tool: Arc::new(tool),
             }));
         }
     }
 }
 
-impl Default for Toolkit {
+impl Default for Dispatch {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl Toolkit {
+impl Dispatch {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
@@ -448,7 +448,7 @@ impl Toolkit {
         // Workspaces may also own async Loaders, so copy those internal
         // sources into this Agent-facing table before the first run. The
         // normal `prepared` phase then discovers them and injects only their
-        // definitions into the system prompt, just like explicitly mounted
+        // definitions into the system prompt, just like explicitly registered
         // Loaders. This downcast is an implementation detail; custom
         // Workspace implementations continue to use their synchronous
         // `skill()` catalog without a new public hook.
@@ -474,7 +474,7 @@ impl Toolkit {
                 }) as Arc<dyn Entry>
             })
             .collect();
-        let mut toolkit = Self {
+        let mut dispatch = Self {
             entries,
             mcp_catalog: workspace.mcp(),
             skills: skills.clone(),
@@ -482,17 +482,17 @@ impl Toolkit {
             skill_reader: false,
         };
         if !skills.is_empty() {
-            toolkit.entries.push(Arc::new(TypedEntry {
+            dispatch.entries.push(Arc::new(TypedEntry {
                 tool: Arc::new(SkillReader::new(skills)),
             }));
-            toolkit.skill_reader = true;
+            dispatch.skill_reader = true;
         }
-        toolkit
+        dispatch
     }
 
-    /// Combine two independently assembled capability sets. Local Tool and
-    /// Skill names and already-discovered MCP Tool names are checked when the
-    /// The capability set is prepared for a run.
+    /// Combine two independently assembled tool sets. Local Tool and Skill
+    /// names and already-discovered MCP Tool names are checked when the set
+    /// is prepared for a run.
     pub fn merge(mut self, other: Self) -> Result<Self, Error> {
         self = self.append(other);
         self.validate_names(&self.entries)?;
@@ -527,11 +527,11 @@ impl Toolkit {
         S: Server + 'static,
     {
         for server in servers {
-            let mounted = TypedMcp {
+            let entry = TypedMcp {
                 server: Arc::new(server),
             };
-            self.mcp_catalog.push(mounted.server.definition().clone());
-            self.entries.extend(mounted.entries());
+            self.mcp_catalog.push(entry.server.definition().clone());
+            self.entries.extend(entry.entries());
         }
         self
     }
@@ -561,7 +561,7 @@ impl Toolkit {
     }
 
     /// Bind a Workspace-owned Skill loader. Discovery and reading happen
-    /// asynchronously for each run; the capability set never assumes local
+    /// asynchronously for each run; the dispatch table never assumes local
     /// file paths.
     pub(crate) fn skill<S: Loader + 'static>(mut self, loader: S) -> Self {
         self.skill_loaders.push(Arc::new(TypedLoader {
@@ -597,7 +597,7 @@ impl Toolkit {
             return prompt;
         }
         let mut catalog = String::from(
-            "Available Skills are instruction sets. Read a Skill with the `skill` tool when its description is relevant, then follow its instructions using the available Tools and MCP capabilities. A Skill does not execute those capabilities.\n<skills>\n",
+            "Available Skills are instruction sets. Read a Skill with the `skill` tool when its description is relevant, then follow its instructions using the available Tools and MCP servers. A Skill does not execute those tools.\n<skills>\n",
         );
         for skill in &self.skills {
             let definition = skill.definition();
@@ -622,7 +622,7 @@ impl Toolkit {
             if !names.insert(name) {
                 return Err(Error::new(
                     "INVALID_ARGUMENTS",
-                    "Tool names must be unique across mounted Tools and MCP servers",
+                    "Tool names must be unique across configured Tools and MCP servers",
                 ));
             }
         }
@@ -694,8 +694,8 @@ impl Toolkit {
             .collect()
     }
 
-    /// Prepared Agent capability catalog; not inferred from a generated Plan.
-    pub(crate) fn capability_names(&self) -> BTreeSet<String> {
+    /// Prepared Agent tool catalog; not inferred from a generated Plan.
+    pub(crate) fn names(&self) -> BTreeSet<String> {
         self.entries
             .iter()
             .map(|entry| entry.definition().name)
@@ -770,7 +770,7 @@ impl Toolkit {
                         .await
                         .map(|(_, message)| message)
                 },
-                // Standalone capability calls have no Runtime owner.
+                // Standalone tool calls have no Runtime owner.
                 // They do not persist recovery facts or attempt stage retries.
                 commit: |_: Phase, _: &Call, _: Option<&Message>| async { Ok(()) },
             },
@@ -1044,12 +1044,12 @@ mod tests {
     }
 
     #[test]
-    fn toolkit_exports_definitions_and_executes_by_name() {
+    fn dispatch_exports_definitions_and_executes_by_name() {
         let called = Arc::new(AtomicBool::new(false));
-        let toolkit = Toolkit::new().tools(weather(called.clone()));
-        assert_eq!(toolkit.len(), 1);
-        assert_eq!(toolkit.tool_catalog()[0].name, "weather");
-        let (message, evaluation) = block_on(toolkit.execute(
+        let dispatch = Dispatch::new().tools(weather(called.clone()));
+        assert_eq!(dispatch.len(), 1);
+        assert_eq!(dispatch.tool_catalog()[0].name, "weather");
+        let (message, evaluation) = block_on(dispatch.execute(
             Call {
                 call_id: "call_1".into(),
                 name: "weather".into(),
@@ -1064,10 +1064,10 @@ mod tests {
     }
 
     #[test]
-    fn toolkit_rejects_unknown_tools_without_invoking_registered_tools() {
+    fn dispatch_rejects_unknown_tools_without_invoking_registered_tools() {
         let called = Arc::new(AtomicBool::new(false));
-        let toolkit = Toolkit::new().tools(weather(called.clone()));
-        let error = block_on(toolkit.execute(
+        let dispatch = Dispatch::new().tools(weather(called.clone()));
+        let error = block_on(dispatch.execute(
             Call {
                 call_id: "call_1".into(),
                 name: "unknown".into(),
@@ -1091,12 +1091,12 @@ mod tests {
             "Use sources.".into(),
         )
         .unwrap();
-        let toolkit = Toolkit::new()
+        let dispatch = Dispatch::new()
             .tools(weather(Arc::new(AtomicBool::new(false))))
             .skills(vec![skill])
             .unwrap();
         let cancellation = Cancellation::new();
-        let prepared = block_on(toolkit.prepared(&cancellation)).unwrap();
+        let prepared = block_on(dispatch.prepared(&cancellation)).unwrap();
         let definitions = prepared.tool_catalog();
         assert_eq!(definitions.len(), 2);
         assert_eq!(definitions[0].name, "weather");
@@ -1162,13 +1162,13 @@ mod tests {
     fn caller_can_retry_only_eval_using_the_retained_call_and_result() {
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let evaluations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let toolkit = Toolkit::new().tools(RetryingEval {
+        let dispatch = Dispatch::new().tools(RetryingEval {
             definition: weather(Arc::new(AtomicBool::new(false))).definition,
             calls: calls.clone(),
             evaluations: evaluations.clone(),
         });
         let cancellation = Cancellation::new();
-        let (call, message) = block_on(toolkit.call(
+        let (call, message) = block_on(dispatch.call(
             Call {
                 call_id: "call_1".into(),
                 name: "weather".into(),
@@ -1178,12 +1178,12 @@ mod tests {
         ))
         .unwrap();
         assert_eq!(
-            block_on(toolkit.evaluate(&call, &message, &cancellation))
+            block_on(dispatch.evaluate(&call, &message, &cancellation))
                 .unwrap_err()
                 .code,
             "TIMEOUT"
         );
-        let result = block_on(toolkit.evaluate(&call, &message, &cancellation)).unwrap();
+        let result = block_on(dispatch.evaluate(&call, &message, &cancellation)).unwrap();
         assert!(!result.passed);
         assert!(result.feedback.is_some());
         assert_eq!(calls.load(Ordering::SeqCst), 1);

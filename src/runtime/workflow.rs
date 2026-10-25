@@ -3350,10 +3350,7 @@ mod tests {
         crate::core::memory::InMemory,
     >;
 
-    fn workflow_memory() -> (
-        WorkflowMemoryConfig,
-        Arc<crate::core::memory::short::chat::InMemory>,
-    ) {
+    fn workflow_memory() -> WorkflowMemoryConfig {
         use crate::memory::short::session::Store as _;
         let config = WorkflowMemoryConfig::new(
             crate::memory::short::Pair::new(
@@ -3379,7 +3376,7 @@ mod tests {
             &Cancellation::new(),
         ))
         .unwrap();
-        (config.clone(), config.short.chat_arc())
+        config
     }
 
     #[test]
@@ -3828,7 +3825,8 @@ mod tests {
         builder.add_edge(START, "agent").unwrap();
         builder.add_edge("agent", END).unwrap();
         let workflow = builder.compile().unwrap();
-        let (config, chats) = workflow_memory();
+        let config = workflow_memory();
+        let chats = config.clone();
         let mut runtime = Runtime::new(5, workflow.clone())
             .unwrap()
             .memory(config)
@@ -3837,7 +3835,7 @@ mod tests {
         block_on(runtime.execute(workflow_input(), Arc::new(|| 5_001), Cancellation::new()))
             .unwrap();
 
-        let chat = block_on(chats.read(5, &Cancellation::new())).unwrap();
+        let chat = block_on(chats.chat().read(5, &Cancellation::new())).unwrap();
         assert_eq!(chat.r#type, crate::memory::short::Type::Workflow);
         assert_eq!(chat.status, crate::memory::short::chat::Status::Completed);
         assert_eq!(
@@ -3865,7 +3863,8 @@ mod tests {
         builder.add_edge(START, "agent").unwrap();
         builder.add_edge("agent", END).unwrap();
         let workflow = builder.compile().unwrap();
-        let (config, chats) = workflow_memory();
+        let config = workflow_memory();
+        let chats = config.clone();
         let mut first = Runtime::new(5, workflow.clone())
             .unwrap()
             .memory(config.clone())
@@ -3881,13 +3880,13 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            block_on(chats.read(5, &Cancellation::new()))
+            block_on(chats.chat().read(5, &Cancellation::new()))
                 .unwrap()
                 .status,
             crate::memory::short::chat::Status::Completed
         );
         assert_eq!(
-            block_on(chats.read(5, &Cancellation::new()))
+            block_on(chats.chat().read(5, &Cancellation::new()))
                 .unwrap()
                 .state
                 .unwrap()["chat_id"],
@@ -3921,7 +3920,8 @@ mod tests {
         builder.add_edge(START, "approval").unwrap();
         builder.add_edge("approval", END).unwrap();
         let workflow = builder.compile().unwrap();
-        let (config, chats) = workflow_memory();
+        let config = workflow_memory();
+        let chats = config.clone();
         let mut runtime = Runtime::new(5, workflow).unwrap().memory(config).unwrap();
         let initial = workflow_input();
 
@@ -3932,13 +3932,13 @@ mod tests {
             "WAITING"
         );
         assert_eq!(
-            block_on(chats.read(5, &Cancellation::new()))
+            block_on(chats.chat().read(5, &Cancellation::new()))
                 .unwrap()
                 .status,
             crate::memory::short::chat::Status::Running
         );
         assert!(
-            block_on(chats.read(5, &Cancellation::new()))
+            block_on(chats.chat().read(5, &Cancellation::new()))
                 .unwrap()
                 .state
                 .is_none()
@@ -3954,13 +3954,13 @@ mod tests {
             .unwrap();
         block_on(runtime.execute(initial, Arc::new(|| 5_003), Cancellation::new())).unwrap();
         assert_eq!(
-            block_on(chats.read(5, &Cancellation::new()))
+            block_on(chats.chat().read(5, &Cancellation::new()))
                 .unwrap()
                 .status,
             crate::memory::short::chat::Status::Completed
         );
         assert!(
-            block_on(chats.read(5, &Cancellation::new()))
+            block_on(chats.chat().read(5, &Cancellation::new()))
                 .unwrap()
                 .state
                 .is_some()
@@ -3988,7 +3988,8 @@ mod tests {
             builder.add_edge(START, "agent").unwrap();
             builder.add_edge("agent", END).unwrap();
             let workflow = builder.compile().unwrap();
-            let (config, chats) = workflow_memory();
+            let config = workflow_memory();
+            let chats = config.clone();
             let mut runtime = Runtime::new(5, workflow).unwrap().memory(config).unwrap();
             let error = block_on(runtime.execute(
                 workflow_input(),
@@ -4005,13 +4006,13 @@ mod tests {
                 }
             );
             assert_eq!(
-                block_on(chats.read(5, &Cancellation::new()))
+                block_on(chats.chat().read(5, &Cancellation::new()))
                     .unwrap()
                     .status,
                 expected_chat_status
             );
             assert_eq!(
-                block_on(chats.read(5, &Cancellation::new()))
+                block_on(chats.chat().read(5, &Cancellation::new()))
                     .unwrap()
                     .state
                     .unwrap()["status"],

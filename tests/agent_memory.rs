@@ -795,14 +795,7 @@ fn config_clone_shares_stores_and_each_run_reads_a_fresh_snapshot() {
         .push(history(201, 1, "first", "a"));
     let configured = config(session(), &state);
     let retained = configured.clone();
-    assert!(Arc::ptr_eq(
-        &configured.short.session_arc(),
-        &retained.short.session_arc()
-    ));
-    assert!(Arc::ptr_eq(
-        &configured.short.chat_arc(),
-        &retained.short.chat_arc()
-    ));
+    assert!(Arc::ptr_eq(&configured.short, &retained.short));
     assert!(Arc::ptr_eq(&configured.long, &retained.long));
     let model = Model::default();
     let agent = agent::chat()

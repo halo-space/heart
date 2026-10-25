@@ -19,7 +19,7 @@ use crate::{
     workspace::{Definition, Mode},
 };
 
-use super::agent::mounts::{ToolInputs, Toolkit};
+use super::agent::dispatch::{Dispatch, ToolInputs};
 use super::operation::{cancellable, check};
 
 pub mod docker;
@@ -42,7 +42,7 @@ impl Drop for Temporary {
 pub struct Local {
     root: PathBuf,
     definition: Definition,
-    capabilities: Toolkit,
+    dispatch: Dispatch,
     sandbox: Option<crate::sandbox::Local>,
     pub(super) access: Arc<RwLock<()>>,
     pub(super) skill_cache: tools::SkillCache,
@@ -50,7 +50,7 @@ pub struct Local {
 
 impl Local {
     pub(super) fn skill_catalog(&self) -> Vec<SkillDefinition> {
-        let mut definitions = self.capabilities.skill_catalog();
+        let mut definitions = self.dispatch.skill_catalog();
         let root = self.root.join("skills");
         let Ok(entries) = std::fs::read_dir(root) else {
             return definitions;
@@ -94,44 +94,44 @@ impl Local {
                 path: Some(path),
                 metadata: Default::default(),
             },
-            capabilities: Toolkit::new(),
+            dispatch: Dispatch::new(),
             sandbox: None,
             access: Arc::new(RwLock::new(())),
             skill_cache: Arc::new(RwLock::new(None)),
         })
     }
 
-    /// Mount the application's Tools, MCP servers and Skills in this workspace.
-    /// This only stores configuration; it performs no tool calls or discovery.
-    /// Mount application Tools on this Workspace. Standard local file tools
+    /// Register the application's Tools, MCP servers and Skills in this
+    /// workspace. This only stores configuration; it performs no tool calls
+    /// or discovery. Standard local file tools
     /// are added when the Workspace is consumed by an Agent or Harness.
     #[allow(private_bounds)]
     pub fn tools<I>(mut self, tools: I) -> Self
     where
         I: ToolInputs,
     {
-        self.capabilities = self.capabilities.tools(tools);
+        self.dispatch = self.dispatch.tools(tools);
         self
     }
 
-    /// Mount already connected and discovered MCP servers on this Workspace.
+    /// Register already connected and discovered MCP servers on this Workspace.
     #[allow(private_bounds)]
     pub fn mcps<S>(mut self, servers: impl IntoIterator<Item = S>) -> Self
     where
         S: Server + 'static,
     {
-        self.capabilities = self.capabilities.mcps(servers);
+        self.dispatch = self.dispatch.mcps(servers);
         self
     }
 
-    /// Mount in-process Skills on this Workspace. Local directory discovery
+    /// Register in-process Skills on this Workspace. Local directory discovery
     /// remains owned by the Workspace backend and is cached there.
     #[allow(private_bounds)]
     pub fn skills<S>(mut self, skills: impl IntoIterator<Item = S>) -> Result<Self, Error>
     where
         S: Skill + 'static,
     {
-        self.capabilities = self.capabilities.skills(skills)?;
+        self.dispatch = self.dispatch.skills(skills)?;
         Ok(self)
     }
 
@@ -197,30 +197,30 @@ impl Local {
     }
 }
 
-impl From<Local> for Toolkit {
+impl From<Local> for Dispatch {
     fn from(mut workspace: Local) -> Self {
-        let capabilities = std::mem::take(&mut workspace.capabilities);
-        tools::attach(workspace.into(), capabilities)
+        let dispatch = std::mem::take(&mut workspace.dispatch);
+        tools::attach(workspace.into(), dispatch)
     }
 }
 
 impl Local {
     /// Internal Tool catalog used to implement the Workspace contract.
     pub(super) fn tool_catalog(&self) -> Vec<crate::tool::ToolDefinition> {
-        Toolkit::from(self.clone()).tool_catalog()
+        Dispatch::from(self.clone()).tool_catalog()
     }
 
     pub(super) fn mcp_catalog(&self) -> Vec<crate::mcp::Definition> {
-        Toolkit::from(self.clone()).mcp_catalog()
+        Dispatch::from(self.clone()).mcp_catalog()
     }
 
-    /// Execute one mounted or built-in Workspace Tool.
+    /// Execute one configured or built-in Workspace Tool.
     pub async fn execute(
         &self,
         call: crate::tool::Call,
         cancellation: &Cancellation,
     ) -> Result<(crate::Message, crate::tool::Evaluation), Error> {
-        Toolkit::from(self.clone())
+        Dispatch::from(self.clone())
             .execute(call, cancellation)
             .await
     }

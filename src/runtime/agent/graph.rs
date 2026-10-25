@@ -769,7 +769,7 @@ mod tests {
     }
 
     #[test]
-    fn restored_graph_accepts_task_names_without_mounted_capabilities_validation() {
+    fn restored_graph_accepts_task_names_without_mounted_tools_validation() {
         let graph = Graph::new(plan(&[])).unwrap();
         let snapshot = serde_json::to_value(&graph).unwrap();
         let mut restored: Graph = serde_json::from_value(snapshot).unwrap();

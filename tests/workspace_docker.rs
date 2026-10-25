@@ -94,8 +94,8 @@ protocol_test!(
 );
 protocol_test!(protocol_dropped_future, drop_in_flight_future_cleans_up);
 protocol_test!(
-    protocol_dropped_mounted_capabilities,
-    drop_mounted_capabilities_releases_environment
+    protocol_dropped_configured_tools,
+    drop_configured_tools_releases_environment
 );
 protocol_test!(protocol_foreign_resource, foreign_resource_is_never_removed);
 protocol_test!(protocol_mount_and_env, configured_mount_and_env);
@@ -135,8 +135,8 @@ async fn run_protocol_case() {
             cancelled_lock_wait_does_not_close_environment().await
         }
         "drop_in_flight_future_cleans_up" => drop_in_flight_future_cleans_up().await,
-        "drop_mounted_capabilities_releases_environment" => {
-            drop_mounted_capabilities_releases_environment().await
+        "drop_configured_tools_releases_environment" => {
+            drop_configured_tools_releases_environment().await
         }
         "foreign_resource_is_never_removed" => foreign_resource_is_never_removed().await,
         "configured_mount_and_env" => configured_mount_and_env().await,
@@ -543,7 +543,7 @@ async fn drop_in_flight_future_cleans_up() {
     assert_eq!(count("create"), 1);
 }
 
-async fn drop_mounted_capabilities_releases_environment() {
+async fn drop_configured_tools_releases_environment() {
     let capabilities = Docker::new(config()).unwrap();
     run(&capabilities, "write", json!({"path":"x","content":"kept"}))
         .await

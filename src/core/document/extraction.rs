@@ -11,7 +11,7 @@ use crate::components::event::Event as ChatEvent;
 use crate::components::message::{Message, Messages};
 use crate::components::model;
 
-/// Built-in loader for the framework's default local-file capability.
+/// Built-in loader for the framework's default local-file source.
 #[derive(Clone, Debug, Default)]
 pub struct LocalLoader;
 

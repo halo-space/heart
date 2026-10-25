@@ -7,7 +7,7 @@ use crate::{Cancellation, Messages, agent::Input, message::Role};
 
 const INSTRUCTION: &str = "Return only a complete JSON Agent plan with version, nodes and edges. \
 nodes is an object keyed by unique logical node IDs; each value has only name and objective. \
-Here name is the task name, not a direct Tool/MCP/Skill invocation. The Agent decides whether and how to use its mounted Tools, MCP servers and Skills while completing the task. \
+Here name is the task name, not a direct Tool/MCP/Skill invocation. The Agent decides whether and how to use its configured Tools, MCP servers and Skills while completing the task. \
 edges contains only {from,to} references to existing logical nodes. \
 Return a valid DAG: no self-edges, duplicate edges or cycles. \
 An initial plan and a replanned plan both use this full structure, never a patch. \

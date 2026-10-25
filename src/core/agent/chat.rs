@@ -22,9 +22,9 @@ use crate::components::model::content::part::{Part, object as part_data};
 use crate::components::tool::Call;
 use crate::components::{mcp::Server, skill::Skill};
 use crate::core::agent::access::Access;
+use crate::core::agent::dispatch::{Dispatch, ToolInputs};
 use crate::core::agent::hooks::{Hooks, cancellable};
 use crate::core::agent::input::user_message;
-use crate::core::agent::mounts::{ToolInputs, Toolkit};
 use crate::core::agent::subagent::SubAgent;
 use crate::core::agent::subagent::{
     Failure as SubAgentFailure, Progress as SubAgentProgress, Root,
@@ -37,7 +37,7 @@ use crate::runtime::agent::tool_steps;
 pub struct Builder<M = ()> {
     model: Option<M>,
     system_prompt: Option<String>,
-    capabilities: Option<Toolkit>,
+    dispatch: Option<Dispatch>,
     subagents: Vec<SubAgent>,
     hooks: Hooks,
     access: Access,
@@ -52,7 +52,7 @@ pub fn builder() -> Builder {
     Builder {
         model: None,
         system_prompt: None,
-        capabilities: None,
+        dispatch: None,
         subagents: Vec::new(),
         hooks: Hooks::default(),
         access: Access::default(),
@@ -69,7 +69,7 @@ impl<M> Builder<M> {
         Builder {
             model: Some(model),
             system_prompt: self.system_prompt,
-            capabilities: self.capabilities,
+            dispatch: self.dispatch,
             subagents: self.subagents,
             hooks: self.hooks,
             access: self.access,
@@ -86,41 +86,41 @@ impl<M> Builder<M> {
         self
     }
 
-    /// Mount application Tools directly on this Agent.
+    /// Register application Tools directly on this Agent.
     #[allow(private_bounds)]
     pub fn tools<I>(mut self, tools: I) -> Self
     where
         I: ToolInputs,
     {
-        let capabilities = self.capabilities.take().unwrap_or_default();
-        self.capabilities = Some(capabilities.tools(tools));
+        let dispatch = self.dispatch.take().unwrap_or_default();
+        self.dispatch = Some(dispatch.tools(tools));
         self
     }
 
-    /// Mount already connected and discovered MCP servers on this Agent.
+    /// Register already connected and discovered MCP servers on this Agent.
     #[allow(private_bounds)]
     pub fn mcps<S>(mut self, servers: impl IntoIterator<Item = S>) -> Self
     where
         S: Server + 'static,
     {
-        let capabilities = self.capabilities.take().unwrap_or_default();
-        self.capabilities = Some(capabilities.mcps(servers));
+        let dispatch = self.dispatch.take().unwrap_or_default();
+        self.dispatch = Some(dispatch.mcps(servers));
         self
     }
 
-    /// Mount in-process Skills on this Agent.
+    /// Register in-process Skills on this Agent.
     #[allow(private_bounds)]
     pub fn skills<S>(mut self, skills: impl IntoIterator<Item = S>) -> Result<Self, Error>
     where
         S: Skill + 'static,
     {
-        let capabilities = self.capabilities.take().unwrap_or_default();
-        self.capabilities = Some(capabilities.skills(skills)?);
+        let dispatch = self.dispatch.take().unwrap_or_default();
+        self.dispatch = Some(dispatch.skills(skills)?);
         Ok(self)
     }
 
     /// Register the heterogeneous Agent set available to the built-in
-    /// `agent_spawn` delegation path. SubAgents are not Toolkit entries.
+    /// `agent_spawn` delegation path. SubAgents are not tool dispatch entries.
     pub fn subagents(mut self, subagents: impl IntoIterator<Item = SubAgent>) -> Self {
         self.subagents.extend(subagents);
         self
@@ -201,7 +201,7 @@ where
             replies: Default::default(),
             model: Arc::new(model),
             system_prompt: self.system_prompt,
-            capabilities: self.capabilities,
+            dispatch: self.dispatch,
             subagents: self.subagents,
             hooks: self.hooks,
             access: self.access,
@@ -218,7 +218,7 @@ pub struct Agent<M> {
     replies: crate::runtime::agent::reply::Hub,
     model: Arc<M>,
     system_prompt: Option<String>,
-    capabilities: Option<Toolkit>,
+    dispatch: Option<Dispatch>,
     subagents: Vec<SubAgent>,
     hooks: Hooks,
     access: Access,
@@ -261,7 +261,7 @@ struct ToolBatchConfig {
     interaction: Option<crate::runtime::agent::reply::Run>,
     relay: Option<crate::core::agent::subagent::Relay>,
     steps: Arc<Mutex<Vec<Step>>>,
-    capabilities: Arc<Toolkit>,
+    dispatch: Arc<Dispatch>,
     subagents: Vec<SubAgent>,
     access: Access,
     hooks: Hooks,
@@ -274,7 +274,7 @@ struct ToolBatchConfig {
 
 // Private per-call dependencies; not a public Tool context or saved state.
 struct ToolExecution {
-    capabilities: Arc<Toolkit>,
+    dispatch: Arc<Dispatch>,
     access: Access,
     hooks: Hooks,
     metadata: Map<String, Value>,
@@ -289,7 +289,7 @@ struct EventsConfig<S> {
     interaction: Option<crate::runtime::agent::reply::Run>,
     steps: Arc<Mutex<Vec<Step>>>,
     provider_factory: ProviderFactory<S>,
-    capabilities: Option<Toolkit>,
+    dispatch: Option<Dispatch>,
     subagents: Vec<SubAgent>,
     access: Access,
     evaluator: Option<EvaluatorHandle>,
@@ -338,7 +338,7 @@ pub struct Events<S> {
     replayed_completion: bool,
     finished: bool,
     hooks: Hooks,
-    capabilities: Option<Arc<Toolkit>>,
+    dispatch: Option<Arc<Dispatch>>,
     subagents: Vec<SubAgent>,
     access: Access,
     evaluator: Option<EvaluatorHandle>,
@@ -399,7 +399,7 @@ impl<S> Events<S> {
             replayed_completion: false,
             finished: false,
             hooks,
-            capabilities: None,
+            dispatch: None,
             subagents: Vec::new(),
             access: Access::default(),
             evaluator: None,
@@ -432,7 +432,7 @@ impl<S> Events<S> {
         self.interaction = config.interaction;
         self.steps = config.steps;
         self.provider_factory = Some(config.provider_factory);
-        self.capabilities = config.capabilities.map(Arc::new);
+        self.dispatch = config.dispatch.map(Arc::new);
         self.subagents = config.subagents;
         self.access = config.access;
         self.evaluator = config.evaluator;
@@ -1109,7 +1109,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                 this.close(Ok(event));
                                 return Pin::new(this).poll_next(cx);
                             }
-                            if this.capabilities.is_some() || !this.subagents.is_empty() {
+                            if this.dispatch.is_some() || !this.subagents.is_empty() {
                                 let selected = tool_steps::selected(
                                     &mut this.steps.lock().expect("Tool steps lock poisoned"),
                                     &calls,
@@ -1173,10 +1173,10 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                         ),
                                     ));
                                 }
-                                let capabilities = this
-                                    .capabilities
+                                let dispatch = this
+                                    .dispatch
                                     .clone()
-                                    .unwrap_or_else(|| Arc::new(Toolkit::new()));
+                                    .unwrap_or_else(|| Arc::new(Dispatch::new()));
                                 let access = this.access.clone();
                                 let hooks = this.hooks.clone();
                                 let metadata = this.metadata.clone();
@@ -1187,7 +1187,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                         interaction: this.interaction.clone(),
                                         relay: Some(this.child_events.clone()),
                                         steps: this.steps.clone(),
-                                        capabilities,
+                                        dispatch,
                                         subagents: this.subagents.clone(),
                                         access,
                                         hooks,
@@ -1204,7 +1204,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                             }
                             this.close(Err(Error::new(
                                 "INVALID_STATE",
-                                "model returned tool calls without a configured Toolkit",
+                                "model returned tool calls without configured tools",
                             )));
                             Pin::new(this).poll_next(cx)
                         }
@@ -1458,17 +1458,17 @@ where
             })
             .unwrap_or(embedded_waits);
         let restoring = restored_messages.is_some();
-        let discovered_mounted_capabilities = match &self.capabilities {
-            Some(capabilities) => Some(capabilities.with_discovered_skills(&cancellation).await),
+        let discovered_dispatch = match &self.dispatch {
+            Some(dispatch) => Some(dispatch.with_discovered_skills(&cancellation).await),
             None => None,
         };
         if !restoring {
-            let system_prompt = discovered_mounted_capabilities
+            let system_prompt = discovered_dispatch
                 .as_ref()
                 .and_then(|result| result.as_ref().ok())
                 .map_or_else(
                     || self.system_prompt.clone(),
-                    |capabilities| capabilities.system_prompt(self.system_prompt.clone()),
+                    |dispatch| dispatch.system_prompt(self.system_prompt.clone()),
                 );
             preparation = Some(crate::runtime::agent::preparation::State::new(
                 original.clone(),
@@ -1480,7 +1480,7 @@ where
         });
         let mut run = Run::default();
         // Preparation belongs to this run too. Retain its constructed input
-        // before Toolkit preparation, model hooks or Provider dispatch stop it.
+        // before Dispatch preparation, model hooks or Provider dispatch stop it.
         let mut preparation_messages = restored_messages.clone().unwrap_or_default();
         let mut preparation_input_tokens = 0;
         let request_scene = Arc::new(Mutex::new(None));
@@ -1511,8 +1511,8 @@ where
                 messages.push(user_message(input.clone()));
             }
             preparation_messages = messages.clone();
-            let capabilities = match &discovered_mounted_capabilities {
-                Some(Ok(capabilities)) => Some(capabilities.prepared(&cancellation).await?),
+            let dispatch = match &discovered_dispatch {
+                Some(Ok(dispatch)) => Some(dispatch.prepared(&cancellation).await?),
                 Some(Err(error)) => return Err(error.clone()),
                 None => None,
             };
@@ -1520,14 +1520,13 @@ where
                 step.kind == "tool"
                     && matches!(step.stage.as_deref(), Some("call" | "after" | "eval"))
             }) {
-                let checked = capabilities
+                let checked = dispatch
                     .as_ref()
                     .ok_or_else(|| {
-                        Error::new("INVALID_STATE", "saved eval requires a configured Toolkit")
+                        Error::new("INVALID_STATE", "saved eval requires configured tools")
                     })
-                    .and_then(|capabilities| {
-                        capabilities
-                            .validate(step.call.as_ref().expect("validated saved Tool Call"))
+                    .and_then(|dispatch| {
+                        dispatch.validate(step.call.as_ref().expect("validated saved Tool Call"))
                     });
                 if let Err(error) = checked {
                     restore_validation_error = true;
@@ -1538,9 +1537,9 @@ where
                     .with_details(format!("{}: {}", error.code, error.message)));
                 }
             }
-            let tool_definitions = capabilities
+            let tool_definitions = dispatch
                 .as_ref()
-                .map(Toolkit::tool_catalog)
+                .map(Dispatch::tool_catalog)
                 .unwrap_or_default();
             let mut tool_definitions = tool_definitions;
             if !self.subagents.is_empty() {
@@ -1612,7 +1611,7 @@ where
                 interaction: interaction.clone(),
                 steps: model_steps.clone(),
                 provider_factory: factory,
-                capabilities,
+                dispatch,
                 subagents: self.subagents.clone(),
                 access: self.access.clone(),
                 evaluator: self.evaluator.clone(),
@@ -1656,17 +1655,17 @@ where
                 calls.extend(restored_calls.clone());
                 calls.sort_by_key(|(index, _)| *index);
                 let calls = calls.into_iter().map(|(_, call)| call).collect::<Vec<_>>();
-                let capabilities = events
-                    .capabilities
+                let dispatch = events
+                    .dispatch
                     .clone()
-                    .unwrap_or_else(|| Arc::new(Toolkit::new()));
+                    .unwrap_or_else(|| Arc::new(Dispatch::new()));
                 events.provider = None;
                 events.pending_tools = Some(Box::pin(execute_tool_batch(
                     ToolBatchConfig {
                         interaction: events.interaction.clone(),
                         relay: Some(events.child_events.clone()),
                         steps: events.steps.clone(),
-                        capabilities,
+                        dispatch,
                         subagents: events.subagents.clone(),
                         access: events.access.clone(),
                         hooks: events.hooks.clone(),
@@ -1775,7 +1774,7 @@ async fn execute_tool_batch(
         interaction,
         relay,
         steps,
-        capabilities,
+        dispatch,
         subagents,
         access,
         hooks,
@@ -1789,7 +1788,7 @@ async fn execute_tool_batch(
     let slots = Arc::new(tokio::sync::Semaphore::new(max_concurrency.max(1)));
     let tasks = calls.into_iter().enumerate().map(|(index, call)| {
         let slots = slots.clone();
-        let capabilities = Arc::clone(&capabilities);
+        let dispatch = Arc::clone(&dispatch);
         let steps = steps.clone();
         let interaction = interaction.clone();
         let subagents = subagents.clone();
@@ -1923,7 +1922,7 @@ async fn execute_tool_batch(
                 } else {
                     execute_tool(
                         ToolExecution {
-                            capabilities,
+                            dispatch,
                             access,
                             hooks,
                             metadata,
@@ -2203,7 +2202,7 @@ fn checkpoint_identity_matches(snapshot: &Value, metadata: &Map<String, Value>) 
 
 async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Message>, Error> {
     let ToolExecution {
-        capabilities,
+        dispatch,
         access,
         hooks,
         metadata,
@@ -2230,7 +2229,7 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
     let mut control_failed = false;
     let result = async {
         let effective = Box::pin(super::lifecycle::tool_prepare(
-            &capabilities,
+            &dispatch,
             &access,
             &hooks,
             &metadata,
@@ -2287,7 +2286,7 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
                 })?;
         }
         super::lifecycle::tool_call(
-            &capabilities,
+            &dispatch,
             &saved,
             effective,
             interaction.clone(),
@@ -2330,7 +2329,7 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
         &effective_call,
         &business,
     );
-    let evaluation = match capabilities
+    let evaluation = match dispatch
         .evaluate(&effective_call, &business, &cancellation)
         .await
     {
@@ -3276,7 +3275,7 @@ mod tests {
                 ToolBatchConfig {
                     interaction: None,
                     relay: None,
-                    capabilities: Arc::new(Toolkit::new()),
+                    dispatch: Arc::new(Dispatch::new()),
                     steps: steps.clone(),
                     subagents: subagents.clone(),
                     access: Access::default(),
@@ -3297,7 +3296,7 @@ mod tests {
                 ToolBatchConfig {
                     interaction: None,
                     relay: None,
-                    capabilities: Arc::new(Toolkit::new()),
+                    dispatch: Arc::new(Dispatch::new()),
                     steps,
                     subagents,
                     access: Access::default(),

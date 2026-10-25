@@ -23,17 +23,3 @@ pub mod skill;
 mod structured;
 pub(crate) mod tool;
 pub mod workspace;
-
-/// Compatibility namespace matching the design vocabulary. The idiomatic
-/// Rust path is `core::memory::InMemory`; this namespace exposes the agreed
-/// `core::Memory::memory::new()` construction spelling as well.
-#[allow(non_snake_case)]
-pub mod Memory {
-    pub mod memory {
-        pub use super::super::memory::InMemory;
-
-        pub fn new() -> InMemory {
-            InMemory::new()
-        }
-    }
-}

@@ -105,7 +105,7 @@ impl Chat for Model {
 }
 
 #[tokio::test]
-async fn mounted_capabilities_provides_skill_catalog_and_all_tool_mcp_definitions_to_model() {
+async fn configured_tools_provide_skill_catalog_and_all_tool_mcp_definitions_to_model() {
     let requests = Arc::new(Mutex::new(Vec::new()));
     let agent = agent::chat()
         .model(Model {
@@ -148,7 +148,7 @@ async fn mounted_capabilities_provides_skill_catalog_and_all_tool_mcp_definition
     assert!(prompt.contains("Answer clearly."));
     assert!(prompt.contains("research"));
     assert!(prompt.contains("Find and cite reliable sources."));
-    assert!(prompt.contains("available Tools and MCP capabilities"));
+    assert!(prompt.contains("available Tools and MCP servers"));
 }
 
 #[test]

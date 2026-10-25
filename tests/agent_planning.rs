@@ -638,7 +638,7 @@ fn configured_id_source_executes_plan_nodes_before_final_synthesis() {
         let requests = requests.lock().unwrap();
         assert_eq!(requests.len(), 4);
         // Planner request has no business tools. The planned task request
-        // exposes the Toolkit but does not expose the reserved plan control.
+        // exposes the tool dispatcher but does not expose the reserved plan control.
         assert!(requests[1].tools.is_empty());
         assert!(requests[2].tools.is_empty());
         assert!(

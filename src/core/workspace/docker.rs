@@ -13,7 +13,7 @@ use crate::{
     Cancellation, Error,
     components::{mcp::Server, skill::Skill},
     core::{
-        agent::mounts::{ToolInputs, Toolkit},
+        agent::dispatch::{Dispatch, ToolInputs},
         operation::{cancellable, check},
         sandbox::docker as sandbox,
     },
@@ -49,7 +49,7 @@ impl Default for Config {
 pub struct Docker {
     backend: std::sync::Arc<Backend>,
     definition: Definition,
-    capabilities: Toolkit,
+    dispatch: Dispatch,
     pub(super) discover_skills: bool,
     pub(super) access: Arc<RwLock<()>>,
     pub(super) skill_cache: tools::SkillCache,
@@ -98,7 +98,7 @@ impl Docker {
                 config,
                 state: Mutex::new(State::New),
             }),
-            capabilities: Toolkit::new(),
+            dispatch: Dispatch::new(),
             discover_skills: false,
             access: Arc::new(RwLock::new(())),
             skill_cache: Arc::new(RwLock::new(None)),
@@ -113,33 +113,33 @@ impl Docker {
         self
     }
 
-    /// Mount application Tools on this Workspace.
+    /// Register application Tools on this Workspace.
     #[allow(private_bounds)]
     pub fn tools<I>(mut self, tools: I) -> Self
     where
         I: ToolInputs,
     {
-        self.capabilities = self.capabilities.tools(tools);
+        self.dispatch = self.dispatch.tools(tools);
         self
     }
 
-    /// Mount already connected and discovered MCP servers on this Workspace.
+    /// Register already connected and discovered MCP servers on this Workspace.
     #[allow(private_bounds)]
     pub fn mcps<S>(mut self, servers: impl IntoIterator<Item = S>) -> Self
     where
         S: Server + 'static,
     {
-        self.capabilities = self.capabilities.mcps(servers);
+        self.dispatch = self.dispatch.mcps(servers);
         self
     }
 
-    /// Mount in-process Skills on this Workspace.
+    /// Register in-process Skills on this Workspace.
     #[allow(private_bounds)]
     pub fn skills<S>(mut self, skills: impl IntoIterator<Item = S>) -> Result<Self, Error>
     where
         S: Skill + 'static,
     {
-        self.capabilities = self.capabilities.skills(skills)?;
+        self.dispatch = self.dispatch.skills(skills)?;
         Ok(self)
     }
 
@@ -221,34 +221,34 @@ impl Docker {
     }
 }
 
-impl From<Docker> for Toolkit {
+impl From<Docker> for Dispatch {
     fn from(mut workspace: Docker) -> Self {
-        let capabilities = std::mem::take(&mut workspace.capabilities);
-        tools::attach(tools::Files::Docker(workspace), capabilities)
+        let dispatch = std::mem::take(&mut workspace.dispatch);
+        tools::attach(tools::Files::Docker(workspace), dispatch)
     }
 }
 
 impl Docker {
     /// Internal Tool catalog used to implement the Workspace contract.
     pub(super) fn tool_catalog(&self) -> Vec<crate::tool::ToolDefinition> {
-        Toolkit::from(self.clone()).tool_catalog()
+        Dispatch::from(self.clone()).tool_catalog()
     }
 
     pub(super) fn mcp_catalog(&self) -> Vec<crate::mcp::Definition> {
-        Toolkit::from(self.clone()).mcp_catalog()
+        Dispatch::from(self.clone()).mcp_catalog()
     }
 
     pub(super) fn skill_catalog(&self) -> Vec<crate::skill::Definition> {
-        self.capabilities.skill_catalog()
+        self.dispatch.skill_catalog()
     }
 
-    /// Execute one mounted or built-in Workspace Tool.
+    /// Execute one configured or built-in Workspace Tool.
     pub async fn execute(
         &self,
         call: crate::tool::Call,
         cancellation: &Cancellation,
     ) -> Result<(crate::Message, crate::tool::Evaluation), Error> {
-        Toolkit::from(self.clone())
+        Dispatch::from(self.clone())
             .execute(call, cancellation)
             .await
     }
