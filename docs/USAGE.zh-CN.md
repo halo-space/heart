@@ -827,7 +827,7 @@ description: 查找资料并列出来源
 ```
 
 需要让 Agent 使用这个 Skill 时，在构造 Agent 时调用 `.skills([skill])?`；需要目录发现时实现 `skill::Loader`，再通过
-`.skills(loader)` 挂载。Server Workspace 不假装存在本地路径，而是由后端 Loader 从数据库读取同样的定义和资源。
+`.skills(loader)` 挂载。模型可通过共享 `skill` 阅读入口显式给出相对 `resource` 路径读取引用的文本资源；不会自动跟随引用或执行脚本。Server Workspace 不假装存在本地路径，而是由后端 Loader 从数据库读取同样的定义和资源。
 
 ### 10.9 MCP：先连接和发现，再挂载
 

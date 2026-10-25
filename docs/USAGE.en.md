@@ -601,7 +601,7 @@ async fn main() -> Result<(), Error> {
 ```
 
 Mount a concrete Skill with `.skills([skill])?`, or implement `skill::Loader` and use `.skills(loader)` for directory/database discovery. Skill
-text is instructions; it does not execute scripts or grant permissions.
+text is instructions; it does not execute scripts or grant permissions. Referenced text resources are read only when the model explicitly calls the shared `skill` reader with a relative `resource` path; references are never followed automatically.
 
 ### 10.9 MCP initialization
 

@@ -1,12 +1,24 @@
-use std::sync::Arc;
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 
 use elasticsearch::{Elasticsearch, http::transport::Transport};
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
+    agent::checkpoint::Checkpoint as _,
     agent::event::Event,
     agent::mcp::{Definition as McpDefinition, Server},
-    agent::model::chat::{Chat, Request},
+    agent::message::Role,
+    agent::model::{
+        chat::{Chat, Request},
+        content::part::Part,
+    },
+    agent::permission::{Behavior, Decision, Permission, Request as PermissionRequest},
     agent::skill::{Definition, Loader, Skill},
     agent::tool::{Call, Tool, ToolDefinition},
     agent::{self, Agent, Input},
@@ -89,6 +101,132 @@ impl Server for Remote {
 
 struct Model {
     requests: Arc<Mutex<Vec<Request>>>,
+}
+
+#[derive(Clone)]
+struct ScriptModel {
+    requests: Arc<Mutex<Vec<Request>>>,
+    events: Arc<Mutex<VecDeque<Result<Event, Error>>>>,
+}
+
+impl ScriptModel {
+    fn new(events: Vec<Result<Event, Error>>) -> (Self, Arc<Mutex<Vec<Request>>>) {
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        (
+            Self {
+                requests: Arc::clone(&requests),
+                events: Arc::new(Mutex::new(events.into())),
+            },
+            requests,
+        )
+    }
+}
+
+impl Chat for ScriptModel {
+    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+
+    async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
+        self.requests.lock().await.push(request);
+        let event = self
+            .events
+            .lock()
+            .await
+            .pop_front()
+            .expect("unexpected scripted model call");
+        Ok(stream::iter(vec![event]))
+    }
+}
+
+fn skill_call_event(call_id: &str, resource: Option<&str>) -> Result<Event, Error> {
+    let mut arguments = serde_json::Map::from_iter([("skill".into(), json!("research"))]);
+    if let Some(resource) = resource {
+        arguments.insert("resource".into(), json!(resource));
+    }
+    let mut message = Message::new(Role::Assistant);
+    message.content.push(Part {
+        r#type: "tool_call".into(),
+        data: json!({
+            "call_id": call_id,
+            "name": "skill",
+            "arguments": arguments
+        })
+        .as_object()
+        .unwrap()
+        .clone(),
+    });
+    Ok(Event::Complete {
+        message,
+        usage: None,
+        finish_reason: Some("tool_calls".into()),
+    })
+}
+
+fn answer_event() -> Result<Event, Error> {
+    Ok(Event::Complete {
+        message: Message::function(json!({"answer": "done"})),
+        usage: None,
+        finish_reason: Some("stop".into()),
+    })
+}
+
+struct CountingSkill {
+    definition: Definition,
+    reads: Arc<AtomicUsize>,
+    result: Result<&'static str, Error>,
+}
+
+impl CountingSkill {
+    fn new(reads: Arc<AtomicUsize>, result: Result<&'static str, Error>) -> Self {
+        Self {
+            definition: research().definition,
+            reads,
+            result,
+        }
+    }
+}
+
+impl Skill for CountingSkill {
+    fn definition(&self) -> &Definition {
+        &self.definition
+    }
+
+    async fn read(&self, _: &Cancellation) -> Result<String, Error> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        self.result.clone().map(str::to_owned)
+    }
+}
+
+struct CancellingSkill {
+    definition: Definition,
+}
+
+impl Skill for CancellingSkill {
+    fn definition(&self) -> &Definition {
+        &self.definition
+    }
+
+    async fn read(&self, cancellation: &Cancellation) -> Result<String, Error> {
+        cancellation.cancel();
+        std::future::pending().await
+    }
+}
+
+struct DenySkill {
+    requests: Arc<Mutex<Vec<PermissionRequest>>>,
+}
+
+impl Permission for DenySkill {
+    async fn check(
+        &self,
+        request: &PermissionRequest,
+        _: &Cancellation,
+    ) -> Result<Decision, Error> {
+        self.requests.lock().await.push(request.clone());
+        Ok(Decision {
+            behavior: Behavior::Deny,
+            reason: Some("Skill reading is not allowed".into()),
+        })
+    }
 }
 
 impl Chat for Model {
@@ -262,6 +400,259 @@ async fn local_workspace_discovers_skills_and_reads_adjacent_resources() {
         .await
         .unwrap_err();
     assert_eq!(error.code, "INVALID_ARGUMENTS");
+}
+
+#[tokio::test]
+async fn harness_model_reads_skill_instructions_and_nested_resource_on_demand() {
+    let directory = Directory::new();
+    let marker = directory.0.join("script-ran");
+    std::fs::create_dir_all(directory.0.join("skills/research/scripts")).unwrap();
+    std::fs::write(
+        directory.0.join("skills/research/scripts/create-marker.sh"),
+        format!("#!/bin/sh\ntouch '{}'\n", marker.display()),
+    )
+    .unwrap();
+    let workspace = halo::core::workspace::Local::new(&directory.0).unwrap();
+    let cancellation = Cancellation::new();
+    workspace
+        .write(
+            "skills/research/SKILL.md",
+            b"---\nname: research\ndescription: Research with sources.\n---\nUse references/guide.md for citation rules.\n"
+                .to_vec(),
+            &cancellation,
+        )
+        .await
+        .unwrap();
+    workspace
+        .write(
+            "skills/research/references/guide.md",
+            b"Cite primary sources and include publication dates.".to_vec(),
+            &cancellation,
+        )
+        .await
+        .unwrap();
+
+    let (model, requests) = ScriptModel::new(vec![
+        skill_call_event("read_instructions", None),
+        skill_call_event("read_reference", Some("references/guide.md")),
+        answer_event(),
+    ]);
+    let agent = halo::harness::builder()
+        .model(model)
+        .workspace(workspace)
+        .build()
+        .unwrap();
+    let events = agent
+        .run(Input::default(), true, Cancellation::new())
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.iter().all(Result::is_ok));
+
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 3);
+    assert!(requests[0].tools.iter().any(|tool| tool.name == "skill"));
+    let second_request = serde_json::to_string(&requests[1].messages).unwrap();
+    assert!(second_request.contains("Use references/guide.md for citation rules."));
+    let third_request = serde_json::to_string(&requests[2].messages).unwrap();
+    assert!(third_request.contains("Cite primary sources and include publication dates."));
+    assert!(
+        !marker.exists(),
+        "reading a Skill must not execute its scripts"
+    );
+}
+
+#[tokio::test]
+async fn permission_denial_prevents_skill_read_and_is_returned_to_the_model() {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let (model, requests) = ScriptModel::new(vec![
+        skill_call_event("read_research", None),
+        answer_event(),
+    ]);
+    let permission_requests = Arc::new(Mutex::new(Vec::new()));
+    let directory = Directory::new();
+    let workspace = halo::core::workspace::Local::new(&directory.0)
+        .unwrap()
+        .skills([CountingSkill::new(
+            Arc::clone(&reads),
+            Ok("private instructions"),
+        )])
+        .unwrap();
+    let agent = halo::harness::builder()
+        .model(model)
+        .workspace(workspace)
+        .permission(DenySkill {
+            requests: Arc::clone(&permission_requests),
+        })
+        .build()
+        .unwrap();
+
+    let events = agent
+        .run(Input::default(), true, Cancellation::new())
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.iter().all(Result::is_ok));
+    assert_eq!(reads.load(Ordering::SeqCst), 0);
+    let checked = permission_requests.lock().await;
+    assert_eq!(checked.len(), 1);
+    assert_eq!(checked[0].resource, "skill");
+    drop(checked);
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    assert!(
+        serde_json::to_string(&requests[1].messages)
+            .unwrap()
+            .contains("PERMISSION_DENIED")
+    );
+}
+
+#[tokio::test]
+async fn skill_read_error_uses_existing_tool_error_context() {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let (model, requests) = ScriptModel::new(vec![
+        skill_call_event("read_research", None),
+        answer_event(),
+    ]);
+    let directory = Directory::new();
+    let workspace = halo::core::workspace::Local::new(&directory.0)
+        .unwrap()
+        .skills([CountingSkill::new(
+            Arc::clone(&reads),
+            Err(Error::new("SKILL_READ_FAILED", "skill storage unavailable")),
+        )])
+        .unwrap();
+    let agent = halo::harness::builder()
+        .model(model)
+        .workspace(workspace)
+        .build()
+        .unwrap();
+
+    let events = agent
+        .run(Input::default(), true, Cancellation::new())
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(events.iter().all(Result::is_ok));
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 2);
+    let context = serde_json::to_string(&requests[1].messages).unwrap();
+    assert!(context.contains("SKILL_READ_FAILED"));
+    assert!(context.contains("skill storage unavailable"));
+}
+
+#[tokio::test]
+async fn cancellation_during_skill_read_stops_the_agent_and_saves_checkpoint() {
+    let (model, requests) = ScriptModel::new(vec![skill_call_event("read_research", None)]);
+    let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+    let directory = Directory::new();
+    let workspace = halo::core::workspace::Local::new(&directory.0)
+        .unwrap()
+        .skills([CancellingSkill {
+            definition: research().definition,
+        }])
+        .unwrap();
+    let agent = halo::harness::builder()
+        .model(model)
+        .workspace(workspace)
+        .checkpoint(checkpoint.clone())
+        .build()
+        .unwrap();
+    let input = Input {
+        metadata: serde_json::Map::from_iter([("chat_id".into(), json!(8202))]),
+        ..Default::default()
+    };
+    let events = agent
+        .run(input, true, Cancellation::new())
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+
+    assert!(!events.is_empty());
+    assert_eq!(requests.lock().await.len(), 1);
+    assert_eq!(
+        checkpoint.load(8202, &Cancellation::new()).await.unwrap()["status"],
+        "stopped"
+    );
+}
+
+#[tokio::test]
+async fn restored_chat_reuses_a_completed_skill_read_without_rereading() {
+    let reads = Arc::new(AtomicUsize::new(0));
+    let (model, requests) = ScriptModel::new(vec![
+        skill_call_event("read_research", None),
+        Err(Error::new("WAITING", "model is waiting for input")),
+        answer_event(),
+    ]);
+    let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+    let directory = Directory::new();
+    let workspace = halo::core::workspace::Local::new(&directory.0)
+        .unwrap()
+        .skills([CountingSkill::new(
+            Arc::clone(&reads),
+            Ok("Research instructions."),
+        )])
+        .unwrap();
+    let agent = halo::harness::builder()
+        .model(model.clone())
+        .workspace(workspace)
+        .checkpoint(checkpoint.clone())
+        .build()
+        .unwrap();
+    let input = Input {
+        metadata: serde_json::Map::from_iter([("chat_id".into(), json!(8201))]),
+        ..Default::default()
+    };
+    let first = agent
+        .run(input.clone(), true, Cancellation::new())
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(
+        first
+            .iter()
+            .any(|event| matches!(event, Err(error) if error.code == "WAITING"))
+    );
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        checkpoint.load(8201, &Cancellation::new()).await.unwrap()["status"],
+        "waiting"
+    );
+
+    let workspace = halo::core::workspace::Local::new(&directory.0)
+        .unwrap()
+        .skills([CountingSkill::new(
+            Arc::clone(&reads),
+            Ok("Research instructions."),
+        )])
+        .unwrap();
+    let restored = halo::harness::builder()
+        .model(model.clone())
+        .workspace(workspace)
+        .checkpoint(checkpoint)
+        .build()
+        .unwrap();
+    let resumed = restored
+        .run(input, true, Cancellation::new())
+        .await
+        .unwrap()
+        .collect::<Vec<_>>()
+        .await;
+    assert!(resumed.iter().all(Result::is_ok));
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    let requests = requests.lock().await;
+    assert_eq!(requests.len(), 3);
+    assert!(
+        serde_json::to_string(&requests[2].messages)
+            .unwrap()
+            .contains("Research instructions.")
+    );
 }
 
 #[tokio::test]
