@@ -25,6 +25,7 @@ pub(super) enum Kind {
     OpenAI,
     DeepSeek,
     Vllm,
+    Zhipu,
 }
 
 impl Kind {
@@ -33,6 +34,7 @@ impl Kind {
             Self::OpenAI => "openai",
             Self::DeepSeek => "deepseek",
             Self::Vllm => "vllm",
+            Self::Zhipu => "zhipu",
         }
     }
 }
@@ -331,6 +333,9 @@ fn encode_request(
             "top_logprobs",
             "chat_template_kwargs",
         ],
+        // Zhipu currently exposes Embed through this connection; Chat is not
+        // part of the public Zhipu provider surface.
+        Kind::Zhipu => &[],
     };
     for key in allowed {
         if let Some(value) = options.get(*key) {
@@ -363,7 +368,7 @@ fn encode_request(
         body.insert(
             match kind {
                 Kind::OpenAI => "max_completion_tokens",
-                Kind::DeepSeek | Kind::Vllm => "max_tokens",
+                Kind::DeepSeek | Kind::Vllm | Kind::Zhipu => "max_tokens",
             }
             .into(),
             value.into(),
@@ -749,7 +754,12 @@ impl Accumulator {
                 if call.get("type").is_some_and(|kind| kind != "function") {
                     return Err(Error::new(
                         "UNSUPPORTED",
-                        "non-function Tool call is unsupported",
+                        format!(
+                            "non-function Tool call type `{}` is unsupported",
+                            call.get("type")
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown")
+                        ),
                     ));
                 }
                 let entry = self.calls.entry(index).or_default();
@@ -934,6 +944,9 @@ pub struct Embed {
 impl model::embed::Embed for Embed {
     async fn embed(&self, request: model::embed::Request) -> Result<Message, Error> {
         request.validate()?;
+        if self.connection.kind == Kind::Zhipu {
+            super::zhipu::validate_dimensions(request.dimensions)?;
+        }
         let mut options = self.config.options.clone();
         options.extend(request.options);
         let mut body = json!({"model": self.config.model_name, "input": request.input, "encoding_format": "float"});

@@ -1,15 +1,20 @@
 //! Ambiguous external feedback must be rejected before model dispatch.
-//! This guard is not the still-pending targeted live reply implementation.
-use std::sync::{Arc, Mutex};
+//! The Agent is bound to the real DeepSeek provider; a counting pass-through
+//! wrapper verifies that this validation path does not send a model request.
+use std::future::Future;
+use std::sync::{
+    Arc,
+    atomic::{AtomicUsize, Ordering},
+};
 
-use futures_util::stream;
-use halo::agent::{Cancellation, Error, Message, Messages};
+use halo::agent::{Cancellation, Message, Messages};
 use halo::{
     agent::checkpoint::Checkpoint as _,
-    agent::event::Event,
     agent::message::Role,
+    agent::model::Error as ModelError,
     agent::model::chat::{Chat, Request},
     agent::plan::Plan,
+    agent::provider::deepseek::DeepSeek,
     agent::{self, Agent, Input},
     core,
     runtime::agent::{
@@ -19,16 +24,17 @@ use halo::{
 };
 use serde_json::json;
 
-struct Model(Arc<Mutex<Vec<Request>>>);
-impl Chat for Model {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-    async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
-        self.0.lock().unwrap().push(request);
-        Ok(stream::iter(vec![Ok(Event::Complete {
-            message: Message::new(Role::Assistant),
-            usage: None,
-            finish_reason: Some("stop".into()),
-        })]))
+struct ObservedChat<C> {
+    chat: C,
+    calls: Arc<AtomicUsize>,
+}
+
+impl<C: Chat> Chat for ObservedChat<C> {
+    type Stream = C::Stream;
+
+    fn stream(&self, request: Request) -> impl Future<Output = Result<Self::Stream, ModelError>> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.chat.stream(request)
     }
 }
 
@@ -78,9 +84,25 @@ async fn one_external_reply_must_not_be_broadcast_to_multiple_waiting_nodes() {
         .save(501, snapshot.clone(), &Cancellation::new())
         .await
         .unwrap();
-    let requests = Arc::new(Mutex::new(Vec::new()));
+    let provider = DeepSeek::builder()
+        .base_url(
+            std::env::var("DEEPSEEK_BASE_URL")
+                .unwrap_or_else(|_| "https://api.deepseek.com".into()),
+        )
+        .api_key(std::env::var("DEEPSEEK_API_KEY").expect("set DEEPSEEK_API_KEY"))
+        .build()
+        .expect("construct real DeepSeek provider");
+    let model = provider
+        .chat(halo::agent::model::chat::Config::new(
+            std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-flash".into()),
+        ))
+        .expect("construct real DeepSeek Chat");
+    let calls = Arc::new(AtomicUsize::new(0));
     let agent = agent::react()
-        .model(Model(requests.clone()))
+        .model(ObservedChat {
+            chat: model,
+            calls: calls.clone(),
+        })
         .checkpoint(checkpoint.clone())
         .with_id_fn(|| panic!("restoration must not allocate new identities"))
         .build()
@@ -103,7 +125,7 @@ async fn one_external_reply_must_not_be_broadcast_to_multiple_waiting_nodes() {
             error.message,
             "feedback has multiple possible waiting consumers"
         );
-        assert!(requests.lock().unwrap().is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert_eq!(
             checkpoint.load(501, &Cancellation::new()).await.unwrap(),
             snapshot,

@@ -10,6 +10,12 @@ description = "Halo Agent and Workflow execution kernel"
 name = "halo"
 path = "src/lib.rs"
 
+[[bin]]
+name = "heart_mcp_acceptance_server"
+path = "tests/support/mcp_acceptance_server.rs"
+test = false
+bench = false
+
 [dependencies]
 heart-node-macros = { path = "src/runtime/workflow/macros" }
 futures-core = "0.3"

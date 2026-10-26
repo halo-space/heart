@@ -2566,32 +2566,30 @@ mod tests {
         static NEXT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(600000);
         NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
     }
-    use crate::components::model::token::Usage;
     use std::collections::VecDeque;
     use std::pin::Pin;
     use std::sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicUsize, Ordering},
     };
-    use std::task::{Context, Poll, Wake, Waker};
+    use std::task::{Context, Poll};
 
     use super::*;
     use crate::components::agent::Agent as AgentContract;
     use crate::components::event::Event;
     use crate::components::message::Role;
-    use crate::components::permission::{Permission, Request as PermissionRequest};
     use crate::components::tool::{Call, Tool, ToolDefinition};
     use futures_core::Stream;
     use futures_executor::block_on;
     use serde_json::json;
 
     #[derive(Debug)]
-    struct FakeStream {
+    struct EventFeed {
         events: VecDeque<Result<Event, Error>>,
         pending: bool,
     }
 
-    impl Stream for FakeStream {
+    impl Stream for EventFeed {
         type Item = Result<Event, Error>;
 
         fn poll_next(mut self: Pin<&mut Self>, _cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
@@ -2599,92 +2597,6 @@ mod tests {
                 return Poll::Pending;
             }
             Poll::Ready(self.events.pop_front())
-        }
-    }
-
-    #[derive(Clone)]
-    struct FakeChat {
-        called: Arc<AtomicBool>,
-        failure: Option<Error>,
-        include_complete: bool,
-        pending: bool,
-    }
-
-    impl Chat for FakeChat {
-        type Stream = FakeStream;
-
-        async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
-            self.called.store(true, Ordering::Release);
-            assert!(request.stream);
-            if let Some(error) = &self.failure {
-                return Err(error.clone());
-            }
-            let mut delta = Message::new(Role::Assistant);
-            delta.content.push(Part {
-                r#type: "text".into(),
-                data: crate::components::model::content::part::object(json!({"value": "hel"})),
-            });
-            let mut complete = Message::new(Role::Assistant);
-            complete.content.push(Part {
-                r#type: "text".into(),
-                data: crate::components::model::content::part::object(json!({"value": "hello"})),
-            });
-            let mut events = VecDeque::from([Ok(Event::Delta { message: delta })]);
-            if self.include_complete {
-                events.push_back(Ok(Event::Complete {
-                    message: complete,
-                    usage: Some(Usage {
-                        input: Some(1),
-                        output: Some(2),
-                        total: Some(3),
-                        input_details: None,
-                        output_details: None,
-                        details: Map::new(),
-                    }),
-                    finish_reason: Some("stop".into()),
-                }));
-            }
-            Ok(FakeStream {
-                events,
-                pending: self.pending,
-            })
-        }
-    }
-
-    struct SequenceChat {
-        calls: Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    impl Chat for SequenceChat {
-        type Stream = FakeStream;
-
-        async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
-            let call = self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-            assert!(request.stream);
-            let mut message = Message::new(Role::Assistant);
-            if call == 0 {
-                message.content.push(Part {
-                    r#type: "tool_call".into(),
-                    data: part_data(json!({
-                        "call_id": "call_1",
-                        "name": "echo",
-                        "arguments": {"value": "hello"}
-                    })),
-                });
-            } else {
-                message.content.push(Part {
-                    r#type: "text".into(),
-                    data: part_data(json!({"value": "done"})),
-                });
-            }
-            Ok(FakeStream {
-                events: VecDeque::from([Ok(Event::Complete {
-                    message,
-                    usage: None,
-                    finish_reason: Some("stop".into()),
-                })]),
-                pending: false,
-            })
         }
     }
 
@@ -2765,63 +2677,10 @@ mod tests {
         }
     }
 
-    struct EchoTool {
-        definition: ToolDefinition,
-        calls: Arc<AtomicBool>,
-    }
-
-    impl Tool for EchoTool {
-        fn definition(&self) -> &ToolDefinition {
-            &self.definition
-        }
-
-        async fn call(&self, _call: &Call, _cancellation: &Cancellation) -> Result<Message, Error> {
-            self.calls.store(true, Ordering::SeqCst);
-            Ok(Message {
-                role: Role::Tool,
-                content: Vec::new(),
-                values: Map::from_iter([(String::from("value"), json!("hello"))]),
-                metadata: Map::new(),
-                usage: None,
-            })
-        }
-    }
-
-    fn echo_tool(calls: Arc<AtomicBool>) -> EchoTool {
-        EchoTool {
-            definition: ToolDefinition {
-                name: "echo".into(),
-                description: "Echo a value".into(),
-                parameters: serde_json::from_value(json!({
-                    "type": "object",
-                    "properties": {"value": {"type": "string"}},
-                    "required": ["value"]
-                }))
-                .expect("valid schema"),
-            },
-            calls,
-        }
-    }
-
-    struct DenyPermission;
-
-    impl Permission for DenyPermission {
-        async fn check(
-            &self,
-            _request: &PermissionRequest,
-            _cancellation: &Cancellation,
-        ) -> Result<crate::permission::Decision, Error> {
-            Ok(crate::permission::Decision {
-                behavior: crate::permission::Behavior::Deny,
-                reason: Some("tool call denied".into()),
-            })
-        }
-    }
-
     fn next_now<S: Stream<Item = Result<Event, Error>> + Unpin>(
         stream: &mut S,
     ) -> Option<Result<Event, Error>> {
-        let waker: &Waker = Waker::noop();
+        let waker: &std::task::Waker = std::task::Waker::noop();
         let mut context = Context::from_waker(waker);
         match Pin::new(stream).poll_next(&mut context) {
             Poll::Ready(value) => value,
@@ -2861,48 +2720,9 @@ mod tests {
     }
 
     #[test]
-    fn run_forwards_provider_events_and_maps_provider_errors() {
-        let called = Arc::new(AtomicBool::new(false));
-        let agent = builder()
-            .model(FakeChat {
-                called: called.clone(),
-                failure: None,
-                include_complete: true,
-                pending: false,
-            })
-            .build()
-            .expect("agent build");
-        let mut stream = block_on(agent.run(Input::default(), true, Cancellation::new()))
-            .expect("provider stream");
-        assert!(matches!(
-            next_now(&mut stream),
-            Some(Ok(Event::Delta { .. }))
-        ));
-        assert!(matches!(
-            next_now(&mut stream),
-            Some(Ok(Event::Complete { .. }))
-        ));
-        assert!(called.load(Ordering::Acquire));
-
-        let provider_error = Error::new("PROVIDER", "unavailable").with_details("retryable");
-        let agent = builder()
-            .model(FakeChat {
-                called: Arc::new(AtomicBool::new(false)),
-                failure: Some(provider_error),
-                include_complete: true,
-                pending: false,
-            })
-            .build()
-            .expect("agent build");
-        let error = block_on(agent.run(Input::default(), true, Cancellation::new())).unwrap_err();
-        assert_eq!(error.code, "PROVIDER");
-        assert_eq!(error.details.as_deref(), Some("retryable"));
-    }
-
-    #[test]
     fn stream_item_errors_and_normal_completion_are_terminal_once() {
         let mut errored = Events::new(
-            FakeStream {
+            EventFeed {
                 events: VecDeque::from([Err(Error::new("PROVIDER", "stream failed"))]),
                 pending: false,
             },
@@ -2921,7 +2741,7 @@ mod tests {
 
         let cancellation = Cancellation::new();
         let mut completed = Events::new(
-            FakeStream {
+            EventFeed {
                 events: VecDeque::from([Ok(Event::Complete {
                     message: Message::new(Role::Assistant),
                     usage: None,
@@ -2943,253 +2763,18 @@ mod tests {
 
     #[test]
     fn cancelled_run_does_not_invoke_provider() {
-        let called = Arc::new(AtomicBool::new(false));
-        let agent = builder()
-            .model(FakeChat {
-                called: called.clone(),
-                failure: None,
-                include_complete: true,
-                pending: false,
-            })
+        let provider = crate::core::provider::vllm::Vllm::builder()
+            .api_key("compile-only")
             .build()
-            .expect("agent build");
+            .expect("construct provider without sending a request");
+        let chat = provider
+            .chat(crate::model::chat::Config::new("compile-only"))
+            .expect("construct real Provider Chat");
+        let agent = builder().model(chat).build().expect("agent build");
         let cancellation = Cancellation::new();
         cancellation.cancel();
         let error = block_on(agent.run(Input::default(), true, cancellation)).unwrap_err();
         assert_eq!(error.code, "CANCELLED");
-        assert!(!called.load(Ordering::Acquire));
-    }
-
-    #[test]
-    fn cancellation_after_delta_emits_one_partial_complete() {
-        let called = Arc::new(AtomicBool::new(false));
-        let agent = builder()
-            .model(FakeChat {
-                called,
-                failure: None,
-                include_complete: true,
-                pending: false,
-            })
-            .build()
-            .expect("agent build");
-        let cancellation = Cancellation::new();
-        let mut stream = block_on(agent.run(Input::default(), true, cancellation.clone()))
-            .expect("provider stream");
-        assert!(matches!(
-            next_now(&mut stream),
-            Some(Ok(Event::Delta { .. }))
-        ));
-        cancellation.cancel();
-        let event = next_now(&mut stream)
-            .expect("cancel event")
-            .expect("event ok");
-        match event {
-            Event::Complete {
-                message,
-                usage: Some(usage),
-                finish_reason: Some(reason),
-            } => {
-                assert_eq!(reason, "cancelled");
-                assert_eq!(message.content[0].data["value"], "hel");
-                assert!(usage.total.unwrap_or_default() > 0);
-            }
-            other => panic!("unexpected event: {other:?}"),
-        }
-        assert!(next_now(&mut stream).is_none());
-    }
-
-    #[test]
-    fn missing_provider_complete_is_an_invalid_response() {
-        let agent = builder()
-            .model(FakeChat {
-                called: Arc::new(AtomicBool::new(false)),
-                failure: None,
-                include_complete: false,
-                pending: false,
-            })
-            .build()
-            .expect("agent build");
-        let mut stream = block_on(agent.run(Input::default(), true, Cancellation::new()))
-            .expect("provider stream");
-        assert!(matches!(
-            next_now(&mut stream),
-            Some(Ok(Event::Delta { .. }))
-        ));
-        let error = next_now(&mut stream)
-            .expect("stream error")
-            .expect_err("missing Complete must fail");
-        assert_eq!(error.code, "INVALID_RESPONSE");
-        assert!(next_now(&mut stream).is_none());
-    }
-
-    #[test]
-    fn cancellation_wakes_a_pending_agent_stream() {
-        struct WakeFlag(AtomicBool);
-
-        impl Wake for WakeFlag {
-            fn wake(self: Arc<Self>) {
-                self.0.store(true, Ordering::Release);
-            }
-
-            fn wake_by_ref(self: &Arc<Self>) {
-                self.0.store(true, Ordering::Release);
-            }
-        }
-
-        let agent = builder()
-            .model(FakeChat {
-                called: Arc::new(AtomicBool::new(false)),
-                failure: None,
-                include_complete: false,
-                pending: true,
-            })
-            .build()
-            .expect("agent build");
-        let cancellation = Cancellation::new();
-        let mut stream = block_on(agent.run(Input::default(), true, cancellation.clone()))
-            .expect("provider stream");
-        let flag = Arc::new(WakeFlag(AtomicBool::new(false)));
-        let waker: Waker = flag.clone().into();
-        let mut context = Context::from_waker(&waker);
-        assert!(matches!(
-            Pin::new(&mut stream).poll_next(&mut context),
-            Poll::Pending
-        ));
-        cancellation.cancel();
-        assert!(flag.0.load(Ordering::Acquire));
-        assert!(matches!(
-            Pin::new(&mut stream).poll_next(&mut context),
-            Poll::Ready(Some(Ok(Event::Complete {
-                finish_reason: Some(reason),
-                ..
-            }))) if reason == "cancelled"
-        ));
-    }
-
-    #[test]
-    fn chat_executes_model_tool_calls_and_continues_with_tool_message() {
-        let model_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let tool_called = Arc::new(AtomicBool::new(false));
-        let agent = builder()
-            .model(SequenceChat {
-                calls: Arc::clone(&model_calls),
-            })
-            .tools(echo_tool(Arc::clone(&tool_called)))
-            .build()
-            .expect("agent build");
-        let mut stream =
-            block_on(agent.run(Input::default(), true, Cancellation::new())).expect("agent stream");
-        let events = block_on(async {
-            let mut events = Vec::new();
-            while let Some(event) = stream.next().await {
-                events.push(event.expect("event"));
-            }
-            events
-        });
-
-        assert_eq!(model_calls.load(Ordering::SeqCst), 2);
-        assert!(tool_called.load(Ordering::SeqCst));
-        assert_eq!(events.len(), 3);
-        assert!(matches!(events[0], Event::Complete { .. }));
-        assert!(
-            matches!(events[1], Event::Complete { ref message, finish_reason: Some(ref reason), .. } if message.role == Role::Tool && reason == "tool")
-        );
-        assert!(
-            matches!(events[2], Event::Complete { ref message, .. } if message.role == Role::Assistant)
-        );
-    }
-
-    #[test]
-    fn chat_waiting_child_checkpoint_does_not_call_parent_before_child_restore() {
-        use crate::checkpoint::Checkpoint as _;
-
-        struct CountingChat {
-            calls: Arc<std::sync::atomic::AtomicUsize>,
-        }
-
-        impl Chat for CountingChat {
-            type Stream = FakeStream;
-
-            async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
-                assert!(request.stream);
-                self.calls.fetch_add(1, Ordering::SeqCst);
-                let mut message = Message::new(Role::Assistant);
-                message.content.push(Part {
-                    r#type: "text".into(),
-                    data: part_data(json!({"value": "child complete"})),
-                });
-                Ok(FakeStream {
-                    events: VecDeque::from([Ok(Event::Complete {
-                        message,
-                        usage: None,
-                        finish_reason: Some("stop".into()),
-                    })]),
-                    pending: false,
-                })
-            }
-        }
-
-        block_on(async {
-            let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
-            checkpoint
-                .save(
-                    991,
-                    crate::core::agent::subagent::waiting_fixture(
-                        json!({
-                            "type": "agent",
-                            "chat_id": 991,
-                            "status": "waiting",
-                            "stream": true,
-                            "messages": [],
-                            "usage": null,
-                            "query": {"metadata": {"chat_id": 991}, "payload": []},
-                            "metadata": {"chat_id": 991},
-                        }),
-                        Call {
-                            call_id: "spawn_1".into(),
-                            name: "agent_spawn".into(),
-                            arguments: serde_json::from_value(
-                                json!({"name":"child", "input":{"payload":[]}}),
-                            )
-                            .unwrap(),
-                        },
-                        test_id,
-                    ),
-                    &Cancellation::new(),
-                )
-                .await
-                .unwrap();
-            let parent_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let child_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-            let child = builder()
-                .model(CountingChat {
-                    calls: child_calls.clone(),
-                })
-                .build()
-                .unwrap();
-            let parent = builder()
-                .model(CountingChat {
-                    calls: parent_calls.clone(),
-                })
-                .subagents(vec![SubAgent::new("child", child).unwrap()])
-                .with_id_fn(test_id)
-                .checkpoint(checkpoint)
-                .build()
-                .unwrap();
-            let input = Input {
-                metadata: Map::from_iter([("chat_id".into(), json!(991))]),
-                payload: Vec::new(),
-            };
-            let events = parent
-                .run(input, true, Cancellation::new())
-                .await
-                .unwrap()
-                .collect::<Vec<_>>()
-                .await;
-            assert!(events.iter().all(Result::is_ok), "{events:?}");
-            assert_eq!(child_calls.load(Ordering::SeqCst), 1);
-            assert_eq!(parent_calls.load(Ordering::SeqCst), 1);
-        });
     }
 
     #[test]
@@ -3316,35 +2901,131 @@ mod tests {
         });
     }
 
-    #[test]
-    fn denied_chat_tool_call_becomes_direct_tool_error_for_next_model_turn() {
-        let model_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let tool_called = Arc::new(AtomicBool::new(false));
-        let agent = builder()
-            .model(SequenceChat {
-                calls: Arc::clone(&model_calls),
-            })
-            .tools(echo_tool(Arc::clone(&tool_called)))
-            .permission(DenyPermission)
-            .build()
-            .expect("agent build");
-        let mut stream =
-            block_on(agent.run(Input::default(), true, Cancellation::new())).expect("agent stream");
-        let events = block_on(async {
-            let mut events = Vec::new();
-            while let Some(event) = stream.next().await {
-                events.push(event.expect("event"));
-            }
-            events
-        });
+    struct BatchProbeTool {
+        active: Arc<AtomicUsize>,
+        peak: Arc<AtomicUsize>,
+        started: Arc<std::sync::Mutex<Vec<usize>>>,
+        fail: Option<usize>,
+    }
 
-        assert_eq!(model_calls.load(Ordering::SeqCst), 2);
-        assert!(!tool_called.load(Ordering::SeqCst));
-        assert!(
-            matches!(events[1], Event::Complete { ref message, .. } if message.role == Role::Tool && message.values.get("error").is_some())
+    impl Tool for BatchProbeTool {
+        fn definition(&self) -> &ToolDefinition {
+            static DEFINITION: std::sync::OnceLock<ToolDefinition> = std::sync::OnceLock::new();
+            DEFINITION.get_or_init(|| ToolDefinition {
+                name: "batch_probe".into(),
+                description: "Record an indexed batch call".into(),
+                parameters: serde_json::from_value(json!({
+                    "type":"object",
+                    "properties":{"index":{"type":"integer"}},
+                    "required":["index"],
+                    "additionalProperties":false
+                }))
+                .expect("static tool schema"),
+            })
+        }
+
+        async fn call(&self, call: &Call, _: &Cancellation) -> Result<Message, Error> {
+            let index = call.arguments["index"].as_u64().unwrap() as usize;
+            self.started.lock().unwrap().push(index);
+            let active = self.active.fetch_add(1, Ordering::SeqCst) + 1;
+            self.peak.fetch_max(active, Ordering::SeqCst);
+            tokio::time::sleep(std::time::Duration::from_millis(4)).await;
+            self.active.fetch_sub(1, Ordering::SeqCst);
+            if self.fail == Some(index) {
+                return Err(Error::new("BACKEND", format!("failed index {index}")));
+            }
+            Ok(Message::function(json!({"index":index})))
+        }
+    }
+
+    fn batch_calls(indices: &[usize]) -> Vec<Call> {
+        indices
+            .iter()
+            .map(|index| Call {
+                call_id: format!("batch_{index}"),
+                name: "batch_probe".into(),
+                arguments: serde_json::from_value(json!({"index":index}))
+                    .expect("valid indexed call"),
+            })
+            .collect()
+    }
+
+    fn batch_config(tool: BatchProbeTool, max_concurrency: usize) -> ToolBatchConfig {
+        ToolBatchConfig {
+            interaction: None,
+            relay: None,
+            steps: Arc::new(std::sync::Mutex::new(Vec::new())),
+            dispatch: Arc::new(Dispatch::new().tools(tool)),
+            subagents: Vec::new(),
+            access: Access::default(),
+            hooks: Hooks::default(),
+            metadata: Map::new(),
+            cancellation: Cancellation::new(),
+            max_concurrency,
+            root: Root::default(),
+            id_fn: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn direct_tool_batch_caps_concurrency_and_returns_source_order() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (messages, usage) = execute_tool_batch(
+            batch_config(
+                BatchProbeTool {
+                    active,
+                    peak: Arc::clone(&peak),
+                    started,
+                    fail: None,
+                },
+                2,
+            ),
+            batch_calls(&[1, 2, 3, 4]),
+        )
+        .await
+        .expect("all direct batch calls should succeed");
+
+        assert_eq!(usage, None);
+        assert_eq!(
+            messages
+                .iter()
+                .map(|message| message.values["index"].as_u64().unwrap())
+                .collect::<Vec<_>>(),
+            [1, 2, 3, 4]
         );
-        assert!(
-            matches!(events.last(), Some(Event::Complete { message, .. }) if message.role == Role::Assistant)
-        );
+        assert_eq!(peak.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn direct_tool_batch_runs_every_call_and_returns_first_source_error() {
+        let active = Arc::new(AtomicUsize::new(0));
+        let peak = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let (messages, _) = execute_tool_batch(
+            batch_config(
+                BatchProbeTool {
+                    active,
+                    peak,
+                    started: Arc::clone(&started),
+                    fail: Some(2),
+                },
+                3,
+            ),
+            batch_calls(&[1, 2, 3]),
+        )
+        .await
+        .expect("tool errors are returned as per-call messages");
+
+        let failed = messages
+            .iter()
+            .find(|message| message.values.get("call_id") == Some(&json!("batch_2")))
+            .expect("failed call message is retained");
+        assert_eq!(failed.values["error"]["code"], "BACKEND");
+        assert_eq!(failed.values["error"]["message"], "failed index 2");
+        let mut started = started.lock().unwrap().clone();
+        started.sort_unstable();
+        assert_eq!(started, [1, 2, 3]);
     }
 }

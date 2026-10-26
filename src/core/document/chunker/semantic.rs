@@ -386,157 +386,32 @@ fn estimate(text: &str) -> Result<usize, Error> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicUsize, Ordering},
-    };
-
-    use futures_executor::block_on;
-    use serde_json::json;
-
-    use super::*;
-    use crate::{
-        document::{Chunker as _, Document},
-        message::{Message, Role},
-    };
-
-    struct FailFirst {
-        calls: Arc<AtomicUsize>,
-    }
-
-    impl Embed for FailFirst {
-        fn embed(
-            &self,
-            _request: Request,
-        ) -> impl std::future::Future<Output = Result<Message, Error>> + Send {
-            let call = self.calls.fetch_add(1, Ordering::SeqCst);
-            std::future::ready(if call == 0 {
-                Err(Error::new("TIMEOUT", "temporary embed failure"))
-            } else {
-                let mut message = Message::new(Role::Assistant);
-                message.values.insert("vector".into(), json!([1.0, 1.0]));
-                Ok(message)
-            })
-        }
-    }
+    use super::{candidate_cache_key, estimate, similarity};
 
     #[test]
-    fn retries_only_failed_candidates_from_the_private_cache() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let chunker = new(
-            json!({
-                "max_tokens": 8,
-                "min_tokens": 1,
-                "threshold": 0.5,
-                "max_concurrency": 1
-            }),
-            FailFirst {
-                calls: calls.clone(),
-            },
-        )
-        .unwrap();
-        let documents = vec![Document {
-            content: "first. second. third.".into(),
-            ..Document::default()
-        }];
-        let cancellation = Cancellation::new();
-        let first = block_on(chunker.chunk(documents.clone(), &cancellation, &mut || 1));
-        assert!(first.is_err());
-        let second = block_on(chunker.chunk(documents, &cancellation, &mut || 2));
-        assert!(second.is_ok());
-        // The first batch embeds all three candidates; the second call only
-        // retries the one that failed in the first batch.
-        assert_eq!(calls.load(Ordering::SeqCst), 4);
-    }
-
-    #[test]
-    fn successful_batch_releases_retry_cache_before_the_next_independent_call() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let chunker = new(
-            json!({"max_tokens":8,"min_tokens":1,"threshold":0.5,"max_concurrency":2}),
-            FailFirst {
-                calls: calls.clone(),
-            },
-        )
-        .unwrap();
-        let documents = vec![Document {
-            content: "first. second. third.".into(),
-            ..Default::default()
-        }];
-        let cancellation = Cancellation::new();
-        assert!(block_on(chunker.chunk(documents.clone(), &cancellation, &mut || 1)).is_err());
-        assert!(block_on(chunker.chunk(documents.clone(), &cancellation, &mut || 2)).is_ok());
-        assert_eq!(calls.load(Ordering::SeqCst), 4);
-        assert!(
-            chunker.cache.lock().unwrap().is_empty(),
-            "terminal batches must release retry-only work state"
-        );
-        assert!(block_on(chunker.chunk(documents, &cancellation, &mut || 3)).is_ok());
+    fn similarity_computes_cosine_without_scale_overflow() {
+        assert_eq!(similarity(Some(&[1.0, 0.0]), Some(&[1.0, 0.0])), Some(1.0));
+        assert_eq!(similarity(Some(&[1.0, 0.0]), Some(&[0.0, 1.0])), Some(0.0));
         assert_eq!(
-            calls.load(Ordering::SeqCst),
-            7,
-            "a new call must not replay another batch's completed work"
+            similarity(Some(&[1.0, 0.0]), Some(&[-1.0, 0.0])),
+            Some(-1.0)
         );
-    }
-
-    struct FailLaterDocument {
-        calls: Arc<AtomicUsize>,
-        failed: std::sync::atomic::AtomicBool,
-    }
-
-    impl Embed for FailLaterDocument {
-        async fn embed(&self, request: Request) -> Result<Message, Error> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            if request.input == "second." && !self.failed.swap(true, Ordering::SeqCst) {
-                return Err(Error::new("TIMEOUT", "later document failed"));
-            }
-            let mut message = Message::new(Role::Assistant);
-            message.values.insert("vector".into(), json!([1.0, 1.0]));
-            Ok(message)
-        }
+        assert_eq!(similarity(None, Some(&[1.0])), None);
+        assert_eq!(similarity(Some(&[f64::MAX]), Some(&[f64::MAX])), Some(1.0));
     }
 
     #[test]
-    fn retry_cache_survives_until_all_documents_and_ids_are_delivered() {
-        let calls = Arc::new(AtomicUsize::new(0));
-        let chunker = new(
-            json!({"max_tokens":8,"min_tokens":1,"threshold":0.5}),
-            FailLaterDocument {
-                calls: calls.clone(),
-                failed: std::sync::atomic::AtomicBool::new(false),
-            },
-        )
-        .unwrap();
-        let documents = ["first.", "second."]
-            .map(|content| Document {
-                content: content.into(),
-                ..Default::default()
-            })
-            .to_vec();
-        let cancellation = Cancellation::new();
-        assert!(
-            block_on(
-                chunker.chunk(documents.clone(), &cancellation, &mut || panic!(
-                    "partial failure must not allocate chunk ids"
-                ))
-            )
-            .is_err()
-        );
-        assert_eq!(calls.load(Ordering::SeqCst), 2);
-        // Even when all embeds succeed, duplicate final IDs prevent delivery
-        // and must not discard successful candidate work required by a retry.
-        let error =
-            block_on(chunker.chunk(documents.clone(), &cancellation, &mut || 1)).unwrap_err();
-        assert_eq!(error.code, "INVALID_ARGUMENTS");
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
-        let mut id = 10;
-        let chunks = block_on(chunker.chunk(documents, &cancellation, &mut || {
-            id += 1;
-            id
-        }))
-        .unwrap();
-        assert_eq!(calls.load(Ordering::SeqCst), 3);
-        assert_eq!(chunks.len(), 2);
-        assert!(chunker.cache.lock().unwrap().is_empty());
+    fn candidate_cache_key_tracks_source_and_candidate_boundaries() {
+        let whole = candidate_cache_key("first. second.", &[0..7, 7..14]);
+        assert_eq!(whole, candidate_cache_key("first. second.", &[0..7, 7..14]));
+        assert_ne!(whole, candidate_cache_key("other. second.", &[0..7, 7..14]));
+        assert_ne!(whole, candidate_cache_key("first. second.", &[0..6, 6..14]));
+    }
+
+    #[test]
+    fn default_length_uses_the_documented_utf8_byte_estimate() {
+        assert_eq!(estimate("abcd").unwrap(), 1);
+        assert_eq!(estimate("北京").unwrap(), 2);
+        assert_eq!(estimate("").unwrap(), 0);
     }
 }

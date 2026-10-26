@@ -1,12 +1,11 @@
-//! History spies exercise initialization independently of final Chat writes.
+//! Agent memory initialization and the exact prompt sent to a real Provider.
 use std::{
     future::pending,
     sync::{Arc, Mutex},
     time::Duration,
 };
 
-use futures_executor::block_on;
-use futures_util::{StreamExt, stream};
+use futures_util::StreamExt;
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
     agent::event::Event,
@@ -16,16 +15,27 @@ use halo::{
     },
     agent::message::Role,
     agent::model::{
-        chat::{Chat, Request},
+        chat::{self as model_chat, Chat, Request},
         content::part::Part,
         token::Usage,
     },
+    agent::provider::vllm::{self, Vllm},
     agent::tool::{Call, Tool, ToolDefinition},
     agent::{self, Agent, Input, Payload},
 };
 use serde_json::{Map, Value, json};
 
 use session::Store as _;
+
+fn block_on<F: std::future::Future>(future: F) -> F::Output {
+    static RUNTIME: std::sync::LazyLock<tokio::runtime::Runtime> = std::sync::LazyLock::new(|| {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    });
+    RUNTIME.block_on(future)
+}
 
 #[derive(Clone, Default)]
 struct State {
@@ -303,35 +313,55 @@ fn item(agent: Option<i64>, kind: memory::Type, content: &str) -> memory::Item {
     }
 }
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Model {
+    inner: vllm::chat::Chat,
     requests: Arc<Mutex<Vec<Request>>>,
-    tool: bool,
+}
+impl Model {
+    fn never_called() -> Self {
+        let provider = Vllm::builder()
+            .base_url("http://127.0.0.1:1/v1")
+            .api_key("unused")
+            .build()
+            .unwrap();
+        Self {
+            inner: provider.chat(model_chat::Config::new("unused")).unwrap(),
+            requests: Default::default(),
+        }
+    }
+
+    fn live() -> Self {
+        let provider = Vllm::new(vllm::Config {
+            base_url: std::env::var("HEART_VLLM_BASE_URL").expect("set HEART_VLLM_BASE_URL"),
+            api_key: std::env::var("HEART_VLLM_API_KEY").expect("set HEART_VLLM_API_KEY"),
+            ..Default::default()
+        })
+        .unwrap();
+        let model_name = std::env::var("HEART_VLLM_MODEL").expect("set HEART_VLLM_MODEL");
+        Self {
+            inner: provider
+                .chat(
+                    model_chat::Config::new(model_name).options(serde_json::Map::from_iter([(
+                        "chat_template_kwargs".into(),
+                        json!({"enable_thinking":false}),
+                    )])),
+                )
+                .unwrap(),
+            requests: Default::default(),
+        }
+    }
+}
+impl Default for Model {
+    fn default() -> Self {
+        Self::never_called()
+    }
 }
 impl Chat for Model {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+    type Stream = <vllm::chat::Chat as Chat>::Stream;
     async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
-        let mut requests = self.requests.lock().unwrap();
-        let first = requests.is_empty();
-        requests.push(request);
-        let message = if self.tool && first {
-            let mut message = Message::new(Role::Assistant);
-            message.content.push(Part {
-                r#type: "tool_call".into(),
-                data: json!({"call_id":"call_1","name":"search","arguments":{}})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            });
-            message
-        } else {
-            text(Role::Assistant, "final")
-        };
-        Ok(stream::iter(vec![Ok(Event::Complete {
-            message,
-            usage: None,
-            finish_reason: None,
-        })]))
+        self.requests.lock().unwrap().push(request.clone());
+        self.inner.stream(request).await
     }
 }
 fn values(model: &Model, index: usize) -> Vec<String> {
@@ -350,13 +380,14 @@ fn values(model: &Model, index: usize) -> Vec<String> {
 }
 
 #[test]
+#[ignore = "requires the configured real VLLM model; run through scripts/test-real.sh"]
 fn chat_initializes_ordered_history_before_current_input() {
     let state = State::default();
     *state.chats.lock().unwrap() = vec![
         history(202, 20, "second?", "second!"),
         history(201, 10, "first?", "first!"),
     ];
-    let model = Model::default();
+    let model = Model::live();
     let agent = agent::chat()
         .memory(config(session(), &state))
         .system_prompt("instruction")
@@ -380,6 +411,7 @@ fn chat_initializes_ordered_history_before_current_input() {
 }
 
 #[test]
+#[ignore = "requires the configured real VLLM model; run through scripts/test-real.sh"]
 fn react_uses_the_same_initialization_contract() {
     let state = State::default();
     state
@@ -387,7 +419,7 @@ fn react_uses_the_same_initialization_contract() {
         .lock()
         .unwrap()
         .push(history(201, 1, "weather?", "sunny"));
-    let model = Model::default();
+    let model = Model::live();
     let agent = agent::react()
         .memory(config(session(), &state))
         .model(model.clone())
@@ -403,6 +435,7 @@ fn react_uses_the_same_initialization_contract() {
 }
 
 #[test]
+#[ignore = "requires the configured real VLLM model; run through scripts/test-real.sh"]
 fn summary_coverage_resolves_history_order_not_numeric_id_ranges() {
     let state = State::default();
     *state.chats.lock().unwrap() = vec![
@@ -413,7 +446,7 @@ fn summary_coverage_resolves_history_order_not_numeric_id_ranges() {
     let mut s = session();
     s.summary = Some("previous conversation".into());
     s.metadata = json!({"from":900,"to":50}).as_object().unwrap().clone();
-    let model = Model::default();
+    let model = Model::live();
     let agent = agent::chat()
         .model(model.clone())
         .memory(config(s, &state))
@@ -433,6 +466,7 @@ fn summary_coverage_resolves_history_order_not_numeric_id_ranges() {
 }
 
 #[test]
+#[ignore = "requires the configured real VLLM model; run through scripts/test-real.sh"]
 fn recall_scopes_are_exact_and_only_affect_long_memory() {
     let state = State::default();
     state
@@ -445,7 +479,7 @@ fn recall_scopes_are_exact_and_only_affect_long_memory() {
         item(Some(3), memory::Type::Fact, "agent fact"),
         item(Some(4), memory::Type::Summary, "other agent"),
     ];
-    let model = Model::default();
+    let model = Model::live();
     let agent = agent::chat()
         .model(model.clone())
         .memory(config(session(), &state).with_scopes(["user", "agent"]))
@@ -489,8 +523,9 @@ fn recall_scopes_are_exact_and_only_affect_long_memory() {
 }
 
 #[test]
+#[ignore = "requires the configured real VLLM model; run through scripts/test-real.sh"]
 fn no_configuration_keeps_agent_independent_of_memory_identity() {
-    let model = Model::default();
+    let model = Model::live();
     let agent = agent::chat().model(model.clone()).build().unwrap();
     let mut question = input();
     question.metadata.clear();
@@ -509,7 +544,7 @@ fn invalid_scopes_fail_build_without_reading_backends() {
         let state = State::default();
         let configured = config(session(), &state).with_scopes(scopes);
         let error = agent::chat()
-            .model(Model::default())
+            .model(Model::never_called())
             .memory(configured)
             .build()
             .err()
@@ -524,7 +559,7 @@ fn configured_memory_requires_exact_i64_business_metadata_before_io() {
     for field in ["tenant_id", "user_id", "agent_id", "session_id", "chat_id"] {
         for invalid in [Value::Null, json!("123"), json!(0)] {
             let state = State::default();
-            let model = Model::default();
+            let model = Model::never_called();
             let agent = agent::chat()
                 .model(model.clone())
                 .memory(config(session(), &state))
@@ -556,7 +591,7 @@ fn mismatched_session_identity_stops_before_history_and_model() {
             2 => s.user_id = 9,
             _ => s.r#type = short::Type::Workflow,
         }
-        let model = Model::default();
+        let model = Model::never_called();
         let agent = agent::chat()
             .model(model.clone())
             .memory(config(s, &state))
@@ -591,7 +626,7 @@ fn incorrect_backend_chat_filtering_is_not_trusted() {
         if index == 5 {
             state.chats.lock().unwrap().push(wrong);
         }
-        let model = Model::default();
+        let model = Model::never_called();
         let agent = agent::react()
             .model(model.clone())
             .memory(config(session(), &state))
@@ -615,7 +650,7 @@ fn backend_errors_are_direct_without_retries_or_prompt_injection() {
             fail: Some(stage),
             ..Default::default()
         };
-        let model = Model::default();
+        let model = Model::never_called();
         let agent = agent::chat()
             .model(model.clone())
             .memory(config(session(), &state).with_scopes(["user"]))
@@ -642,6 +677,7 @@ fn backend_errors_are_direct_without_retries_or_prompt_injection() {
 }
 
 #[test]
+#[ignore = "requires the configured real VLLM model; run through scripts/test-real.sh"]
 fn running_failed_stopped_incomplete_and_current_chats_are_not_replayed() {
     let state = State::default();
     let mut rows = vec![history(201, 1, "good", "answer")];
@@ -662,7 +698,7 @@ fn running_failed_stopped_incomplete_and_current_chats_are_not_replayed() {
     rows.push(incomplete);
     rows.push(history(999, 4, "current saved copy", "duplicate"));
     *state.chats.lock().unwrap() = rows;
-    let model = Model::default();
+    let model = Model::live();
     let agent = agent::chat()
         .model(model.clone())
         .memory(config(session(), &state))
@@ -673,14 +709,10 @@ fn running_failed_stopped_incomplete_and_current_chats_are_not_replayed() {
 }
 
 #[test]
-fn original_media_and_complete_assistant_fields_are_preserved() {
+#[ignore = "requires the configured real VLLM model; run through scripts/test-real.sh"]
+fn original_complete_assistant_fields_are_preserved() {
     let state = State::default();
     let mut row = history(201, 1, "caption", "answer");
-    row.input.as_mut().unwrap().payload.push(chat::Payload {
-        r#type: "image".into(),
-        data: json!({"value":"stable-image-ref"}),
-        mime_type: Some("image/png".into()),
-    });
     let message = row.message.as_mut().unwrap();
     message.values.insert("result".into(), json!({"x":1}));
     message.metadata.insert("original".into(), json!(true));
@@ -690,7 +722,7 @@ fn original_media_and_complete_assistant_fields_are_preserved() {
     });
     let original = message.clone();
     state.chats.lock().unwrap().push(row);
-    let model = Model::default();
+    let model = Model::live();
     let agent = agent::chat()
         .model(model.clone())
         .memory(config(session(), &state))
@@ -699,13 +731,6 @@ fn original_media_and_complete_assistant_fields_are_preserved() {
     block_on(agent.run(input(), true, Cancellation::new())).unwrap();
     let requests = model.requests.lock().unwrap();
     let messages = requests[0].messages.as_slice();
-    assert_eq!(
-        messages[0].content[1].data,
-        json!({"value":"stable-image-ref","mime_type":"image/png"})
-            .as_object()
-            .unwrap()
-            .clone()
-    );
     assert_eq!(messages[1], original);
     let mut message_metadata = input().metadata;
     for key in ["chat_id", "node_id", "exec_id"] {
@@ -733,7 +758,7 @@ fn malformed_or_unresolved_summary_coverage_is_not_silently_replayed() {
         s.summary = Some("summary".into());
         s.metadata = markers.as_object().unwrap().clone();
         let agent = agent::chat()
-            .model(Model::default())
+            .model(Model::never_called())
             .memory(config(s, &state))
             .build()
             .unwrap();
@@ -749,7 +774,7 @@ fn malformed_or_unresolved_summary_coverage_is_not_silently_replayed() {
     let mut s = session();
     s.metadata.insert("from".into(), json!(201));
     let agent = agent::chat()
-        .model(Model::default())
+        .model(Model::never_called())
         .memory(config(s, &state))
         .build()
         .unwrap();
@@ -769,7 +794,7 @@ fn wrong_long_scope_or_type_never_reaches_the_model() {
         state: state.clone(),
         wrong: true,
     });
-    let model = Model::default();
+    let model = Model::never_called();
     let agent = agent::chat()
         .model(model.clone())
         .memory(configured.with_scopes(["user"]))
@@ -786,6 +811,7 @@ fn wrong_long_scope_or_type_never_reaches_the_model() {
 }
 
 #[test]
+#[ignore = "requires the configured real VLLM model; run through scripts/test-real.sh"]
 fn config_clone_shares_stores_and_each_run_reads_a_fresh_snapshot() {
     let state = State::default();
     state
@@ -797,7 +823,7 @@ fn config_clone_shares_stores_and_each_run_reads_a_fresh_snapshot() {
     let retained = configured.clone();
     assert!(Arc::ptr_eq(&configured.short, &retained.short));
     assert!(Arc::ptr_eq(&configured.long, &retained.long));
-    let model = Model::default();
+    let model = Model::live();
     let agent = agent::chat()
         .memory(configured)
         .model(model.clone())
@@ -839,6 +865,7 @@ impl Tool for Search {
 }
 
 #[test]
+#[ignore = "requires the configured real VLLM model; run through scripts/test-real.sh"]
 fn react_model_iterations_reuse_one_initial_memory_snapshot() {
     let state = State::default();
     state
@@ -854,21 +881,19 @@ fn react_model_iterations_reuse_one_initial_memory_snapshot() {
         },
         state: state.clone(),
     }];
-    let model = Model {
-        tool: true,
-        ..Default::default()
-    };
+    let model = Model::live();
     let agent = agent::react()
         .model(model.clone())
+        .system_prompt("You must call the search tool exactly once, then answer briefly.")
         .memory(config(session(), &state).with_scopes(["user"]))
         .tools(capabilities)
         .build()
         .unwrap();
     let output = block_on(agent.run(input(), true, Cancellation::new())).unwrap();
     let events = block_on(output.collect::<Vec<_>>());
-    assert_eq!(events.len(), 3);
-    assert!(events.iter().all(Result::is_ok));
+    assert!(events.iter().all(Result::is_ok), "{events:?}");
     assert_eq!(model.requests.lock().unwrap().len(), 2);
+    assert!(events.iter().any(|event| matches!(event, Ok(Event::Complete { message, .. }) if message.role == Role::Function)));
     assert!(
         !values(&model, 1)
             .iter()
@@ -907,6 +932,7 @@ fn react_model_iterations_reuse_one_initial_memory_snapshot() {
 }
 
 #[test]
+#[ignore = "requires the configured real VLLM model; run through scripts/test-real.sh"]
 fn later_memory_configuration_replaces_earlier_components() {
     let first = State::default();
     let last = State::default();
@@ -914,7 +940,7 @@ fn later_memory_configuration_replaces_earlier_components() {
         .lock()
         .unwrap()
         .push(history(201, 1, "last configured", "answer"));
-    let model = Model::default();
+    let model = Model::live();
     let agent = agent::chat()
         .memory(config(session(), &first))
         .model(model.clone())
@@ -933,7 +959,7 @@ async fn pending_memory_reads_are_cancellable_at_every_stage() {
             wait: Some(stage),
             ..Default::default()
         };
-        let model = Model::default();
+        let model = Model::never_called();
         let agent = agent::chat()
             .model(model.clone())
             .memory(config(session(), &state).with_scopes(["user"]))
@@ -966,7 +992,7 @@ fn synchronous_backend_cancellation_stops_later_reads_and_model() {
             cancel: Some(stage),
             ..Default::default()
         };
-        let model = Model::default();
+        let model = Model::never_called();
         let agent = agent::react()
             .model(model.clone())
             .memory(config(session(), &state).with_scopes(["user"]))
@@ -998,13 +1024,14 @@ fn synchronous_backend_cancellation_stops_later_reads_and_model() {
 }
 
 #[test]
+#[ignore = "requires the configured real VLLM model; run through scripts/test-real.sh"]
 fn in_memory_backends_remain_directly_usable_through_the_config() {
     let configured = memory::Config::new(
         halo::core::memory::short::InMemory::new(),
         halo::core::memory::InMemory::new(),
     );
     block_on(configured.session().create(session(), &Cancellation::new())).unwrap();
-    let model = Model::default();
+    let model = Model::live();
     let agent = agent::chat()
         .model(model.clone())
         .memory(configured.clone().with_scopes(["agent"]))

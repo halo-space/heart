@@ -14,6 +14,25 @@ struct Task<M: Chat> {
     slot: crate::runtime::agent::reply::Slot,
 }
 
+fn task_messages(mut messages: Messages, input: Message) -> Messages {
+    let mut instruction = Message::new(Role::System);
+    instruction.content.push(Part {
+        r#type: "text".into(),
+        data: part_data(json!({"value": "Complete only the current planned task objective using the original query and its committed source results. Choose tools and arguments yourself when needed. Return this task's result, not the final answer for unrelated tasks."})),
+    });
+    if let Some(system) = messages
+        .0
+        .first_mut()
+        .filter(|message| message.role == Role::System)
+    {
+        system.content.extend(instruction.content);
+    } else {
+        messages.0.insert(0, instruction);
+    }
+    messages.push(input);
+    messages
+}
+
 pub(super) struct Active {
     run: Run,
     slot: crate::runtime::agent::reply::Slot,
@@ -150,15 +169,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
         let mut messages = if resumed && !existing.is_empty() {
             existing.clone()
         } else {
-            let mut messages = state.task_base.clone();
-            let mut instruction = Message::new(Role::System);
-            instruction.content.push(Part {
-                r#type: "text".into(),
-                data: part_data(json!({"value": "Complete only the current planned task objective using the original query and its committed source results. Choose tools and arguments yourself when needed. Return this task's result, not the final answer for unrelated tasks."})),
-            });
-            messages.0.insert(0, instruction);
-            messages.push(input);
-            messages
+            task_messages(state.task_base.clone(), input)
         };
         if resumed
             && state.external_resume_nodes.remove(&node_id)

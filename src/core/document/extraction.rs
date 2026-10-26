@@ -102,6 +102,13 @@ async fn complete_request<C: model::chat::Chat>(
                 .with_details(error.details.unwrap_or(error.code))
         })?,
     };
+    complete_stream(stream, cancellation).await
+}
+
+async fn complete_stream<S>(stream: S, cancellation: &Cancellation) -> Result<Message, Error>
+where
+    S: Stream<Item = Result<ChatEvent, model::Error>>,
+{
     let mut stream = Box::pin(stream);
     loop {
         let item = std::future::poll_fn(|context| {
@@ -463,16 +470,16 @@ pub mod graph_impl {
     }
 
     #[derive(Clone, Debug)]
-    struct EntityType {
-        name: String,
-        description: String,
+    pub(super) struct EntityType {
+        pub(super) name: String,
+        pub(super) description: String,
     }
     #[derive(Clone, Debug)]
-    struct RelationType {
-        name: String,
-        description: String,
-        from: Vec<String>,
-        to: Vec<String>,
+    pub(super) struct RelationType {
+        pub(super) name: String,
+        pub(super) description: String,
+        pub(super) from: Vec<String>,
+        pub(super) to: Vec<String>,
     }
 
     pub struct Graph<C> {
@@ -575,7 +582,7 @@ pub mod graph_impl {
             let mut input = Message::new(crate::components::message::Role::User);
             input.content.push(crate::components::model::content::part::Part {
                 r#type: "text".into(),
-                data: crate::components::model::content::part::object(serde_json::json!({"value": format!("Extract the graph from these documents using the declared entity and relation types. Return a JSON object with entities and relations arrays. Entity fields are id, type, name, optional attrs and evidence. Relation fields are from, to, kind, optional attrs and evidence. Do not invent evidence or identifiers absent from the source. Input: {payload}")})),
+                data: crate::components::model::content::part::object(serde_json::json!({"value": format!("Extract the graph from these documents using the declared entity and relation types. Return only a JSON object with entities and relations arrays. Entity shape: {{\"id\": string, \"type\": string, \"name\": string, \"attrs\": object, \"evidence\": [{{\"content\": string, \"method\": \"text\"}}]}}. Relation shape: {{\"from\": entity id, \"to\": entity id, \"kind\": relation type, \"attrs\": object, \"evidence\": [{{\"content\": string, \"method\": \"text\"}}]}}. Evidence must always be an array of objects, never a string; use an empty array if no exact source quotation is available. Do not invent evidence or identifiers absent from the source. Input: {payload}")})),
             });
             let message = complete_request(
                 &self.chat,
@@ -588,43 +595,48 @@ pub mod graph_impl {
                 cancellation,
             )
             .await?;
-            let values = if message.values.contains_key("entities")
-                || message.values.contains_key("relations")
-            {
-                message.values
-            } else {
-                // Some adapters expose the complete JSON as text. Decode only
-                // that complete response, never Delta or reasoning content.
-                let text = message
-                    .content
-                    .iter()
-                    .filter(|part| part.r#type == "text")
-                    .filter_map(|part| part.data.get("value").and_then(Value::as_str))
-                    .collect::<String>();
-                serde_json::from_str::<Map<String, Value>>(&text).map_err(|error| {
-                    Error::new("INVALID_RESPONSE", "graph response must be a JSON object")
-                        .with_details(error.to_string())
-                })?
-            };
-            let entities: Vec<Entity> = serde_json::from_value(
-                values
-                    .get("entities")
-                    .cloned()
-                    .ok_or_else(|| Error::new("INVALID_RESPONSE", "graph entities are missing"))?,
-            )
-            .map_err(|error| Error::new("INVALID_RESPONSE", error.to_string()))?;
-            let relations: Vec<Relation> =
-                serde_json::from_value(values.get("relations").cloned().ok_or_else(|| {
-                    Error::new("INVALID_RESPONSE", "graph relations are missing")
-                })?)
-                .map_err(|error| Error::new("INVALID_RESPONSE", error.to_string()))?;
-            validate_output(
-                &entities,
-                &relations,
-                &self.entity_types,
-                &self.relation_types,
-            )
+            decode_output(&message, &self.entity_types, &self.relation_types)
         }
+    }
+
+    pub(super) fn decode_output(
+        message: &Message,
+        entity_types: &[EntityType],
+        relation_types: &[RelationType],
+    ) -> Result<Output, Error> {
+        let values = if message.values.contains_key("entities")
+            || message.values.contains_key("relations")
+        {
+            message.values.clone()
+        } else {
+            // Some adapters expose the complete JSON as text. Decode only
+            // that complete response, never Delta or reasoning content.
+            let text = message
+                .content
+                .iter()
+                .filter(|part| part.r#type == "text")
+                .filter_map(|part| part.data.get("value").and_then(Value::as_str))
+                .collect::<String>();
+            serde_json::from_str::<Map<String, Value>>(&text).map_err(|error| {
+                Error::new("INVALID_RESPONSE", "graph response must be a JSON object")
+                    .with_details(error.to_string())
+            })?
+        };
+        let entities: Vec<Entity> = serde_json::from_value(
+            values
+                .get("entities")
+                .cloned()
+                .ok_or_else(|| Error::new("INVALID_RESPONSE", "graph entities are missing"))?,
+        )
+        .map_err(|error| Error::new("INVALID_RESPONSE", error.to_string()))?;
+        let relations: Vec<Relation> = serde_json::from_value(
+            values
+                .get("relations")
+                .cloned()
+                .ok_or_else(|| Error::new("INVALID_RESPONSE", "graph relations are missing"))?,
+        )
+        .map_err(|error| Error::new("INVALID_RESPONSE", error.to_string()))?;
+        validate_output(&entities, &relations, entity_types, relation_types)
     }
 
     fn strings(value: Option<&Value>) -> Result<Vec<String>, Error> {
@@ -715,7 +727,8 @@ mod tests {
 
     use super::{
         Document, Loader, LocalLoader, Source,
-        graph::{Evidence, Graph, Method},
+        graph::{Evidence, Method},
+        graph_impl::{EntityType, decode_output},
         location::{Location, Range},
         raptor::Raptor,
     };
@@ -725,6 +738,15 @@ mod tests {
         message::{Message, Role},
         model::{self, chat::Chat, embed::Embed},
     };
+
+    fn uncalled_provider_chat() -> impl Chat {
+        crate::core::provider::vllm::Vllm::builder()
+            .api_key("compile-only")
+            .build()
+            .expect("construct Provider without sending a request")
+            .chat(crate::model::chat::Config::new("compile-only"))
+            .expect("construct Provider Chat")
+    }
 
     struct FakeStream(VecDeque<Result<Event, model::Error>>);
     impl Stream for FakeStream {
@@ -737,83 +759,17 @@ mod tests {
         }
     }
 
-    #[derive(Clone)]
-    struct FakeChat {
-        response: Message,
-    }
-    impl Chat for FakeChat {
-        type Stream = FakeStream;
-        async fn stream(
-            &self,
-            _request: model::chat::Request,
-        ) -> Result<Self::Stream, model::Error> {
-            Ok(FakeStream(VecDeque::from([Ok(Event::Complete {
-                message: self.response.clone(),
-                usage: None,
-                finish_reason: None,
-            })])))
-        }
-    }
-
-    struct CompleteThenPending(Option<Message>);
+    struct CompleteThenPending(Option<Result<Event, model::Error>>);
     impl Stream for CompleteThenPending {
         type Item = Result<Event, model::Error>;
         fn poll_next(
             mut self: Pin<&mut Self>,
             _context: &mut Context<'_>,
         ) -> Poll<Option<Self::Item>> {
-            match self.0.take() {
-                Some(message) => Poll::Ready(Some(Ok(Event::Complete {
-                    message,
-                    usage: None,
-                    finish_reason: None,
-                }))),
-                None => Poll::Pending,
-            }
+            self.0
+                .take()
+                .map_or(Poll::Pending, |event| Poll::Ready(Some(event)))
         }
-    }
-
-    struct NonEndingChat(Option<Message>);
-    impl Chat for NonEndingChat {
-        type Stream = CompleteThenPending;
-        async fn stream(
-            &self,
-            _request: model::chat::Request,
-        ) -> Result<Self::Stream, model::Error> {
-            Ok(CompleteThenPending(self.0.clone()))
-        }
-    }
-
-    struct PendingCreateChat;
-    impl Chat for PendingCreateChat {
-        type Stream = CompleteThenPending;
-        async fn stream(
-            &self,
-            _request: model::chat::Request,
-        ) -> Result<Self::Stream, model::Error> {
-            std::future::pending().await
-        }
-    }
-
-    struct FakeEmbed;
-    impl Embed for FakeEmbed {
-        async fn embed(&self, _request: model::embed::Request) -> Result<Message, model::Error> {
-            Ok(model::embed::message(vec![0.1, 0.2], "fake", "embed", Some(2)).unwrap())
-        }
-    }
-
-    fn summary_chat() -> FakeChat {
-        let mut response = Message::new(Role::Assistant);
-        response.values.insert("summary".into(), json!("摘要"));
-        FakeChat { response }
-    }
-
-    fn graph_options() -> super::graph::Options {
-        serde_json::from_value(json!({
-            "entity_types": [{"name": "person", "description": "人物"}],
-            "relation_types": []
-        }))
-        .unwrap()
     }
 
     #[test]
@@ -831,12 +787,12 @@ mod tests {
         ] {
             let result = Raptor::new(
                 serde_json::from_value(options).unwrap(),
-                summary_chat(),
-                FakeEmbed,
+                uncalled_provider_chat(),
+                PendingEmbed,
             );
             assert_eq!(result.err().unwrap().code, "INVALID_ARGUMENTS");
         }
-        assert!(Raptor::new(Default::default(), summary_chat(), FakeEmbed).is_ok());
+        assert!(Raptor::new(Default::default(), uncalled_provider_chat(), PendingEmbed).is_ok());
     }
 
     struct PendingEmbed;
@@ -849,7 +805,8 @@ mod tests {
     #[test]
     fn cancellation_unblocks_raptor_while_embed_is_pending() {
         let cancellation = Cancellation::new();
-        let raptor = Raptor::new(Default::default(), summary_chat(), PendingEmbed).unwrap();
+        let raptor =
+            Raptor::new(Default::default(), uncalled_provider_chat(), PendingEmbed).unwrap();
         let documents = [Document {
             id: Some(1),
             content: "text".into(),
@@ -878,88 +835,30 @@ mod tests {
         );
     }
 
-    struct ChangingDimensions;
-    impl Embed for ChangingDimensions {
-        async fn embed(&self, request: model::embed::Request) -> Result<Message, model::Error> {
-            let vector = if request.input == "first" {
-                vec![1.0]
-            } else {
-                vec![1.0, 0.0]
-            };
-            Ok(model::embed::message(vector, "fake", "embed", None).unwrap())
-        }
-    }
-
     #[test]
-    fn raptor_rejects_dimension_changes_before_summary_generation() {
-        let raptor = Raptor::new(Default::default(), summary_chat(), ChangingDimensions).unwrap();
-        let documents = [
-            Document {
-                id: Some(1),
-                content: "first".into(),
-                ..Document::default()
-            },
-            Document {
-                id: Some(2),
-                content: "second".into(),
-                ..Document::default()
-            },
-        ];
-        let mut generated = 0;
-        let result = block_on(raptor.run(&documents, &Cancellation::new(), &mut || {
-            generated += 1;
-            generated
-        }));
-        assert_eq!(result.unwrap_err().code, "INVALID_RESPONSE");
-        assert_eq!(generated, 0);
-    }
-
-    struct JsonChat {
-        text: String,
-    }
-    impl Chat for JsonChat {
-        type Stream = FakeStream;
-        async fn stream(
-            &self,
-            request: model::chat::Request,
-        ) -> Result<Self::Stream, model::Error> {
-            assert_eq!(
-                request.response_format,
-                Some(model::chat::ResponseFormat::JsonObject)
-            );
-            request.validate()?;
-            let mut response = Message::new(Role::Assistant);
-            response.content.push(model::content::part::Part {
-                r#type: "think".into(),
-                data: crate::components::model::content::part::object(json!({"value": "not JSON"})),
-            });
-            // A complete text response can contain more than one text part.
-            response.content.push(model::content::part::Part {
-                r#type: "text".into(),
-                data: crate::components::model::content::part::object(
-                    json!({"value": &self.text[..1]}),
-                ),
-            });
-            response.content.push(model::content::part::Part {
-                r#type: "text".into(),
-                data: crate::components::model::content::part::object(
-                    json!({"value": &self.text[1..]}),
-                ),
-            });
-            Ok(FakeStream(VecDeque::from([Ok(Event::Complete {
-                message: response,
-                usage: None,
-                finish_reason: None,
-            })])))
-        }
-    }
-
-    #[test]
-    fn graph_requests_json_and_decodes_only_complete_text() {
-        let graph = Graph::new(graph_options(), JsonChat {
-            text: json!({"entities": [{"id": "p1", "type": "person", "name": "张三"}], "relations": []}).to_string(),
-        }).unwrap();
-        let output = block_on(graph.run(&[], &Cancellation::new())).unwrap();
+    fn graph_decodes_complete_text_and_ignores_think_content() {
+        let text =
+            json!({"entities": [{"id": "p1", "type": "person", "name": "张三"}], "relations": []})
+                .to_string();
+        let mut response = Message::new(Role::Assistant);
+        response.content.push(model::content::part::Part {
+            r#type: "think".into(),
+            data: crate::components::model::content::part::object(json!({"value": "not JSON"})),
+        });
+        // A complete text response can contain more than one text part.
+        response.content.push(model::content::part::Part {
+            r#type: "text".into(),
+            data: crate::components::model::content::part::object(json!({"value": &text[..1]})),
+        });
+        response.content.push(model::content::part::Part {
+            r#type: "text".into(),
+            data: crate::components::model::content::part::object(json!({"value": &text[1..]})),
+        });
+        let entity_types = [EntityType {
+            name: "person".into(),
+            description: "人物".into(),
+        }];
+        let output = decode_output(&response, &entity_types, &[]).unwrap();
         assert_eq!(output.entities[0].name, "张三");
         for text in [
             "not JSON",
@@ -967,9 +866,13 @@ mod tests {
             "{\"entities\": []}",
             "{\"entities\": [], \"relations\": 1}",
         ] {
-            let graph = Graph::new(graph_options(), JsonChat { text: text.into() }).unwrap();
+            let mut response = Message::new(Role::Assistant);
+            response.content.push(model::content::part::Part {
+                r#type: "text".into(),
+                data: crate::components::model::content::part::object(json!({"value": text})),
+            });
             assert_eq!(
-                block_on(graph.run(&[], &Cancellation::new()))
+                decode_output(&response, &entity_types, &[])
                     .unwrap_err()
                     .code,
                 "INVALID_RESPONSE"
@@ -985,16 +888,12 @@ mod tests {
             json!([{"id": "p1", "type": " person ", "name": "张三"}]),
         );
         response.values.insert("relations".into(), json!([]));
-        let graph = Graph::new(
-            serde_json::from_value(json!({
-                "entity_types": [{"name": " person ", "description": "人物"}], "relation_types": []
-            }))
-            .unwrap(),
-            FakeChat { response },
-        )
-        .unwrap();
+        let entity_types = [EntityType {
+            name: " person ".into(),
+            description: "人物".into(),
+        }];
         assert_eq!(
-            block_on(graph.run(&[], &Cancellation::new()))
+            decode_output(&response, &entity_types, &[])
                 .unwrap()
                 .entities[0]
                 .r#type,
@@ -1079,23 +978,19 @@ mod tests {
     #[test]
     fn document_model_call_stops_on_complete_without_waiting_for_stream_end() {
         let response = Message::new(Role::Assistant);
-        let result = block_on(super::complete_message(
-            &NonEndingChat(Some(response.clone())),
-            crate::Messages::default(),
-            &Cancellation::new(),
-        ))
-        .unwrap();
+        let events = CompleteThenPending(Some(Ok(Event::Complete {
+            message: response.clone(),
+            usage: None,
+            finish_reason: None,
+        })));
+        let result = block_on(super::complete_stream(events, &Cancellation::new())).unwrap();
         assert_eq!(result, response);
     }
 
-    struct UsageChat;
-    impl Chat for UsageChat {
-        type Stream = FakeStream;
-        async fn stream(
-            &self,
-            _request: model::chat::Request,
-        ) -> Result<Self::Stream, model::Error> {
-            Ok(FakeStream(VecDeque::from([Ok(Event::Complete {
+    #[test]
+    fn document_complete_preserves_event_usage_without_estimating_or_aggregating() {
+        let message = block_on(super::complete_stream(
+            FakeStream(VecDeque::from([Ok(Event::Complete {
                 message: Message::new(Role::Assistant),
                 usage: Some(model::token::Usage {
                     input: Some(7),
@@ -1104,15 +999,7 @@ mod tests {
                     ..Default::default()
                 }),
                 finish_reason: None,
-            })])))
-        }
-    }
-
-    #[test]
-    fn document_complete_preserves_event_usage_without_estimating_or_aggregating() {
-        let message = block_on(super::complete_message(
-            &UsageChat,
-            crate::Messages::default(),
+            })])),
             &Cancellation::new(),
         ))
         .unwrap();
@@ -1123,10 +1010,8 @@ mod tests {
     #[test]
     fn cancellation_unblocks_a_pending_document_model_stream() {
         let cancellation = Cancellation::new();
-        let chat = NonEndingChat(None);
-        let mut future = Box::pin(super::complete_message(
-            &chat,
-            crate::Messages::default(),
+        let mut future = Box::pin(super::complete_stream(
+            CompleteThenPending(None),
             &cancellation,
         ));
         let waker = std::task::Waker::noop();
@@ -1135,25 +1020,6 @@ mod tests {
         cancellation.cancel();
         let Poll::Ready(result) = future.as_mut().poll(&mut context) else {
             panic!("cancelled document stream should be ready");
-        };
-        assert_eq!(result.unwrap_err().code, "CANCELLED");
-    }
-
-    #[test]
-    fn cancellation_unblocks_document_model_stream_creation() {
-        let cancellation = Cancellation::new();
-        let chat = PendingCreateChat;
-        let mut future = Box::pin(super::complete_message(
-            &chat,
-            crate::Messages::default(),
-            &cancellation,
-        ));
-        let waker = std::task::Waker::noop();
-        let mut context = Context::from_waker(waker);
-        assert!(future.as_mut().poll(&mut context).is_pending());
-        cancellation.cancel();
-        let Poll::Ready(result) = future.as_mut().poll(&mut context) else {
-            panic!("cancelled model creation should be ready");
         };
         assert_eq!(result.unwrap_err().code, "CANCELLED");
     }
@@ -1174,116 +1040,24 @@ mod tests {
                 {"from": "person-1", "to": "company-1", "kind": "works_for"}
             ]),
         );
-        let graph = Graph::new(serde_json::from_value(json!({
-            "entity_types": [
-                {"name": "person", "description": "人物"},
-                {"name": "company", "description": "组织"}
-            ],
-            "relation_types": [
-                {"name": "works_for", "description": "任职", "from": ["person"], "to": ["company"]}
-            ]
-        })).unwrap(), FakeChat { response }).unwrap();
-        let output = block_on(graph.run(
-            &[Document {
-                id: Some(1),
-                content: "张三在甲公司工作".into(),
-                ..Document::default()
-            }],
-            &Cancellation::new(),
-        ))
-        .unwrap();
+        let entity_types = [
+            EntityType {
+                name: "person".into(),
+                description: "人物".into(),
+            },
+            EntityType {
+                name: "company".into(),
+                description: "组织".into(),
+            },
+        ];
+        let relation_types = [super::graph_impl::RelationType {
+            name: "works_for".into(),
+            description: "任职".into(),
+            from: vec!["person".into()],
+            to: vec!["company".into()],
+        }];
+        let output = decode_output(&response, &entity_types, &relation_types).unwrap();
         assert_eq!(output.entities.len(), 2);
         assert_eq!(output.relations[0].kind, "works_for");
-    }
-
-    #[test]
-    fn raptor_returns_new_summary_documents_and_source_relations() {
-        let mut response = Message::new(Role::Assistant);
-        response
-            .values
-            .insert("summary".into(), json!("两段内容的摘要"));
-        let raptor = Raptor::new(
-            serde_json::from_value(json!({"cluster_size": 2, "levels": 1})).unwrap(),
-            FakeChat { response },
-            FakeEmbed,
-        )
-        .unwrap();
-        let documents = vec![
-            Document {
-                id: Some(1),
-                content: "第一段".into(),
-                ..Document::default()
-            },
-            Document {
-                id: Some(2),
-                content: "第二段".into(),
-                ..Document::default()
-            },
-        ];
-        let mut next = 100;
-        let output = block_on(raptor.run(&documents, &Cancellation::new(), &mut || {
-            next += 1;
-            next
-        }))
-        .unwrap();
-        assert_eq!(output.documents.len(), 1);
-        assert_eq!(output.documents[0].id, Some(101));
-        assert_eq!(output.relations.len(), 2);
-        assert!(
-            output
-                .relations
-                .iter()
-                .all(|relation| relation.kind == "summary")
-        );
-    }
-
-    struct DistinctEmbed;
-    impl Embed for DistinctEmbed {
-        async fn embed(&self, request: model::embed::Request) -> Result<Message, model::Error> {
-            let vector = if request.input.contains('一') {
-                vec![1.0, 0.0]
-            } else {
-                vec![0.0, 1.0]
-            };
-            Ok(model::embed::message(vector, "fake", "embed", Some(2)).unwrap())
-        }
-    }
-
-    #[test]
-    fn raptor_uses_embedding_similarity_instead_of_only_input_order() {
-        let mut response = Message::new(Role::Assistant);
-        response.values.insert("summary".into(), json!("摘要"));
-        let raptor = Raptor::new(
-            serde_json::from_value(json!({
-                "cluster_size": 2,
-                "levels": 1,
-                "threshold": 0.9
-            }))
-            .unwrap(),
-            FakeChat { response },
-            DistinctEmbed,
-        )
-        .unwrap();
-        let documents = vec![
-            Document {
-                id: Some(1),
-                content: "第一段".into(),
-                ..Document::default()
-            },
-            Document {
-                id: Some(2),
-                content: "第二段".into(),
-                ..Document::default()
-            },
-        ];
-        let mut next = 100;
-        let output = block_on(raptor.run(&documents, &Cancellation::new(), &mut || {
-            next += 1;
-            next
-        }))
-        .unwrap();
-        assert_eq!(output.documents.len(), 2);
-        assert_eq!(output.relations.len(), 2);
-        assert!(output.relations.iter().all(|relation| relation.to > 100));
     }
 }

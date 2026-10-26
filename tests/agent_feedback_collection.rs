@@ -10,6 +10,7 @@ use halo::{
     runtime::agent::{
         State,
         node::{Step, Wait},
+        wait,
     },
 };
 use serde_json::json;
@@ -221,4 +222,19 @@ fn same_payload_for_different_questions_does_not_share_feedback_or_status() {
     assert_eq!(second.status, "waiting");
     assert_eq!(second.question, other_question);
     assert_eq!(first.status, "resolved");
+}
+
+#[tokio::test]
+async fn asking_for_feedback_without_an_active_agent_step_is_rejected() {
+    assert_eq!(
+        wait::ask(
+            message(Role::Assistant, "请提供反馈"),
+            1,
+            &Cancellation::new()
+        )
+        .await
+        .unwrap_err()
+        .code,
+        "INVALID_STATE"
+    );
 }

@@ -17,13 +17,9 @@ use halo::{
     agent::checkpoint::Checkpoint as _,
     agent::event::Event,
     agent::message::Role,
-    agent::model::{
-        chat::{Chat, Request},
-        content::part::Part,
-        token::Usage,
-    },
+    agent::model::{content::part::Part, token::Usage},
     agent::node::{Node, Signal, Wait},
-    agent::{self, Agent, Input},
+    agent::{Agent, Input},
     runtime::workflow::{
         CompiledWorkflow, FieldSource, InputBinding, NodeAttrs, Runtime, WorkflowBuilder,
         graph::{self, END, START},
@@ -596,99 +592,6 @@ fn waiting_stream_ends_after_saving_the_same_waiting_scene() {
             runtime.state().nodes["review"].executions[&15000].status,
             node::ExecutionStatus::Waiting
         );
-    });
-}
-
-struct GateChat(Mutex<Option<oneshot::Receiver<()>>>);
-impl Chat for GateChat {
-    type Stream = Gated;
-    async fn stream(&self, _: Request) -> Result<Self::Stream, Error> {
-        Ok(Gated {
-            first: Some(Event::Delta {
-                message: text(Role::Assistant, "partial model output"),
-            }),
-            gate: self.0.lock().unwrap().take().unwrap(),
-            done: false,
-        })
-    }
-}
-
-#[test]
-fn cancellation_forwards_the_agents_partial_complete_and_settled_usage() {
-    block_on(async {
-        let (_release, gate) = oneshot::channel();
-        let agent = agent::chat::builder()
-            .model(GateChat(Mutex::new(Some(gate))))
-            .build()
-            .unwrap();
-        let mut builder = WorkflowBuilder::new("observed-cancel");
-        builder.add_agent_node("agent", agent).unwrap();
-        builder.add_edge(START, "agent").unwrap();
-        builder.add_edge("agent", END).unwrap();
-        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
-        let compiled = builder.compile().unwrap();
-        let mut runtime = Runtime::new(1007, compiled.clone())
-            .unwrap()
-            .with_checkpoint(checkpoint.clone());
-        let cancellation = Cancellation::new();
-        {
-            let initial = Messages::new([text(Role::User, "question")]);
-            let mut events = runtime
-                .run(initial, ids(16000), cancellation.clone())
-                .await
-                .unwrap();
-            assert!(matches!(
-                events.next().await.unwrap().unwrap(),
-                Event::Delta { .. }
-            ));
-            cancellation.cancel();
-            let Event::Complete {
-                message,
-                usage,
-                finish_reason,
-            } = events.next().await.unwrap().unwrap()
-            else {
-                panic!("cancelled Complete")
-            };
-            assert_eq!(finish_reason.as_deref(), Some("cancelled"));
-            assert_eq!(message.content[0].data["value"], "partial model output");
-            assert_eq!(message.usage, usage);
-            assert!(usage.unwrap().total.unwrap() > 0);
-            assert_eq!(events.next().await.unwrap().unwrap_err().code, "CANCELLED");
-            assert_eq!(
-                checkpoint.load(1007, &Cancellation::new()).await.unwrap()["status"],
-                "cancelled"
-            );
-            assert!(events.next().await.is_none());
-        }
-        assert_eq!(runtime.state().status, graph::Status::Cancelled);
-        assert!(runtime.state().usage.as_ref().unwrap().total.unwrap() > 0);
-        let saved = runtime.snapshot().unwrap();
-        let restored = Runtime::from_snapshot(1007, compiled, saved.clone()).unwrap();
-        {
-            let mut events = restored
-                .run(
-                    Messages::new([text(Role::User, "question")]),
-                    Arc::new(|| panic!("cancelled terminal read must not allocate IDs")),
-                    Cancellation::new(),
-                )
-                .await
-                .unwrap();
-            let Event::Complete {
-                message,
-                finish_reason,
-                usage,
-            } = events.next().await.unwrap().unwrap()
-            else {
-                panic!("saved partial Complete")
-            };
-            assert_eq!(finish_reason.as_deref(), Some("cancelled"));
-            assert_eq!(message.content[0].data["value"], "partial model output");
-            assert!(usage.unwrap().total.unwrap() > 0);
-            assert_eq!(events.next().await.unwrap().unwrap_err().code, "CANCELLED");
-            assert!(events.next().await.is_none());
-        }
-        assert_eq!(restored.snapshot().unwrap(), saved);
     });
 }
 

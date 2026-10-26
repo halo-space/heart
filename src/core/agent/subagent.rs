@@ -596,29 +596,6 @@ pub(crate) fn sync_waits(
     Ok(())
 }
 
-#[cfg(test)]
-pub(crate) fn waiting_fixture(mut snapshot: Value, call: Call, id_fn: fn() -> i64) -> Value {
-    let root = Root::default();
-    let mut steps = Vec::new();
-    root.prepare(&mut steps, &call, Some(id_fn)).unwrap();
-    let mut selecting = Message::new(Role::Assistant);
-    selecting.content.push(crate::model::content::part::Part {
-        r#type: "tool_call".into(),
-        data:
-            serde_json::json!({"call_id":call.call_id,"name":call.name,"arguments":call.arguments})
-                .as_object()
-                .unwrap()
-                .clone(),
-    });
-    let mut messages: crate::Messages =
-        serde_json::from_value(snapshot["messages"].clone()).unwrap();
-    messages.push(selecting);
-    snapshot["messages"] = serde_json::to_value(messages).unwrap();
-    snapshot["steps"] = serde_json::to_value(steps).unwrap();
-    snapshot["execution"] = serde_json::to_value(root.snapshot("waiting", None, None)).unwrap();
-    snapshot
-}
-
 pub(crate) fn prepare(
     nodes: &mut BTreeMap<String, State>,
     steps: &mut Vec<Step>,
@@ -1339,6 +1316,9 @@ fn feedback_changed(scene: &Value, previous: Option<&Value>) -> bool {
 
 fn result_message(mut message: Message, call: &Call) -> Message {
     message.role = Role::Function;
+    // A child Agent's private reasoning belongs to its own model transcript;
+    // it is not part of the function result returned to the parent model.
+    message.content.retain(|part| part.r#type != "think");
     crate::runtime::observation::clear_source(&mut message);
     message
         .metadata
@@ -1347,4 +1327,242 @@ fn result_message(mut message: Message, call: &Call) -> Message {
         .metadata
         .insert("name".into(), Value::String(call.name.clone()));
     message
+}
+
+#[cfg(test)]
+mod result_message_tests {
+    use super::result_message;
+    use crate::{Message, message::Role, tool::Call};
+    use serde_json::json;
+
+    #[test]
+    fn child_private_think_is_not_forwarded_as_a_function_result() {
+        let call: Call = serde_json::from_value(json!({
+            "call_id": "call_child",
+            "name": "agent_spawn",
+            "arguments": {}
+        }))
+        .unwrap();
+        let mut message = Message::new(Role::Assistant);
+        message.content.extend([
+            crate::model::content::part::Part {
+                r#type: "think".into(),
+                data: json!({"value":"private reasoning"})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+            },
+            crate::model::content::part::Part {
+                r#type: "text".into(),
+                data: json!({"value":"child result"}).as_object().unwrap().clone(),
+            },
+        ]);
+
+        let result = result_message(message, &call);
+
+        assert_eq!(result.role, Role::Function);
+        assert_eq!(result.content.len(), 1);
+        assert_eq!(result.content[0].r#type, "text");
+        assert_eq!(result.content[0].data["value"], "child result");
+        assert_eq!(result.metadata["call_id"], "call_child");
+    }
+}
+
+#[cfg(test)]
+mod observation_tests {
+    use super::*;
+    use crate::runtime::agent::node::{Attempt, Execution, State, Status};
+    use serde_json::json;
+    use std::collections::BTreeMap;
+
+    fn running_node(exec_id: i64) -> State {
+        State {
+            status: Status::Running,
+            execution: Some(Execution {
+                exec_id,
+                attempts: vec![Attempt {
+                    idx: 0,
+                    status: Status::Running,
+                    created_time: Some(1),
+                    finished_time: None,
+                    usage: None,
+                    finish_reason: None,
+                    steps: Vec::new(),
+                    messages: crate::Messages::default(),
+                    completion: None,
+                    nodes: BTreeMap::new(),
+                    agent: None,
+                    error: None,
+                }],
+                messages: crate::Messages::default(),
+                usage: None,
+                error: None,
+            }),
+            ..Default::default()
+        }
+    }
+
+    fn observation(
+        event: Option<Event>,
+        scene: Option<Value>,
+        message: Option<Message>,
+    ) -> Observation {
+        Observation {
+            event,
+            feedback: false,
+            source: ("reviewer".into(), 77),
+            scene: scene.map(Arc::new),
+            usage: None,
+            message,
+        }
+    }
+
+    #[test]
+    fn intermediate_child_complete_does_not_complete_its_parent_node() {
+        let mut nodes = BTreeMap::from([("reviewer".into(), running_node(77))]);
+        let mut event_message = Message::new(Role::Assistant);
+        event_message
+            .values
+            .insert("progress".into(), json!("partial"));
+        let mut result = Message::function(json!({"progress":"partial"}));
+        result
+            .metadata
+            .insert("call_id".into(), json!("child_call"));
+        let observation = observation(
+            Some(Event::Complete {
+                message: event_message,
+                usage: None,
+                finish_reason: Some("tool".into()),
+            }),
+            None,
+            Some(result),
+        );
+
+        observe(&mut nodes, &observation).unwrap();
+
+        let child = &nodes["reviewer"];
+        assert_eq!(child.status, Status::Running);
+        assert!(child.messages.is_none());
+        assert_eq!(
+            child.execution.as_ref().unwrap().attempts[0].status,
+            Status::Running
+        );
+        assert!(child.execution.as_ref().unwrap().messages.is_empty());
+    }
+
+    #[test]
+    fn only_a_terminal_child_scene_commits_its_result_message() {
+        let mut nodes = BTreeMap::from([("reviewer".into(), running_node(77))]);
+        let message = Message::function(json!({"unix_seconds":1234}));
+        let observation = observation(
+            None,
+            Some(json!({
+                "type":"agent",
+                "status":"succeeded",
+                "usage":{"input":4,"output":2,"total":6,"details":{}}
+            })),
+            Some(message.clone()),
+        );
+
+        observe(&mut nodes, &observation).unwrap();
+
+        let child = &nodes["reviewer"];
+        assert_eq!(child.status, Status::Succeeded);
+        assert_eq!(
+            child.messages.as_ref().unwrap().as_slice(),
+            std::slice::from_ref(&message)
+        );
+        let execution = child.execution.as_ref().unwrap();
+        assert_eq!(execution.messages.as_slice(), &[message]);
+        assert_eq!(
+            execution.attempts[0].agent.as_ref().unwrap()["status"],
+            "succeeded"
+        );
+        assert_eq!(execution.usage.as_ref().unwrap().total, Some(6));
+        assert!(execution.attempts[0].finished_time.is_some());
+    }
+
+    #[test]
+    fn nested_child_wait_locators_are_prefixed_once_in_the_saved_order() {
+        let nodes = BTreeMap::from([("reviewer".into(), running_node(77))]);
+        let scene = json!({
+            "type":"agent",
+            "status":"waiting",
+            "waits":[
+                {"nodes":[],"step":"first"},
+                {"nodes":[{"node_id":"inner","exec_id":88,"idx":0}],"step":"second"}
+            ]
+        });
+        let observation = observation(None, Some(scene), None);
+        let mut waits = Vec::new();
+
+        sync_waits(&nodes, &mut waits, &observation).unwrap();
+        sync_waits(&nodes, &mut waits, &observation).unwrap();
+
+        assert_eq!(waits.len(), 2);
+        assert_eq!(waits[0].step, "first");
+        assert_eq!(waits[0].nodes[0].node_id, "reviewer");
+        assert_eq!(waits[0].nodes[0].exec_id, 77);
+        assert_eq!(waits[0].nodes[0].idx, 0);
+        assert_eq!(waits[1].step, "second");
+        assert_eq!(waits[1].nodes[0].node_id, "reviewer");
+        assert_eq!(waits[1].nodes[1].node_id, "inner");
+    }
+}
+
+#[cfg(test)]
+mod relay_tests {
+    use super::*;
+    use crate::{Message, message::Role, runtime::agent::wait::Node};
+    use futures_util::future::poll_fn;
+    use serde_json::json;
+
+    #[tokio::test]
+    async fn child_event_waits_for_parent_ack_and_keeps_its_execution_source() {
+        let relay = Relay::default();
+        let observer = relay.observer(
+            Some(501),
+            Node {
+                node_id: "reviewer".into(),
+                exec_id: 77,
+                idx: 0,
+            },
+        );
+        let sender = tokio::spawn(async move {
+            let mut message = Message::new(Role::Assistant);
+            message.values.insert("phase".into(), json!("child"));
+            observer
+                .emit(Some(Event::Delta { message }), None, None, None, false)
+                .await;
+        });
+
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), async {
+                let _ = sender.is_finished();
+                while !sender.is_finished() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .is_err(),
+            "child producer stays backpressured until its event is consumed"
+        );
+        let observation = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            poll_fn(|context| relay.poll_event(context)),
+        )
+        .await
+        .expect("parent must receive the queued child event");
+        let Some(Event::Delta { message }) = observation.event else {
+            panic!("expected the original child Delta")
+        };
+        assert_eq!(message.metadata["chat_id"], 501);
+        assert_eq!(message.metadata["node_id"], "reviewer");
+        assert_eq!(message.metadata["exec_id"], 77);
+        assert_eq!(message.values["phase"], "child");
+        tokio::time::timeout(std::time::Duration::from_secs(1), sender)
+            .await
+            .expect("consumption acknowledges the event")
+            .expect("child emitter task succeeds");
+    }
 }

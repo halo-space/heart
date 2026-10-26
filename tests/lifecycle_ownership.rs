@@ -1,15 +1,12 @@
-//! One lifecycle implementation, actual per-execution state and native APIs.
-use futures_util::{StreamExt, stream};
+//! Live-provider lifecycle ownership: actual per-execution state and native APIs.
+use futures_util::StreamExt;
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    agent::event::Event,
     agent::message::Role,
-    agent::model::{
-        chat::{Chat, Request},
-        content::part::Part,
-        token::Usage,
-    },
+    agent::model::chat,
+    agent::model::content::part::Part,
     agent::node::{Node, Signal},
+    agent::provider::vllm::{Config, Vllm, chat::Chat as VllmChat},
     agent::tool::{Call, Evaluation, Tool, ToolDefinition},
     agent::{self},
     runtime::workflow::{
@@ -19,17 +16,14 @@ use halo::{
     },
 };
 use serde_json::{Value, json};
-use std::{
-    collections::BTreeMap,
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
-    },
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering},
 };
 
-type Counts = Arc<Mutex<BTreeMap<String, [usize; 5]>>>;
-fn count(counts: &Counts, owner: &str, phase: usize) {
-    counts.lock().unwrap().entry(owner.into()).or_default()[phase] += 1;
+type Counts = Arc<Mutex<[usize; 4]>>;
+fn count(counts: &Counts, phase: usize) {
+    counts.lock().unwrap()[phase] += 1;
 }
 struct Operation {
     definition: ToolDefinition,
@@ -43,13 +37,13 @@ impl Tool for SharedTool {
         &self.0.definition
     }
     async fn before(&self, call: &mut Call, _: &Cancellation) -> Result<(), Error> {
-        count(&self.0.counts, call.arguments["owner"].as_str().unwrap(), 0);
+        count(&self.0.counts, 0);
         assert_eq!(call.arguments["n"], 1);
         call.arguments.insert("n".into(), json!(2));
         Ok(())
     }
     async fn call(&self, call: &Call, _: &Cancellation) -> Result<Message, Error> {
-        count(&self.0.counts, call.arguments["owner"].as_str().unwrap(), 1);
+        count(&self.0.counts, 1);
         assert_eq!(call.arguments["n"], 2);
         Ok(Message::function(
             json!({"owner":call.arguments["owner"],"n":2}),
@@ -62,7 +56,7 @@ impl Tool for SharedTool {
         _: &Cancellation,
     ) -> Result<(), Error> {
         let owner = call.arguments["owner"].as_str().unwrap();
-        count(&self.0.counts, owner, 2);
+        count(&self.0.counts, 2);
         assert_eq!(message.values["owner"], owner);
         assert_eq!(message.values["n"], 2);
         if owner == "A" && self.0.pause.load(Ordering::SeqCst) {
@@ -73,66 +67,20 @@ impl Tool for SharedTool {
     }
     async fn eval(
         &self,
-        call: &Call,
+        _call: &Call,
         message: &Message,
         _: &Cancellation,
     ) -> Result<Evaluation, Error> {
-        count(&self.0.counts, call.arguments["owner"].as_str().unwrap(), 3);
+        count(&self.0.counts, 3);
         assert_eq!(message.values["n"], 3);
         Ok(Evaluation::passed())
-    }
-}
-#[derive(Clone)]
-struct SharedModel(Counts);
-impl Chat for SharedModel {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-    async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
-        let owner = request
-            .messages
-            .as_slice()
-            .iter()
-            .find(|message| message.role == Role::System)
-            .unwrap()
-            .content[0]
-            .data["value"]
-            .as_str()
-            .unwrap();
-        count(&self.0, owner, 4);
-        let done = request.messages.as_slice().iter().any(|message| {
-            message.values.get("owner") == Some(&json!(owner))
-                && message.values.get("n") == Some(&json!(3))
-        });
-        let mut message = Message::new(Role::Assistant);
-        if done {
-            message.values.insert("answer".into(), json!(owner));
-        } else {
-            message.content.push(Part {
-                r#type: "tool_call".into(),
-                data:
-                    json!({"call_id":"same_call","name":"shared","arguments":{"owner":owner,"n":1}})
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-            });
-        }
-        Ok(stream::iter(vec![Ok(Event::Complete {
-            message,
-            usage: Some(Usage {
-                input: Some(1),
-                output: Some(1),
-                total: Some(2),
-                ..Default::default()
-            }),
-            finish_reason: Some("stop".into()),
-        })]))
     }
 }
 fn shared() -> SharedTool {
     SharedTool(Arc::new(Operation {definition:ToolDefinition {name:"shared".into(),description:"shared actual instance".into(),parameters:json!({"type":"object","properties":{"owner":{"type":"string"},"n":{"type":"integer"}},"required":["owner","n"],"additionalProperties":false}).as_object().unwrap().clone()},counts:Default::default(),pause:AtomicBool::new(true)}))
 }
-fn graph(react: bool, tool: SharedTool) -> CompiledWorkflow {
+fn graph(react: bool, tool: SharedTool, model: VllmChat) -> CompiledWorkflow {
     let mut builder = WorkflowBuilder::new("shared-lifecycle-owners");
-    let model = SharedModel(tool.0.counts.clone());
     for (id, owner) in [("a", "A"), ("b", "B")] {
         let capabilities = tool.clone();
         if react {
@@ -141,7 +89,9 @@ fn graph(react: bool, tool: SharedTool) -> CompiledWorkflow {
                     id,
                     agent::react()
                         .model(model.clone())
-                        .system_prompt(owner)
+                    .system_prompt(format!(
+                        "You are workflow node {owner}. You must call the shared tool exactly once with owner set to the exact string {owner:?} and n set to 1. Do not answer before the tool call. After receiving the tool result, provide a brief answer that includes the owner."
+                    ))
                         .tools(capabilities)
                         .build()
                         .unwrap(),
@@ -153,7 +103,9 @@ fn graph(react: bool, tool: SharedTool) -> CompiledWorkflow {
                     id,
                     agent::chat()
                         .model(model.clone())
-                        .system_prompt(owner)
+                    .system_prompt(format!(
+                        "You are workflow node {owner}. You must call the shared tool exactly once with owner set to the exact string {owner:?} and n set to 1. Do not answer before the tool call. After receiving the tool result, provide a brief answer that includes the owner."
+                    ))
                         .tools(capabilities)
                         .build()
                         .unwrap(),
@@ -166,6 +118,23 @@ fn graph(react: bool, tool: SharedTool) -> CompiledWorkflow {
     builder.add_join(["a", "b"], "merge").unwrap();
     builder.add_edge("merge", END).unwrap();
     builder.compile().unwrap()
+}
+fn live_model() -> Result<VllmChat, Error> {
+    let provider = Vllm::new(Config {
+        base_url: std::env::var("HEART_VLLM_BASE_URL")
+            .map_err(|_| Error::new("INVALID_ARGUMENTS", "HEART_VLLM_BASE_URL is required"))?,
+        api_key: std::env::var("HEART_VLLM_API_KEY")
+            .map_err(|_| Error::new("AUTHENTICATION", "HEART_VLLM_API_KEY is required"))?,
+        ..Config::default()
+    })?;
+    let model_name = std::env::var("HEART_VLLM_MODEL")
+        .map_err(|_| Error::new("INVALID_ARGUMENTS", "HEART_VLLM_MODEL is required"))?;
+    provider.chat(
+        chat::Config::new(model_name).options(serde_json::Map::from_iter([(
+            "chat_template_kwargs".into(),
+            json!({ "enable_thinking": false }),
+        )])),
+    )
 }
 static IDS: AtomicI64 = AtomicI64::new(500_000);
 fn next_id() -> i64 {
@@ -196,10 +165,12 @@ fn scene<'a>(snapshot: &'a Value, node: &str) -> &'a Value {
 }
 
 #[tokio::test]
+#[ignore = "requires real HEART_VLLM_BASE_URL, HEART_VLLM_API_KEY and HEART_VLLM_MODEL"]
 async fn shared_model_tool_and_call_id_keep_distinct_workflow_node_scenes() {
     for react in [false, true] {
         let tool = shared();
-        let runtime = Runtime::new(3001, graph(react, tool.clone()))
+        let model = live_model().expect("construct live VLLM Chat");
+        let runtime = Runtime::new(3001, graph(react, tool.clone(), model.clone()))
             .unwrap()
             .with_max_concurrency(2)
             .unwrap();
@@ -250,13 +221,12 @@ async fn shared_model_tool_and_call_id_keep_distinct_workflow_node_scenes() {
                 .expect("actual Tool Step")["message"]["values"]["owner"],
             "B"
         );
-        assert_eq!(tool.0.counts.lock().unwrap()["A"], [1, 1, 1, 0, 1]);
-        assert_eq!(tool.0.counts.lock().unwrap()["B"], [1, 1, 1, 1, 2]);
+        assert_eq!(*tool.0.counts.lock().unwrap(), [2, 2, 2, 1]);
         let b = saved["nodes"]["b"].clone();
         tool.0.pause.store(false, Ordering::SeqCst);
         let mut restored = Runtime::from_snapshot(
             3001,
-            graph(react, tool.clone()),
+            graph(react, tool.clone(), model),
             serde_json::from_str(&serde_json::to_string(&saved).unwrap()).unwrap(),
         )
         .unwrap();
@@ -279,9 +249,8 @@ async fn shared_model_tool_and_call_id_keep_distinct_workflow_node_scenes() {
             done["nodes"]["b"], b,
             "A restoration must not rewrite successful B"
         );
-        assert_eq!(tool.0.counts.lock().unwrap()["A"], [1, 1, 2, 1, 2]);
-        assert_eq!(tool.0.counts.lock().unwrap()["B"], [1, 1, 1, 1, 2]);
-        assert_eq!(done["usage"]["total"], 8);
+        assert_eq!(*tool.0.counts.lock().unwrap(), [2, 2, 3, 2]);
+        assert!(done["usage"]["total"].as_u64().unwrap_or_default() > 0);
     }
 }
 

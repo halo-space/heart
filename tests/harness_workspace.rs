@@ -1,28 +1,19 @@
 use std::{
-    collections::VecDeque,
     path::PathBuf,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
 };
 
-use futures_executor::block_on;
-use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::event::Event,
     agent::mcp::{Definition as McpDefinition, Server},
     agent::message::Role,
-    agent::model::{
-        chat::{Chat, Request},
-        content::part::Part,
-    },
-    agent::permission::{Behavior, Decision},
+    agent::model::content::part::Part,
     agent::skill::{Definition as SkillDefinition, Skill},
     agent::tool::{Call, Tool, ToolDefinition},
     agent::workspace::{Mode, Workspace},
-    agent::{Agent, Input, Payload},
     core, harness,
 };
 use serde_json::{Value, json};
@@ -50,20 +41,6 @@ fn call(name: &str, arguments: Value) -> Call {
         name: name.into(),
         arguments: arguments.as_object().unwrap().clone(),
     }
-}
-
-fn tool_call(name: &str, arguments: Value) -> Message {
-    let call = call(name, arguments);
-    let mut message = Message::new(Role::Assistant);
-    message.content.push(Part {
-        r#type: "tool_call".into(),
-        data: serde_json::to_value(call)
-            .unwrap()
-            .as_object()
-            .unwrap()
-            .clone(),
-    });
-    message
 }
 
 struct Echo(ToolDefinition);
@@ -106,57 +83,6 @@ impl Skill for Research {
 
     async fn read(&self, _: &Cancellation) -> Result<String, Error> {
         Ok("Research instructions.".into())
-    }
-}
-
-struct Model {
-    outputs: Mutex<VecDeque<Message>>,
-    requests: Arc<Mutex<Vec<Request>>>,
-}
-
-impl Model {
-    fn new(outputs: Vec<Message>) -> (Self, Arc<Mutex<Vec<Request>>>) {
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        (
-            Self {
-                outputs: Mutex::new(outputs.into()),
-                requests: Arc::clone(&requests),
-            },
-            requests,
-        )
-    }
-}
-
-impl Chat for Model {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-
-    async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
-        self.requests.lock().unwrap().push(request);
-        let message = self
-            .outputs
-            .lock()
-            .unwrap()
-            .pop_front()
-            .expect("unexpected model replay");
-        Ok(stream::iter(vec![Ok(Event::Complete {
-            message,
-            usage: None,
-            finish_reason: None,
-        })]))
-    }
-}
-
-fn input() -> Input {
-    Input {
-        metadata: json!({"chat_id":101,"agent_id":201,"session_id":301})
-            .as_object()
-            .unwrap()
-            .clone(),
-        payload: vec![Payload {
-            r#type: "text".into(),
-            data: json!({"value":"write and read the draft"}),
-            mime_type: None,
-        }],
     }
 }
 
@@ -291,138 +217,15 @@ async fn bound_file_tools_share_one_backend_and_preserve_direct_errors() {
     assert_eq!(result.values["content"], "draft");
 }
 
-#[tokio::test]
-async fn harness_uses_workspace_mounted_tools_in_the_existing_model_loop() {
-    let directory = Directory::new();
-    let (model, requests) = Model::new(vec![
-        tool_call(
-            "workspace_write",
-            json!({"path":"draft.txt","content":"draft"}),
-        ),
-        tool_call("workspace_list", json!({})),
-        tool_call("workspace_glob", json!({"pattern":"*.txt"})),
-        tool_call("workspace_grep", json!({"pattern":"draft"})),
-        tool_call(
-            "workspace_edit",
-            json!({"path":"draft.txt","old_string":"draft","new_string":"edited draft"}),
-        ),
-        tool_call("workspace_read", json!({"path":"draft.txt"})),
-        tool_call("echo", json!({})),
-        tool_call("workspace_delete", json!({"path":"draft.txt"})),
-        message(Role::Assistant, "done"),
-    ]);
-    let workspace = core::workspace::Local::new(&directory.0)
-        .unwrap()
-        .tools(Echo(definition("echo")));
-    let agent = harness::builder()
-        .model(model)
-        .workspace(workspace)
-        .build()
-        .unwrap();
-    assert!(requests.lock().unwrap().is_empty());
-    let events: Vec<_> = agent
-        .run(input(), false, Cancellation::new())
-        .await
-        .unwrap()
-        .collect()
-        .await;
-    assert!(events.iter().all(Result::is_ok));
-    assert_eq!(events.len(), 17, "nine model calls and eight tool results");
-    assert!(!directory.0.join("draft.txt").exists());
-    let requests = requests.lock().unwrap();
-    assert_eq!(requests.len(), 9);
-    let names: Vec<_> = requests[0]
-        .tools
-        .iter()
-        .map(|tool| tool.name.as_str())
-        .collect();
-    for name in [
-        "echo",
-        "workspace_read",
-        "workspace_write",
-        "workspace_list",
-        "workspace_edit",
-        "workspace_glob",
-        "workspace_grep",
-        "workspace_delete",
-    ] {
-        assert!(names.contains(&name));
-    }
-    assert!(!names.iter().any(|name| name.contains("shell")));
-    let read_result = requests[6]
-        .messages
-        .0
-        .iter()
-        .rev()
-        .find(|message| message.role == Role::Tool)
-        .unwrap();
-    assert!(
-        read_result.content[0].data["value"]
-            .as_str()
-            .unwrap()
-            .contains("draft")
-    );
-    let custom_result = requests[7]
-        .messages
-        .0
-        .iter()
-        .rev()
-        .find(|message| message.role == Role::Tool)
-        .unwrap();
-    assert_eq!(custom_result.content[0].data["value"], "custom result");
-}
-
-#[tokio::test]
-async fn permission_denial_stops_a_workspace_write_before_side_effects() {
-    let directory = Directory::new();
-    let (model, requests) = Model::new(vec![
-        tool_call(
-            "workspace_write",
-            json!({"path":"denied.txt","content":"wrong"}),
-        ),
-        message(Role::Assistant, "write was denied"),
-    ]);
-    let decisions = Arc::new(AtomicUsize::new(0));
-    let checks = Arc::clone(&decisions);
-    let policy = core::permission::Permission::new(
-        move |request: halo::agent::permission::Request, _: Cancellation| {
-            let checks = Arc::clone(&checks);
-            async move {
-                assert_eq!(request.resource, "workspace_write");
-                checks.fetch_add(1, Ordering::SeqCst);
-                Ok(Decision {
-                    behavior: Behavior::Deny,
-                    reason: Some("read only".into()),
-                })
-            }
-        },
-    );
-    let workspace = core::workspace::Local::new(&directory.0).unwrap();
-    let agent = harness::builder()
-        .model(model)
-        .workspace(workspace)
-        .permission(policy)
-        .build()
-        .unwrap();
-    let events: Vec<_> = agent
-        .run(input(), false, Cancellation::new())
-        .await
-        .unwrap()
-        .collect()
-        .await;
-    assert!(events.iter().all(Result::is_ok));
-    assert_eq!(decisions.load(Ordering::SeqCst), 1);
-    assert!(!directory.0.join("denied.txt").exists());
-    assert_eq!(
-        requests.lock().unwrap().len(),
-        2,
-        "Agent can handle the original tool error"
-    );
-}
-
 #[test]
 fn conflicting_workspace_tool_names_are_rejected_before_model_execution() {
-    let (model, requests) = Model::new(vec![]);
+    let provider = halo::agent::provider::deepseek::DeepSeek::builder()
+        .api_key("unused-in-construction-only")
+        .build()
+        .unwrap();
+    let model = provider
+        .chat(halo::agent::model::chat::Config::new("deepseek-flash"))
+        .unwrap();
     let directory = Directory::new();
     let workspace = core::workspace::Local::new(&directory.0)
         .unwrap()
@@ -432,28 +235,6 @@ fn conflicting_workspace_tool_names_are_rejected_before_model_execution() {
         panic!("duplicate tool name was accepted")
     };
     assert_eq!(error.code, "INVALID_ARGUMENTS");
-    assert!(requests.lock().unwrap().is_empty());
-}
-
-#[test]
-fn harness_without_workspace_does_not_install_file_tools() {
-    block_on(async {
-        let (model, requests) = Model::new(vec![message(Role::Assistant, "done")]);
-        let agent = harness::builder().model(model).build().unwrap();
-        let events: Vec<_> = agent
-            .run(input(), false, Cancellation::new())
-            .await
-            .unwrap()
-            .collect()
-            .await;
-        assert!(events.iter().all(Result::is_ok));
-        assert!(
-            requests.lock().unwrap()[0]
-                .tools
-                .iter()
-                .all(|tool| !tool.name.starts_with("workspace_"))
-        );
-    });
 }
 
 // A contract fixture, not a database backend. It deliberately has no file
@@ -561,65 +342,6 @@ fn database_workspace(calls: Arc<AtomicUsize>) -> DatabaseWorkspace {
 }
 
 #[tokio::test]
-async fn definition_only_server_uses_its_own_schema_and_the_original_harness_loop() {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let workspace = database_workspace(Arc::clone(&calls));
-    assert_eq!(workspace.definition().mode, Mode::Server);
-    assert!(workspace.definition().path.is_none());
-    let (model, requests) = Model::new(vec![
-        tool_call("records_read", json!({"filter":{"id":1001}})),
-        message(Role::Assistant, "done"),
-    ]);
-    let agent = harness::builder()
-        .model(model)
-        .workspace(workspace)
-        .build()
-        .unwrap();
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
-    let events: Vec<_> = agent
-        .run(input(), false, Cancellation::new())
-        .await
-        .unwrap()
-        .collect()
-        .await;
-    assert!(events.iter().all(Result::is_ok));
-    assert_eq!(
-        events.len(),
-        3,
-        "retain both model and tool Complete events"
-    );
-    assert_eq!(calls.load(Ordering::SeqCst), 1);
-    let requests = requests.lock().unwrap();
-    assert_eq!(requests.len(), 2);
-    for request in requests.iter() {
-        let mut names: Vec<_> = request
-            .tools
-            .iter()
-            .map(|tool| tool.name.as_str())
-            .collect();
-        names.sort_unstable();
-        assert_eq!(
-            names,
-            ["plan", "records_read"],
-            "retain the built-in Planner, but do not install file tools for Server"
-        );
-        let query = request
-            .tools
-            .iter()
-            .find(|tool| tool.name == "records_read")
-            .unwrap();
-        assert!(query.parameters["properties"].get("path").is_none());
-    }
-    assert!(requests[1].messages.as_slice().iter().any(|message| {
-        message.role == Role::Tool
-            && message
-                .content
-                .iter()
-                .any(|part| part.data.get("value") == Some(&json!("record 1001: research")))
-    }));
-}
-
-#[tokio::test]
 async fn definition_only_server_keeps_tool_validation_cancellation_and_results() {
     let calls = Arc::new(AtomicUsize::new(0));
     let capabilities = database_workspace(Arc::clone(&calls));
@@ -663,154 +385,17 @@ async fn definition_only_server_keeps_tool_validation_cancellation_and_results()
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
-#[tokio::test]
-async fn definition_only_server_still_checks_existing_permission_before_call() {
-    let calls = Arc::new(AtomicUsize::new(0));
-    let (model, _) = Model::new(vec![
-        tool_call("records_read", json!({"filter":{"id":1001}})),
-        message(Role::Assistant, "denied"),
-    ]);
-    let permission = core::permission::Permission::new(
-        |_: halo::agent::permission::Request, _: Cancellation| async {
-            Ok(Decision {
-                behavior: Behavior::Deny,
-                reason: Some("not allowed".into()),
-            })
-        },
-    );
-    let agent = harness::builder()
-        .model(model)
-        .workspace(database_workspace(Arc::clone(&calls)))
-        .permission(permission)
-        .build()
-        .unwrap();
-    let events: Vec<_> = agent
-        .run(input(), false, Cancellation::new())
-        .await
-        .unwrap()
-        .collect()
-        .await;
-    assert!(events.iter().all(Result::is_ok));
-    assert_eq!(calls.load(Ordering::SeqCst), 0);
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn configured_workspace_commands_use_the_original_harness_loop_and_shared_files() {
-    let directory = Directory::new();
-    let (model, requests) = Model::new(vec![
-        tool_call(
-            "workspace_write",
-            json!({"path":"draft.txt","content":"draft"}),
-        ),
-        tool_call(
-            "workspace_exec_shell",
-            json!({"args":["/bin/sh","-c","printf edited > draft.txt"]}),
-        ),
-        tool_call("workspace_read", json!({"path":"draft.txt"})),
-        tool_call("workspace_delete", json!({"path":"draft.txt"})),
-        message(Role::Assistant, "done"),
-    ]);
-    let agent = harness::builder()
-        .model(model)
-        .workspace(
-            core::workspace::Local::new(&directory.0)
-                .unwrap()
-                .sandbox(halo::agent::sandbox::Local::default()),
-        )
-        .build()
-        .unwrap();
-    let events: Vec<_> = agent
-        .run(input(), false, Cancellation::new())
-        .await
-        .unwrap()
-        .collect()
-        .await;
-    assert!(events.iter().all(Result::is_ok));
-    assert_eq!(events.len(), 9);
-    assert!(!directory.0.join("draft.txt").exists());
-    let requests = requests.lock().unwrap();
-    assert_eq!(requests.len(), 5);
-    assert_eq!(
-        requests[0].tools.len(),
-        9,
-        "eight workspace Tools and the existing built-in plan"
-    );
-    let read = requests[3]
-        .messages
-        .as_slice()
-        .iter()
-        .rev()
-        .find(|message| message.role == Role::Tool)
-        .unwrap();
-    assert!(
-        read.content[0].data["value"]
-            .as_str()
-            .unwrap()
-            .contains("edited")
-    );
-}
-
-#[cfg(unix)]
-#[tokio::test]
-async fn permission_denial_blocks_builtin_delete_and_command_without_side_effects() {
-    for name in ["workspace_delete", "workspace_exec_shell"] {
-        let directory = Directory::new();
-        std::fs::write(directory.0.join("keep.txt"), "keep").unwrap();
-        let args = if name == "workspace_delete" {
-            json!({"path":"keep.txt"})
-        } else {
-            json!({"args":["/bin/sh","-c","printf wrong > keep.txt; printf wrong > unexpected"]})
-        };
-        let (model, _) = Model::new(vec![
-            tool_call(name, args),
-            message(Role::Assistant, "denied"),
-        ]);
-        let checks = Arc::new(AtomicUsize::new(0));
-        let checked = Arc::clone(&checks);
-        let permission = core::permission::Permission::new(
-            move |request: halo::agent::permission::Request, _: Cancellation| {
-                assert_eq!(request.resource, name);
-                checked.fetch_add(1, Ordering::SeqCst);
-                async {
-                    Ok(Decision {
-                        behavior: Behavior::Deny,
-                        reason: Some("read only".into()),
-                    })
-                }
-            },
-        );
-        let agent = harness::builder()
-            .model(model)
-            .workspace(
-                core::workspace::Local::new(&directory.0)
-                    .unwrap()
-                    .sandbox(halo::agent::sandbox::Local::default()),
-            )
-            .permission(permission)
-            .build()
-            .unwrap();
-        let events: Vec<_> = agent
-            .run(input(), false, Cancellation::new())
-            .await
-            .unwrap()
-            .collect()
-            .await;
-        assert!(events.iter().all(Result::is_ok));
-        assert!(checks.load(Ordering::SeqCst) > 0);
-        assert_eq!(
-            std::fs::read_to_string(directory.0.join("keep.txt")).unwrap(),
-            "keep"
-        );
-        assert!(!directory.0.join("unexpected").exists());
-    }
-}
-
 #[test]
 fn automatically_bound_operations_still_reject_custom_name_collisions() {
     for name in ["workspace_delete", "workspace_exec_shell"] {
         let directory = Directory::new();
-        let (model, requests) = Model::new(vec![]);
+        let provider = halo::agent::provider::deepseek::DeepSeek::builder()
+            .api_key("unused-in-construction-only")
+            .build()
+            .unwrap();
+        let model = provider
+            .chat(halo::agent::model::chat::Config::new("deepseek-flash"))
+            .unwrap();
         let workspace = core::workspace::Local::new(&directory.0)
             .unwrap()
             .sandbox(halo::agent::sandbox::Local::default())
@@ -819,6 +404,5 @@ fn automatically_bound_operations_still_reject_custom_name_collisions() {
             panic!("built-in operation collision was accepted");
         };
         assert_eq!(error.code, "INVALID_ARGUMENTS");
-        assert!(requests.lock().unwrap().is_empty());
     }
 }

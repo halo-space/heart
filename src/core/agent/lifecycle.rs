@@ -330,3 +330,7 @@ where
 #[cfg(test)]
 #[path = "../../../tests/unit/agent_tool_prepare.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../../tests/unit/agent_model_partial.rs"]
+mod model_partial_tests;

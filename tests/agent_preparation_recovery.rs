@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 use chat::Store as _;
-use futures_util::{StreamExt, stream};
+use futures_util::StreamExt;
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
     agent::checkpoint::Checkpoint,
@@ -16,7 +16,8 @@ use halo::{
     },
     agent::message::Role,
     agent::middleware::Middleware,
-    agent::model::chat::{Chat, Request},
+    agent::model::chat::{self as model_chat, Chat, Request},
+    agent::provider::vllm::{self, Vllm},
     agent::{self, Agent, Input, Payload},
     core,
     runtime::workflow::{
@@ -97,26 +98,60 @@ struct Transform(Gate);
 impl Middleware for Transform {
     async fn before_execute(&self, input: &mut Value, _: &Cancellation) -> Result<(), Error> {
         self.0.execute.fetch_add(1, Ordering::SeqCst);
-        input["payload"][0]["data"]["value"] = json!("effective input");
+        input["payload"][0]["data"]["value"] =
+            json!("effective input: 按系统要求直接输出 PREPARATION_OK。");
         Ok(())
     }
     async fn before_system_prompt(&self, value: &mut Value, _: &Cancellation) -> Result<(), Error> {
         self.0.prompt.fetch_add(1, Ordering::SeqCst);
-        *value = json!("effective prompt");
+        *value = json!(
+            "effective prompt: 只输出 PREPARATION_OK；不需要工具、计划、MCP、Skill 或子 Agent。"
+        );
         Ok(())
     }
 }
-#[derive(Clone, Default)]
-struct Model(Arc<Mutex<Vec<Request>>>);
+#[derive(Clone)]
+struct Model {
+    inner: vllm::chat::Chat,
+    requests: Arc<Mutex<Vec<Request>>>,
+}
+impl Model {
+    fn never_called() -> Self {
+        let provider = Vllm::builder()
+            .base_url("http://127.0.0.1:1/v1")
+            .api_key("unused")
+            .build()
+            .unwrap();
+        Self {
+            inner: provider.chat(model_chat::Config::new("unused")).unwrap(),
+            requests: Default::default(),
+        }
+    }
+
+    fn live() -> Self {
+        let provider = Vllm::new(vllm::Config {
+            base_url: std::env::var("HEART_VLLM_BASE_URL").expect("set HEART_VLLM_BASE_URL"),
+            api_key: std::env::var("HEART_VLLM_API_KEY").expect("set HEART_VLLM_API_KEY"),
+            ..Default::default()
+        })
+        .unwrap();
+        let model_name = std::env::var("HEART_VLLM_MODEL").expect("set HEART_VLLM_MODEL");
+        Self {
+            inner: provider.chat(model_chat::Config::new(model_name)).unwrap(),
+            requests: Default::default(),
+        }
+    }
+}
+impl Default for Model {
+    fn default() -> Self {
+        Self::never_called()
+    }
+}
 impl Chat for Model {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
+    type Stream = <vllm::chat::Chat as Chat>::Stream;
     async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
-        self.0.lock().unwrap().push(request);
-        Ok(stream::iter(vec![Ok(Event::Complete {
-            message: Message::new(Role::Assistant),
-            usage: None,
-            finish_reason: Some("stop".into()),
-        })]))
+        self.requests.lock().unwrap().push(request.clone());
+        self.inner.stream(request).await
     }
 }
 struct Sessions {
@@ -208,6 +243,7 @@ async fn run(
     if react {
         let agent = agent::react()
             .model(model)
+            .system_prompt("直接回答用户，不要调用任何工具或 plan。只回复 PREPARATION_OK。")
             .middleware(Transform(gate.clone()))
             .middleware(gate)
             .memory(memory)
@@ -221,6 +257,7 @@ async fn run(
     } else {
         let agent = agent::chat()
             .model(model)
+            .system_prompt("直接回答用户，不要调用任何工具或 plan。只回复 PREPARATION_OK。")
             .middleware(Transform(gate.clone()))
             .middleware(gate)
             .memory(memory)
@@ -235,6 +272,7 @@ async fn run(
 }
 
 #[tokio::test]
+#[ignore = "requires the configured real VLLM model; run through scripts/test-real.sh"]
 async fn waiting_preparation_resumes_only_unfinished_methods_without_consuming_feedback() {
     for react in [false, true] {
         for stage in [
@@ -246,7 +284,7 @@ async fn waiting_preparation_resumes_only_unfinished_methods_without_consuming_f
             let gate = Gate::new(stage, Stop::Waiting);
             let memory = memory(gate.clone()).await;
             let checkpoint = Arc::new(core::checkpoint::InMemory::new());
-            let model = Model::default();
+            let model = Model::live();
             let first = run(
                 react,
                 gate.clone(),
@@ -267,7 +305,7 @@ async fn waiting_preparation_resumes_only_unfinished_methods_without_consuming_f
             assert_eq!(saved["query"], serde_json::to_value(input()).unwrap());
             assert_eq!(
                 saved["preparation"]["input"]["payload"][0]["data"]["value"],
-                "effective input"
+                "effective input: 按系统要求直接输出 PREPARATION_OK。"
             );
             assert!(saved["steps"].as_array().is_none_or(Vec::is_empty));
             assert!(saved["execution"].is_null());
@@ -309,7 +347,7 @@ async fn waiting_preparation_resumes_only_unfinished_methods_without_consuming_f
             assert_eq!(gate.execute.load(Ordering::SeqCst), 1);
             assert_eq!(gate.prompt.load(Ordering::SeqCst), 1);
             let json = {
-                let requests = model.0.lock().unwrap();
+                let requests = model.requests.lock().unwrap();
                 assert_eq!(requests.len(), 1);
                 serde_json::to_string(&requests[0]).unwrap()
             };
@@ -342,7 +380,7 @@ async fn preparation_failures_and_cancellation_close_the_original_chat_and_check
                 let gate = Gate::new(stage, stop);
                 let memory = memory(gate.clone()).await;
                 let checkpoint = Arc::new(core::checkpoint::InMemory::new());
-                let model = Model::default();
+                let model = Model::never_called();
                 let result = run(
                     react,
                     gate.clone(),
@@ -391,7 +429,7 @@ async fn preparation_failures_and_cancellation_close_the_original_chat_and_check
                     json!({"value":"original input"})
                 );
                 assert_eq!(chat.state.unwrap()["preparation"], saved["preparation"]);
-                assert!(model.0.lock().unwrap().is_empty());
+                assert!(model.requests.lock().unwrap().is_empty());
                 let hits = gate.hits.load(Ordering::SeqCst);
                 let _ = run(
                     react,
@@ -422,7 +460,7 @@ async fn invalid_preparation_is_rejected_before_hooks_or_memory_writeback() {
         let gate = Gate::new(Stage::BeforePrompt, Stop::Waiting);
         let memory = memory(gate.clone()).await;
         let checkpoint = Arc::new(core::checkpoint::InMemory::new());
-        let model = Model::default();
+        let model = Model::never_called();
         run(
             react,
             gate.clone(),
@@ -468,7 +506,7 @@ async fn invalid_preparation_is_rejected_before_hooks_or_memory_writeback() {
                 saved
             );
             assert_eq!(gate.hits.load(Ordering::SeqCst), 1);
-            assert!(model.0.lock().unwrap().is_empty());
+            assert!(model.requests.lock().unwrap().is_empty());
             assert_eq!(
                 memory
                     .chat()
@@ -483,12 +521,13 @@ async fn invalid_preparation_is_rejected_before_hooks_or_memory_writeback() {
 }
 
 #[tokio::test]
+#[ignore = "requires the configured real VLLM model; run through scripts/test-real.sh"]
 async fn repeated_prompt_waits_keep_the_previous_successful_transformations() {
     for react in [false, true] {
         let first = Gate::new(Stage::BeforePrompt, Stop::Waiting);
         let memory = memory(first.clone()).await;
         let checkpoint = Arc::new(core::checkpoint::InMemory::new());
-        let model = Model::default();
+        let model = Model::live();
         run(
             react,
             first.clone(),
@@ -517,7 +556,10 @@ async fn repeated_prompt_waits_keep_the_previous_successful_transformations() {
         assert!(matches!(result.last(), Some(Err(error)) if error.code == "WAITING"));
         let saved = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
         assert_eq!(saved["preparation"]["stage"], "after_prompt");
-        assert_eq!(saved["preparation"]["prompt"], "effective prompt");
+        assert_eq!(
+            saved["preparation"]["prompt"],
+            "effective prompt: 只输出 PREPARATION_OK；不需要工具、计划、MCP、Skill 或子 Agent。"
+        );
         let result = run(
             react,
             second,
@@ -531,13 +573,13 @@ async fn repeated_prompt_waits_keep_the_previous_successful_transformations() {
         assert!(result.iter().all(Result::is_ok));
         assert_eq!(first.execute.load(Ordering::SeqCst), 1);
         assert_eq!(first.prompt.load(Ordering::SeqCst), 1);
-        assert_eq!(model.0.lock().unwrap().len(), 1);
+        assert_eq!(model.requests.lock().unwrap().len(), 1);
     }
 }
 
 #[test]
 fn native_run_futures_do_not_inline_the_execution_closeout_machine() {
-    let model = Model::default();
+    let model = Model::never_called();
     let chat = agent::chat().model(model.clone()).build().unwrap();
     let react = agent::react().model(model.clone()).build().unwrap();
     let chat_run = chat.run(input(), true, Cancellation::new());
@@ -552,7 +594,7 @@ fn native_run_futures_do_not_inline_the_execution_closeout_machine() {
         react_bytes < 16 * 1024,
         "ReAct run future: {react_bytes} bytes"
     );
-    assert!(model.0.lock().unwrap().is_empty());
+    assert!(model.requests.lock().unwrap().is_empty());
 }
 
 #[derive(Clone, Default)]
@@ -656,10 +698,11 @@ fn workflow_input() -> Messages {
     Messages::new([message])
 }
 #[tokio::test]
+#[ignore = "requires the configured real VLLM model; run through scripts/test-real.sh"]
 async fn preparation_is_owned_by_the_actual_nested_agent_attempt_not_shared_components() {
     for react in [false, true] {
         let hooks = Isolated::default();
-        let model = Model::default();
+        let model = Model::live();
         let runtime = Runtime::new(1001, graph(react, hooks.clone(), model.clone())).unwrap();
         let events = runtime
             .run(workflow_input(), Arc::new(ids), Cancellation::new())
@@ -682,7 +725,7 @@ async fn preparation_is_owned_by_the_actual_nested_agent_attempt_not_shared_comp
         );
         assert_eq!(attempt(inner, "b")["agent"]["status"], "succeeded");
         let b = inner["nodes"]["b"].clone();
-        assert_eq!(model.0.lock().unwrap().len(), 1);
+        assert_eq!(model.requests.lock().unwrap().len(), 1);
         hooks.0.allow.store(true, Ordering::SeqCst);
         let mut restored = Runtime::from_snapshot(
             1001,
@@ -708,6 +751,6 @@ async fn preparation_is_owned_by_the_actual_nested_agent_attempt_not_shared_comp
         );
         assert_eq!(hooks.0.prompts.lock().unwrap()["A"], 2);
         assert_eq!(hooks.0.prompts.lock().unwrap()["B"], 1);
-        assert_eq!(model.0.lock().unwrap().len(), 2);
+        assert_eq!(model.requests.lock().unwrap().len(), 2);
     }
 }

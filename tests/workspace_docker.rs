@@ -99,10 +99,8 @@ protocol_test!(
 );
 protocol_test!(protocol_foreign_resource, foreign_resource_is_never_removed);
 protocol_test!(protocol_mount_and_env, configured_mount_and_env);
-protocol_test!(
-    protocol_harness_permission,
-    custom_tool_and_harness_permission
-);
+// The model-to-permission path is exercised with a real Provider by the
+// opt-in live acceptance below, not by a scripted Chat fixture.
 protocol_test!(
     protocol_validation,
     pre_cancel_and_invalid_arguments_are_no_io
@@ -140,7 +138,7 @@ async fn run_protocol_case() {
         }
         "foreign_resource_is_never_removed" => foreign_resource_is_never_removed().await,
         "configured_mount_and_env" => configured_mount_and_env().await,
-        "custom_tool_and_harness_permission" => custom_tool_and_harness_permission().await,
+        "real_model_workspace_permission_denial" => real_model_workspace_permission_denial().await,
         "pre_cancel_and_invalid_arguments_are_no_io" => {
             pre_cancel_and_invalid_arguments_are_no_io().await
         }
@@ -148,6 +146,12 @@ async fn run_protocol_case() {
         "limits_and_startup_failure" => limits_and_startup_failure().await,
         other => panic!("unknown fixture case {other}"),
     }
+}
+
+#[tokio::test]
+#[ignore = "requires DEEPSEEK_API_KEY; subprocesses a Docker-call probe"]
+async fn live_model_workspace_permission_denial_prevents_docker_dispatch() {
+    protocol("real_model_workspace_permission_denial");
 }
 
 fn config() -> Config {
@@ -599,68 +603,69 @@ async fn configured_mount_and_env() {
     assert!(args.contains("ARG:--env\nARG:MY_SETTING=secret-not-in-definition"));
 }
 
-async fn custom_tool_and_harness_permission() {
-    use futures_util::{StreamExt, stream};
+async fn real_model_workspace_permission_denial() {
+    use futures_util::StreamExt;
     use halo::{
-        agent::event::Event,
-        agent::message::Role,
-        agent::model::chat::{Chat, Request},
+        agent::model::chat,
         agent::permission::{Behavior, Decision},
-        agent::tool::{Tool, ToolDefinition},
+        agent::provider::deepseek::DeepSeek,
         agent::{Agent, Input},
     };
-    struct Echo(ToolDefinition);
-    impl Tool for Echo {
-        fn definition(&self) -> &ToolDefinition {
-            &self.0
-        }
-        async fn call(&self, _: &Call, _: &Cancellation) -> Result<Message, Error> {
-            Ok(Message::new(Role::Tool))
-        }
-    }
     use std::sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     };
-    let calls = Arc::new(AtomicUsize::new(0));
-    let checks = Arc::new(AtomicUsize::new(0));
-    struct Model(Arc<AtomicUsize>);
-    impl Chat for Model {
-        type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-        async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
-            assert!(request.tools.iter().any(|tool| tool.name == "echo"));
-            let mut message = Message::new(Role::Assistant);
-            if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
-                message
-                    .content
-                    .push(halo::agent::model::content::part::Part {
-                        r#type: "tool_call".into(),
-                        data: serde_json::to_value(call(
-                            "write",
-                            json!({"path":"denied","content":"no"}),
-                        ))
-                        .unwrap()
-                        .as_object()
-                        .unwrap()
-                        .clone(),
-                    });
-            }
-            Ok(stream::iter(vec![Ok(Event::Complete {
-                message,
-                usage: None,
-                finish_reason: None,
-            })]))
+
+    struct WriteOnly(Docker);
+    impl Workspace for WriteOnly {
+        fn definition(&self) -> &halo::agent::workspace::Definition {
+            self.0.definition()
+        }
+
+        fn tool(&self) -> Vec<halo::agent::tool::ToolDefinition> {
+            self.0
+                .tool()
+                .into_iter()
+                .filter(|tool| tool.name == "workspace_write")
+                .collect()
+        }
+
+        fn mcp(&self) -> Vec<halo::agent::mcp::Definition> {
+            Vec::new()
+        }
+
+        fn skill(&self) -> Vec<halo::agent::skill::Definition> {
+            Vec::new()
+        }
+
+        fn execute<'a>(
+            &'a self,
+            call: Call,
+            cancellation: &'a Cancellation,
+        ) -> halo::agent::workspace::ToolFuture<'a> {
+            Box::pin(async move { self.0.execute(call, cancellation).await })
         }
     }
-    let echo = Echo(ToolDefinition {
-        name: "echo".into(),
-        description: "custom".into(),
-        parameters: json!({"type":"object"}).as_object().unwrap().clone(),
-    });
-    let workspace = Docker::new(config()).unwrap().tools(echo);
+
+    let provider = DeepSeek::builder()
+        .base_url(
+            std::env::var("DEEPSEEK_BASE_URL")
+                .unwrap_or_else(|_| "https://api.deepseek.com".into()),
+        )
+        .api_key(std::env::var("DEEPSEEK_API_KEY").expect("set DEEPSEEK_API_KEY"))
+        .build()
+        .expect("construct real DeepSeek Provider");
+    let model = provider
+        .chat(chat::Config::new(
+            std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-flash".into()),
+        ))
+        .expect("construct real Chat");
+    let checks = Arc::new(AtomicUsize::new(0));
+    let workspace = WriteOnly(Docker::new(config()).unwrap());
     let agent = halo::harness::builder()
-        .model(Model(Arc::clone(&calls)))
+        .model(model)
         .workspace(workspace)
+        .system_prompt("你必须调用 workspace_write，将内容写入路径 denied.txt；不要改用其他操作。")
         .permission(halo::core::permission::Permission::new({
             let checks = Arc::clone(&checks);
             move |request: halo::agent::permission::Request, _: Cancellation| {
@@ -670,7 +675,7 @@ async fn custom_tool_and_harness_permission() {
                     checks.fetch_add(1, Ordering::SeqCst);
                     Ok(Decision {
                         behavior: Behavior::Deny,
-                        reason: None,
+                        reason: Some("live acceptance denies file writes".into()),
                     })
                 }
             }
@@ -685,7 +690,7 @@ async fn custom_tool_and_harness_permission() {
             .clone(),
         payload: vec![halo::agent::Payload {
             r#type: "text".into(),
-            data: json!({"value":"write a file"}),
+            data: json!({"value":"请创建文件 denied.txt，内容为 no。"}),
             mime_type: None,
         }],
     };
@@ -697,11 +702,13 @@ async fn custom_tool_and_harness_permission() {
         .await;
     assert!(!events.is_empty());
     assert!(events.iter().all(Result::is_ok), "{events:?}");
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
-    assert_eq!(checks.load(Ordering::SeqCst), 1);
+    assert!(
+        checks.load(Ordering::SeqCst) > 0,
+        "the real model must select the protected operation"
+    );
     assert!(
         operations().is_empty(),
-        "Permission denial must not even create a container"
+        "Permission denial must prevent even container startup"
     );
 }
 

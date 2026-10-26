@@ -4,21 +4,17 @@ use std::{
     time::Duration,
 };
 
-use futures_util::{StreamExt, stream};
 use serde_json::{Map, Value, json};
 use tokio::sync::Semaphore;
 
 use super::*;
 use crate::memory::short::{chat, chat::Store as _, session};
 use crate::{
-    agent::{self, Agent, Input, Payload},
+    agent::{Input, Payload},
     core,
-    event::Event,
+    core::agent::hooks::Hooks,
     middleware::Middleware,
-    model::{
-        chat::{Chat, Request},
-        content::part::Part,
-    },
+    model::content::part::Part,
 };
 
 type WithSession<S> = memory::Config<
@@ -106,20 +102,6 @@ impl crate::compression::Compressor for Compressor {
     }
 }
 
-#[derive(Clone, Default)]
-struct Model(Arc<Mutex<Vec<Request>>>);
-impl Chat for Model {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-    async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
-        self.0.lock().unwrap().push(request);
-        Ok(stream::iter(vec![Ok(Event::Complete {
-            message: text(Role::Assistant, "answer"),
-            usage: Some(usage(4)),
-            finish_reason: Some("stop".into()),
-        })]))
-    }
-}
-
 async fn config() -> Config {
     let config = Config::new(
         memory::short::Pair::new(
@@ -162,6 +144,25 @@ async fn seed<S: session::Store>(
     status: chat::Status,
     usage: Option<Usage>,
 ) {
+    seed_with_text(
+        config,
+        id,
+        session_id,
+        status,
+        usage,
+        &format!("question {id}"),
+    )
+    .await;
+}
+
+async fn seed_with_text<S: session::Store>(
+    config: &WithSession<S>,
+    id: i64,
+    session_id: i64,
+    status: chat::Status,
+    usage: Option<Usage>,
+    input_text: &str,
+) {
     config
         .chat()
         .create(
@@ -177,7 +178,7 @@ async fn seed<S: session::Store>(
                     metadata: Map::new(),
                     payload: vec![chat::Payload {
                         r#type: "text".into(),
-                        data: json!({"value":format!("question {id}")}),
+                        data: json!({"value":input_text}),
                         mime_type: None,
                     }],
                 }),
@@ -198,6 +199,23 @@ async fn seed<S: session::Store>(
         .unwrap();
 }
 
+async fn seed_current<S: session::Store>(
+    config: &WithSession<S>,
+    id: i64,
+    session_id: i64,
+    usage: Option<Usage>,
+) {
+    seed_with_text(
+        config,
+        id,
+        session_id,
+        chat::Status::Completed,
+        usage,
+        &format!("current {id}"),
+    )
+    .await;
+}
+
 fn input(id: i64, session_id: i64) -> Input {
     Input {
         metadata:
@@ -213,17 +231,45 @@ fn input(id: i64, session_id: i64) -> Input {
     }
 }
 
-async fn run(config: Config, model: Model, id: i64, session_id: i64) {
-    let agent = agent::chat().model(model).memory(config).build().unwrap();
-    let events = tokio::time::timeout(
-        Duration::from_secs(3),
-        agent.run(input(id, session_id), true, Cancellation::new()),
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    let events = events.collect::<Vec<_>>().await;
-    assert!(events.iter().all(Result::is_ok));
+async fn run_with_hooks<S, L>(
+    config: memory::Config<S, L>,
+    id: i64,
+    session_id: i64,
+    hooks: Hooks,
+) -> Messages
+where
+    S: memory::short::Store + 'static,
+    L: memory::Memory + 'static,
+{
+    run_with_hooks_and_cancellation(config, id, session_id, hooks, &Cancellation::new()).await
+}
+
+async fn run_with_hooks_and_cancellation<S, L>(
+    config: memory::Config<S, L>,
+    id: i64,
+    session_id: i64,
+    hooks: Hooks,
+    cancellation: &Cancellation,
+) -> Messages
+where
+    S: memory::short::Store + 'static,
+    L: memory::Memory + 'static,
+{
+    let mut history = super::super::History::default();
+    history.set(config);
+    let messages = history
+        .load(input(id, session_id).metadata, hooks, cancellation)
+        .await
+        .unwrap();
+    Messages::new(messages)
+}
+
+async fn run<S, L>(config: memory::Config<S, L>, id: i64, session_id: i64) -> Messages
+where
+    S: memory::short::Store + 'static,
+    L: memory::Memory + 'static,
+{
+    run_with_hooks(config, id, session_id, Hooks::default()).await
 }
 
 async fn idle<S>(config: &WithSession<S>, id: i64) {
@@ -314,19 +360,8 @@ async fn long_extraction_retry_uses_same_agent_without_recompressing_successful_
         .with_extractor(extractor.clone())
         .with_id_fn(|| 1001);
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(100))).await;
-    let agent = agent::chat()
-        .model(Model::default())
-        .memory(config.clone())
-        .build()
-        .unwrap();
     for id in [202, 203] {
-        let events = agent
-            .run(input(id, 101), true, Cancellation::new())
-            .await
-            .unwrap()
-            .collect::<Vec<_>>()
-            .await;
-        assert!(events.iter().all(Result::is_ok));
+        let _ = run(config.clone(), id, 101).await;
         idle(&config, 101).await;
     }
     assert_eq!(compressor.calls.load(Ordering::SeqCst), 1);
@@ -351,7 +386,7 @@ async fn long_extraction_retry_uses_same_agent_without_recompressing_successful_
 async fn successful_summary_without_extractor_does_not_generate_long_memory() {
     let config = config().await.with_compression(Compressor::new(Some(1)));
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(100))).await;
-    run(config.clone(), Model::default(), 202, 101).await;
+    run(config.clone(), 202, 101).await;
     idle(&config, 101).await;
     assert!(
         config
@@ -421,19 +456,8 @@ async fn committed_summary_with_lost_ack_retains_extraction_without_recompressio
         .with_id_fn(|| 1001);
         add_session(&config, 101).await;
         seed(&config, 201, 101, chat::Status::Completed, Some(usage(100))).await;
-        let agent = agent::chat()
-            .model(Model::default())
-            .memory(config.clone())
-            .build()
-            .unwrap();
         for id in [202, 203] {
-            let events = agent
-                .run(input(id, 101), true, Cancellation::new())
-                .await
-                .unwrap()
-                .collect::<Vec<_>>()
-                .await;
-            assert!(events.iter().all(Result::is_ok));
+            let _ = run(config.clone(), id, 101).await;
             idle(&config, 101).await;
             assert_eq!(
                 stored(&config).await.summary.as_deref(),
@@ -457,31 +481,12 @@ async fn committed_summary_with_lost_ack_retains_extraction_without_recompressio
 }
 
 #[tokio::test]
-async fn invalid_size_rejected_by_both_builders_before_io() {
+async fn invalid_size_is_rejected_before_io() {
     for size in [None, Some(0)] {
         let compressor = Compressor::new(size);
         let config = config().await.with_compression(compressor.clone());
         let original = stored(&config).await;
-        assert_eq!(
-            agent::chat()
-                .model(Model::default())
-                .memory(config.clone())
-                .build()
-                .err()
-                .unwrap()
-                .code,
-            "INVALID_ARGUMENTS"
-        );
-        assert_eq!(
-            crate::agent::react()
-                .model(Model::default())
-                .memory(config.clone())
-                .build()
-                .err()
-                .unwrap()
-                .code,
-            "INVALID_ARGUMENTS"
-        );
+        assert_eq!(config.validate().unwrap_err().code, "INVALID_ARGUMENTS");
         assert_eq!(compressor.calls.load(Ordering::SeqCst), 0);
         assert_eq!(stored(&config).await, original);
     }
@@ -492,10 +497,10 @@ async fn disabled_below_threshold_and_unknown_usage_do_not_start_work() {
     let config = config().await;
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
     let original = stored(&config).await;
-    run(config.clone(), Model::default(), 301, 101).await;
+    run(config.clone(), 301, 101).await;
     let compressor = Compressor::new(Some(100));
     let enabled = config.clone().with_compression(compressor.clone());
-    run(enabled.clone(), Model::default(), 302, 101).await;
+    run(enabled.clone(), 302, 101).await;
     idle(&enabled, 101).await;
     assert_eq!(compressor.calls.load(Ordering::SeqCst), 0);
     assert_eq!(stored(&config).await, original);
@@ -504,7 +509,7 @@ async fn disabled_below_threshold_and_unknown_usage_do_not_start_work() {
         .await
         .with_compression(Compressor::new(Some(1)));
     seed(&unknown, 201, 101, chat::Status::Completed, None).await;
-    run(unknown.clone(), Model::default(), 301, 101).await;
+    run(unknown.clone(), 301, 101).await;
     idle(&unknown, 101).await;
     assert!(stored(&unknown).await.summary.is_none());
 }
@@ -515,18 +520,14 @@ async fn background_does_not_block_switch_foreground_or_duplicate_a_session() {
     let config = config().await.with_compression(compressor.clone());
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
     let original_chat = config.chat().read(201, &Cancellation::new()).await.unwrap();
-    let model = Model::default();
-    run(config.clone(), model.clone(), 301, 101).await;
+    let first = run(config.clone(), 301, 101).await;
     entered(&compressor, 1).await;
-    run(config.clone(), model.clone(), 302, 101).await;
+    let second = run(config.clone(), 302, 101).await;
     assert_eq!(compressor.calls.load(Ordering::SeqCst), 1);
     assert!(stored(&config).await.summary.is_none());
-    {
-        let requests = model.0.lock().unwrap();
-        for request in requests.iter() {
-            assert!(contents(&request.messages).contains("question 201"));
-            assert!(!contents(&request.messages).contains("new summary"));
-        }
+    for messages in [&first, &second] {
+        assert!(contents(messages).contains("question 201"));
+        assert!(!contents(messages).contains("new summary"));
     }
     compressor.release();
     idle(&config, 101).await;
@@ -551,9 +552,9 @@ async fn background_does_not_block_switch_foreground_or_duplicate_a_session() {
     );
     // Starting later requests is deliberate; the job did not chase Chat 301/302.
     let next = config.clone().with_compression(Compressor::new(Some(1000)));
-    run(next, model.clone(), 303, 101).await;
-    let requests = model.0.lock().unwrap();
-    let next = contents(&requests.last().unwrap().messages);
+    seed_current(&next, 301, 101, Some(usage(10))).await;
+    seed_current(&next, 302, 101, Some(usage(10))).await;
+    let next = contents(&run(next, 303, 101).await);
     assert!(next.contains("new summary"));
     assert!(next.contains("current 301"));
     assert!(next.contains("current 302"));
@@ -589,7 +590,7 @@ async fn rolling_summary_threshold_and_usage_are_replaced_not_accumulated() {
         .update(old, &Cancellation::new())
         .await
         .unwrap();
-    run(config.clone(), Model::default(), 301, 101).await;
+    run(config.clone(), 301, 101).await;
     idle(&config, 101).await;
     assert_eq!(compressor.calls.load(Ordering::SeqCst), 1);
     let stored = stored(&config).await;
@@ -621,7 +622,7 @@ async fn covered_chat_usage_is_not_added_to_the_current_summary_threshold() {
         .await
         .unwrap();
 
-    run(config.clone(), Model::default(), 301, 101).await;
+    run(config.clone(), 301, 101).await;
     idle(&config, 101).await;
 
     // 10 + 10 < 21, even though the already-covered Chat used another 40.
@@ -644,7 +645,7 @@ async fn no_new_pairs_never_recompresses_summary_alone() {
         .update(old, &Cancellation::new())
         .await
         .unwrap();
-    run(config.clone(), Model::default(), 301, 101).await;
+    run(config.clone(), 301, 101).await;
     idle(&config, 101).await;
     assert_eq!(compressor.calls.load(Ordering::SeqCst), 0);
 }
@@ -654,7 +655,7 @@ async fn concurrent_writer_wins_without_stale_overwrite_or_retry() {
     let compressor = Compressor::new(Some(1)).gated();
     let config = config().await.with_compression(compressor.clone());
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
-    run(config.clone(), Model::default(), 301, 101).await;
+    run(config.clone(), 301, 101).await;
     entered(&compressor, 1).await;
     let mut latest = stored(&config).await;
     latest.title = Some("concurrent edit".into());
@@ -667,7 +668,8 @@ async fn concurrent_writer_wins_without_stale_overwrite_or_retry() {
     idle(&config, 101).await;
     assert_eq!(stored(&config).await, latest);
     assert_eq!(compressor.calls.load(Ordering::SeqCst), 1);
-    run(config.clone(), Model::default(), 302, 101).await;
+    seed_current(&config, 301, 101, Some(usage(10))).await;
+    run(config.clone(), 302, 101).await;
     entered(&compressor, 2).await;
     compressor.release();
     idle(&config, 101).await;
@@ -689,11 +691,12 @@ async fn failed_component_releases_claim_and_retries_only_on_new_request() {
     let config = config().await.with_compression(compressor.clone());
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
     let original = stored(&config).await;
-    run(config.clone(), Model::default(), 301, 101).await;
+    run(config.clone(), 301, 101).await;
     idle(&config, 101).await;
     assert_eq!(stored(&config).await, original);
     assert_eq!(compressor.calls.load(Ordering::SeqCst), 1);
-    run(config.clone(), Model::default(), 302, 101).await;
+    seed_current(&config, 301, 101, Some(usage(10))).await;
+    run(config.clone(), 302, 101).await;
     idle(&config, 101).await;
     assert_eq!(compressor.calls.load(Ordering::SeqCst), 2);
     assert_eq!(stored(&config).await.metadata["to"], 301);
@@ -706,12 +709,11 @@ async fn earlier_running_chat_is_not_swallowed_by_coverage() {
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
     seed(&config, 202, 101, chat::Status::Running, None).await;
     seed(&config, 203, 101, chat::Status::Completed, Some(usage(10))).await;
-    let model = Model::default();
-    run(config.clone(), model.clone(), 301, 101).await;
+    let messages = run(config.clone(), 301, 101).await;
     idle(&config, 101).await;
     assert_eq!(stored(&config).await.metadata["to"], 201);
     assert!(!contents(&compressor.inputs.lock().unwrap()[0]).contains("question 203"));
-    assert!(contents(&model.0.lock().unwrap()[0].messages).contains("question 203"));
+    assert!(contents(&messages).contains("question 203"));
 }
 
 #[tokio::test]
@@ -720,11 +722,11 @@ async fn failed_and_stopped_chats_do_not_enter_compression() {
     let config = config().await.with_compression(compressor.clone());
     seed(&config, 201, 101, chat::Status::Failed, Some(usage(100))).await;
     seed(&config, 202, 101, chat::Status::Stopped, Some(usage(100))).await;
-    run(config.clone(), Model::default(), 301, 101).await;
+    run(config.clone(), 301, 101).await;
     idle(&config, 101).await;
     assert_eq!(compressor.calls.load(Ordering::SeqCst), 0);
     seed(&config, 401, 101, chat::Status::Completed, Some(usage(10))).await;
-    run(config.clone(), Model::default(), 501, 101).await;
+    run(config.clone(), 501, 101).await;
     idle(&config, 101).await;
     assert!(!contents(&compressor.inputs.lock().unwrap()[0]).contains("question 201"));
     assert!(!contents(&compressor.inputs.lock().unwrap()[0]).contains("question 202"));
@@ -737,8 +739,8 @@ async fn independent_sessions_can_compress_in_parallel() {
     add_session(&config, 102).await;
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
     seed(&config, 202, 102, chat::Status::Completed, Some(usage(10))).await;
-    run(config.clone(), Model::default(), 301, 101).await;
-    run(config.clone(), Model::default(), 302, 102).await;
+    run(config.clone(), 301, 101).await;
+    run(config.clone(), 302, 102).await;
     entered(&compressor, 2).await;
     compressor.release();
     compressor.release();
@@ -757,23 +759,16 @@ async fn independent_sessions_can_compress_in_parallel() {
 }
 
 #[tokio::test]
-async fn foreground_cancel_and_stream_drop_do_not_cancel_background() {
+async fn foreground_cancellation_does_not_cancel_background_compression() {
     let compressor = Compressor::new(Some(1)).gated();
     let config = config().await.with_compression(compressor.clone());
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
     let cancellation = Cancellation::new();
-    let agent = agent::chat()
-        .model(Model::default())
-        .memory(config.clone())
-        .build()
-        .unwrap();
-    let events = agent
-        .run(input(301, 101), true, cancellation.clone())
-        .await
-        .unwrap();
+    let _ =
+        run_with_hooks_and_cancellation(config.clone(), 301, 101, Hooks::default(), &cancellation)
+            .await;
     entered(&compressor, 1).await;
     cancellation.cancel();
-    drop(events);
     compressor.release();
     idle(&config, 101).await;
     assert_eq!(
@@ -823,28 +818,18 @@ async fn compression_hooks_run_in_order_without_corrupting_usage() {
     let config = config().await.with_compression(compressor);
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
     let log = Arc::new(Mutex::new(Vec::new()));
-    let agent = agent::chat()
-        .model(Model::default())
-        .memory(config.clone())
-        .middleware(Hook {
-            name: "a",
-            log: log.clone(),
-            fail: false,
-        })
-        .middleware(Hook {
-            name: "b",
-            log: log.clone(),
-            fail: false,
-        })
-        .build()
-        .unwrap();
-    let result = agent
-        .run(input(301, 101), true, Cancellation::new())
-        .await
-        .unwrap()
-        .collect::<Vec<_>>()
-        .await;
-    assert!(result.iter().all(Result::is_ok));
+    let mut hooks = Hooks::default();
+    hooks.add(Hook {
+        name: "a",
+        log: log.clone(),
+        fail: false,
+    });
+    hooks.add(Hook {
+        name: "b",
+        log: log.clone(),
+        fail: false,
+    });
+    let _ = run_with_hooks(config.clone(), 301, 101, hooks).await;
     idle(&config, 101).await;
     assert_eq!(
         *log.lock().unwrap(),
@@ -863,23 +848,13 @@ async fn compression_hook_error_never_fails_foreground_or_commits_summary() {
     let config = config().await.with_compression(compressor.clone());
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
     let original = stored(&config).await;
-    let agent = agent::chat()
-        .model(Model::default())
-        .memory(config.clone())
-        .middleware(Hook {
-            name: "fail",
-            log: Arc::new(Mutex::new(Vec::new())),
-            fail: true,
-        })
-        .build()
-        .unwrap();
-    let result = agent
-        .run(input(301, 101), true, Cancellation::new())
-        .await
-        .unwrap()
-        .collect::<Vec<_>>()
-        .await;
-    assert!(result.iter().all(Result::is_ok));
+    let mut hooks = Hooks::default();
+    hooks.add(Hook {
+        name: "fail",
+        log: Arc::new(Mutex::new(Vec::new())),
+        fail: true,
+    });
+    let _ = run_with_hooks(config.clone(), 301, 101, hooks).await;
     idle(&config, 101).await;
     assert_eq!(compressor.calls.load(Ordering::SeqCst), 0);
     assert_eq!(stored(&config).await, original);
@@ -898,7 +873,7 @@ async fn invalid_compression_output_leaves_session_unchanged() {
         let config = config().await.with_compression(compressor.clone());
         seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
         let original = stored(&config).await;
-        run(config.clone(), Model::default(), 301, 101).await;
+        run(config.clone(), 301, 101).await;
         idle(&config, 101).await;
         assert_eq!(stored(&config).await, original);
         assert_eq!(compressor.calls.load(Ordering::SeqCst), 1);
@@ -906,22 +881,11 @@ async fn invalid_compression_output_leaves_session_unchanged() {
 }
 
 #[tokio::test]
-async fn react_uses_same_background_lifecycle() {
+async fn history_load_uses_the_same_background_lifecycle_for_all_agents() {
     let compressor = Compressor::new(Some(1));
     let config = config().await.with_compression(compressor.clone());
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
-    let agent = crate::agent::react()
-        .model(Model::default())
-        .memory(config.clone())
-        .build()
-        .unwrap();
-    let result = agent
-        .run(input(301, 101), true, Cancellation::new())
-        .await
-        .unwrap()
-        .collect::<Vec<_>>()
-        .await;
-    assert!(result.iter().all(Result::is_ok));
+    let _ = run(config.clone(), 301, 101).await;
     idle(&config, 101).await;
     assert_eq!(compressor.calls.load(Ordering::SeqCst), 1);
     assert_eq!(
@@ -930,19 +894,8 @@ async fn react_uses_same_background_lifecycle() {
     );
 }
 
-#[tokio::test]
-async fn built_in_compressor_preserves_current_usage_and_hides_think() {
-    let model = Model::default();
-    let compressor = core::compression::Compressor::new(model.clone(), Request::default())
-        .unwrap()
-        .with_size(10);
-    let config = config().await.with_compression(compressor);
-    seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
-    run(config.clone(), Model::default(), 301, 101).await;
-    idle(&config, 101).await;
-    assert_eq!(stored(&config).await.summary.as_deref(), Some("answer"));
-    assert_eq!(stored(&config).await.usage, Some(usage(4)));
-    assert!(contents(&model.0.lock().unwrap()[0].messages).contains("question 201"));
+#[test]
+fn summary_extracts_text_and_hides_think() {
     let mut result = output("actual summary", 3);
     result.0[0].content.insert(
         0,
@@ -1026,14 +979,16 @@ async fn replacing_configured_component_cannot_bypass_session_single_flight() {
     let second = Compressor::new(Some(1));
     let config = config().await.with_compression(first.clone());
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
-    run(config.clone(), Model::default(), 301, 101).await;
+    run(config.clone(), 301, 101).await;
     entered(&first, 1).await;
     let replaced = config.clone().with_compression(second.clone());
-    run(replaced.clone(), Model::default(), 302, 101).await;
+    run(replaced.clone(), 302, 101).await;
     assert_eq!(second.calls.load(Ordering::SeqCst), 0);
     first.release();
     idle(&config, 101).await;
-    run(replaced, Model::default(), 303, 101).await;
+    seed_current(&config, 301, 101, Some(usage(10))).await;
+    seed_current(&config, 302, 101, Some(usage(10))).await;
+    run(replaced, 303, 101).await;
     idle(&config, 101).await;
     assert_eq!(second.calls.load(Ordering::SeqCst), 1);
     assert_eq!(first.calls.load(Ordering::SeqCst), 1);
@@ -1052,11 +1007,10 @@ async fn incomplete_completed_pair_does_not_create_a_coverage_hole() {
         .await
         .unwrap();
     seed(&config, 202, 101, chat::Status::Completed, Some(usage(10))).await;
-    let model = Model::default();
-    run(config.clone(), model.clone(), 301, 101).await;
+    let messages = run(config.clone(), 301, 101).await;
     idle(&config, 101).await;
     assert_eq!(compressor.calls.load(Ordering::SeqCst), 0);
-    assert!(contents(&model.0.lock().unwrap()[0].messages).contains("question 202"));
+    assert!(contents(&messages).contains("question 202"));
 }
 
 struct AfterError;
@@ -1072,19 +1026,9 @@ async fn after_hook_failure_does_not_commit_partial_summary() {
     let config = config().await.with_compression(compressor.clone());
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
     let original = stored(&config).await;
-    let agent = agent::chat()
-        .model(Model::default())
-        .memory(config.clone())
-        .middleware(AfterError)
-        .build()
-        .unwrap();
-    let result = agent
-        .run(input(301, 101), true, Cancellation::new())
-        .await
-        .unwrap()
-        .collect::<Vec<_>>()
-        .await;
-    assert!(result.iter().all(Result::is_ok));
+    let mut hooks = Hooks::default();
+    hooks.add(AfterError);
+    let _ = run_with_hooks(config.clone(), 301, 101, hooks).await;
     idle(&config, 101).await;
     assert_eq!(compressor.calls.load(Ordering::SeqCst), 1);
     assert_eq!(stored(&config).await, original);
@@ -1117,27 +1061,14 @@ async fn long_recall_and_current_prompt_are_not_session_compression_input() {
         .await
         .unwrap();
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
-    let model = Model::default();
-    let agent = agent::chat()
-        .model(model.clone())
-        .system_prompt("system instruction")
-        .memory(config.clone())
-        .build()
-        .unwrap();
-    let result = agent
-        .run(input(301, 101), true, Cancellation::new())
-        .await
-        .unwrap()
-        .collect::<Vec<_>>()
-        .await;
-    assert!(result.iter().all(Result::is_ok));
+    let messages = run(config.clone(), 301, 101).await;
     idle(&config, 101).await;
     let background = contents(&compressor.inputs.lock().unwrap()[0]);
     assert!(background.contains("question 201"));
     assert!(!background.contains("long preference"));
     assert!(!background.contains("system instruction"));
     assert!(!background.contains("current 301"));
-    assert!(contents(&model.0.lock().unwrap()[0].messages).contains("long preference"));
+    assert!(contents(&messages).contains("long preference"));
 }
 
 #[tokio::test]
@@ -1154,7 +1085,7 @@ async fn current_single_invocation_keeps_provider_usage_details() {
     compressor.results.lock().unwrap().push_back(Ok(result));
     let config = config().await.with_compression(compressor.clone());
     seed(&config, 201, 101, chat::Status::Completed, Some(usage(10))).await;
-    run(config.clone(), Model::default(), 301, 101).await;
+    run(config.clone(), 301, 101).await;
     idle(&config, 101).await;
     assert_eq!(stored(&config).await.usage, expected);
 }

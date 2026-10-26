@@ -4,13 +4,10 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use futures_util::{StreamExt, stream};
-use halo::agent::{Cancellation, Error, Message};
+use halo::agent::{Cancellation, Message};
 use halo::{
     agent::checkpoint::Checkpoint,
-    agent::event::Event,
     agent::message::Role,
-    agent::model::chat::{Chat, Request},
     agent::{self, Agent, Input},
     core,
     runtime::agent::{
@@ -20,17 +17,33 @@ use halo::{
 };
 use serde_json::{Value, json};
 
-struct Model(Arc<AtomicUsize>);
-impl Chat for Model {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-    async fn stream(&self, _: Request) -> Result<Self::Stream, Error> {
-        self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(stream::iter(vec![Ok(Event::Complete {
-            message: Message::new(Role::Assistant),
-            usage: None,
-            finish_reason: Some("stop".into()),
-        })]))
+struct ObservedChat<C> {
+    inner: C,
+    calls: Arc<AtomicUsize>,
+}
+
+impl<C: halo::agent::model::chat::Chat> halo::agent::model::chat::Chat for ObservedChat<C> {
+    type Stream = C::Stream;
+
+    async fn stream(
+        &self,
+        request: halo::agent::model::chat::Request,
+    ) -> Result<Self::Stream, halo::agent::model::Error> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.inner.stream(request).await
     }
+}
+
+fn model(calls: Arc<AtomicUsize>) -> ObservedChat<halo::agent::provider::vllm::chat::Chat> {
+    let provider = halo::agent::provider::vllm::Vllm::builder()
+        .base_url("http://127.0.0.1:1/v1")
+        .api_key("compile-only")
+        .build()
+        .unwrap();
+    let chat = provider
+        .chat(halo::agent::model::chat::Config::new("compile-only"))
+        .unwrap();
+    ObservedChat { inner: chat, calls }
 }
 
 fn input() -> Input {
@@ -101,19 +114,6 @@ fn positioned(mut base: Value, nodes: Vec<Value>) -> Value {
     base
 }
 
-async fn seed<A: Agent>(agent: &A, checkpoint: &core::checkpoint::InMemory) -> Value {
-    let events = agent
-        .run(input(), true, Cancellation::new())
-        .await
-        .unwrap()
-        .collect::<Vec<_>>()
-        .await;
-    assert!(events.iter().all(Result::is_ok));
-    let base = checkpoint.load(1001, &Cancellation::new()).await.unwrap();
-    assert_eq!(base["waits"], json!([]));
-    base
-}
-
 async fn reject<A: Agent>(
     agent: &A,
     checkpoint: &core::checkpoint::InMemory,
@@ -148,7 +148,13 @@ async fn cases<A: Agent>(
     checkpoint: Arc<core::checkpoint::InMemory>,
     calls: Arc<AtomicUsize>,
 ) {
-    let base = seed(&agent, &checkpoint).await;
+    let base = serde_json::to_value(State {
+        chat_id: Some(1001),
+        r#type: "agent".into(),
+        status: "succeeded".into(),
+        ..Default::default()
+    })
+    .unwrap();
     let mut root = positioned(base.clone(), vec![]);
     root["steps"] = json!([step("review", 5001)]);
     reject(
@@ -438,7 +444,7 @@ async fn restored_locations_follow_current_containment_without_dispatch_or_rewri
     let checkpoint = Arc::new(core::checkpoint::InMemory::new());
     cases(
         agent::chat()
-            .model(Model(calls.clone()))
+            .model(model(calls.clone()))
             .checkpoint(checkpoint.clone())
             .build()
             .unwrap(),
@@ -450,7 +456,7 @@ async fn restored_locations_follow_current_containment_without_dispatch_or_rewri
     let checkpoint = Arc::new(core::checkpoint::InMemory::new());
     cases(
         agent::react()
-            .model(Model(calls.clone()))
+            .model(model(calls.clone()))
             .checkpoint(checkpoint.clone())
             .build()
             .unwrap(),

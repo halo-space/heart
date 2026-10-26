@@ -4,3 +4,4 @@ mod compatible;
 pub mod deepseek;
 pub mod openai;
 pub mod vllm;
+pub mod zhipu;

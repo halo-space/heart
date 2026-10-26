@@ -1,25 +1,18 @@
 use super::*;
 
-struct Model;
-impl Chat for Model {
-    type Stream = futures_util::stream::Empty<Result<Event, Error>>;
-
-    async fn stream(&self, _: Request) -> Result<Self::Stream, Error> {
-        Ok(futures_util::stream::empty())
-    }
-}
+type ProviderChat = crate::core::provider::vllm::chat::Chat;
 
 #[test]
 fn event_progress_does_not_inline_the_complete_execution_machine() {
-    fn bounded<F: Future>(_: impl FnOnce(ReActState<Model>) -> F) {
+    fn bounded<F: Future>(_: impl FnOnce(ReActState<ProviderChat>) -> F) {
         assert!(
             std::mem::size_of::<F>() < 16 * 1024,
             "event progress Future: {} bytes",
             std::mem::size_of::<F>()
         );
     }
-    bounded(next_react_progress::<Model>);
-    bounded(next_react_event::<Model>);
+    bounded(next_react_progress::<ProviderChat>);
+    bounded(next_react_event::<ProviderChat>);
 }
 
 #[tokio::test]
@@ -83,5 +76,5 @@ async fn ready_cancel_handoff_ignores_only_the_tokio_budget_yield() {
 
 #[test]
 fn plan_progress_keeps_the_owned_task_off_nested_poll_stacks() {
-    assert!(std::mem::size_of::<execution::TaskProgress<Model>>() < 1024);
+    assert!(std::mem::size_of::<execution::TaskProgress<ProviderChat>>() < 1024);
 }

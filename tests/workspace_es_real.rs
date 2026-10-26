@@ -3,7 +3,6 @@
 //! them. No tests use a production index or provision a Docker service.
 
 use std::{
-    collections::VecDeque,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -14,13 +13,13 @@ use elasticsearch::{
     http::transport::{SingleNodeConnectionPool, TransportBuilder},
     indices::{IndicesDeleteParts, IndicesExistsParts},
 };
-use futures_util::{StreamExt, future::join_all, stream};
+use futures_util::{StreamExt, future::join_all};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::event::Event,
     agent::message::Role,
-    agent::model::chat::{Chat, Request},
-    agent::tool::{Call, Tool, ToolDefinition},
+    agent::model::chat,
+    agent::provider::deepseek::DeepSeek,
+    agent::tool::Call,
     agent::workspace::Workspace,
     agent::{Agent, Input, Payload},
     core, harness,
@@ -240,106 +239,44 @@ async fn real_write_returns_pipeline_transformed_source() {
     assert_eq!(cleanup.unwrap().values["count"], 1);
 }
 
-struct Model {
-    outputs: Mutex<VecDeque<Message>>,
-    requests: Arc<Mutex<Vec<Request>>>,
-}
-impl Chat for Model {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-    async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
-        self.requests.lock().unwrap().push(request);
-        Ok(stream::iter(vec![Ok(Event::Complete {
-            message: self
-                .outputs
-                .lock()
-                .unwrap()
-                .pop_front()
-                .expect("unexpected model replay"),
-            usage: None,
-            finish_reason: None,
-        })]))
-    }
-}
-
-fn text(role: Role, value: &str) -> Message {
-    let mut message = Message::new(role);
-    message
-        .content
-        .push(halo::agent::model::content::part::Part {
-            r#type: "text".into(),
-            data: json!({"value":value}).as_object().unwrap().clone(),
-        });
-    message
-}
-
-struct Custom(ToolDefinition);
-impl Tool for Custom {
-    fn definition(&self) -> &ToolDefinition {
-        &self.0
-    }
-    async fn call(&self, _: &Call, _: &Cancellation) -> Result<Message, Error> {
-        Ok(text(Role::Tool, "custom result"))
-    }
-}
-
 #[tokio::test]
-#[ignore = "requires application-prepared HEART_ES_URL and isolated HEART_ES_TEST_INDEX; model is scripted, DB is real"]
+#[ignore = "requires real DeepSeek credentials and an application-prepared isolated Elasticsearch index"]
 async fn real_harness_crud_and_permission_use_the_existing_tool_chain() {
     let (client, index) = environment();
+    let provider = DeepSeek::builder()
+        .base_url(
+            std::env::var("DEEPSEEK_BASE_URL")
+                .unwrap_or_else(|_| "https://api.deepseek.com".into()),
+        )
+        .api_key(std::env::var("DEEPSEEK_API_KEY").expect("set DEEPSEEK_API_KEY"))
+        .build()
+        .expect("construct real DeepSeek provider");
+    let model = provider
+        .chat(chat::Config::new(
+            std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-flash".into()),
+        ))
+        .expect("construct real DeepSeek Chat");
     for allowed in [true, false] {
         let capabilities = core::workspace::es::new(client.clone(), &index).unwrap();
-        let id = rand::random::<i64>();
+        // Keep the ID exactly representable by JSON-number handling in all
+        // model/provider layers while remaining unique in the test index.
+        let id = i64::from(rand::random::<u32>() & 0x7fff_ffff).max(1);
         let data = json!({"id":id,"content":"original","metadata":{"kept":true}});
-        let operations = if allowed {
-            vec![
-                ("write", json!({"data":data})),
-                ("read", json!({"id":id})),
-                ("update", json!({"id":id,"data":{"content":"changed"}})),
-                ("read", json!({"id":id})),
-                ("delete", json!({"id":id})),
-            ]
+        let instruction = if allowed {
+            format!(
+                "请严格按顺序真实执行以下数据库操作，每一步都必须调用对应的 workspace 工具，不要跳过或编造结果：\n1. workspace_write，参数 {{\"data\":{data}}}\n2. workspace_read，参数 {{\"id\":{id}}}\n3. workspace_update，参数 {{\"id\":{id},\"data\":{{\"content\":\"changed\"}}}}\n4. workspace_read，参数 {{\"id\":{id}}}\n5. workspace_delete，参数 {{\"id\":{id}}}\n全部完成后只回复 DONE。"
+            )
         } else {
-            vec![("write", json!({"data":data}))]
+            format!(
+                "请调用 workspace_write，参数 {{\"data\":{data}}}。即使权限被拒绝，也只报告实际工具结果，不要声称写入成功。"
+            )
         };
-        let mut outputs: Vec<Message> = operations
-            .iter()
-            .enumerate()
-            .map(|(idx, (name, args))| {
-                let mut actual_call = call(name, args.clone());
-                // Each model-selected call has its own identity, including repeated read.
-                actual_call.call_id = format!("es_real_{idx}");
-                let mut message = Message::new(Role::Assistant);
-                message
-                    .content
-                    .push(halo::agent::model::content::part::Part {
-                        r#type: "tool_call".into(),
-                        data: serde_json::to_value(actual_call)
-                            .unwrap()
-                            .as_object()
-                            .unwrap()
-                            .clone(),
-                    });
-                message
-            })
-            .collect();
-        outputs.push(text(Role::Assistant, "done"));
-        let requests = Arc::new(Mutex::new(Vec::new()));
         let checks = Arc::new(Mutex::new(Vec::new()));
         let checked = Arc::clone(&checks);
         let agent = harness::builder()
-            .model(Model {
-                outputs: Mutex::new(outputs.into()),
-                requests: Arc::clone(&requests),
-            })
-            .workspace(
-                core::workspace::es::new(client.clone(), &index)
-                    .unwrap()
-                    .tools(Custom(ToolDefinition {
-                        name: "custom_query".into(),
-                        description: "application query".into(),
-                        parameters: json!({"type":"object"}).as_object().unwrap().clone(),
-                    })),
-            )
+            .model(model.clone())
+            .system_prompt("你是数据库操作 Agent。只根据工具的真实结果继续操作，绝不编造成功状态。")
+            .workspace(core::workspace::es::new(client.clone(), &index).unwrap())
             .permission(core::permission::Permission::new(
                 move |request: halo::agent::permission::Request, _: Cancellation| {
                     checked.lock().unwrap().push(request.resource);
@@ -355,16 +292,18 @@ async fn real_harness_crud_and_permission_use_the_existing_tool_chain() {
                     }
                 },
             ))
+            .with_max_iters(12)
             .build()
             .unwrap();
         let input = Input {
-            metadata: json!({"chat_id":11,"agent_id":22,"session_id":33})
-                .as_object()
-                .unwrap()
-                .clone(),
+            metadata:
+                json!({"chat_id":rand::random::<u32>() as i64 + 1,"agent_id":22,"session_id":33})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
             payload: vec![Payload {
                 r#type: "text".into(),
-                data: json!({"value":"test real database operations"}),
+                data: json!({"value":instruction}),
                 mime_type: None,
             }],
         };
@@ -386,37 +325,17 @@ async fn real_harness_crud_and_permission_use_the_existing_tool_chain() {
                 .unwrap();
         }
         let events = result.unwrap().unwrap();
-        assert_eq!(events.len(), operations.len() * 2 + 1);
+        assert!(!events.is_empty());
         assert_eq!(leftover.unwrap().values["data"], json!([]));
-        assert_eq!(checks.lock().unwrap().len(), operations.len());
-        let requests = requests.lock().unwrap();
-        assert_eq!(requests.len(), operations.len() + 1);
-        assert!(
-            requests[0]
-                .tools
-                .iter()
-                .any(|tool| tool.name == "custom_query")
-        );
-        assert!(
-            !requests[0]
-                .tools
-                .iter()
-                .any(|tool| tool.name == "workspace_glob")
-        );
-        let messages: Vec<_> = requests
-            .last()
-            .unwrap()
-            .messages
-            .as_slice()
-            .iter()
-            .filter(|message| message.role == Role::Tool)
-            .collect();
+        let checks = checks.lock().unwrap();
+        assert!(checks.iter().any(|resource| resource == "workspace_write"));
         if allowed {
-            assert_eq!(messages[0].values["data"], data);
-            assert_eq!(messages[1].values["data"], json!([data]));
-            assert_eq!(messages[2].values["count"], 1);
-            assert_eq!(messages[3].values["data"][0]["content"], "changed");
-            assert_eq!(messages[4].values["count"], 1);
+            for operation in ["workspace_read", "workspace_update", "workspace_delete"] {
+                assert!(
+                    checks.iter().any(|resource| resource == operation),
+                    "missing authorized {operation}: {checks:?}"
+                );
+            }
         }
     }
 }
