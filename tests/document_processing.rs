@@ -94,6 +94,44 @@ fn parser_construction_rejects_malformed_and_unsupported_configurations() {
 }
 
 #[test]
+fn liteparse_reads_a_real_pdf_through_the_document_parser_contract() {
+    let data = include_bytes!("fixtures/liteparse.pdf");
+    let parser = document::parser::new("general", json!({"format":"pdf"})).unwrap();
+    let pages = block_on(parser.parse(data, &Cancellation::new())).unwrap();
+    assert_eq!(pages.len(), 1);
+    assert!(pages[0].content.contains("Heart LiteParse integration"));
+    assert_eq!(pages[0].metadata["parser"], "liteparse");
+    assert_eq!(
+        pages[0].metadata["location"]["page"],
+        json!({"from":1,"to":1})
+    );
+    assert!(pages[0].id.is_none() && pages[0].doc_id.is_none());
+
+    let one = document::parser::new("one", json!({"format":"pdf"})).unwrap();
+    let documents = block_on(one.parse(data, &Cancellation::new())).unwrap();
+    assert_eq!(documents.len(), 1);
+    assert!(documents[0].content.contains("Heart LiteParse integration"));
+    assert!(documents[0].metadata.get("location").is_none());
+}
+
+#[test]
+fn liteparse_options_are_validated_before_parsing() {
+    for options in [
+        json!({"ocr":"yes"}),
+        json!({"max_pages":0}),
+        json!({"target_pages":""}),
+        json!({"output":"json"}),
+    ] {
+        assert_eq!(
+            document::parser::new("general", json!({"format":"pdf","options":options}))
+                .unwrap_err()
+                .code,
+            "INVALID_ARGUMENTS"
+        );
+    }
+}
+
+#[test]
 fn one_preserves_original_text_and_leaves_identity_to_the_application() {
     let input = "  北京\r\n\r\n露营🙂  ";
     let parsed = block_on(

@@ -12,6 +12,10 @@ readme = "README.md"
 name = "halo"
 path = "src/lib.rs"
 
+[features]
+default = []
+ocr = ["liteparse/tesseract"]
+
 [[bin]]
 name = "heart_mcp_acceptance_server"
 path = "tests/support/mcp_acceptance_server.rs"
@@ -23,12 +27,14 @@ heart-node-macros = { path = "src/runtime/workflow/macros", version = "0.1.0" }
 futures-core = "0.3"
 futures-util = { version = "0.3", features = ["alloc"] }
 jsonschema = { version = "0.58.5", default-features = false }
+liteparse = { version = "2.17.0", default-features = false }
 csv = "1.4"
 pulldown-cmark = { version = "0.13", default-features = false }
 reqwest = { version = "0.12.28", default-features = false, features = ["json", "stream", "rustls-tls"] }
 eventsource-stream = "0.2.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
+tempfile = "3.27.0"
 schemars = "0.8"
 sha2 = "0.10"
 rand = "0.10.2"

@@ -43,6 +43,7 @@ cargo run --offline --example workflow_events
 | Prompt、压缩 | [`examples/compress.rs`](../examples/compress.rs) | `HALO_API_KEY=... cargo run --example compress` |
 | Session/Memory CRUD | [`examples/short_memory.rs`](../examples/short_memory.rs) | `cargo run --example short_memory` |
 | Document Loader/Parser/Transformer | [`examples/document_parse.rs`](../examples/document_parse.rs) | `cargo run --example document_parse -- ./input.csv` |
+| PDF/Office/图片解析 | [`examples/document_liteparse.rs`](../examples/document_liteparse.rs) | `cargo run --example document_liteparse -- ./input.pdf` |
 | OpenAI-compatible Chat | [`examples/provider_chat.rs`](../examples/provider_chat.rs) | `OPENAI_API_KEY=... cargo run --example provider_chat` |
 | DeepSeek Chat Completions | [`examples/provider_deepseek.rs`](../examples/provider_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example provider_deepseek` |
 | VLLM Chat Completions | [`examples/provider_vllm.rs`](../examples/provider_vllm.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example provider_vllm` |
@@ -415,7 +416,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ## 9. 当前版本边界
 
-完整 PDF/Office/OCR Parser、Python 函数接入、TTS 和完整多模态契约属于后续版本。本手册只描述当前公开的 Rust 能力。
+PDF/Office/图片的通用解析默认使用 LiteParse；领域专用 Parser 方法、Python 函数接入、TTS 和完整多模态契约属于后续版本。具体格式和运行依赖见 [Document 解析手册](DOCUMENT.zh-CN.md)。
 
 ## 10. 完整可运行配方
 

@@ -41,6 +41,7 @@ In your own Cargo project, add the dependencies above and copy any example to `s
 | Prompt and compression | [`examples/compress.rs`](../examples/compress.rs) | `HALO_API_KEY=... cargo run --example compress` |
 | Session/Memory CRUD | [`examples/short_memory.rs`](../examples/short_memory.rs) | `cargo run --example short_memory` |
 | Document Loader/Parser/Transformer | [`examples/document_parse.rs`](../examples/document_parse.rs) | `cargo run --example document_parse -- ./input.csv` |
+| PDF/Office/image parsing | [`examples/document_liteparse.rs`](../examples/document_liteparse.rs) | `cargo run --example document_liteparse -- ./input.pdf` |
 | OpenAI-compatible Chat | [`examples/provider_chat.rs`](../examples/provider_chat.rs) | `OPENAI_API_KEY=... cargo run --example provider_chat` |
 | DeepSeek Chat Completions | [`examples/provider_deepseek.rs`](../examples/provider_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example provider_deepseek` |
 | VLLM Chat Completions | [`examples/provider_vllm.rs`](../examples/provider_vllm.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example provider_vllm` |
@@ -387,7 +388,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ## 9. Current scope
 
-Full PDF/Office/OCR Parser extensions, Python function integration, TTS and the complete multimodal contract are future-version work.
+General PDF/Office/image parsing uses LiteParse by default. Domain-specific Parser methods, Python function integration, TTS, and the complete multimodal contract remain future-version work. See the [Document parsing guide](DOCUMENT.en.md) for formats and runtime requirements.
 
 ## 10. Complete runnable recipes
 

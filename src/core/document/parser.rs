@@ -9,6 +9,8 @@ use crate::{
     document::{self, Document, Error},
 };
 
+mod liteparse;
+
 #[derive(Clone, Copy, Debug)]
 enum Method {
     General,
@@ -22,6 +24,7 @@ enum Format {
     Markdown,
     Csv,
     Json,
+    Binary(&'static str),
 }
 
 /// A concrete Parser. Configuration is kept private, not a second public Config.
@@ -54,6 +57,41 @@ pub fn new(method: &str, config: Value) -> Result<Parser, Error> {
         "markdown" | "md" => Format::Markdown,
         "csv" => Format::Csv,
         "json" => Format::Json,
+        "pdf" => Format::Binary("pdf"),
+        "doc" => Format::Binary("doc"),
+        "docx" => Format::Binary("docx"),
+        "docm" => Format::Binary("docm"),
+        "dot" => Format::Binary("dot"),
+        "dotm" => Format::Binary("dotm"),
+        "dotx" => Format::Binary("dotx"),
+        "xlsx" => Format::Binary("xlsx"),
+        "xls" => Format::Binary("xls"),
+        "xlsm" => Format::Binary("xlsm"),
+        "xlsb" => Format::Binary("xlsb"),
+        "pptx" => Format::Binary("pptx"),
+        "ppt" => Format::Binary("ppt"),
+        "pptm" => Format::Binary("pptm"),
+        "pot" => Format::Binary("pot"),
+        "potm" => Format::Binary("potm"),
+        "potx" => Format::Binary("potx"),
+        "odt" => Format::Binary("odt"),
+        "ott" => Format::Binary("ott"),
+        "ods" => Format::Binary("ods"),
+        "ots" => Format::Binary("ots"),
+        "odp" => Format::Binary("odp"),
+        "otp" => Format::Binary("otp"),
+        "rtf" => Format::Binary("rtf"),
+        "pages" => Format::Binary("pages"),
+        "key" => Format::Binary("key"),
+        "numbers" => Format::Binary("numbers"),
+        "tsv" => Format::Binary("tsv"),
+        "png" => Format::Binary("png"),
+        "jpg" | "jpeg" => Format::Binary("jpg"),
+        "tif" | "tiff" => Format::Binary("tiff"),
+        "gif" => Format::Binary("gif"),
+        "bmp" => Format::Binary("bmp"),
+        "webp" => Format::Binary("webp"),
+        "svg" => Format::Binary("svg"),
         _ => {
             return Err(Error::new(
                 "UNSUPPORTED",
@@ -61,13 +99,18 @@ pub fn new(method: &str, config: Value) -> Result<Parser, Error> {
             ));
         }
     };
-    let engine = field(config, "engine")?;
+    let engine = if matches!(format, Format::Binary(_)) && !config.contains_key("engine") {
+        "liteparse"
+    } else {
+        field(config, "engine")?
+    };
     let compatible = matches!(
         (format, engine),
         (Format::Text, "text")
             | (Format::Markdown, "markdown")
             | (Format::Csv, "csv")
             | (Format::Json, "json")
+            | (Format::Binary(_), "liteparse")
     );
     if !compatible {
         return Err(Error::new(
@@ -88,6 +131,16 @@ pub fn new(method: &str, config: Value) -> Result<Parser, Error> {
         _ => return Err(invalid("options", "parser options must be an object")),
     };
     let mut allowed = vec!["trim", "normalize_newlines", "remove_empty"];
+    if matches!(format, Format::Binary(_)) {
+        allowed.extend([
+            "ocr",
+            "ocr_language",
+            "ocr_server_url",
+            "max_pages",
+            "target_pages",
+            "output",
+        ]);
+    }
     if format == Format::Csv {
         allowed.push("delimiter");
     }
@@ -102,6 +155,9 @@ pub fn new(method: &str, config: Value) -> Result<Parser, Error> {
         if options.get(key).is_some_and(|value| !value.is_boolean()) {
             return Err(invalid(key, "option must be boolean"));
         }
+    }
+    if matches!(format, Format::Binary(_)) {
+        liteparse::validate(&options)?;
     }
     for key in ["question", "answer", "content"] {
         if options
@@ -449,12 +505,23 @@ fn validate_csv_quotes(
 }
 
 impl document::Parser for Parser {
+    const FORMATS: &'static [&'static str] = &[
+        "text", "txt", "markdown", "md", "csv", "json", "pdf", "doc", "docx", "docm", "dot",
+        "dotm", "dotx", "xlsx", "xls", "xlsm", "xlsb", "pptx", "ppt", "pptm", "pot", "potm",
+        "potx", "odt", "ott", "ods", "ots", "odp", "otp", "rtf", "pages", "key", "numbers", "tsv",
+        "png", "jpg", "jpeg", "tif", "tiff", "gif", "bmp", "webp", "svg",
+    ];
+
     async fn parse(
         &self,
         data: &[u8],
         cancellation: &Cancellation,
     ) -> Result<Vec<Document>, Error> {
         check_cancelled(cancellation)?;
+        if let Format::Binary(extension) = self.format {
+            return liteparse::parse(data, extension, self.method, &self.options, cancellation)
+                .await;
+        }
         let data = data.strip_prefix(&[0xef, 0xbb, 0xbf]).unwrap_or(data);
         let text = std::str::from_utf8(data)
             .map_err(|_| parse_error("data", "input is not UTF-8 text"))?;
@@ -474,6 +541,7 @@ impl document::Parser for Parser {
                 Format::Markdown => self.markdown(text, cancellation)?,
                 Format::Csv => self.csv(text, cancellation)?,
                 Format::Json => self.json(text, cancellation)?,
+                Format::Binary(_) => unreachable!("binary formats return before UTF-8 decoding"),
             }
         };
         if self.enabled("remove_empty", true) {
