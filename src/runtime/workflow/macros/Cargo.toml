@@ -5,6 +5,7 @@ edition = "2024"
 rust-version = "1.99.1"
 license = "MIT"
 description = "Compile-time validation for Heart Workflow node registration"
+repository = "https://github.com/halo-space/heart"
 
 [lib]
 proc-macro = true

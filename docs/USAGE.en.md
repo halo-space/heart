@@ -8,7 +8,7 @@ This guide shows how to use Heart from a Rust application to build Agents and Wo
 
 ```toml
 [dependencies]
-halo = { git = "https://github.com/halo-space/heart.git" }
+halo = { package = "halo-agent", version = "0.1.0" }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -323,6 +323,40 @@ let chat = provider.chat(halo::agent::model::chat::Config::new("deepseek-flash")
 
 The Qwen model in the VLLM example belongs to the VLLM server and is not mixed with the DeepSeek Provider.
 
+Zhipu Embedding-3 is a separate Embed Provider; it does not depend on a Chat Provider. The default request URL is Zhipu's V4 API. Omit `dimensions` to use the service default (2048), or set a value from 256 through 2048:
+
+```rust
+use halo::agent::{
+    model::embed::{self, Embed as _},
+    provider::zhipu::Zhipu,
+};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = Zhipu::builder()
+        .api_key(std::env::var("HEART_EMBED_API_KEY")?)
+        .build()?;
+    let embed = provider.embed(embed::Config {
+        model_name: "embedding-3".into(),
+        options: Default::default(),
+    })?;
+    let message = embed
+        .embed(embed::Request {
+            input: "Text to embed for semantic search".into(),
+            dimensions: Some(1024),
+            options: Default::default(),
+        })
+        .await?;
+    let vector = message.values.get("vector").expect("embedding vector");
+    println!("dimension={}, usage={:?}", vector.as_array().unwrap().len(), message.usage);
+    Ok(())
+}
+```
+
+Set `HEART_EMBED_API_KEY` in the local `.env`. For a compatible gateway or a different model name, optionally set `HEART_EMBED_BASE_URL` and `HEART_EMBED_MODEL`. Never commit credentials.
+
+The OpenAI Embeddings API is also available through the existing `core::provider::openai::OpenAI`; no separate Provider type is needed. It defaults to `https://api.openai.com/v1` and can use `text-embedding-3-small`; pass a requested vector size via `embed::Request.dimensions`. Setting `OPENAI_API_KEY` enables the live OpenAI vector acceptance in `scripts/test-real.sh`.
+
 ## 7. Workspace, Skill and MCP
 
 Workspace selects local-file or server-database behavior. Local Workspace provides basic file operations; shell execution requires an explicit Sandbox.
@@ -621,6 +655,17 @@ use serde_json::Map;
 
 The application then passes the connected `server` to `agent::chat().model(chat).mcps([server])`. Do not commit the endpoint or credentials.
 
+For local protocol validation, the project includes a separate stdio MCP service process. Its `current_time` tool reads the actual system clock; the acceptance test uses Heart's MCP client to discover and call it instead of substituting a canned business response:
+
+```bash
+cargo test --offline --test mcp_stdio_acceptance -- --nocapture
+cargo test --offline --test mcp_http_acceptance -- --nocapture
+```
+
+The HTTP acceptance test starts a local Streamable HTTP MCP service, exercises initialization, tool discovery and a real tool call through Heart's HTTP client, and checks the returned timestamp against the host clock.
+
+MCP acceptance uses the project's own standalone stdio service process and local Streamable HTTP service; it does not depend on a remote MCP endpoint. Keep provider credentials in the local `.env`, never in Git.
+
 ### 10.10 Validation order
 
 Run offline checks before external services:
@@ -632,4 +677,27 @@ cargo check --offline --examples
 cargo test --offline --lib
 ```
 
-Then run the VLLM/MCP recipes with their environment variables. Keep `.env`, test fixtures and design material out of the source commit.
+Live model acceptance must call the actual provider; fixed model responses are not a substitute. After configuring the local `.env`, run the live Agent tool-call and parent/child delegation tests:
+
+```bash
+./scripts/test-real.sh
+```
+
+The script reads provider credentials from the untracked local `.env` without printing secrets. It runs real Provider, Planner, Evaluator, Compressor, long-memory extraction/merge, Chat/ReAct Agent tool calls, parent/child Agent, Agent human-feedback recovery, streaming/non-streaming Agent, Chat persistence closeout, Workflow with an embedded Agent, Skill, and local MCP stdio/HTTP acceptance tests. Configure `HEART_EMBED_API_KEY` to run real Semantic Chunker acceptance with Zhipu Embedding-3; `HEART_EMBED_BASE_URL` and `HEART_EMBED_MODEL` are optional and default to `https://open.bigmodel.cn/api/paas/v4` and `embedding-3`. Without the API key that case is explicitly skipped (no synthetic vectors are substituted). With `HEART_ES_URL` and an isolated test index configured, it also runs real Elasticsearch tests; with `HEART_WORKSPACE_TEST_IMAGE`, it runs real Docker Workspace tests. It does not connect to any remote MCP endpoint. Individual commands are listed below for selective runs.
+
+The live acceptance checks use real providers and runtime data for Provider calls, Planner, Evaluator, Compressor, long-memory extraction/merge, Chat/ReAct Agent tool calls, parent/child delegation, MCP, Skill, user-feedback recovery and Workflow-embedded Agents. A provider/service failure or a model that does not perform the requested call is a test failure; never substitute a canned model response. The DeepSeek acceptance tests require `DEEPSEEK_API_KEY` in `.env`; `DEEPSEEK_BASE_URL` and `DEEPSEEK_MODEL` are optional and default to the official API and `deepseek-flash`. Keep `.env`, test fixtures and design material out of the source commit.
+`component_real_acceptance` validates a real complete Planner DAG, Reasoner Provider Complete, final-result Evaluator judgment, a Chat Agent completion checked by a second real Evaluator call, typed long-memory extraction and merge, and a Compressor summary from the actual model Complete.
+`workspace_skill_real_acceptance` uses an actual local `SKILL.md` and checks Workspace discovery, on-demand Skill reading by the live model, and an answer grounded in that content. `workflow_real_acceptance` runs a real DeepSeek-backed Agent as a Workflow node and checks persisted execution status and Usage.
+`agent_feedback_real_acceptance` has a real DeepSeek model select a feedback-waiting Tool, then verifies that a user reply correlated by `reply_id` resumes the same Agent and produces a final answer.
+`agent_stream_real_acceptance` uses real DeepSeek calls to verify that `stream=true` emits Delta/Complete and `stream=false` emits Complete only.
+The live closeout test in `agent_chat_closeout_real_acceptance` also verifies that the actual Provider Message and Usage are persisted in Chat state.
+`semantic_chunking_real_acceptance` exercises Semantic Chunker with real Zhipu Embedding-3 vectors when `HEART_EMBED_API_KEY` is configured; optionally override the API base URL or model with `HEART_EMBED_BASE_URL` and `HEART_EMBED_MODEL`.
+The default `cargo test` suite contains offline unit and state-machine tests for direct state transitions, validation, and event-protocol rules; it does not synthesize successful Chat or Embed responses. These checks are not live-model end-to-end acceptance and do not replace the real acceptance script.
+Docker Workspace container, bind-mount and cancellation tests do not pull images. Point them at an image already present locally, then run explicitly:
+
+```bash
+export HEART_WORKSPACE_TEST_IMAGE=docker.elastic.co/elasticsearch/elasticsearch:9.5.4
+cargo test --offline --test workspace_docker docker_workspace_real_container_smoke -- --ignored --nocapture
+cargo test --offline --test workspace_docker docker_workspace_real_bind_mount_smoke -- --ignored --nocapture
+cargo test --offline --test workspace_docker docker_workspace_real_cancellation_smoke -- --ignored --nocapture
+```

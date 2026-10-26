@@ -54,8 +54,11 @@ pub fn node(attributes: TokenStream, item: TokenStream) -> TokenStream {
 
 fn root() -> syn::Result<Tokens> {
     use proc_macro_crate::{FoundCrate, crate_name};
-    match crate_name("halo") {
+    match crate_name("halo-agent") {
         Ok(FoundCrate::Itself) => Ok(quote!(::halo)),
+        // Cargo exposes this package's explicit `[lib] name = "halo"` when
+        // the dependency has not been renamed by its consumer.
+        Ok(FoundCrate::Name(name)) if name == "halo_agent" => Ok(quote!(::halo)),
         Ok(FoundCrate::Name(name)) => {
             let name = syn::parse_str::<Ident>(&name)
                 .or_else(|_| syn::parse_str::<Ident>(&format!("r#{name}")))?;

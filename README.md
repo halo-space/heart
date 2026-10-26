@@ -6,7 +6,7 @@ Heart 提供的是可嵌入的库，不是带页面、账号系统或托管服�
 
 > **版本状态：Alpha（0.1.x 开发阶段）**
 >
-> 当前版本是早期开发版，尚未正式发布，也不承诺 API 稳定性。公共契约、组件实现和运行时行为仍可能在后续版本中调整；Cargo 中的 `0.1.0` 仅表示当前开发版本号。
+> 当前版本是早期 Alpha 版本，不承诺 API 稳定性。公共契约、组件实现和运行时行为仍可能在后续版本中调整。
 
 ## 当前定位
 
@@ -21,7 +21,7 @@ Heart 提供的是可嵌入的库，不是带页面、账号系统或托管服�
 use halo::agent::{self, Cancellation, Input};
 ```
 
-Agent、Workflow 和公共运行类型都通过这个入口使用；具体实现分别从 `halo::agent::core` 与 `halo::agent::workflow` 访问。Cargo 包名和 Rust crate 名是 `halo`，当前要求 Rust 1.99.1 或更新版本。
+Agent、Workflow 和公共运行类型都通过这个入口使用；具体实现分别从 `halo::agent::core` 与 `halo::agent::workflow` 访问。Cargo 包名是 `halo-agent`，Rust 库名是 `halo`，当前要求 Rust 1.99.1 或更新版本。
 
 ## 快速开始
 

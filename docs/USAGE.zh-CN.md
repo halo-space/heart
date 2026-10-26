@@ -6,11 +6,11 @@
 
 ## 1. 安装
 
-Heart 的 Cargo 包名和 Rust crate 名是 `halo`，要求 Rust 1.99.1 或更新版本。
+Heart 的 Cargo 包名是 `halo-agent`，Rust 库名是 `halo`，要求 Rust 1.99.1 或更新版本。
 
 ```toml
 [dependencies]
-halo = { git = "https://github.com/halo-space/heart.git" }
+halo = { package = "halo-agent", version = "0.1.0" }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -347,6 +347,40 @@ let chat = provider.chat(halo::agent::model::chat::Config::new("deepseek-flash")
 ```
 
 VLLM 示例中的 Qwen 模型属于 VLLM 服务，不与 DeepSeek Provider 混用。
+
+智谱 Embedding-3 是独立的 Embed Provider，不依赖 Chat Provider。默认请求地址为智谱 V4 API，`dimensions` 可省略（服务默认 2048），或在 256–2048 范围内显式设置：
+
+```rust
+use halo::agent::{
+    model::embed::{self, Embed as _},
+    provider::zhipu::Zhipu,
+};
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let provider = Zhipu::builder()
+        .api_key(std::env::var("HEART_EMBED_API_KEY")?)
+        .build()?;
+    let embed = provider.embed(embed::Config {
+        model_name: "embedding-3".into(),
+        options: Default::default(),
+    })?;
+    let message = embed
+        .embed(embed::Request {
+            input: "语义搜索的测试文本".into(),
+            dimensions: Some(1024),
+            options: Default::default(),
+        })
+        .await?;
+    let vector = message.values.get("vector").expect("embedding vector");
+    println!("dimension={}, usage={:?}", vector.as_array().unwrap().len(), message.usage);
+    Ok(())
+}
+```
+
+本地 `.env` 至少配置 `HEART_EMBED_API_KEY`；如使用兼容网关或其他模型名，可另配 `HEART_EMBED_BASE_URL`、`HEART_EMBED_MODEL`。不要提交密钥。
+
+OpenAI 的 Embeddings API 也已由 `core::provider::openai::OpenAI` 提供，无需额外 Provider 类型。默认地址为 `https://api.openai.com/v1`，例如使用 `text-embedding-3-small`；请求维度通过 `embed::Request.dimensions` 传入。配置 `OPENAI_API_KEY` 后，`scripts/test-real.sh` 会执行真实 OpenAI 向量验收。
 
 ## 7. Workspace、Skill 和 MCP
 
@@ -873,8 +907,16 @@ async fn main() -> Result<(), Error> {
 // 这里的 MyChat 只是让程序在 MCP 连接成功后仍能完整构造 Agent；真实应用替换为 VLLM/OpenAI Chat。
 ```
 
-如需让该段也在没有 MCP 服务时离线运行，可把 `Server::http` 替换成测试中的内存 `Server` 实现。不要把连接失败当成“可选工具”静默吞掉；
-应用应先决定是否继续构造 Agent。当前示例中的 `HEART_MCP_SSE_URL` 也只能放在 `.env`，不能提交。
+不要用内存 `Server` 替身把连接失败伪装成成功。需要本地验证 MCP 协议时，项目提供了一个独立 stdio MCP 服务进程：它的 `current_time` 工具读取真实系统时钟，测试通过 Heart 的 MCP 客户端发现并调用该工具，不使用预置业务响应：
+
+```bash
+cargo test --offline --test mcp_stdio_acceptance -- --nocapture
+cargo test --offline --test mcp_http_acceptance -- --nocapture
+```
+
+HTTP 验收测试会启动本地 Streamable HTTP MCP 服务，通过 Heart 的 HTTP 客户端执行初始化、工具发现和真实工具调用，并校验返回时间戳与系统时钟一致。
+
+MCP 验收使用项目自带的独立 stdio 服务进程和本地 Streamable HTTP 服务，不依赖远端 MCP 地址。Provider Key 等私密配置只放本地 `.env`，不能提交。
 
 ### 10.10 Prompt、压缩、Permission 和 Middleware 的组合
 
@@ -905,5 +947,29 @@ cargo check --offline --examples
 cargo test --offline --lib
 ```
 
-最后再运行需要外部服务的 VLLM/MCP 示例。若 `cargo test --all-targets` 报缺少被忽略的测试 fixture，说明本地测试目录不是发布内容，
-不要把 `.env`、测试数据或设计文档强行加入源码提交。
+真实模型验收必须调用实际 Provider，不用固定模型响应替代。配置好本地 `.env` 后，可运行 Agent 工具调用和父子 Agent 委派的真实测试：
+
+```bash
+./scripts/test-real.sh
+```
+
+该脚本从未提交的本地 `.env` 读取 Provider 凭据，不输出密钥；它逐项运行真实 Provider、Planner、Evaluator、Compressor、长期记忆提取/合并、Chat/ReAct Agent 的真实工具调用、父子 Agent、Agent 用户反馈恢复、流式/非流式 Agent、Chat 持久化收口、Workflow 内嵌 Agent、Skill、以及本地 MCP stdio/HTTP 服务验收。配置 `HEART_EMBED_API_KEY` 后，会使用智谱 Embedding-3 运行 Semantic Chunker 的真实向量验收；`HEART_EMBED_BASE_URL` 和 `HEART_EMBED_MODEL` 可选，默认分别为 `https://open.bigmodel.cn/api/paas/v4` 和 `embedding-3`。未配置 API Key 时会明确跳过，不以模拟向量代替。配置 `HEART_ES_URL` 与隔离测试索引后，也会运行真实 Elasticsearch 测试；配置 `HEART_WORKSPACE_TEST_IMAGE` 后，会运行真实 Docker Workspace 测试。它不连接远端 MCP 地址。也可以按需单独执行下方的测试命令。
+
+真实验收中的 Provider、Planner、Evaluator、Compressor、记忆提取/合并、Chat/ReAct Agent 工具调用、父子 Agent 委派、MCP 调用、Skill、用户反馈恢复和 Workflow 内嵌 Agent 都使用真实 Provider/实际运行数据；模型没有执行预期调用、Provider 出错或外部服务不可用都应判失败，不能用预置模型响应补成通过。DeepSeek 验收需在 `.env` 配置 `DEEPSEEK_API_KEY`；`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL` 可选，默认分别为官方 API 地址和 `deepseek-flash`。
+`component_real_acceptance` 验证真实 Planner 产出完整 DAG、Reasoner 返回 Provider Complete、Evaluator 对最终结果的判断、真实 Chat Agent 完成后由真实 Evaluator 复核、Extractor 的长期记忆结构化提取与合并，以及 Compressor 的真实 Complete 摘要。
+`workspace_skill_real_acceptance` 使用本地真实 `SKILL.md`，检查 Harness/Workspace 发现、模型按需读取 Skill 并依据其内容作答；`workflow_real_acceptance` 检查 Workflow 内嵌 Agent 节点调用真实 DeepSeek 并保存执行状态与 Usage。
+`agent_feedback_real_acceptance` 由真实 DeepSeek 选择等待反馈的 Tool，测试用户通过 `reply_id` 回答后同一 Agent 继续运行并输出最终结果。
+`agent_stream_real_acceptance` 使用真实 DeepSeek 分别验证 `stream=true` 会发出 Delta/Complete、`stream=false` 只发出 Complete。
+`agent_chat_closeout_real_acceptance` 中的真实收口测试还验证真实 Provider 返回的最终 Message 和 Usage 被写入 Chat 状态。
+配置 `HEART_EMBED_API_KEY` 后，`semantic_chunking_real_acceptance` 会调用智谱 Embedding-3 并用实际向量验证 Semantic Chunker；可选通过 `HEART_EMBED_BASE_URL`、`HEART_EMBED_MODEL` 覆盖默认地址和模型。
+默认 `cargo test` 还包含离线单元与状态机测试，用于直接校验状态转移、输入校验和事件协议，不会合成成功的 Chat 或 Embed 响应。这些测试不等同于真实模型端到端验收，也不会替代上述真实验收脚本。
+Docker Workspace 的真实容器、挂载和取消测试不会自动拉取镜像；指定已经下载的镜像后显式运行：
+
+```bash
+export HEART_WORKSPACE_TEST_IMAGE=docker.elastic.co/elasticsearch/elasticsearch:9.5.4
+cargo test --offline --test workspace_docker docker_workspace_real_container_smoke -- --ignored --nocapture
+cargo test --offline --test workspace_docker docker_workspace_real_bind_mount_smoke -- --ignored --nocapture
+cargo test --offline --test workspace_docker docker_workspace_real_cancellation_smoke -- --ignored --nocapture
+```
+
+若 `cargo test --all-targets` 报缺少被忽略的测试 fixture，说明本地测试目录不是发布内容，不要把 `.env`、测试数据或设计文档强行加入源码提交。
