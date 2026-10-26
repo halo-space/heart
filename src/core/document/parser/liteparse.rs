@@ -98,8 +98,7 @@ pub(super) async fn parse(
             .suffix(&format!(".{extension}"))
             .tempfile()
             .map_err(|error| Error::new("IO_ERROR", error.to_string()).with_details("data"))?;
-        tokio::fs::write(file.path(), data)
-            .await
+        std::fs::write(file.path(), data)
             .map_err(|error| Error::new("IO_ERROR", error.to_string()).with_details("data"))?;
         let path = file.path().to_str().ok_or_else(|| {
             Error::new("INVALID_ARGUMENTS", "temporary path is not UTF-8").with_details("data")
