@@ -46,6 +46,8 @@ type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> +
 type EvaluatorHandle =
     std::sync::Arc<dyn Fn(Input, Messages, Cancellation) -> EvaluationFuture + Send + Sync>;
 type CheckpointSave = Backend;
+type ProgressFuture<M> =
+    Pin<Box<dyn Future<Output = Option<(Option<Result<Event, Error>>, ReActState<M>)>> + 'static>>;
 
 fn plan_definition() -> ToolDefinition {
     ToolDefinition {
@@ -911,75 +913,77 @@ async fn next_react_event<M: Chat + 'static>(
 }
 
 // Private state handoff: None carries native task progress, never an Event.
-async fn next_react_progress<M: Chat + 'static>(
-    state: ReActState<M>,
-) -> Option<(Option<Result<Event, Error>>, ReActState<M>)> {
-    // Keep the complete invocation machine out of each forwarding/task frame.
-    // Deeply nested native scenes still use the same executor and state owner.
-    let (result, state) = Box::pin(next_react_event_inner(Box::new(state))).await?;
-    let mut state = *state;
-    let Some(result) = result else {
-        return Some((None, state));
-    };
-    if result.is_err() && state.model_pending && !state.model_settled {
-        let usage = super::lifecycle::model_unfinished(&mut state.steps, &state.partial);
-        if let Err(error) = &result {
-            crate::runtime::agent::model_steps::stopped(&mut state.steps, error);
-        }
-        state.run.settle(usage);
-        state.model_settled = true;
-    }
-    let result = if state.done {
-        if result.as_ref().is_err_and(|error| error.code != "WAITING") && !state.waits.is_empty() {
-            state.waits.clear();
-            crate::runtime::agent::tool_steps::cancel_pending(&mut state.steps);
-            execution::cancel_active(&mut state);
-        }
-        if let Some(run) = &state.interaction {
-            run.close();
-        }
-        // Serialize the actual terminal scene once for Checkpoint and Chat.state.
-        // An I/O failure is not an execution failure and must not produce a
-        // second, rewritten runtime scene.
-        let snapshot = checkpoint_snapshot(&state, &result);
-        let saved = save_checkpoint(&state, snapshot.clone()).await;
-        let graph = state
-            .graph
-            .as_ref()
-            .and_then(|graph| serde_json::to_value(&graph.plan).ok());
-        // Drop all pending futures even if the consumer retains the terminal
-        // stream. Local resources are released; external effects are not undone.
-        state.active_tools.clear();
-        state.tool_progress.clear();
-        state.active_tasks.clear();
-        state.pending_calls.clear();
-        state.pending_plans.clear();
-        state.pending_replan = None;
-        state.provider = None;
-        match saved {
-            Err(error) => Err(error),
-            Ok(()) => {
-                state
-                    .run
-                    .close_with_state(result, graph, Some(snapshot))
-                    .await
+fn next_react_progress<M: Chat + 'static>(state: ReActState<M>) -> ProgressFuture<M> {
+    Box::pin(async move {
+        // Keep the complete invocation machine out of each forwarding/task frame.
+        // Deeply nested native scenes still use the same executor and state owner.
+        let (result, state) = Box::pin(next_react_event_inner(Box::new(state))).await?;
+        let mut state = *state;
+        let Some(result) = result else {
+            return Some((None, state));
+        };
+        if result.is_err() && state.model_pending && !state.model_settled {
+            let usage = super::lifecycle::model_unfinished(&mut state.steps, &state.partial);
+            if let Err(error) = &result {
+                crate::runtime::agent::model_steps::stopped(&mut state.steps, error);
             }
+            state.run.settle(usage);
+            state.model_settled = true;
         }
-    } else {
-        result
-    };
-    if !state.done
-        && !state.is_plan_task
-        && matches!(&result, Ok(Event::Complete { .. }))
-        && crate::runtime::agent::scope::active()
-    {
-        crate::runtime::agent::scope::capture(if state.waits.is_empty() {
-            running_snapshot(&state)
+        let result = if state.done {
+            if result.as_ref().is_err_and(|error| error.code != "WAITING")
+                && !state.waits.is_empty()
+            {
+                state.waits.clear();
+                crate::runtime::agent::tool_steps::cancel_pending(&mut state.steps);
+                execution::cancel_active(&mut state);
+            }
+            if let Some(run) = &state.interaction {
+                run.close();
+            }
+            // Serialize the actual terminal scene once for Checkpoint and Chat.state.
+            // An I/O failure is not an execution failure and must not produce a
+            // second, rewritten runtime scene.
+            let snapshot = checkpoint_snapshot(&state, &result);
+            let saved = save_checkpoint(&state, snapshot.clone()).await;
+            let graph = state
+                .graph
+                .as_ref()
+                .and_then(|graph| serde_json::to_value(&graph.plan).ok());
+            // Drop all pending futures even if the consumer retains the terminal
+            // stream. Local resources are released; external effects are not undone.
+            state.active_tools.clear();
+            state.tool_progress.clear();
+            state.active_tasks.clear();
+            state.pending_calls.clear();
+            state.pending_plans.clear();
+            state.pending_replan = None;
+            state.provider = None;
+            match saved {
+                Err(error) => Err(error),
+                Ok(()) => {
+                    state
+                        .run
+                        .close_with_state(result, graph, Some(snapshot))
+                        .await
+                }
+            }
         } else {
-            waiting_snapshot(&state)
-        });
-    }
-    Some((Some(result), state))
+            result
+        };
+        if !state.done
+            && !state.is_plan_task
+            && matches!(&result, Ok(Event::Complete { .. }))
+            && crate::runtime::agent::scope::active()
+        {
+            crate::runtime::agent::scope::capture(if state.waits.is_empty() {
+                running_snapshot(&state)
+            } else {
+                waiting_snapshot(&state)
+            });
+        }
+        Some((Some(result), state))
+    })
 }
 
 fn emitted<T>(
