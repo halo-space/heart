@@ -47,6 +47,7 @@ cargo run --offline --example workflow_events
 | OpenAI-compatible Chat | [`examples/provider_chat.rs`](../examples/provider_chat.rs) | `OPENAI_API_KEY=... cargo run --example provider_chat` |
 | DeepSeek Chat Completions | [`examples/provider_deepseek.rs`](../examples/provider_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example provider_deepseek` |
 | 真实 DeepSeek Agent、Tool 和 fastrace | [`examples/agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example agent_live_deepseek` |
+| 三个并发 SubAgent | [`examples/agent_live_three_subagents.rs`](../examples/agent_live_three_subagents.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example agent_live_three_subagents` |
 | VLLM Chat Completions | [`examples/provider_vllm.rs`](../examples/provider_vllm.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example provider_vllm` |
 
 网络示例只在明确执行命令时访问外部服务；密钥只从环境变量读取，不写入源码。`cargo check --examples` 不会发起模型或 MCP 请求，适合先验证代码。

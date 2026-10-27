@@ -45,6 +45,7 @@ In your own Cargo project, add the dependencies above and copy any example to `s
 | OpenAI-compatible Chat | [`examples/provider_chat.rs`](../examples/provider_chat.rs) | `OPENAI_API_KEY=... cargo run --example provider_chat` |
 | DeepSeek Chat Completions | [`examples/provider_deepseek.rs`](../examples/provider_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example provider_deepseek` |
 | Live DeepSeek Agent, Tool and fastrace | [`examples/agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example agent_live_deepseek` |
+| Three concurrent SubAgents | [`examples/agent_live_three_subagents.rs`](../examples/agent_live_three_subagents.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example agent_live_three_subagents` |
 | VLLM Chat Completions | [`examples/provider_vllm.rs`](../examples/provider_vllm.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example provider_vllm` |
 
 Network examples contact external services only when their command is explicitly run. Credentials are read from environment variables and never
