@@ -46,6 +46,7 @@ cargo run --offline --example workflow_events
 | PDF/Office/图片解析 | [`examples/document_liteparse.rs`](../examples/document_liteparse.rs) | `cargo run --example document_liteparse -- ./input.pdf` |
 | OpenAI-compatible Chat | [`examples/provider_chat.rs`](../examples/provider_chat.rs) | `OPENAI_API_KEY=... cargo run --example provider_chat` |
 | DeepSeek Chat Completions | [`examples/provider_deepseek.rs`](../examples/provider_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example provider_deepseek` |
+| 真实 DeepSeek Agent、Tool 和 fastrace | [`examples/agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example agent_live_deepseek` |
 | VLLM Chat Completions | [`examples/provider_vllm.rs`](../examples/provider_vllm.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example provider_vllm` |
 
 网络示例只在明确执行命令时访问外部服务；密钥只从环境变量读取，不写入源码。`cargo check --examples` 不会发起模型或 MCP 请求，适合先验证代码。
@@ -107,6 +108,24 @@ pub enum Event {
 ```
 
 事件是观察流，不是 Runtime State。Workflow 下游从节点 State 读取业务结果，不从事件副本拼装依赖数据。
+
+### 2.3 链路追踪
+
+Heart 使用 `fastrace` 记录 Agent 和 Workflow 的执行层级。应用在启动时选择 Reporter，运行结束或进程退出前调用一次 `flush`：
+
+```rust
+use halo::agent::trace::fastrace::{flush, set_reporter, Config, ConsoleReporter};
+
+fn init_trace() {
+    set_reporter(ConsoleReporter, Config::default());
+}
+
+fn shutdown_trace() {
+    flush();
+}
+```
+
+Reporter 由应用选择，Heart 不把某个后端写进 Runtime 契约。除了控制台 Reporter，还可以传入 fastrace 的 Jaeger 或 OpenTelemetry Reporter。链路中记录运行层级、节点和执行 ID、Delta/Complete、结束原因、Usage、等待关联 ID 和错误码；完整 Message、Checkpoint 和 Runtime State 仍由各自的状态与持久化机制保存。
 
 ## 3. Chat Agent
 

@@ -44,6 +44,7 @@ In your own Cargo project, add the dependencies above and copy any example to `s
 | PDF/Office/image parsing | [`examples/document_liteparse.rs`](../examples/document_liteparse.rs) | `cargo run --example document_liteparse -- ./input.pdf` |
 | OpenAI-compatible Chat | [`examples/provider_chat.rs`](../examples/provider_chat.rs) | `OPENAI_API_KEY=... cargo run --example provider_chat` |
 | DeepSeek Chat Completions | [`examples/provider_deepseek.rs`](../examples/provider_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example provider_deepseek` |
+| Live DeepSeek Agent, Tool and fastrace | [`examples/agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example agent_live_deepseek` |
 | VLLM Chat Completions | [`examples/provider_vllm.rs`](../examples/provider_vllm.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example provider_vllm` |
 
 Network examples contact external services only when their command is explicitly run. Credentials are read from environment variables and never
@@ -101,6 +102,24 @@ pub enum Event {
 ```
 
 Events are observations, not Runtime State. Workflow downstream nodes read their input from node State.
+
+### 2.3 Trace reporting
+
+Heart uses `fastrace` for Agent and Workflow execution traces. The application selects a Reporter during startup and calls `flush` before shutdown:
+
+```rust
+use halo::agent::trace::fastrace::{flush, set_reporter, Config, ConsoleReporter};
+
+fn init_trace() {
+    set_reporter(ConsoleReporter, Config::default());
+}
+
+fn shutdown_trace() {
+    flush();
+}
+```
+
+The Reporter is chosen by the application and is not part of the Runtime contract. In addition to the console Reporter, the application can pass a Jaeger or OpenTelemetry Reporter supplied by the fastrace integrations. Traces contain execution hierarchy, node and execution IDs, Delta/Complete events, finish reason, Usage, waiting correlation IDs and error codes. Full Messages, Checkpoints and Runtime State remain owned by their existing state and persistence paths.
 
 ## 3. Chat Agent
 

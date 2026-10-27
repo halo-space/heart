@@ -291,17 +291,21 @@ impl Runtime {
         }
         let owner = interaction.owner();
         let limit = engine.max_concurrency;
-        Ok(events::stream(events::Output::default(), async move {
-            let _owner = owner;
-            admission::run(
-                limit,
-                events::with_interaction(
-                    interaction,
-                    engine.execute(initial_messages, next_exec_id, cancellation),
-                ),
-            )
-            .await
-        }))
+        Ok(events::stream(
+            events::Output::default(),
+            engine.state.chat_id,
+            async move {
+                let _owner = owner;
+                admission::run(
+                    limit,
+                    events::with_interaction(
+                        interaction,
+                        engine.execute(initial_messages, next_exec_id, cancellation),
+                    ),
+                )
+                .await
+            },
+        ))
     }
 }
 

@@ -139,9 +139,9 @@ pub(super) async fn parse(
             .pages
             .into_iter()
             .map(|page| {
-                let content = if options.get("output").and_then(Value::as_str) == Some("text") {
-                    &page.text
-                } else if page.markdown.is_empty() {
+                let content = if options.get("output").and_then(Value::as_str) == Some("text")
+                    || page.markdown.is_empty()
+                {
                     &page.text
                 } else {
                     &page.markdown

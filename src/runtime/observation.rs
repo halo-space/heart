@@ -1,6 +1,51 @@
 //! Private projection helpers, not a second event or execution model.
 
-use crate::{Message, event::Event};
+use crate::core::trace::fastrace::Root as TraceRoot;
+use crate::{Error, Message, event::Event};
+
+/// Project one public Event result into the configured fastrace span.
+///
+/// Only lifecycle facts and error codes are recorded. Message content remains
+/// in the Event stream and Runtime State, not in the tracing backend.
+pub(crate) fn observe_trace(trace: &TraceRoot, result: &Result<Event, Error>) {
+    match result {
+        Ok(Event::Delta { .. }) => trace.event("event.delta"),
+        Ok(Event::Complete {
+            message,
+            usage,
+            finish_reason,
+        }) => {
+            let mut properties = vec![("status".into(), "completed".into())];
+            if let Some(reason) = finish_reason {
+                properties.push(("finish_reason".into(), reason.clone()));
+            }
+            if let Some(usage) = usage {
+                if let Some(input) = usage.input {
+                    properties.push(("usage.input".into(), input.to_string()));
+                }
+                if let Some(output) = usage.output {
+                    properties.push(("usage.output".into(), output.to_string()));
+                }
+                if let Some(total) = usage.total {
+                    properties.push(("usage.total".into(), total.to_string()));
+                }
+            }
+            if let Some(reply_id) = message.metadata.get("reply_id").and_then(|v| v.as_i64()) {
+                properties.push(("reply_id".into(), reply_id.to_string()));
+            }
+            trace.event_properties("event.complete", properties);
+        }
+        Err(error) => {
+            trace.event_properties(
+                "event.error",
+                vec![
+                    ("status".into(), "failed".into()),
+                    ("error_code".into(), error.code.clone()),
+                ],
+            );
+        }
+    }
+}
 
 pub(crate) fn clear_source(message: &mut Message) {
     // reply_id belongs to the runtime's question/feedback association, just

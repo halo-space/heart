@@ -17,6 +17,7 @@ use halo::{
         model::chat,
         provider::vllm::{Config, Vllm, chat::Chat as VllmChat},
         tool::{Call, Tool, ToolDefinition},
+        trace::fastrace::{Config as TraceConfig, ConsoleReporter, flush, set_reporter},
     },
 };
 use serde_json::json;
@@ -179,5 +180,8 @@ pub async fn run() -> Result<(), Error> {
 #[tokio::main]
 #[allow(dead_code)]
 async fn main() -> Result<(), Error> {
-    run().await
+    set_reporter(ConsoleReporter, TraceConfig::default());
+    let result = run().await;
+    flush();
+    result
 }

@@ -30,6 +30,7 @@ use crate::core::agent::subagent::{
     Failure as SubAgentFailure, Progress as SubAgentProgress, Root,
 };
 use crate::core::memory::history::{History, Run};
+use crate::core::trace::fastrace::{Root as TraceRoot, SpanScope};
 use crate::runtime::agent::checkpoint::Backend;
 use crate::runtime::agent::node::Step;
 use crate::runtime::agent::tool_steps;
@@ -270,6 +271,7 @@ struct ToolBatchConfig {
     max_concurrency: usize,
     root: Root,
     id_fn: Option<fn() -> i64>,
+    trace: TraceRoot,
 }
 
 // Private per-call dependencies; not a public Tool context or saved state.
@@ -282,6 +284,7 @@ struct ToolExecution {
     steps: Arc<Mutex<Vec<Step>>>,
     interaction: Option<crate::runtime::agent::reply::Run>,
     id_fn: Option<fn() -> i64>,
+    trace: TraceRoot,
 }
 
 struct EventsConfig<S> {
@@ -302,6 +305,7 @@ struct EventsConfig<S> {
     pending_subagents: std::collections::BTreeMap<String, PendingSubAgent>,
     root: Root,
     id_fn: Option<fn() -> i64>,
+    trace: TraceRoot,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -357,6 +361,9 @@ pub struct Events<S> {
     pending_checkpoint: Option<CheckpointFuture>,
     pending: Option<CompletionFuture>,
     run: Run,
+    trace: TraceRoot,
+    model_span: Option<SpanScope>,
+    polling: bool,
     settled: bool,
     closing: bool,
 }
@@ -371,14 +378,35 @@ impl<S> std::fmt::Debug for Events<S> {
 }
 
 impl<S> Events<S> {
+    #[cfg(test)]
     fn new(provider: S, cancellation: Cancellation, input_tokens: u64, hooks: Hooks) -> Self {
-        let mut events = Self::empty(cancellation, hooks);
+        Self::new_with_trace(
+            provider,
+            cancellation,
+            input_tokens,
+            hooks,
+            TraceRoot::start("agent.chat"),
+        )
+    }
+
+    fn new_with_trace(
+        provider: S,
+        cancellation: Cancellation,
+        input_tokens: u64,
+        hooks: Hooks,
+        trace: TraceRoot,
+    ) -> Self {
+        let mut events = Self::empty_with_trace(cancellation, hooks, trace);
         events.provider = Some(Box::pin(provider));
         events.input_tokens = input_tokens;
         events
     }
 
     fn empty(cancellation: Cancellation, hooks: Hooks) -> Self {
+        Self::empty_with_trace(cancellation, hooks, TraceRoot::noop())
+    }
+
+    fn empty_with_trace(cancellation: Cancellation, hooks: Hooks, trace: TraceRoot) -> Self {
         Self {
             completion: Default::default(),
             preparation: None,
@@ -418,6 +446,9 @@ impl<S> Events<S> {
             pending_checkpoint: None,
             pending: None,
             run: Run::default(),
+            trace,
+            model_span: None,
+            polling: false,
             settled: false,
             closing: false,
         }
@@ -439,7 +470,15 @@ impl<S> Events<S> {
         self.checkpoint = config.checkpoint;
         self.input = Some(config.input);
         self.checkpoint_id = config.checkpoint_id;
+        self.trace = config.trace;
+        self.model_span = self
+            .provider
+            .as_ref()
+            .map(|_| self.trace.child("agent.model"));
         self.metadata = config.metadata;
+        if let Some(chat_id) = self.metadata.get("chat_id").and_then(Value::as_i64) {
+            self.trace.property("chat_id", chat_id.to_string());
+        }
         self.messages = config.messages;
         self.max_concurrency = config.max_concurrency;
         self.id_fn = config.id_fn;
@@ -603,9 +642,19 @@ where
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.get_mut();
+        let outer_poll = !this.polling;
+        if outer_poll {
+            this.polling = true;
+        }
         loop {
+            if outer_poll {
+                this.polling = true;
+            }
             let mut result = this.poll_event(cx);
             if !this.stream && matches!(result, Poll::Ready(Some(Ok(Event::Delta { .. })))) {
+                if outer_poll {
+                    this.polling = false;
+                }
                 continue;
             }
             if let Poll::Ready(Some(Ok(event))) = &mut result {
@@ -617,6 +666,12 @@ where
                     this.metadata.get("chat_id").and_then(Value::as_i64),
                     None,
                 );
+            }
+            if outer_poll {
+                this.polling = false;
+            }
+            if outer_poll && let Poll::Ready(Some(item)) = &result {
+                crate::runtime::observation::observe_trace(&this.trace, item);
             }
             return result;
         }
@@ -838,6 +893,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                 Poll::Ready(Ok(provider)) => {
                     this.input_tokens = this.pending_input_tokens.load(Ordering::Relaxed);
                     this.provider = Some(Box::pin(provider));
+                    this.model_span = Some(this.trace.child("agent.model"));
                     this.pending_provider = None;
                     return Pin::new(this).poll_next(cx);
                 }
@@ -1196,6 +1252,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                         max_concurrency,
                                         id_fn: this.id_fn,
                                         root: this.root.clone(),
+                                        trace: this.trace.clone(),
                                     },
                                     calls,
                                 )));
@@ -1234,6 +1291,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                 usage,
                 finish_reason,
             }))) => {
+                this.model_span = None;
                 crate::runtime::observation::clear_source(&mut message);
                 let usage = usage.or_else(|| message.usage.clone());
                 message.usage = usage.clone();
@@ -1260,10 +1318,12 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                 Pin::new(this).poll_next(cx)
             }
             Poll::Ready(Some(Err(error))) => {
+                this.model_span = None;
                 this.close(Err(error));
                 Pin::new(this).poll_next(cx)
             }
             Poll::Ready(None) => {
+                this.model_span = None;
                 this.close(Err(Error::new(
                     "INVALID_RESPONSE",
                     "model stream ended without Complete",
@@ -1299,6 +1359,10 @@ where
     ) -> Result<Self::Stream, Error> {
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "agent run cancelled"));
+        }
+        let trace = TraceRoot::start("agent.chat");
+        if let Some(chat_id) = input.metadata.get("chat_id").and_then(Value::as_i64) {
+            trace.property("chat_id", chat_id.to_string());
         }
         let embedded_snapshot = crate::runtime::agent::scope::restore();
         let embedded = crate::runtime::agent::scope::active();
@@ -1567,7 +1631,19 @@ where
                 crate::runtime::agent::model_steps::calling(
                     &mut model_steps.lock().expect("Model steps lock"),
                 );
-                let provider = cancellable(model.stream(request), &cancellation).await?;
+                let provider = match cancellable(model.stream(request), &cancellation).await {
+                    Ok(provider) => provider,
+                    Err(error) => {
+                        trace.event_properties(
+                            "model.error",
+                            vec![
+                                ("status".into(), "failed".into()),
+                                ("error_code".into(), error.code.clone()),
+                            ],
+                        );
+                        return Err(error);
+                    }
+                };
                 (Some(provider), input_tokens)
             } else {
                 (None, 0)
@@ -1598,13 +1674,18 @@ where
                     })
                 });
             let mut events = match provider {
-                Some(provider) => Events::new(
+                Some(provider) => Events::new_with_trace(
                     provider,
                     cancellation.clone(),
                     input_tokens,
                     self.hooks.clone(),
+                    trace.clone(),
                 ),
-                None => Events::empty(cancellation.clone(), self.hooks.clone()),
+                None => Events::empty_with_trace(
+                    cancellation.clone(),
+                    self.hooks.clone(),
+                    trace.clone(),
+                ),
             }
             .configure_tools(EventsConfig {
                 completion: completion.clone(),
@@ -1624,6 +1705,7 @@ where
                 pending_subagents: restored_pending_subagents.clone(),
                 root: restored_root.clone(),
                 id_fn,
+                trace: trace.clone(),
             });
             events.stream = stream;
             events.request = request_scene.clone();
@@ -1674,6 +1756,7 @@ where
                         max_concurrency: events.max_concurrency,
                         id_fn,
                         root: events.root.clone(),
+                        trace: events.trace.clone(),
                     },
                     calls,
                 )));
@@ -1783,6 +1866,7 @@ async fn execute_tool_batch(
         max_concurrency,
         root,
         id_fn,
+        trace,
     } = config;
     let task_count = calls.len().max(1);
     let slots = Arc::new(tokio::sync::Semaphore::new(max_concurrency.max(1)));
@@ -1798,6 +1882,7 @@ async fn execute_tool_batch(
         let cancellation = cancellation.clone();
         let root = root.clone();
         let relay = relay.clone();
+        let trace = trace.clone();
         async move {
             let slot = crate::runtime::agent::reply::Slot::waiting(slots, Default::default());
             if let Err(error) = slot.acquire(&cancellation).await {
@@ -1930,6 +2015,7 @@ async fn execute_tool_batch(
                             steps,
                             interaction,
                             id_fn,
+                            trace,
                         },
                         call.clone(),
                     )
@@ -2210,7 +2296,10 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
         steps,
         interaction,
         id_fn,
+        trace,
     } = execution;
+    let tool_span = trace.child("agent.tool");
+    tool_span.property("tool", call.name.clone());
     if cancellation.is_cancelled() {
         return Err(Error::new("CANCELLED", "tool call cancelled"));
     }
@@ -2870,6 +2959,7 @@ mod tests {
                     max_concurrency: 2,
                     root: root.clone(),
                     id_fn: Some(test_id),
+                    trace: TraceRoot::start("agent.chat.test"),
                 },
                 calls.clone(),
             )
@@ -2891,6 +2981,7 @@ mod tests {
                     max_concurrency: 2,
                     root,
                     id_fn: None,
+                    trace: TraceRoot::start("agent.chat.test"),
                 },
                 calls,
             )
@@ -2964,6 +3055,7 @@ mod tests {
             max_concurrency,
             root: Root::default(),
             id_fn: None,
+            trace: TraceRoot::start("agent.chat.test"),
         }
     }
 

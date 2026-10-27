@@ -10,6 +10,7 @@ use std::{
 use futures_core::Stream;
 use futures_util::task::AtomicWaker;
 
+use crate::core::trace::fastrace::Root as TraceRoot;
 use crate::{Error, Message, Messages, event::Event};
 
 pub(crate) fn project_message(message: &Message) -> Message {
@@ -71,6 +72,7 @@ impl Output {
 
 tokio::task_local! {
     static CURRENT: Output;
+    static TRACE: TraceRoot;
     static SOURCE: (i64, String, i64);
     static INTERACTION: crate::runtime::agent::reply::Run;
     static RELAY:Relay;
@@ -171,8 +173,18 @@ pub(super) async fn with_source<F: Future>(
     exec_id: i64,
     future: F,
 ) -> F::Output {
+    let node_id = node_id.to_owned();
     SOURCE
-        .scope((chat_id, node_id.to_owned(), exec_id), future)
+        .scope((chat_id, node_id.clone(), exec_id), async move {
+            if let Ok(trace) = TRACE.try_with(Clone::clone) {
+                let node = trace.child("workflow.node");
+                node.property("node_id", node_id);
+                node.property("exec_id", exec_id.to_string());
+                node.in_span_ref("workflow.node.execute", future).await
+            } else {
+                future.await
+            }
+        })
         .await
 }
 
@@ -208,14 +220,22 @@ pub(crate) async fn emit(mut event: Event) {
     .await;
 }
 
-pub(super) fn stream<F>(output: Output, execution: F) -> impl Stream<Item = Result<Event, Error>>
+pub(super) fn stream<F>(
+    output: Output,
+    chat_id: i64,
+    execution: F,
+) -> impl Stream<Item = Result<Event, Error>>
 where
     F: Future<Output = Result<Messages, Error>>,
 {
-    let mut execution = Box::pin(CURRENT.scope(output.clone(), execution));
+    let trace = TraceRoot::start("workflow");
+    trace.property("chat_id", chat_id.to_string());
+    let execution = CURRENT.scope(output.clone(), execution);
+    let mut execution = Box::pin(TRACE.scope(trace.clone(), execution));
     let mut finished = false;
     futures_util::stream::poll_fn(move |context| {
         if let Some(event) = output.next() {
+            crate::runtime::observation::observe_trace(&trace, &event);
             return Poll::Ready(Some(event));
         }
         if !finished {
@@ -232,6 +252,7 @@ where
             }
         }
         if let Some(event) = output.next() {
+            crate::runtime::observation::observe_trace(&trace, &event);
             Poll::Ready(Some(event))
         } else if finished {
             Poll::Ready(None)

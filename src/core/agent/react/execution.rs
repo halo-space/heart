@@ -273,6 +273,9 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
         } else {
             None
         };
+        let node_trace = state.trace.child_root("agent.node");
+        node_trace.property("node_id", node_id.clone());
+        node_trace.property("exec_id", exec_id.to_string());
         let mut task = Task {
             node_id,
             exec_id,
@@ -348,6 +351,8 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 model_settled: false,
                 input_tokens: 0,
                 request: None,
+                trace: node_trace.clone(),
+                model_span: None,
             },
         };
         if resumed {
@@ -361,7 +366,9 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 slot,
             },
         );
-        state.active_tasks.push(Box::pin(advance(Box::new(task))));
+        state.active_tasks.push(Box::pin(
+            node_trace.in_span("agent.node.execute", advance(Box::new(task))),
+        ));
     }
     Ok(())
 }

@@ -12,6 +12,7 @@ pub use crate::core::agent::{chat, react};
 /// namespace. The provider implementations themselves remain under `core`;
 /// this re-export keeps application code on the single `halo::agent` entry.
 pub use crate::core::provider;
+pub use crate::core::trace;
 
 pub use crate::components::message;
 pub use crate::components::{

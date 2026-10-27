@@ -31,6 +31,7 @@ use crate::core::agent::hooks::{Hooks, cancellable};
 use crate::core::agent::subagent::SubAgent;
 use crate::core::agent::subagent::{Failure as SubAgentFailure, Progress as SubAgentProgress};
 use crate::core::memory::history::{History, Run};
+use crate::core::trace::fastrace::{Root as TraceRoot, SpanScope};
 use crate::runtime::agent::checkpoint::{Backend, invalid as invalid_checkpoint};
 use crate::runtime::agent::graph::Graph;
 use crate::runtime::agent::node::Step;
@@ -551,7 +552,12 @@ where
             model_settled: false,
             input_tokens: 0,
             request: None,
+            trace: TraceRoot::start("agent.react"),
+            model_span: None,
         };
+        if let Some(chat_id) = state.metadata.get("chat_id").and_then(Value::as_i64) {
+            state.trace.property("chat_id", chat_id.to_string());
+        }
         if let Some(snapshot) = restored {
             restore_state(&mut state, snapshot)?;
             if preparing {
@@ -615,6 +621,7 @@ where
             return Err(result.expect_err("preparation must not execute a Model"));
         }
         let chat_id = state.query.metadata.get("chat_id").and_then(Value::as_i64);
+        let trace = state.trace.clone();
         Ok(Box::pin(
             unfold(state, next_react_event::<M>)
                 .filter(move |result| {
@@ -624,6 +631,7 @@ where
                     if let Ok(event) = &mut result {
                         crate::runtime::observation::associate(event, chat_id, None);
                     }
+                    crate::runtime::observation::observe_trace(&trace, &result);
                     result
                 }),
         ))
@@ -705,6 +713,8 @@ struct ReActState<M: Chat> {
     model_settled: bool,
     input_tokens: u64,
     request: Option<Box<Request>>,
+    trace: TraceRoot,
+    model_span: Option<SpanScope>,
 }
 
 // Distinguish model-selected control from business evaluation. Replanning is
@@ -749,6 +759,7 @@ struct ToolExecution {
     access: Access,
     metadata: Map<String, Value>,
     cancellation: Cancellation,
+    trace: TraceRoot,
 }
 
 async fn prepare_tool(state: &ToolExecution, call: &Call, saved: &Step) -> Result<Call, Failure> {
@@ -1638,6 +1649,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 access: state.access.clone(),
                 metadata: state.metadata.clone(),
                 cancellation: state.cancellation.clone(),
+                trace: state.trace.clone(),
             };
             let saved = crate::runtime::agent::tool_steps::current(&mut state.steps, &call.call_id)
                 .expect("selected Tool Step")
@@ -1688,9 +1700,14 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     Default::default(),
                     permit,
                 );
+                let tool_span = execution.trace.child("agent.tool");
+                tool_span.property("tool", effective.name.clone());
+                let tool_execution = execution.clone();
                 let result = crate::runtime::agent::reply::feedback::with_slot(
                     permit.clone(),
-                    execute_prepared_tool(&execution, effective, saved),
+                    tool_span.in_span("agent.tool.call", async move {
+                        execute_prepared_tool(&tool_execution, effective, saved).await
+                    }),
                 )
                 .await
                 .map_err(Failure::Tool);
@@ -2048,10 +2065,12 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 .await
             };
             if state.cancellation.is_cancelled() {
+                state.model_span = None;
                 state.done = true;
                 return emitted((Ok(cancelled_event(&mut state)), state));
             }
             let Some(item) = item else {
+                state.model_span = None;
                 state.done = true;
                 return emitted((
                     Err(Error::new(
@@ -2063,6 +2082,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
             };
             match item {
                 Err(error) => {
+                    state.model_span = None;
                     crate::runtime::agent::model_steps::stopped(&mut state.steps, &error);
                     state.done = true;
                     return emitted((
@@ -2082,6 +2102,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     finish_reason,
                 }) => {
                     state.provider = None;
+                    state.model_span = None;
                     crate::runtime::observation::clear_source(&mut message);
                     let usage = usage.or_else(|| message.usage.clone());
                     if !restoring {
@@ -2561,6 +2582,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
         match cancellable(state.model.stream(request), &state.cancellation).await {
             Ok(provider) => {
                 state.provider = Some(Box::pin(provider));
+                state.model_span = Some(state.trace.child("agent.model"));
                 state.partial = Message::new(Role::Assistant);
             }
             Err(error) => {
