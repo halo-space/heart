@@ -386,7 +386,7 @@ one Workspace instance reuses its discovered Skill snapshot and refreshes it onl
 
 ```rust
 let workspace = halo::agent::core::workspace::Local::new("./workspace")?
-    .sandbox(halo::agent::sandbox::Local::default())
+    .sandbox(halo::agent::core::sandbox::Local::default())
     .tools(custom_tool)
     .mcps(servers)
     .skills(skills)?;

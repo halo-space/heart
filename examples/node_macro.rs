@@ -3,11 +3,11 @@ use futures_executor::block_on;
 use futures_util::StreamExt;
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
-    node,
-    runtime::workflow::{
+    agent::workflow::{
         GraphError, Runtime, WorkflowBuilder,
         graph::{END, START},
     },
+    node,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

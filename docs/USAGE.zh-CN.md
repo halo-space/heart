@@ -410,7 +410,7 @@ Workspace 决定执行环境是本地文件还是服务器数据库。Local Work
 
 ```rust
 let workspace = halo::agent::core::workspace::Local::new("./workspace")?
-    .sandbox(halo::agent::sandbox::Local::default())
+    .sandbox(halo::agent::core::sandbox::Local::default())
     .tools(custom_tool)
     .mcps(servers)
     .skills(skills)?;

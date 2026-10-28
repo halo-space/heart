@@ -6,9 +6,9 @@ use std::sync::{
 
 use futures_util::StreamExt;
 use halo::agent::{Cancellation, Error, Messages};
-use halo::{
-    agent::event::Event,
-    runtime::workflow::{
+use halo::agent::{
+    event::Event,
+    workflow::{
         GraphError, Runtime, WorkflowBuilder,
         graph::{END, START},
     },
