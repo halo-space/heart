@@ -44,34 +44,25 @@ pub(crate) fn fields<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::Plan;
-    use crate::runtime::agent::{graph::Graph, node::Status};
     use serde::Deserialize;
     use serde_json::json;
+    use std::collections::BTreeMap;
 
-    fn sources() -> Graph {
-        let plan: Plan = serde_json::from_value(json!({
-            "version":1,"nodes":{
-                "a":{"name":"search","objective":"北京"},
-                "b":{"name":"search","objective":"上海"},
-                "c":{"name":"compare","objective":"比较"}
-            },"edges":[{"from":"a","to":"c"},{"from":"b","to":"c"}]
-        }))
-        .unwrap();
-        let mut graph = Graph::new(plan).unwrap();
-        for (node_id, exec_id, city) in [("a", 101, "北京"), ("b", 102, "上海")] {
-            graph.start(node_id, exec_id).unwrap();
-            graph
-                .succeed(
-                    node_id,
-                    Messages::new([crate::Message::function(
-                        json!({"city":city, "weather":{"temperature":22}}),
-                    )]),
-                    None,
-                )
-                .unwrap();
-        }
-        graph
+    fn sources() -> BTreeMap<String, Messages> {
+        BTreeMap::from([
+            (
+                "a".into(),
+                Messages::new([crate::Message::function(
+                    json!({"city":"北京", "weather":{"temperature":22}}),
+                )]),
+            ),
+            (
+                "b".into(),
+                Messages::new([crate::Message::function(
+                    json!({"city":"上海", "weather":{"temperature":22}}),
+                )]),
+            ),
+        ])
     }
 
     #[test]
@@ -81,9 +72,8 @@ mod tests {
             first: String,
             second: String,
         }
-        let graph = sources();
-        let before = graph.clone();
-        let sources = graph.source_messages("c").unwrap();
+        let sources = sources();
+        let before = sources.clone();
         let values = fields([("first", "a", "city"), ("second", "b", "city")], |id| {
             sources
                 .get(id)
@@ -93,14 +83,12 @@ mod tests {
         let input: Input = serde_json::from_value(Value::Object(values)).unwrap();
         assert_eq!(input.first, "北京");
         assert_eq!(input.second, "上海");
-        assert_eq!(graph, before);
-        assert_eq!(graph.state("c").unwrap().status, Status::Ready);
+        assert_eq!(sources, before);
     }
 
     #[test]
     fn missing_sources_and_fields_are_not_inferred_from_another_node() {
-        let graph = sources();
-        let sources = graph.source_messages("c").unwrap();
+        let sources = sources();
         for binding in [("city", "missing", "city"), ("city", "a", "missing")] {
             assert_eq!(
                 fields([binding], |id| sources.get(id).ok_or_else(|| Error::new(

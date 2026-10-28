@@ -33,6 +33,8 @@ pub(crate) fn user_message(input: Input) -> Message {
         metadata: input.metadata,
         usage: None,
     };
-    crate::runtime::observation::clear_source(&mut message);
+    for key in ["chat_id", "node_id", "exec_id", "reply_id"] {
+        message.metadata.remove(key);
+    }
     message
 }
