@@ -73,3 +73,7 @@ cargo run --example provider_vllm
 ## 许可证
 
 MIT License。
+
+## 鸣谢
+
+感谢 [Jancd](https://github.com/Jancd) 对项目提出的建议、审阅代码并帮助改进设计与实现。你的反馈为 Heart 的持续完善提供了重要帮助。
