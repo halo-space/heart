@@ -6,7 +6,6 @@
 //! executions complete on the parent Event stream.
 
 use std::collections::BTreeSet;
-use std::sync::Arc;
 use std::sync::atomic::{AtomicI64, Ordering};
 
 use futures_util::StreamExt;

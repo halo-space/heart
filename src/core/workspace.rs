@@ -43,7 +43,7 @@ pub struct Local {
     root: PathBuf,
     definition: Definition,
     dispatch: Dispatch,
-    sandbox: Option<crate::sandbox::Local>,
+    sandbox: Option<crate::core::sandbox::Local>,
     pub(super) access: Arc<RwLock<()>>,
     pub(super) skill_cache: tools::SkillCache,
 }
@@ -138,7 +138,7 @@ impl Local {
     /// Explicitly select host command execution, automatically binding its
     /// Tool to this root. This does not start a process or provide isolation.
     /// Docker execution must use its own shared-environment Workspace instead.
-    pub fn sandbox(mut self, sandbox: crate::sandbox::Local) -> Self {
+    pub fn sandbox(mut self, sandbox: crate::core::sandbox::Local) -> Self {
         self.sandbox = Some(sandbox);
         self
     }

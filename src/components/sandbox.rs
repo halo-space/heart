@@ -5,10 +5,6 @@ use crate::Cancellation;
 
 pub type Error = crate::Error;
 
-pub mod local;
-
-pub use local::Local;
-
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Request {
     pub operation: String,
@@ -25,10 +21,8 @@ pub struct Response {
     pub metadata: Map<String, Value>,
 }
 
-/// Execution boundary, not an isolation guarantee. `Local` runs a host process
-/// with the application's permissions. Isolated backends must be explicitly
-/// selected; they must never silently fall back to host execution. Merely
-/// exporting a default implementation does not enable Agent execution.
+/// Execution boundary, not an isolation guarantee. Concrete backends live in
+/// `core::sandbox`; selecting one never silently enables host execution.
 pub trait Sandbox: Send + Sync {
     fn execute(
         &self,

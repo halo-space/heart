@@ -12,8 +12,8 @@ use tokio::{
     process::Command,
 };
 
-use super::{Error, Request, Response, Sandbox};
 use crate::Cancellation;
+use crate::sandbox::{Error, Request, Response, Sandbox};
 
 /// Host-process waiting/output limits, not CPU, memory or network isolation.
 #[derive(Clone, Debug)]

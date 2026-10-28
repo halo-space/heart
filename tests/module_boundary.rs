@@ -44,3 +44,14 @@ fn components_do_not_depend_on_business_layers() {
     assert!(!source.contains("crate::runtime"));
     assert!(!source.contains("crate::harness"));
 }
+
+#[test]
+fn sandbox_implementation_lives_in_core() {
+    let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
+    assert!(manifest.join("src/core/sandbox/local.rs").is_file());
+    assert!(!manifest.join("src/components/sandbox/local.rs").exists());
+
+    let components = source("src/components/sandbox.rs");
+    assert!(!components.contains("pub mod local"));
+    assert!(!components.contains("pub use local::Local"));
+}

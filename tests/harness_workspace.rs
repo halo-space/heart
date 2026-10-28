@@ -399,7 +399,7 @@ fn automatically_bound_operations_still_reject_custom_name_collisions() {
             .unwrap();
         let workspace = core::workspace::Local::new(&directory.0)
             .unwrap()
-            .sandbox(halo::agent::sandbox::Local::default())
+            .sandbox(halo::agent::core::sandbox::Local::default())
             .tools(Echo(definition(name)));
         let Err(error) = harness::builder().model(model).workspace(workspace).build() else {
             panic!("built-in operation collision was accepted");
