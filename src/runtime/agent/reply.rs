@@ -372,7 +372,7 @@ fn approved(input: &Input) -> Result<bool, Error> {
 fn feedback_signature(input: &Input) -> Value {
     // Feedback is saved as Messages, not the transport Input envelope. Use
     // that same projection live and after recovery (including MIME layout).
-    serde_json::to_value(crate::core::agent::input::user_message(input.clone()).content)
+    serde_json::to_value(crate::components::agent_input::user_message(input.clone()).content)
         .expect("feedback serialization")
 }
 
@@ -835,7 +835,7 @@ pub(crate) fn apply(
                         "waiting questions must be consumed in order",
                     ));
                 }
-                if !record.reply(crate::core::agent::input::user_message(input))? {
+                if !record.reply(crate::components::agent_input::user_message(input))? {
                     return Err(Error::new(
                         "INVALID_STATE",
                         "approval feedback is incomplete",

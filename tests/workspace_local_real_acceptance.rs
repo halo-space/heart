@@ -7,11 +7,11 @@ use std::{
 
 use futures_util::StreamExt;
 use halo::{
+    agent::core::workspace::Local,
     agent::{
         Agent, Cancellation, Input, Payload, event::Event, model::chat,
         provider::deepseek::DeepSeek,
     },
-    core::workspace::Local,
     harness,
 };
 use serde_json::json;

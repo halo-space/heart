@@ -12,9 +12,9 @@ use crate::memory::short::{chat, chat::Store as _, session};
 use crate::{
     agent::{Input, Payload},
     core,
-    core::agent::hooks::Hooks,
     middleware::Middleware,
     model::content::part::Part,
+    runtime::agent::implementation::hooks::Hooks,
 };
 
 type WithSession<S> = memory::Config<

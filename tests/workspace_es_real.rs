@@ -16,13 +16,14 @@ use elasticsearch::{
 use futures_util::{StreamExt, future::join_all};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
+    agent::core,
     agent::message::Role,
     agent::model::chat,
     agent::provider::deepseek::DeepSeek,
     agent::tool::Call,
     agent::workspace::Workspace,
     agent::{Agent, Input, Payload},
-    core, harness,
+    harness,
 };
 use serde_json::{Value, json};
 

@@ -23,7 +23,7 @@ use crate::Error;
 use crate::agent::{Input as AgentInput, Payload as AgentPayload};
 use crate::components::message::{Messages, Role};
 use crate::components::node::Signal;
-use crate::core::memory::history::{History, Run};
+use crate::runtime::agent::history::{History, Run};
 use crate::runtime::workflow::node::ExecutionRef;
 
 pub use graph::{

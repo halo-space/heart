@@ -2,6 +2,7 @@
 //! These complement deterministic contract/failure tests; they do not replace them.
 
 use futures_util::{StreamExt, stream::Map};
+use halo::agent::core;
 use halo::agent::{
     self, Agent, Cancellation, Error, Input, Message, Messages, Payload,
     compression::Compressor as _,
@@ -15,7 +16,6 @@ use halo::agent::{
     provider::deepseek::DeepSeek,
     reason::Reasoner as _,
 };
-use halo::core;
 use serde_json::{Value, json};
 
 fn deepseek_chat() -> impl chat::Chat {

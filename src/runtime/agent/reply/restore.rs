@@ -105,7 +105,7 @@ fn same_feedback(steps: &[Step], input: &Input) -> Result<bool, Error> {
                 "saved feedback question identity is invalid",
             ));
         }
-        let message = crate::core::agent::input::user_message(input.clone());
+        let message = crate::components::agent_input::user_message(input.clone());
         if record
             .feedback
             .as_slice()
@@ -141,7 +141,7 @@ fn same_feedback(steps: &[Step], input: &Input) -> Result<bool, Error> {
         ));
     }
     if record.feedback.as_slice()[0].content
-        != crate::core::agent::input::user_message(input.clone()).content
+        != crate::components::agent_input::user_message(input.clone()).content
     {
         return Err(Error::new(
             "CONFLICT",

@@ -61,7 +61,7 @@ fn approval_workflow(approved: bool) -> CompiledWorkflow {
 #[test]
 fn restored_external_wait_advances_the_barrier_and_runs_its_downstream() {
     block_on(async {
-        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
         let mut original = Runtime::new(908, approval_workflow(false))
             .unwrap()
             .with_checkpoint(checkpoint.clone());
@@ -386,7 +386,7 @@ fn checkpoint_resumes_an_outer_graph_retry_with_its_original_successes_and_attem
             // provide a cache or influence Runtime recovery decisions.
             let second = Arc::new(AtomicUsize::new(1));
             let downstream = Arc::new(AtomicUsize::new(0));
-            let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+            let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
             let mut restored = Runtime::from_snapshot(
                 907,
                 workflow_at(
@@ -435,7 +435,7 @@ fn graph_node_retry_inherits_successes_without_recounting_their_usage() {
         let first = Arc::new(AtomicUsize::new(0));
         let second = Arc::new(AtomicUsize::new(0));
         let downstream = Arc::new(AtomicUsize::new(0));
-        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
         let compiled = workflow(first.clone(), second.clone(), downstream.clone());
         let mut runtime = Runtime::new(905, compiled)
             .unwrap()

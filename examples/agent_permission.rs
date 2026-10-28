@@ -7,6 +7,7 @@ use std::sync::{
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
+    agent::core,
     agent::event::Event,
     agent::message::Role,
     agent::model::{
@@ -16,7 +17,6 @@ use halo::{
     agent::permission::{Behavior, Decision, Request as PermissionRequest},
     agent::tool::{Call, Tool, ToolDefinition},
     agent::{self, Agent, Input},
-    core,
 };
 use serde_json::json;
 

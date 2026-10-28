@@ -10,6 +10,7 @@ use futures_util::StreamExt;
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
     agent::checkpoint::Checkpoint,
+    agent::core,
     agent::event::Event,
     agent::message::Role,
     agent::model::{
@@ -19,7 +20,6 @@ use halo::{
     agent::provider::deepseek::DeepSeek,
     agent::tool::{Call, Tool, ToolDefinition},
     agent::{self, Agent, Input},
-    core,
 };
 use serde_json::{Value, json};
 

@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 use halo::agent::{Cancellation, Message};
 use halo::{
     agent::checkpoint::Checkpoint,
+    agent::core,
     agent::message::Role,
     agent::model::content::part::Part,
-    core,
     runtime::agent::{
         State,
         node::{Step, Wait},

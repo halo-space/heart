@@ -9,6 +9,7 @@ use futures_util::StreamExt;
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
     agent::checkpoint::Checkpoint,
+    agent::core,
     agent::event::Event,
     agent::memory::{
         self,
@@ -19,7 +20,6 @@ use halo::{
     agent::model::chat::{self as model_chat, Chat, Request},
     agent::provider::vllm::{self, Vllm},
     agent::{self, Agent, Input, Payload},
-    core,
     runtime::workflow::{
         CompiledWorkflow, Runtime, WorkflowBuilder,
         graph::{END, START},

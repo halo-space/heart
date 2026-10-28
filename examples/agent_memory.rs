@@ -2,6 +2,7 @@
 use futures_util::{StreamExt, stream};
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
+    agent::core,
     agent::event::Event,
     agent::memory::{
         self, Memory,
@@ -13,7 +14,6 @@ use halo::{
         content::part::Part,
     },
     agent::{self, Agent, Input, Payload},
-    core,
 };
 use serde_json::{Map, json};
 

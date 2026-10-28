@@ -448,7 +448,7 @@ async fn invalid_native_tool_scene_fails_before_component_work() {
 }
 
 struct Store {
-    inner: halo::core::checkpoint::InMemory,
+    inner: halo::agent::core::checkpoint::InMemory,
     saves: AtomicUsize,
 }
 impl Checkpoint for Store {
@@ -467,7 +467,7 @@ impl Checkpoint for Store {
 async fn phase_acknowledgements_do_not_add_checkpoint_writes() {
     let log = Arc::new(Log::new(Phase::After));
     let store = Arc::new(Store {
-        inner: halo::core::checkpoint::InMemory::new(),
+        inner: halo::agent::core::checkpoint::InMemory::new(),
         saves: AtomicUsize::new(0),
     });
     let runtime = Runtime::new(1001, workflow(log.clone(), true, 2, 0))

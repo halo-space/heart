@@ -7,9 +7,9 @@ use std::sync::{
 use halo::agent::{Cancellation, Message};
 use halo::{
     agent::checkpoint::Checkpoint,
+    agent::core,
     agent::message::Role,
     agent::{self, Agent, Input},
-    core,
     runtime::agent::{
         State,
         wait::{Node, Wait},

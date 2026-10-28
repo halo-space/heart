@@ -1,4 +1,4 @@
-use crate::core::agent::lifecycle::model_unfinished;
+use crate::runtime::agent::implementation::lifecycle::model_unfinished;
 use crate::runtime::agent::{
     model_steps,
     node::{Status, Step},

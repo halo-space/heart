@@ -18,7 +18,7 @@ use crate::{
 
 use super::{extraction, progress};
 use crate::components::memory::short::session::Store as _;
-use crate::core::agent::hooks::Hooks;
+use crate::runtime::agent::implementation::hooks::Hooks;
 
 type Key = (usize, i64);
 static ACTIVE: OnceLock<Mutex<HashSet<Key>>> = OnceLock::new();

@@ -3,8 +3,8 @@ use std::{path::PathBuf, sync::Arc};
 use futures_util::future::join_all;
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
+    agent::core,
     agent::{tool::Call, workspace::Workspace},
-    core,
 };
 use serde_json::{Value, json};
 

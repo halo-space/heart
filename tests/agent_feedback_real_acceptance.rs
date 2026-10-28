@@ -203,7 +203,7 @@ async fn real_agent_waits_for_all_three_user_replies_then_continues() {
 #[ignore = "requires DEEPSEEK_API_KEY and sends live model requests"]
 async fn real_parent_delegates_feedback_to_child_and_continues_after_reply() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+    let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
     let child = halo::agent::chat()
         .model(provider_chat())
         .system_prompt(
@@ -300,7 +300,7 @@ async fn real_parent_delegates_feedback_to_child_and_continues_after_reply() {
 #[ignore = "requires DEEPSEEK_API_KEY and sends live model requests"]
 async fn real_child_feedback_restores_partial_collection_from_outer_checkpoint() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+    let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
     let make_parent = || {
         let child = halo::agent::chat()
             .model(provider_chat())

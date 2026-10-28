@@ -1,6 +1,6 @@
 //! Binding of run preparation to this Agent's native scene. No persistence.
 use super::hooks::{Hooks, Stage as Hook};
-use crate::core::memory::history::{History, Run};
+use crate::runtime::agent::history::{History, Run};
 use crate::runtime::agent::preparation::{Stage, State};
 use crate::{Cancellation, Error, Messages, agent::Input};
 

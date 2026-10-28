@@ -1027,8 +1027,8 @@ fn synchronous_backend_cancellation_stops_later_reads_and_model() {
 #[ignore = "requires the configured real VLLM model; run through scripts/test-real.sh"]
 fn in_memory_backends_remain_directly_usable_through_the_config() {
     let configured = memory::Config::new(
-        halo::core::memory::short::InMemory::new(),
-        halo::core::memory::InMemory::new(),
+        halo::agent::core::memory::short::InMemory::new(),
+        halo::agent::core::memory::InMemory::new(),
     );
     block_on(configured.session().create(session(), &Cancellation::new())).unwrap();
     let model = Model::live();

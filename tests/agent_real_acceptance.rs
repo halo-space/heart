@@ -73,7 +73,7 @@ fn live_vllm_chat() -> impl chat::Chat + Clone {
 }
 
 fn live_ask_agent(
-    checkpoint: Arc<halo::core::checkpoint::InMemory>,
+    checkpoint: Arc<halo::agent::core::checkpoint::InMemory>,
     calls: Arc<AtomicUsize>,
     authorizations: Arc<std::sync::Mutex<Vec<PermissionRequest>>>,
 ) -> impl Agent {
@@ -214,7 +214,7 @@ impl Tool for LiveEvalWeather {
 }
 
 #[derive(Default)]
-struct RejectWaitingCheckpoint(halo::core::checkpoint::InMemory);
+struct RejectWaitingCheckpoint(halo::agent::core::checkpoint::InMemory);
 
 impl halo::agent::checkpoint::Checkpoint for RejectWaitingCheckpoint {
     async fn load(&self, id: i64, cancellation: &Cancellation) -> Result<Value, Error> {
@@ -458,7 +458,7 @@ async fn real_react_agent_uses_its_builtin_plan_for_independent_live_tasks() {
     use halo::agent::checkpoint::Checkpoint as _;
 
     let chat_id = 8_139_101;
-    let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+    let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
     let clock_calls = Arc::new(AtomicUsize::new(0));
     let directory_calls = Arc::new(AtomicUsize::new(0));
     let active = Arc::new(AtomicUsize::new(0));
@@ -664,7 +664,7 @@ async fn real_tool_permission_ask_waits_for_reply_before_the_live_side_effect() 
             }
         },
     );
-    let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+    let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
     let chat_id = 8_139_001;
     let session_id = 8_139_002;
     let agent = agent::react()
@@ -798,7 +798,7 @@ async fn real_model_requires_new_approval_after_tool_before_changes_call_argumen
             }
         },
     );
-    let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+    let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
     let chat_id = 8_139_051;
     let session_id = 8_139_052;
     let agent = agent::react()
@@ -883,7 +883,7 @@ async fn real_model_requires_new_approval_after_tool_before_changes_call_argumen
 async fn real_chat_agent_waits_for_tool_approval_then_executes_the_live_tool() {
     use halo::agent::checkpoint::Checkpoint as _;
 
-    let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+    let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
     let calls = Arc::new(AtomicUsize::new(0));
     let authorizations = Arc::new(std::sync::Mutex::new(Vec::<PermissionRequest>::new()));
     let policy_authorizations = Arc::clone(&authorizations);
@@ -990,7 +990,7 @@ async fn real_chat_agent_waits_for_tool_approval_then_executes_the_live_tool() {
 async fn real_agent_restores_a_saved_tool_approval_with_a_fresh_instance() {
     use halo::agent::checkpoint::Checkpoint as _;
 
-    let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+    let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
     let calls = Arc::new(AtomicUsize::new(0));
     let authorizations = Arc::new(std::sync::Mutex::new(Vec::<PermissionRequest>::new()));
     let chat_id = 8_139_101;
@@ -1284,7 +1284,7 @@ async fn real_child_approval_is_not_published_when_outer_waiting_checkpoint_fail
 async fn real_model_resumes_a_waiting_tool_evaluation_without_repeating_the_tool() {
     use halo::agent::checkpoint::Checkpoint as _;
 
-    let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+    let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
     let calls = Arc::new(AtomicUsize::new(0));
     let evals = Arc::new(AtomicUsize::new(0));
     let chat_id = 8_139_301;

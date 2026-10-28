@@ -1,6 +1,6 @@
 use futures_executor::block_on;
 use halo::agent::Cancellation;
-use halo::{agent::skill::Skill as _, core};
+use halo::{agent::core, agent::skill::Skill as _};
 use serde_json::json;
 
 const MARKDOWN: &str = "---\nname: research\ndescription: >-\n  Research the requested topic\n  and report its sources.\nmetadata:\n  author: user\nallowed-tools: search\n---\n# Instructions\nUse explicit sources.\n";

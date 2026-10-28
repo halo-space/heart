@@ -20,7 +20,7 @@ use crate::{
 
 use crate::agent::{Input, Payload};
 use crate::components::memory::short::{chat::Store as _, session::Store as _};
-use crate::core::agent::hooks::Hooks;
+use crate::runtime::agent::implementation::hooks::Hooks;
 use crate::runtime::agent::usage::Ledger;
 use crate::runtime::cancellation::cancellable;
 
@@ -495,7 +495,7 @@ where
                 "Chat final message must have assistant role",
             ));
         }
-        let user = crate::core::agent::input::user_message(Input {
+        let user = crate::components::agent_input::user_message(Input {
             metadata: input.metadata,
             payload: input
                 .payload

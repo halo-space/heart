@@ -193,7 +193,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 })
             && let Some(input) = state.resume_input.clone()
         {
-            messages.push(crate::core::agent::input::user_message(input));
+            messages.push(crate::components::agent_input::user_message(input));
         }
         let mut metadata = state.metadata.clone();
         metadata.insert("node_id".into(), json!(node_id));
@@ -330,7 +330,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 active_tools: FuturesUnordered::new(),
                 tool_progress: VecDeque::new(),
                 child_events: VecDeque::new(),
-                child_relay: crate::core::agent::subagent::Relay::default(),
+                child_relay: crate::runtime::agent::implementation::subagent::Relay::default(),
                 pending_subagents: BTreeMap::new(),
                 tool_results: BTreeMap::new(),
                 evaluations: BTreeMap::new(),
@@ -339,7 +339,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 child_nodes_dirty: false,
                 feedback_dirty: false,
                 phase_progress: false,
-                root: crate::core::agent::subagent::Root::default(),
+                root: crate::runtime::agent::implementation::subagent::Root::default(),
                 partial: Message::new(Role::Assistant),
                 done: false,
                 hooks: state.hooks.clone(),

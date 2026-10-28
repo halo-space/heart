@@ -13,8 +13,8 @@ use serde_json::{Map, Value, json};
 
 use super::tools::{definition, tool_message};
 use crate::components::mcp::Server;
-use crate::core::agent::dispatch::ToolInputs;
-use crate::core::{agent::dispatch::Dispatch, operation::cancellable};
+use crate::core::dispatch::ToolInputs;
+use crate::core::{dispatch::Dispatch, operation::cancellable};
 use crate::tool::{Call, Tool, ToolDefinition};
 use crate::workspace::{Definition, Mode};
 use crate::{Cancellation, Error, Message};

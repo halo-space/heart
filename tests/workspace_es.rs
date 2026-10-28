@@ -7,8 +7,8 @@ use elasticsearch::{
     Elasticsearch,
     http::transport::{SingleNodeConnectionPool, TransportBuilder},
 };
+use halo::agent::core;
 use halo::agent::{Cancellation, tool::Call, workspace::Workspace as _};
-use halo::core;
 use serde_json::json;
 
 fn unavailable_client() -> Elasticsearch {

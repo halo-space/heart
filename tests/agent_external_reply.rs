@@ -10,13 +10,13 @@ use std::sync::{
 use halo::agent::{Cancellation, Message, Messages};
 use halo::{
     agent::checkpoint::Checkpoint as _,
+    agent::core,
     agent::message::Role,
     agent::model::Error as ModelError,
     agent::model::chat::{Chat, Request},
     agent::plan::Plan,
     agent::provider::deepseek::DeepSeek,
     agent::{self, Agent, Input},
-    core,
     runtime::agent::{
         State,
         graph::{Graph, State as PlanState},

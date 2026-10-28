@@ -10,6 +10,7 @@ use std::{
 use futures_executor::block_on;
 use halo::agent::{Cancellation, Error};
 use halo::{
+    agent::core,
     agent::memory::short::{
         Type,
         chat::{self, Store as _},
@@ -17,7 +18,6 @@ use halo::{
     agent::middleware::{Retry, RetryPolicy},
     agent::permission::{Behavior, Decision, Permission as _, Request},
     agent::workspace::{Mode, Workspace as _},
-    core,
 };
 use serde_json::{Map, Value, json};
 

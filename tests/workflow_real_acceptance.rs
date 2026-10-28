@@ -297,7 +297,7 @@ async fn real_workflow_agent_waits_for_approval_then_resumes_the_live_tool_step(
     builder.add_edge(START, "agent").expect("connect START");
     builder.add_edge("agent", END).expect("connect END");
     let workflow = builder.compile().expect("compile Workflow");
-    let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+    let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
     let runtime = Runtime::new(8_273_001, workflow)
         .expect("create Workflow Runtime")
         .with_checkpoint(checkpoint.clone());

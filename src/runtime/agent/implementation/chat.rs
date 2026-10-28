@@ -14,6 +14,7 @@ use serde_json::{Map, Value, json};
 
 use crate::Cancellation;
 use crate::components::agent::{Agent as AgentContract, Error, Input};
+use crate::components::agent_input::user_message;
 use crate::components::evaluation::{Evaluation, Evaluator};
 use crate::components::event::Event;
 use crate::components::message::{Message, Messages, Role};
@@ -21,17 +22,16 @@ use crate::components::model::chat::{Chat, Request};
 use crate::components::model::content::part::{Part, object as part_data};
 use crate::components::tool::Call;
 use crate::components::{mcp::Server, skill::Skill};
-use crate::core::agent::access::Access;
-use crate::core::agent::dispatch::{Dispatch, ToolInputs};
-use crate::core::agent::hooks::{Hooks, cancellable};
-use crate::core::agent::input::user_message;
-use crate::core::agent::subagent::SubAgent;
-use crate::core::agent::subagent::{
-    Failure as SubAgentFailure, Progress as SubAgentProgress, Root,
-};
-use crate::core::memory::history::{History, Run};
+use crate::core::dispatch::{Dispatch, ToolInputs};
 use crate::core::trace::fastrace::{Root as TraceRoot, SpanScope};
 use crate::runtime::agent::checkpoint::Backend;
+use crate::runtime::agent::history::{History, Run};
+use crate::runtime::agent::implementation::access::Access;
+use crate::runtime::agent::implementation::hooks::{Hooks, cancellable};
+use crate::runtime::agent::implementation::subagent::SubAgent;
+use crate::runtime::agent::implementation::subagent::{
+    Failure as SubAgentFailure, Progress as SubAgentProgress, Root,
+};
 use crate::runtime::agent::node::Step;
 use crate::runtime::agent::tool_steps;
 
@@ -260,7 +260,7 @@ type CheckpointSave = Backend;
 
 struct ToolBatchConfig {
     interaction: Option<crate::runtime::agent::reply::Run>,
-    relay: Option<crate::core::agent::subagent::Relay>,
+    relay: Option<crate::runtime::agent::implementation::subagent::Relay>,
     steps: Arc<Mutex<Vec<Step>>>,
     dispatch: Arc<Dispatch>,
     subagents: Vec<SubAgent>,
@@ -356,7 +356,7 @@ pub struct Events<S> {
     pending_tools: Option<ToolBatchFuture>,
     pending_provider: Option<ProviderFuture<S>>,
     tool_results: VecDeque<Message>,
-    child_events: crate::core::agent::subagent::Relay,
+    child_events: crate::runtime::agent::implementation::subagent::Relay,
     pending_subagents: std::collections::BTreeMap<String, PendingSubAgent>,
     pending_checkpoint: Option<CheckpointFuture>,
     pending: Option<CompletionFuture>,
@@ -441,7 +441,7 @@ impl<S> Events<S> {
             pending_tools: None,
             pending_provider: None,
             tool_results: VecDeque::new(),
-            child_events: crate::core::agent::subagent::Relay::default(),
+            child_events: crate::runtime::agent::implementation::subagent::Relay::default(),
             pending_subagents: std::collections::BTreeMap::new(),
             pending_checkpoint: None,
             pending: None,
@@ -816,7 +816,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
     // Keep cancellation-only locals out of every normal nested stream poll.
     #[inline(never)]
     fn cancel_children(&mut self, cx: &mut Context<'_>) -> Result<Vec<Event>, Error> {
-        let (completed, events) = crate::core::agent::subagent::cancel_ready(
+        let (completed, events) = crate::runtime::agent::implementation::subagent::cancel_ready(
             cx,
             &self.child_events,
             |cx| {
@@ -2066,7 +2066,7 @@ async fn execute_subagent(
     restore: Option<Value>,
     cancellation: Cancellation,
     id_fn: Option<fn() -> i64>,
-    observer: Option<crate::core::agent::subagent::Observer>,
+    observer: Option<crate::runtime::agent::implementation::subagent::Observer>,
 ) -> Result<SubAgentProgress, Box<SubAgentFailure>> {
     let name = call
         .arguments
@@ -2091,7 +2091,7 @@ async fn execute_subagent(
             "agent_spawn input must be agent::Input",
         ))
     })?;
-    crate::core::agent::subagent::inherit_identity(&mut input, &parent)
+    crate::runtime::agent::implementation::subagent::inherit_identity(&mut input, &parent)
         .map_err(SubAgentFailure::new)?;
     let depth = parent.get("depth").and_then(Value::as_u64).unwrap_or(1);
     if depth >= 2 {
@@ -2112,7 +2112,7 @@ async fn execute_subagent(
                 "agent_spawn target is not registered",
             ))
         })?;
-    crate::core::agent::subagent::run(
+    crate::runtime::agent::implementation::subagent::run(
         subagent,
         input,
         &call,

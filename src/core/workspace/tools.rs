@@ -17,7 +17,7 @@ use crate::components::message::{Message, Role};
 use crate::components::model::content::part::{Part, object as part_data};
 use crate::components::skill::{Definition as SkillDefinition, Loader as SkillLoader, Skill as _};
 use crate::components::tool::{Call, Tool, ToolDefinition};
-use crate::core::agent::dispatch::Dispatch;
+use crate::core::dispatch::Dispatch;
 use crate::core::operation::check;
 use crate::{Cancellation, Error};
 

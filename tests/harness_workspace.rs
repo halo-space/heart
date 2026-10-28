@@ -8,13 +8,14 @@ use std::{
 
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
+    agent::core,
     agent::mcp::{Definition as McpDefinition, Server},
     agent::message::Role,
     agent::model::content::part::Part,
     agent::skill::{Definition as SkillDefinition, Skill},
     agent::tool::{Call, Tool, ToolDefinition},
     agent::workspace::{Mode, Workspace},
-    core, harness,
+    harness,
 };
 use serde_json::{Value, json};
 

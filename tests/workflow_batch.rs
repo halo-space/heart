@@ -284,7 +284,7 @@ fn restoring_full_runtime_reuses_successful_nodes_and_does_not_guess_internal_ba
             )])
             .unwrap();
         assert_eq!(original_calls.load(Ordering::SeqCst), 1);
-        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
         original
             .save_checkpoint(checkpoint.as_ref(), &Cancellation::new())
             .await
@@ -412,7 +412,7 @@ fn failed_batch_checkpoint_is_terminal_and_never_replays_completed_or_failed_nod
         let source_calls = Arc::new(AtomicUsize::new(0));
         let item_calls = Arc::new(Mutex::new(Vec::new()));
         let downstream = Arc::new(AtomicUsize::new(0));
-        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
         let workflow =
             failing_batch_workflow(source_calls.clone(), item_calls.clone(), downstream.clone());
         let ids = Arc::new(AtomicI64::new(3000));
@@ -539,7 +539,7 @@ fn unfinished_batch_restore_preserves_failed_attempt_history_and_remaining_retry
                 },
             )
             .unwrap();
-        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
         original
             .save_checkpoint(checkpoint.as_ref(), &Cancellation::new())
             .await

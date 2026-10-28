@@ -8,7 +8,7 @@ extern crate self as halo;
 pub mod agent;
 pub(crate) mod cancellation;
 mod components;
-pub mod core;
+pub(crate) mod core;
 pub(crate) mod pkg;
 pub mod runtime;
 

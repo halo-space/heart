@@ -5,11 +5,11 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
+    agent::core,
     agent::message::Role,
     agent::sandbox::{Local as Sandbox, local::Config},
     agent::tool::Call,
     agent::workspace::Workspace,
-    core,
 };
 use serde_json::{Value, json};
 

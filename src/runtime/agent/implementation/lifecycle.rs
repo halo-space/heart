@@ -6,11 +6,11 @@ use crate::core::lifecycle::{Methods, Phase, advance};
 use crate::runtime::agent::{node::Step, reply};
 use crate::{Cancellation, Error, Message, tool::Call};
 
-use super::dispatch::Dispatch;
 use super::{
     access::{self, Access},
     hooks::Hooks,
 };
+use crate::core::dispatch::Dispatch;
 use serde_json::{Map, Value};
 
 /// Close out observed unfinished Model output. Usage is accounted separately
@@ -328,9 +328,9 @@ where
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/agent_tool_prepare.rs"]
+#[path = "../../../../tests/unit/agent_tool_prepare.rs"]
 mod tests;
 
 #[cfg(test)]
-#[path = "../../../tests/unit/agent_model_partial.rs"]
+#[path = "../../../../tests/unit/agent_model_partial.rs"]
 mod model_partial_tests;

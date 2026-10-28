@@ -26,12 +26,12 @@ async fn ready_cancel_handoff_ignores_only_the_tokio_budget_yield() {
                 Poll::Ready(Ok(()))
             ));
         }
-        let relay = crate::core::agent::subagent::Relay::default();
+        let relay = crate::runtime::agent::implementation::subagent::Relay::default();
         let (send, receive) = tokio::sync::oneshot::channel();
         send.send(7_u64).unwrap();
         let mut receive = std::pin::pin!(receive);
         let mut consumed = false;
-        let (ready, events) = crate::core::agent::subagent::cancel_ready(
+        let (ready, events) = crate::runtime::agent::implementation::subagent::cancel_ready(
             cx,
             &relay,
             |cx| {
@@ -57,7 +57,7 @@ async fn ready_cancel_handoff_ignores_only_the_tokio_budget_yield() {
             "original budget is restored"
         );
         let mut polls = 0;
-        let (ready, _) = crate::core::agent::subagent::cancel_ready::<u64>(
+        let (ready, _) = crate::runtime::agent::implementation::subagent::cancel_ready::<u64>(
             cx,
             &relay,
             |_| {

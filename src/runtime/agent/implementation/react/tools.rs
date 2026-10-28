@@ -17,7 +17,7 @@ pub(super) fn restore<M: Chat>(state: &mut ReActState<M>) -> Result<(), Error> {
         crate::runtime::agent::tool_steps::resume_calls(&state.steps, &mut state.messages)?;
     state.pending_calls.extend(pending);
     if state.is_plan_task {
-        let pending = crate::core::agent::subagent::resume_calls(
+        let pending = crate::runtime::agent::implementation::subagent::resume_calls(
             &state.child_nodes,
             &state.steps,
             &mut state.messages,

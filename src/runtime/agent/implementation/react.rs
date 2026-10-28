@@ -25,15 +25,17 @@ use crate::components::model::chat::{Chat, Request, ToolChoice};
 use crate::components::model::content::part::{Part, object as part_data};
 use crate::components::tool::{Call, Evaluation as ToolEvaluation, ToolDefinition, validate_call};
 use crate::components::{mcp::Server, skill::Skill};
-use crate::core::agent::access::Access;
-use crate::core::agent::dispatch::{Dispatch, ToolInputs};
-use crate::core::agent::hooks::{Hooks, cancellable};
-use crate::core::agent::subagent::SubAgent;
-use crate::core::agent::subagent::{Failure as SubAgentFailure, Progress as SubAgentProgress};
-use crate::core::memory::history::{History, Run};
+use crate::core::dispatch::{Dispatch, ToolInputs};
 use crate::core::trace::fastrace::{Root as TraceRoot, SpanScope};
 use crate::runtime::agent::checkpoint::{Backend, invalid as invalid_checkpoint};
 use crate::runtime::agent::graph::Graph;
+use crate::runtime::agent::history::{History, Run};
+use crate::runtime::agent::implementation::access::Access;
+use crate::runtime::agent::implementation::hooks::{Hooks, cancellable};
+use crate::runtime::agent::implementation::subagent::SubAgent;
+use crate::runtime::agent::implementation::subagent::{
+    Failure as SubAgentFailure, Progress as SubAgentProgress,
+};
 use crate::runtime::agent::node::Step;
 use crate::runtime::agent::{State as AgentState, graph};
 
@@ -537,7 +539,7 @@ where
             active_tools: FuturesUnordered::new(),
             tool_progress: VecDeque::new(),
             child_events: VecDeque::new(),
-            child_relay: crate::core::agent::subagent::Relay::default(),
+            child_relay: crate::runtime::agent::implementation::subagent::Relay::default(),
             pending_subagents: BTreeMap::new(),
             tool_results: BTreeMap::new(),
             evaluations: BTreeMap::new(),
@@ -546,7 +548,7 @@ where
             child_nodes_dirty: false,
             feedback_dirty: false,
             phase_progress: false,
-            root: crate::core::agent::subagent::Root::default(),
+            root: crate::runtime::agent::implementation::subagent::Root::default(),
             partial: Message::new(Role::Assistant),
             done: false,
             run,
@@ -604,7 +606,7 @@ where
                 if state.graph.is_none()
                     && let Some(resume_input) = state.resume_input.clone()
                 {
-                    let message = crate::core::agent::input::user_message(resume_input);
+                    let message = crate::components::agent_input::user_message(resume_input);
                     state.messages.push(message.clone());
                     state.task_base.push(message);
                 }
@@ -689,7 +691,7 @@ struct ReActState<M: Chat> {
     active_tools: FuturesUnordered<Pin<Box<dyn Future<Output = ToolProgress> + 'static>>>,
     tool_progress: VecDeque<ToolProgress>,
     child_events: VecDeque<Result<Event, Error>>,
-    child_relay: crate::core::agent::subagent::Relay,
+    child_relay: crate::runtime::agent::implementation::subagent::Relay,
     /// Child calls which have been handed off but have not yet committed a
     /// Function message into the parent context. This queue is derived from
     /// canonical Steps and child nodes, never serialized as another scene.
@@ -703,7 +705,7 @@ struct ReActState<M: Chat> {
     feedback_dirty: bool,
     // Transient eventless handoff marker; phases never add persistence triggers.
     phase_progress: bool,
-    root: crate::core::agent::subagent::Root,
+    root: crate::runtime::agent::implementation::subagent::Root,
     partial: Message,
     done: bool,
     hooks: Hooks,
@@ -729,7 +731,7 @@ enum Planning {
 
 enum ToolProgress {
     Interaction(crate::runtime::agent::reply::Change),
-    Observation(Box<crate::core::agent::subagent::Observation>),
+    Observation(Box<crate::runtime::agent::implementation::subagent::Observation>),
     Called(
         usize,
         Call,
@@ -838,7 +840,7 @@ fn decode_subagent_input(
             "agent_spawn input must be agent::Input",
         )
     })?;
-    crate::core::agent::subagent::inherit_identity(&mut input, parent)?;
+    crate::runtime::agent::implementation::subagent::inherit_identity(&mut input, parent)?;
     let depth = parent.get("depth").and_then(Value::as_u64).unwrap_or(1);
     if depth >= 2 {
         return Err(Error::new("INVALID_ARGUMENTS", "SubAgent depth limit is 2"));
@@ -856,7 +858,7 @@ async fn execute_subagent(
     restore: Option<Value>,
     cancellation: Cancellation,
     id_fn: Option<fn() -> i64>,
-    observer: Option<crate::core::agent::subagent::Observer>,
+    observer: Option<crate::runtime::agent::implementation::subagent::Observer>,
 ) -> Result<SubAgentProgress, Box<SubAgentFailure>> {
     let (name, input) = decode_subagent_input(&call, &parent).map_err(SubAgentFailure::new)?;
     let subagent = subagents
@@ -868,7 +870,7 @@ async fn execute_subagent(
                 "agent_spawn target is not registered",
             ))
         })?;
-    crate::core::agent::subagent::run(
+    crate::runtime::agent::implementation::subagent::run(
         subagent,
         input,
         &call,
@@ -1126,7 +1128,7 @@ fn restore_output<M: Chat>(state: &mut ReActState<M>) -> Result<(), Error> {
             .rev()
             .find(|step| step.kind == "model")
             .and_then(|step| step.request.as_deref())
-            .map(crate::core::agent::chat::estimate_input_tokens)
+            .map(crate::runtime::agent::implementation::chat::estimate_input_tokens)
             .unwrap_or(0);
     }
     Ok(())
@@ -1143,7 +1145,7 @@ fn restore_state<M: Chat>(state: &mut ReActState<M>, snapshot: Value) -> Result<
     state.iteration = Arc::new(AtomicUsize::new(field(&snapshot, "iteration")?));
     state.plan_execution = field(&snapshot, "plan_execution")?;
     state.plan_finalizing = field(&snapshot, "plan_finalizing")?;
-    state.root = crate::core::agent::subagent::Root::restore(&snapshot)?;
+    state.root = crate::runtime::agent::implementation::subagent::Root::restore(&snapshot)?;
     state.tool_results = field(&snapshot, "tool_results")?;
     state.steps = snapshot
         .get("steps")
@@ -1314,8 +1316,8 @@ fn is_external_wait_snapshot(snapshot: &Value) -> bool {
     {
         return false;
     }
-    let waiting_child =
-        crate::core::agent::subagent::Root::restore(snapshot).is_ok_and(|root| root.pending());
+    let waiting_child = crate::runtime::agent::implementation::subagent::Root::restore(snapshot)
+        .is_ok_and(|root| root.pending());
     let waiting_tool = snapshot
         .get("steps")
         .and_then(Value::as_array)
@@ -1529,7 +1531,11 @@ async fn next_react_event_inner<M: Chat + 'static>(
             }
             if call.name == "agent_spawn" && !state.subagents.is_empty() {
                 let cached = if state.is_plan_task {
-                    crate::core::agent::subagent::message(&state.child_nodes, &state.steps, &call)
+                    crate::runtime::agent::implementation::subagent::message(
+                        &state.child_nodes,
+                        &state.steps,
+                        &call,
+                    )
                 } else {
                     state.root.message(&state.steps, &call)
                 };
@@ -1546,7 +1552,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     ));
                 }
                 let prepared = if state.is_plan_task {
-                    crate::core::agent::subagent::prepare(
+                    crate::runtime::agent::implementation::subagent::prepare(
                         &mut state.child_nodes,
                         &mut state.steps,
                         &call,
@@ -1580,7 +1586,11 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 }
                 let slots = state.tool_slots.clone();
                 let source = if state.is_plan_task {
-                    crate::core::agent::subagent::source(&state.child_nodes, &state.steps, &call)
+                    crate::runtime::agent::implementation::subagent::source(
+                        &state.child_nodes,
+                        &state.steps,
+                        &call,
+                    )
                 } else {
                     state.root.source(&state.steps, &call)
                 };
@@ -1836,14 +1846,17 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     state.child_nodes_dirty |= state.is_plan_task && observation.has_facts();
                     state.feedback_dirty |= state.is_plan_task && observation.feedback;
                     let result = if state.is_plan_task {
-                        crate::core::agent::subagent::observe(&mut state.child_nodes, &observation)
-                            .and_then(|_| {
-                                crate::core::agent::subagent::sync_waits(
-                                    &state.child_nodes,
-                                    &mut state.waits,
-                                    &observation,
-                                )
-                            })
+                        crate::runtime::agent::implementation::subagent::observe(
+                            &mut state.child_nodes,
+                            &observation,
+                        )
+                        .and_then(|_| {
+                            crate::runtime::agent::implementation::subagent::sync_waits(
+                                &state.child_nodes,
+                                &mut state.waits,
+                                &observation,
+                            )
+                        })
                     } else {
                         state
                             .root
@@ -1969,7 +1982,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     };
                     let completed = if state.is_plan_task {
                         state.child_nodes_dirty = true;
-                        crate::core::agent::subagent::complete(
+                        crate::runtime::agent::implementation::subagent::complete(
                             &mut state.child_nodes,
                             &mut state.steps,
                             &call,
@@ -2576,7 +2589,8 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 ));
             }
         };
-        state.input_tokens = crate::core::agent::chat::estimate_input_tokens(&request);
+        state.input_tokens =
+            crate::runtime::agent::implementation::chat::estimate_input_tokens(&request);
         state.completion = None;
         state.request = Some(Box::new(request.clone()));
         crate::runtime::agent::model_steps::calling(&mut state.steps);
@@ -2771,7 +2785,7 @@ impl ErrorDetails for Error {
 }
 
 #[cfg(test)]
-#[path = "../../../tests/unit/agent_progress.rs"]
+#[path = "../../../../tests/unit/agent_progress.rs"]
 mod progress_tests;
 
 #[cfg(test)]

@@ -1,9 +1,9 @@
 //! Offline Session conditional update; no model, Runtime or database service.
 use halo::agent::{Cancellation, Error};
 use halo::{
+    agent::core,
     agent::memory::short::{Type, session},
     agent::model::token::Usage,
-    core,
 };
 use serde_json::json;
 use session::Store as _;

@@ -100,7 +100,7 @@ fn skill_call(resource: Option<&str>) -> Call {
 #[tokio::test]
 async fn skill_names_do_not_replace_tool_names() {
     let directory = Directory::new();
-    let workspace = halo::core::workspace::Local::new(&directory.0)
+    let workspace = halo::agent::core::workspace::Local::new(&directory.0)
         .unwrap()
         .tools(LocalTool(definition("research", "A normal business tool.")))
         .skills([research()])
@@ -115,7 +115,7 @@ async fn skill_names_do_not_replace_tool_names() {
 #[tokio::test]
 async fn local_workspace_discovers_skills_and_reads_adjacent_resources() {
     let directory = Directory::new();
-    let workspace = halo::core::workspace::Local::new(&directory.0).unwrap();
+    let workspace = halo::agent::core::workspace::Local::new(&directory.0).unwrap();
     let cancellation = Cancellation::new();
     workspace
         .write(
@@ -187,7 +187,7 @@ impl Loader for DatabaseSkills {
 #[tokio::test]
 async fn server_workspace_uses_database_skill_loader_without_file_paths() {
     let client = Elasticsearch::new(Transport::single_node("http://127.0.0.1:9200").unwrap());
-    let workspace = halo::core::workspace::es::new(client, "workspace")
+    let workspace = halo::agent::core::workspace::es::new(client, "workspace")
         .unwrap()
         .skills(DatabaseSkills);
     let (instructions, _) = halo::agent::workspace::Workspace::execute(
@@ -231,7 +231,7 @@ impl Skill for FailingSkill {
 async fn skill_read_error_is_returned_directly_by_workspace_execution() {
     let directory = Directory::new();
     let reads = Arc::new(AtomicUsize::new(0));
-    let workspace = halo::core::workspace::Local::new(&directory.0)
+    let workspace = halo::agent::core::workspace::Local::new(&directory.0)
         .unwrap()
         .skills([FailingSkill {
             definition: research().definition,
@@ -265,7 +265,7 @@ impl Skill for CancellingSkill {
 #[tokio::test]
 async fn cancellation_during_skill_read_is_observed_by_workspace_execution() {
     let directory = Directory::new();
-    let workspace = halo::core::workspace::Local::new(&directory.0)
+    let workspace = halo::agent::core::workspace::Local::new(&directory.0)
         .unwrap()
         .skills([CancellingSkill(research().definition)])
         .unwrap();
@@ -280,7 +280,7 @@ async fn cancellation_during_skill_read_is_observed_by_workspace_execution() {
 #[tokio::test]
 async fn local_workspace_refreshes_shared_skill_snapshot_when_files_change() {
     let directory = Directory::new();
-    let workspace = halo::core::workspace::Local::new(&directory.0).unwrap();
+    let workspace = halo::agent::core::workspace::Local::new(&directory.0).unwrap();
     let cancellation = Cancellation::new();
     workspace
         .write(

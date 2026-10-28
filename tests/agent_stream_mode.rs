@@ -10,7 +10,7 @@ use halo::agent::{
     model::{chat, content::part::Part},
 };
 use halo::{
-    core,
+    agent::core,
     runtime::agent::{
         State,
         node::{Step, Wait},

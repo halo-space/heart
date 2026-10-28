@@ -13,7 +13,7 @@ use crate::{
     Cancellation, Error,
     components::{mcp::Server, skill::Skill},
     core::{
-        agent::dispatch::{Dispatch, ToolInputs},
+        dispatch::{Dispatch, ToolInputs},
         operation::{cancellable, check},
         sandbox::docker as sandbox,
     },

@@ -12,7 +12,7 @@ pub(super) fn check(cancellation: &Cancellation) -> Result<(), Error> {
     }
 }
 
-pub(super) async fn cancellable<T, E: From<Error>>(
+pub(crate) async fn cancellable<T, E: From<Error>>(
     future: impl Future<Output = Result<T, E>>,
     cancellation: &Cancellation,
 ) -> Result<T, E> {

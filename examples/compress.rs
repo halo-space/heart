@@ -7,11 +7,11 @@
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
     agent::compression::Compressor as _,
+    agent::core,
     agent::message::Role,
     agent::model::{chat, content::part::Part},
     agent::prompt,
     agent::provider::openai::{Config, OpenAI},
-    core,
 };
 use serde_json::{Map, json};
 

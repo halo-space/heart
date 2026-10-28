@@ -4,10 +4,10 @@ use std::sync::{Arc, Barrier};
 use futures_executor::block_on;
 use halo::agent::{Cancellation, Message};
 use halo::{
+    agent::core,
     agent::memory::short::{Type, chat, session},
     agent::message::Role,
     agent::model::token::Usage,
-    core,
 };
 use serde_json::json;
 

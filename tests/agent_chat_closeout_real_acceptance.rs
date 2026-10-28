@@ -4,6 +4,7 @@ use chat::Store as _;
 use futures_util::StreamExt;
 use halo::agent::{Cancellation, Message};
 use halo::{
+    agent::core,
     agent::{
         self, Agent, Input, Payload,
         event::Event,
@@ -15,7 +16,6 @@ use halo::{
         model::chat::Config as ChatConfig,
         provider::deepseek::DeepSeek,
     },
-    core,
 };
 use serde_json::{Map, json};
 use session::Store as _;

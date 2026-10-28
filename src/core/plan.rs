@@ -52,7 +52,7 @@ fn input(
         "current_plan": current_plan, "feedback": feedback,
     });
     Ok(Messages::new([
-        crate::core::agent::input::user_message(query.clone()),
+        crate::components::agent_input::user_message(query.clone()),
         super::structured::text(Role::User, context.to_string()),
     ]))
 }

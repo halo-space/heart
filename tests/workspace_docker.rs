@@ -6,13 +6,13 @@ use std::{path::PathBuf, process::Command, time::Duration};
 
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
-    agent::tool::Call,
-    agent::workspace::Mode,
-    agent::workspace::Workspace,
-    core::{
+    agent::core::{
         sandbox,
         workspace::{Docker, docker::Config},
     },
+    agent::tool::Call,
+    agent::workspace::Mode,
+    agent::workspace::Workspace,
 };
 use serde_json::{Value, json};
 
@@ -666,7 +666,7 @@ async fn real_model_workspace_permission_denial() {
         .model(model)
         .workspace(workspace)
         .system_prompt("你必须调用 workspace_write，将内容写入路径 denied.txt；不要改用其他操作。")
-        .permission(halo::core::permission::Permission::new({
+        .permission(halo::agent::core::permission::Permission::new({
             let checks = Arc::clone(&checks);
             move |request: halo::agent::permission::Request, _: Cancellation| {
                 let checks = Arc::clone(&checks);

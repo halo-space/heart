@@ -281,7 +281,7 @@ async fn collect(
             )
             .await?
         };
-        let message = crate::core::agent::input::user_message(input.clone());
+        let message = crate::components::agent_input::user_message(input.clone());
         let (ack, consumed) = oneshot::channel();
         run.push(Change::Feedback {
             call: call.clone(),
@@ -464,7 +464,7 @@ pub(super) fn apply(
                     .ok_or_else(|| {
                         Error::new("INVALID_STATE", "feedback question no longer exists")
                     })?;
-                let complete = record.reply(crate::core::agent::input::user_message(input))?;
+                let complete = record.reply(crate::components::agent_input::user_message(input))?;
                 if complete {
                     if !step.waits.values().any(|record| record.status == "waiting") {
                         step.status = "running".into();

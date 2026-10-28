@@ -193,7 +193,7 @@ fn nested_graphs_forward_each_real_event_once_without_leaking_values() {
             2,
             downstream.clone(),
         );
-        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
         let mut runtime = Runtime::new(1001, compiled)
             .unwrap()
             .with_checkpoint(checkpoint.clone());
@@ -395,7 +395,7 @@ fn delta_arrives_before_agent_and_downstream_completion() {
     block_on(async {
         let (release, gate) = oneshot::channel();
         let downstream = Arc::new(AtomicUsize::new(0));
-        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
         let compiled = graph_with_agent(GatedAgent(Mutex::new(Some(gate))), 1, downstream.clone());
         let mut runtime = Runtime::new(1002, compiled)
             .unwrap()
@@ -515,7 +515,7 @@ fn final_error_is_direct_and_checkpoint_is_saved_before_it_is_delivered() {
             .unwrap();
         builder.add_edge(START, "agent").unwrap();
         builder.add_edge("agent", END).unwrap();
-        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
         let mut runtime = Runtime::new(1005, builder.compile().unwrap())
             .unwrap()
             .with_checkpoint(checkpoint.clone());
@@ -563,7 +563,7 @@ fn waiting_stream_ends_after_saving_the_same_waiting_scene() {
         builder.add_node("review", Review).unwrap();
         builder.add_edge(START, "review").unwrap();
         builder.add_edge("review", END).unwrap();
-        let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
         let mut runtime = Runtime::new(1006, builder.compile().unwrap())
             .unwrap()
             .with_checkpoint(checkpoint.clone());

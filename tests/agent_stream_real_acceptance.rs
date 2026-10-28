@@ -197,7 +197,7 @@ async fn real_react_agent_honors_the_run_stream_mode() {
 #[ignore = "requires DEEPSEEK_API_KEY and sends a live model request"]
 async fn real_stream_cancellation_closes_with_the_received_partial_message() {
     let chat_id = 813_503;
-    let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+    let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
     let agent = agent::chat()
         .model(chat())
         .system_prompt("用简体中文详细说明地球四季形成的原因。")
@@ -279,7 +279,7 @@ async fn real_model_result_is_not_replayed_when_its_after_hook_resumes() {
     let chat_id = 813_506;
     let calls = Arc::new(AtomicUsize::new(0));
     let allow_after = Arc::new(AtomicBool::new(false));
-    let checkpoint = Arc::new(halo::core::checkpoint::InMemory::new());
+    let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
     let agent = agent::chat()
         .model(CountedChat {
             inner: chat(),

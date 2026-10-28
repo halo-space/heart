@@ -9,7 +9,8 @@ use crate::components::agent::{Agent as AgentContract, Error, Input};
 use crate::components::evaluation::Evaluator;
 use crate::components::model::chat::Chat;
 use crate::components::workspace::Workspace;
-use crate::core::agent::{dispatch::Dispatch, react, subagent::SubAgent};
+use crate::core::dispatch::Dispatch;
+use crate::runtime::agent::{react, subagent::SubAgent};
 
 const LONG_TASK_PROMPT: &str = "You are a capable agent for multi-step tasks. Break substantial work into clear steps, use the available tools to gather evidence and make changes, verify important results, and report what is complete and what remains. Do not claim that an action succeeded unless its result confirms it.";
 

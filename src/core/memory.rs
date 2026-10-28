@@ -15,7 +15,6 @@ use crate::components::memory::{
 // callers always choose the memory kind before the backend.
 mod es;
 pub mod extraction;
-pub(crate) mod history;
 pub mod short;
 
 /// Long-term memory implementations grouped by backend.

@@ -19,7 +19,7 @@ use crate::{
     workspace::{Definition, Mode},
 };
 
-use super::agent::dispatch::{Dispatch, ToolInputs};
+use super::dispatch::{Dispatch, ToolInputs};
 use super::operation::{cancellable, check};
 
 pub mod docker;

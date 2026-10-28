@@ -9,10 +9,7 @@ pub(crate) mod access;
 // through `.tools(...)`, `.mcps(...)` and `.skills(...)`.
 pub mod chat;
 mod completion;
-#[doc(hidden)]
-pub(crate) mod dispatch;
 pub(crate) mod hooks;
-pub(crate) mod input;
 mod lifecycle;
 mod preparation;
 pub mod react;
