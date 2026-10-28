@@ -18,7 +18,7 @@ pub(crate) async fn advance(
 ) -> Result<(), Error> {
     let starting = state.stage == Stage::Start;
     if !starting {
-        *run = crate::core::operation::cancellable(
+        *run = crate::runtime::cancellation::cancellable(
             Box::pin(history.resume(query.clone(), cancellation)),
             cancellation,
         )
@@ -59,7 +59,7 @@ pub(crate) async fn advance(
             } else {
                 cancellation
             };
-            *run = crate::core::operation::cancellable(
+            *run = crate::runtime::cancellation::cancellable(
                 Box::pin(history.begin(query.clone(), record_cancellation)),
                 record_cancellation,
             )

@@ -1,6 +1,6 @@
 //! Private projection helpers, not a second event or execution model.
 
-use crate::core::trace::fastrace::Root as TraceRoot;
+use crate::runtime::trace::fastrace::Root as TraceRoot;
 use crate::{Error, Message, event::Event};
 
 /// Project one public Event result into the configured fastrace span.

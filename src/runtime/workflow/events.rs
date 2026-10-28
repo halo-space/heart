@@ -10,7 +10,7 @@ use std::{
 use futures_core::Stream;
 use futures_util::task::AtomicWaker;
 
-use crate::core::trace::fastrace::Root as TraceRoot;
+use crate::runtime::trace::fastrace::Root as TraceRoot;
 use crate::{Error, Message, Messages, event::Event};
 
 pub(crate) fn project_message(message: &Message) -> Message {

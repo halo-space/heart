@@ -26,7 +26,6 @@ use crate::components::model::content::part::{Part, object as part_data};
 use crate::components::tool::{Call, Evaluation as ToolEvaluation, ToolDefinition, validate_call};
 use crate::components::{mcp::Server, skill::Skill};
 use crate::core::dispatch::{Dispatch, ToolInputs};
-use crate::core::trace::fastrace::{Root as TraceRoot, SpanScope};
 use crate::runtime::agent::checkpoint::{Backend, invalid as invalid_checkpoint};
 use crate::runtime::agent::graph::Graph;
 use crate::runtime::agent::history::{History, Run};
@@ -38,6 +37,7 @@ use crate::runtime::agent::implementation::subagent::{
 };
 use crate::runtime::agent::node::Step;
 use crate::runtime::agent::{State as AgentState, graph};
+use crate::runtime::trace::fastrace::{Root as TraceRoot, SpanScope};
 
 mod execution;
 mod tools;

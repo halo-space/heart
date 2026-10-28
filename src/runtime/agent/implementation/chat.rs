@@ -23,7 +23,6 @@ use crate::components::model::content::part::{Part, object as part_data};
 use crate::components::tool::Call;
 use crate::components::{mcp::Server, skill::Skill};
 use crate::core::dispatch::{Dispatch, ToolInputs};
-use crate::core::trace::fastrace::{Root as TraceRoot, SpanScope};
 use crate::runtime::agent::checkpoint::Backend;
 use crate::runtime::agent::history::{History, Run};
 use crate::runtime::agent::implementation::access::Access;
@@ -34,6 +33,7 @@ use crate::runtime::agent::implementation::subagent::{
 };
 use crate::runtime::agent::node::Step;
 use crate::runtime::agent::tool_steps;
+use crate::runtime::trace::fastrace::{Root as TraceRoot, SpanScope};
 
 pub struct Builder<M = ()> {
     model: Option<M>,
