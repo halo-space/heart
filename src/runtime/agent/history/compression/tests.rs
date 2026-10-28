@@ -14,7 +14,7 @@ use crate::{
     core,
     middleware::Middleware,
     model::content::part::Part,
-    runtime::agent::implementation::hooks::Hooks,
+    runtime::agent::hooks::Hooks,
 };
 
 type WithSession<S> = memory::Config<

@@ -1,7 +1,8 @@
 //! Public Agent entry points, independent of implementation directories.
 //!
 //! The shared contract lives in components; Chat and ReAct implementations
-//! live in core and use the same Agent contract. Runtime owns per-run state.
+//! live in the Agent runtime. Core provides the concrete component instances
+//! consumed by those implementations.
 
 pub use crate::cancellation::Cancellation;
 pub use crate::components::agent::{Agent, Error, Input, Payload};

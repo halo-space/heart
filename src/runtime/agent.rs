@@ -1,28 +1,17 @@
 //! Agent execution support: mutable run graphs, node state and history.
 //!
 //! Chat/ReAct definitions, builders and the public run contract live in
-//! [`crate::agent`]. This module does not define an Agent kind or require
-//! applications to construct a separate Runtime to call an Agent.
-//! Agent-specific integrations are owned by this Runtime or by the Agent
-//! implementation that composes the relevant Core components.
+//! [`crate::agent`]. This module owns the Agent execution loop, mutable
+//! state, waiting and recovery; applications do not construct a separate
+//! Runtime to call an Agent.
 
+pub(crate) mod access;
+pub mod chat;
 pub(crate) mod history;
-pub(crate) mod implementation;
-
-/// Concrete Chat Agent implementation and builder.
-pub mod chat {
-    pub use super::implementation::chat::*;
-}
-
-/// Concrete ReAct Agent implementation and builder.
-pub mod react {
-    pub use super::implementation::react::*;
-}
-
-/// SubAgent definitions used by the Agent runtime.
-pub mod subagent {
-    pub use super::implementation::subagent::*;
-}
+pub(crate) mod hooks;
+pub(crate) mod lifecycle;
+pub mod react;
+pub mod subagent;
 
 pub(crate) mod checkpoint;
 pub mod completion;

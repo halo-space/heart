@@ -20,7 +20,7 @@ use crate::{
 
 use crate::agent::{Input, Payload};
 use crate::components::memory::short::{chat::Store as _, session::Store as _};
-use crate::runtime::agent::implementation::hooks::Hooks;
+use crate::runtime::agent::hooks::Hooks;
 use crate::runtime::agent::usage::Ledger;
 use crate::runtime::cancellation::cancellable;
 

@@ -1,4 +1,4 @@
-//! Concrete permission-policy integration used by the Core Agent implementations.
+//! Concrete permission-policy integration used by the Agent runtime.
 use std::{future::Future, pin::Pin, sync::Arc};
 
 use crate::{
@@ -38,8 +38,11 @@ impl Access {
         cancellation: &Cancellation,
     ) -> Result<Decision, Error> {
         if let Some(policy) = &self.0 {
-            super::hooks::cancellable(policy.check(request, cancellation.clone()), cancellation)
-                .await
+            crate::runtime::agent::hooks::cancellable(
+                policy.check(request, cancellation.clone()),
+                cancellation,
+            )
+            .await
         } else {
             Err(Error::new(
                 "INVALID_STATE",
@@ -59,7 +62,7 @@ pub(crate) enum Failure {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn check_permission<K, KF>(
     access: &Access,
-    hooks: &super::hooks::Hooks,
+    hooks: &crate::runtime::agent::hooks::Hooks,
     mut metadata: serde_json::Map<String, serde_json::Value>,
     call: &crate::tool::Call,
     saved: Option<crate::runtime::agent::permission::State>,
@@ -95,7 +98,7 @@ where
     commit(state.clone()).await.map_err(Failure::Hook)?;
     if state.stage == "before" {
         let input = Box::pin(hooks.apply_from_async(
-            super::hooks::Stage::Permission,
+            crate::runtime::agent::hooks::Stage::Permission,
             true,
             state.input.clone(),
             state.idx,
@@ -130,7 +133,7 @@ where
     state.decision = Some(decision.clone());
     commit(state.clone()).await.map_err(Failure::Hook)?;
     let output = Box::pin(hooks.apply_from_async(
-        super::hooks::Stage::Permission,
+        crate::runtime::agent::hooks::Stage::Permission,
         false,
         state.output.clone().expect("after Request"),
         state.idx,
@@ -157,7 +160,7 @@ where
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn check_tool<K, KF>(
     access: &Access,
-    hooks: &super::hooks::Hooks,
+    hooks: &crate::runtime::agent::hooks::Hooks,
     metadata: serde_json::Map<String, serde_json::Value>,
     call: &crate::tool::Call,
     cancellation: &Cancellation,
@@ -349,7 +352,7 @@ mod tests {
     async fn permission_checks_the_actual_call_between_ordered_hooks() {
         let (access, requests) = policy(Behavior::Allow);
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let mut hooks = super::super::hooks::Hooks::default();
+        let mut hooks = crate::runtime::agent::hooks::Hooks::default();
         hooks.add(Hook {
             name: "before",
             calls: calls.clone(),
@@ -389,7 +392,7 @@ mod tests {
         let (access, _) = policy(Behavior::Deny);
         let decision = check_permission(
             &access,
-            &super::super::hooks::Hooks::default(),
+            &crate::runtime::agent::hooks::Hooks::default(),
             Map::new(),
             &call(),
             None,
@@ -413,7 +416,7 @@ mod tests {
         access.set(Broken);
         let error = check_permission(
             &access,
-            &super::super::hooks::Hooks::default(),
+            &crate::runtime::agent::hooks::Hooks::default(),
             Map::new(),
             &call(),
             None,
@@ -428,7 +431,7 @@ mod tests {
     #[tokio::test]
     async fn permission_hook_cannot_redirect_the_authorized_operation() {
         let (access, requests) = policy(Behavior::Allow);
-        let mut hooks = super::super::hooks::Hooks::default();
+        let mut hooks = crate::runtime::agent::hooks::Hooks::default();
         hooks.add(Hook {
             name: "redirect",
             calls: Arc::default(),
@@ -463,7 +466,7 @@ mod tests {
             let (access, requests) = policy(behavior);
             let result = check_tool(
                 &access,
-                &super::super::hooks::Hooks::default(),
+                &crate::runtime::agent::hooks::Hooks::default(),
                 Map::new(),
                 &call,
                 &Cancellation::new(),
@@ -491,7 +494,7 @@ mod tests {
     #[tokio::test]
     async fn after_hook_cannot_rewrite_a_decision_into_authorizing_another_operation() {
         let (access, requests) = policy(Behavior::Allow);
-        let mut hooks = super::super::hooks::Hooks::default();
+        let mut hooks = crate::runtime::agent::hooks::Hooks::default();
         hooks.add(Hook {
             name: "redirect-after",
             calls: Arc::default(),
@@ -520,7 +523,7 @@ mod tests {
     async fn permission_hook_failures_are_control_errors_at_their_actual_stage() {
         for stage in ["before", "after"] {
             let (access, requests) = policy(Behavior::Allow);
-            let mut hooks = super::super::hooks::Hooks::default();
+            let mut hooks = crate::runtime::agent::hooks::Hooks::default();
             hooks.add(Hook {
                 name: "failure",
                 calls: Arc::default(),
@@ -574,7 +577,7 @@ mod tests {
         });
         let error = check_tool(
             &access,
-            &super::super::hooks::Hooks::default(),
+            &crate::runtime::agent::hooks::Hooks::default(),
             Map::new(),
             &call(),
             &cancellation,
@@ -620,7 +623,7 @@ mod tests {
             requests: requests.clone(),
         });
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let mut hooks = super::super::hooks::Hooks::default();
+        let mut hooks = crate::runtime::agent::hooks::Hooks::default();
         hooks.add(Hook {
             name: "acknowledged",
             calls: calls.clone(),
@@ -679,7 +682,7 @@ mod tests {
             let metadata = Map::from_iter([("chat_id".into(), json!(chat_id))]);
             check_tool(
                 &access,
-                &super::super::hooks::Hooks::default(),
+                &crate::runtime::agent::hooks::Hooks::default(),
                 metadata,
                 &call,
                 &Cancellation::new(),

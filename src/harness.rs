@@ -1,7 +1,7 @@
 //! Opinionated high-level Agent assembly built from Core components.
 //!
 //! Harness supplies long-task defaults and uses a configured Workspace. It
-//! delegates execution to the Core ReAct Agent and the Agent Runtime; it does
+//! delegates execution to the Runtime ReAct Agent and Core components; it does
 //! not introduce a second execution loop or a Workflow lifecycle.
 
 use crate::Cancellation;
@@ -117,7 +117,7 @@ where
 }
 
 /// Long-task Harness Agent. All execution semantics remain those of the
-/// wrapped Core ReAct Agent and Agent Runtime.
+/// wrapped Runtime ReAct Agent and its configured Core components.
 pub struct Agent<M> {
     inner: react::Agent<M>,
 }
