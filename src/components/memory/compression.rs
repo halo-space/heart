@@ -7,6 +7,9 @@ type FutureResult = Pin<Box<dyn Future<Output = Result<Messages, Error>> + 'stat
 
 trait Entry: Send + Sync {
     fn size(&self) -> Option<u64>;
+    fn limit(&self) -> Option<u64>;
+    fn retain(&self) -> Option<u64>;
+    fn count(&self, input: &Messages) -> u64;
     fn compress(&self, input: Messages, cancellation: Cancellation) -> FutureResult;
 }
 
@@ -14,6 +17,18 @@ struct Typed<P>(Arc<P>);
 impl<P: Compressor + 'static> Entry for Typed<P> {
     fn size(&self) -> Option<u64> {
         self.0.size()
+    }
+
+    fn limit(&self) -> Option<u64> {
+        self.0.limit()
+    }
+
+    fn retain(&self) -> Option<u64> {
+        self.0.retain()
+    }
+
+    fn count(&self, input: &Messages) -> u64 {
+        self.0.count(input)
     }
 
     fn compress(&self, input: Messages, cancellation: Cancellation) -> FutureResult {
@@ -42,6 +57,18 @@ impl Configured {
                 "automatic compression requires a positive size",
             )
         })
+    }
+
+    pub(crate) fn limit(&self) -> Option<u64> {
+        self.0.limit()
+    }
+
+    pub(crate) fn retain(&self) -> Option<u64> {
+        self.0.retain()
+    }
+
+    pub(crate) fn count(&self, input: &Messages) -> u64 {
+        self.0.count(input)
     }
 
     pub(crate) async fn compress(

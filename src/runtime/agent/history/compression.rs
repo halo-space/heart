@@ -1,8 +1,9 @@
 //! Agent memory compression over a fixed, request-triggered history snapshot.
 //! The configured compression component performs the transformation; this
 //! module checks the trigger, manages the job and conditionally writes Session.
+use serde_json::Value;
 use std::{
-    collections::HashSet,
+    collections::{BTreeSet, HashSet},
     sync::{Arc, Mutex, OnceLock},
 };
 
@@ -122,6 +123,7 @@ pub(super) fn start<S, L>(
                             } else {
                                 None
                             };
+                            let input = truncate_tool_results(safe_messages(input));
                             let input = hooks
                                 .before_compress(Messages::new(input), &cancellation)
                                 .await?;
@@ -262,6 +264,103 @@ fn summary(output: &Messages) -> Result<String, Error> {
         return Err(invalid());
     }
     Ok(messages.join("\n"))
+}
+
+/// Keep tool-call groups intact when preparing historical messages for a
+/// summary. An unfinished call belongs to the live Agent scene and must stay
+/// there; it must not be represented by a summary without its result.
+fn safe_messages(messages: Vec<Message>) -> Vec<Message> {
+    let mut pending = BTreeSet::new();
+    let mut group_start = None;
+    let mut result = Vec::with_capacity(messages.len());
+
+    for (index, message) in messages.iter().enumerate() {
+        let calls = if message.role == Role::Assistant {
+            message
+                .content
+                .iter()
+                .filter(|part| part.r#type == "tool_call")
+                .filter_map(|part| part.data.get("call_id").and_then(|value| value.as_str()))
+                .collect::<Vec<_>>()
+        } else {
+            Vec::new()
+        };
+        if !calls.is_empty() {
+            group_start.get_or_insert(index);
+            pending.extend(calls.into_iter().map(str::to_owned));
+        }
+
+        if matches!(message.role, Role::Tool | Role::Function)
+            && let Some(call_id) = message_call_id(message)
+        {
+            pending.remove(call_id);
+        }
+
+        result.push(message.clone());
+        if pending.is_empty() {
+            group_start = None;
+        }
+    }
+
+    if let Some(index) = group_start {
+        result.truncate(index);
+    }
+    result
+}
+
+const MAX_TOOL_RESULT_CHARS: usize = 50_000;
+
+/// Reduce only the temporary summary input view. The original tool result is
+/// retained in Chat/Step state and remains available for normal recovery.
+fn truncate_tool_results(mut messages: Vec<Message>) -> Vec<Message> {
+    for message in &mut messages {
+        if !matches!(message.role, Role::Tool | Role::Function) {
+            continue;
+        }
+        for part in &mut message.content {
+            for value in part.data.values_mut() {
+                truncate_value(value);
+            }
+        }
+        for value in message.values.values_mut() {
+            truncate_value(value);
+        }
+    }
+    messages
+}
+
+fn truncate_value(value: &mut Value) {
+    match value {
+        Value::String(text) if text.chars().count() > MAX_TOOL_RESULT_CHARS => {
+            let chars = text.chars().collect::<Vec<_>>();
+            let keep = MAX_TOOL_RESULT_CHARS / 2;
+            let removed = chars.len().saturating_sub(keep * 2);
+            let prefix = chars[..keep].iter().collect::<String>();
+            let suffix = chars[chars.len() - keep..].iter().collect::<String>();
+            *text = format!(
+                "{prefix}\n...[tool result truncated for compression input: {removed} chars omitted]...\n{suffix}"
+            );
+        }
+        Value::Array(values) => {
+            for value in values {
+                truncate_value(value);
+            }
+        }
+        Value::Object(values) => {
+            for value in values.values_mut() {
+                truncate_value(value);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn message_call_id(message: &Message) -> Option<&str> {
+    message
+        .metadata
+        .get("call_id")
+        .or_else(|| message.values.get("call_id"))
+        .and_then(|value| value.as_str())
 }
 
 #[cfg(test)]

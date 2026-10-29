@@ -13,6 +13,26 @@ pub trait Compressor: Send + Sync {
         None
     }
 
+    /// Maximum estimated Token count sent to the compression component.
+    /// `None` keeps the complete uncovered history.
+    fn limit(&self) -> Option<u64> {
+        None
+    }
+
+    /// Estimated Token count kept as the newest uncovered history after a
+    /// rolling Session compression. `None` keeps no extra suffix.
+    fn retain(&self) -> Option<u64> {
+        None
+    }
+
+    /// Counts a temporary compression input view. This is separate from
+    /// Provider Usage and defaults to a JSON byte estimate.
+    fn count(&self, input: &Messages) -> u64 {
+        serde_json::to_vec(input)
+            .map(|bytes| u64::try_from(bytes.len().saturating_add(3) / 4).unwrap_or(u64::MAX))
+            .unwrap_or(u64::MAX)
+    }
+
     fn compress(
         &self,
         input: Messages,

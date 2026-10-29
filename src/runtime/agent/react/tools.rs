@@ -1,8 +1,8 @@
 use super::*;
-pub(super) use crate::runtime::agent::tool_steps::{
+pub(super) use crate::runtime::agent::step::{
     called, committed, evaluated, failed_message, pending, selected, stopped,
 };
-use crate::runtime::agent::tool_steps::{current, new_step};
+use crate::runtime::agent::step::{current, new_step};
 
 pub(super) fn restore<M: Chat>(state: &mut ReActState<M>) -> Result<(), Error> {
     for step in &state.steps {
@@ -13,8 +13,7 @@ pub(super) fn restore<M: Chat>(state: &mut ReActState<M>) -> Result<(), Error> {
             state.dispatch.validate(call)?;
         }
     }
-    let pending =
-        crate::runtime::agent::tool_steps::resume_calls(&state.steps, &mut state.messages)?;
+    let pending = crate::runtime::agent::step::resume_calls(&state.steps, &mut state.messages)?;
     state.pending_calls.extend(pending);
     if state.is_plan_task {
         let pending = crate::runtime::agent::subagent::resume_calls(

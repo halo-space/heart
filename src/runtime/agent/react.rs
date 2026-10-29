@@ -935,7 +935,7 @@ fn next_react_progress<M: Chat + 'static>(state: ReActState<M>) -> ProgressFutur
                 && !state.waits.is_empty()
             {
                 state.waits.clear();
-                crate::runtime::agent::tool_steps::cancel_pending(&mut state.steps);
+                crate::runtime::agent::step::cancel_pending(&mut state.steps);
                 execution::cancel_active(&mut state);
             }
             if let Some(run) = &state.interaction {
@@ -1659,7 +1659,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 cancellation: state.cancellation.clone(),
                 trace: state.trace.clone(),
             };
-            let saved = crate::runtime::agent::tool_steps::current(&mut state.steps, &call.call_id)
+            let saved = crate::runtime::agent::step::current(&mut state.steps, &call.call_id)
                 .expect("selected Tool Step")
                 .clone();
             let slots = state.tool_slots.clone();
@@ -1926,7 +1926,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                             tool_success_message(&call, business)
                         }
                         Err(Failure::Policy(error, effective)) => {
-                            if let Some(step) = crate::runtime::agent::tool_steps::current(
+                            if let Some(step) = crate::runtime::agent::step::current(
                                 &mut state.steps,
                                 &call.call_id,
                             ) {
@@ -2623,7 +2623,7 @@ fn cancelled_event<M: Chat>(state: &mut ReActState<M>) -> Event {
         state.partial = message;
     }
     state.waits.clear();
-    crate::runtime::agent::tool_steps::cancel_pending(&mut state.steps);
+    crate::runtime::agent::step::cancel_pending(&mut state.steps);
     if !state.model_pending {
         // The prior Complete was already settled. Cancellation while executing
         // a Tool/eval/hook must not bill that completed model call a second time.

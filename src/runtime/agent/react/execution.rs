@@ -652,7 +652,7 @@ pub(super) fn cancel_active<M: Chat>(state: &mut ReActState<M>) {
             .as_mut()
             .and_then(|execution| execution.attempts.last_mut())
         {
-            crate::runtime::agent::tool_steps::cancel_pending(&mut attempt.steps);
+            crate::runtime::agent::step::cancel_pending(&mut attempt.steps);
         }
         node.status = Status::Cancelled;
         // Active graph nodes have a current Attempt by construction.

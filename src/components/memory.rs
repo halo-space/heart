@@ -203,6 +203,25 @@ where
         Ok(())
     }
 
+    pub(crate) fn compression_limit(&self) -> Option<u64> {
+        self.compression
+            .as_ref()
+            .and_then(compression::Configured::limit)
+    }
+
+    pub(crate) fn compression_retain(&self) -> Option<u64> {
+        self.compression
+            .as_ref()
+            .and_then(compression::Configured::retain)
+    }
+
+    pub(crate) fn compression_count(&self, input: &crate::Messages) -> u64 {
+        self.compression.as_ref().map_or_else(
+            || default_compression_count(input),
+            |value| value.count(input),
+        )
+    }
+
     /// Configure long-memory extraction for the completed Chat snapshot of a
     /// compression job. Recall scopes do not restrict extraction ownership.
     /// Record IDs are configured separately through `with_id_fn`.
@@ -238,6 +257,12 @@ where
         self.id_fn = Some(id_fn);
         self
     }
+}
+
+fn default_compression_count(input: &crate::Messages) -> u64 {
+    serde_json::to_vec(input)
+        .map(|bytes| u64::try_from(bytes.len().saturating_add(3) / 4).unwrap_or(u64::MAX))
+        .unwrap_or(u64::MAX)
 }
 
 pub trait Memory: Send + Sync {

@@ -28,11 +28,11 @@ use crate::runtime::agent::checkpoint::Backend;
 use crate::runtime::agent::history::{History, Run};
 use crate::runtime::agent::hooks::{Hooks, cancellable};
 use crate::runtime::agent::node::Step;
+use crate::runtime::agent::step;
 use crate::runtime::agent::subagent::SubAgent;
 use crate::runtime::agent::subagent::{
     Failure as SubAgentFailure, Progress as SubAgentProgress, Root,
 };
-use crate::runtime::agent::tool_steps;
 use crate::runtime::trace::fastrace::{Root as TraceRoot, SpanScope};
 
 pub struct Builder<M = ()> {
@@ -590,7 +590,7 @@ impl<S> Events<S> {
             || matches!(&result, Err(error) if error.code!="WAITING")
         {
             self.waits.clear();
-            tool_steps::cancel_pending(&mut self.steps.lock().expect("Tool steps lock poisoned"));
+            step::cancel_pending(&mut self.steps.lock().expect("Tool steps lock poisoned"));
         }
         if result.is_err() && !self.settled {
             let usage = super::lifecycle::model_unfinished(
@@ -1098,7 +1098,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
             if this.tool_results.is_empty()
                 && let Some(factory) = this.provider_factory.clone()
             {
-                tool_steps::committed(&mut this.steps.lock().expect("Tool steps lock poisoned"));
+                step::committed(&mut this.steps.lock().expect("Tool steps lock poisoned"));
                 let messages = this.messages.clone();
                 let cancellation = this.cancellation.clone();
                 this.partial = Message::new(Role::Assistant);
@@ -1166,7 +1166,7 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                 return Pin::new(this).poll_next(cx);
                             }
                             if this.dispatch.is_some() || !this.subagents.is_empty() {
-                                let selected = tool_steps::selected(
+                                let selected = step::selected(
                                     &mut this.steps.lock().expect("Tool steps lock poisoned"),
                                     &calls,
                                 );
@@ -1500,7 +1500,7 @@ where
             processing_output || crate::runtime::agent::model_steps::continuing(&restored_steps);
         let restored_calls = if let Some(messages) = restored_messages.as_mut() {
             restored_root.resume_calls(&restored_steps, messages)?;
-            tool_steps::resume_calls(&restored_steps, messages)?
+            step::resume_calls(&restored_steps, messages)?
         } else {
             Vec::new()
         };
@@ -2305,10 +2305,10 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
     }
     let saved = {
         let mut steps = steps.lock().expect("Tool steps lock poisoned");
-        if tool_steps::current(&mut steps, &call.call_id).is_none() {
-            tool_steps::new_step(&mut steps, &call);
+        if step::current(&mut steps, &call.call_id).is_none() {
+            step::new_step(&mut steps, &call);
         }
-        tool_steps::current(&mut steps, &call.call_id)
+        step::current(&mut steps, &call.call_id)
             .expect("selected Tool step")
             .clone()
     };
@@ -2345,10 +2345,9 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
                         run.permission_stage(call, permission, cancellation).await
                     } else {
                         let mut steps = steps.lock().expect("Tool steps lock");
-                        let owner =
-                            tool_steps::current(&mut steps, &call.call_id).ok_or_else(|| {
-                                Error::new("INVALID_STATE", "permission owner missing")
-                            })?;
+                        let owner = step::current(&mut steps, &call.call_id).ok_or_else(|| {
+                            Error::new("INVALID_STATE", "permission owner missing")
+                        })?;
                         owner.permission = Some(Box::new(permission));
                         Ok(())
                     }
@@ -2404,16 +2403,16 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
         Ok(result) => result,
         Err(error) => {
             let mut steps = steps.lock().expect("Tool steps lock poisoned");
-            tool_steps::stopped(&mut steps, &call.call_id, &error);
+            step::stopped(&mut steps, &call.call_id, &error);
             if control_failed || matches!(error.code.as_str(), "CANCELLED" | "WAITING") {
                 return Err(error);
             }
             let message = tool_error_message(&call, error);
-            tool_steps::failed_message(&mut steps, &call.call_id, &message);
+            step::failed_message(&mut steps, &call.call_id, &message);
             return Ok(vec![message]);
         }
     };
-    tool_steps::called(
+    step::called(
         &mut steps.lock().expect("Tool steps lock poisoned"),
         &effective_call,
         &business,
@@ -2424,7 +2423,7 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
     {
         Ok(evaluation) => evaluation,
         Err(error) => {
-            tool_steps::stopped(
+            step::stopped(
                 &mut steps.lock().expect("Tool steps lock poisoned"),
                 &call.call_id,
                 &error,
@@ -2433,10 +2432,10 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
         }
     };
     let mut steps = steps.lock().expect("Tool steps lock poisoned");
-    tool_steps::evaluated(&mut steps, &call.call_id, &evaluation);
+    step::evaluated(&mut steps, &call.call_id, &evaluation);
     step_messages(
         &call,
-        tool_steps::current(&mut steps, &call.call_id).expect("completed Tool step"),
+        step::current(&mut steps, &call.call_id).expect("completed Tool step"),
     )
 }
 
@@ -2453,9 +2452,9 @@ async fn retain_tool_stage(
     } else {
         let mut steps = steps.lock().expect("Tool steps lock poisoned");
         if let Some(message) = message {
-            tool_steps::returned(&mut steps, call, message);
+            step::returned(&mut steps, call, message);
         } else {
-            tool_steps::prepared(&mut steps, call);
+            step::prepared(&mut steps, call);
         }
         Ok(())
     }
@@ -2610,7 +2609,20 @@ pub(crate) fn estimate_input_tokens(request: &Request) -> u64 {
         .iter()
         .map(|message| {
             let role_bytes = format!("{:?}", message.role).len();
-            role_bytes + message.content.iter().map(part_bytes).sum::<usize>()
+            let content_bytes = message.content.iter().map(part_bytes).sum::<usize>();
+            // values and metadata are part of the model input contract. They
+            // carry structured Function/Tool results, call identities and
+            // media references even when the content parts contain little text.
+            let values_bytes = serde_json::to_vec(&message.values)
+                .map(|value| value.len())
+                .unwrap_or(0);
+            let metadata_bytes = serde_json::to_vec(&message.metadata)
+                .map(|value| value.len())
+                .unwrap_or(0);
+            role_bytes
+                .saturating_add(content_bytes)
+                .saturating_add(values_bytes)
+                .saturating_add(metadata_bytes)
         })
         .sum();
     let tool_bytes: usize = request
@@ -3057,6 +3069,43 @@ mod tests {
             id_fn: None,
             trace: TraceRoot::start("agent.chat.test"),
         }
+    }
+
+    #[test]
+    fn input_estimate_includes_structured_message_fields_and_tool_schema() {
+        let base = Request {
+            messages: Messages::new([Message::new(Role::User)]),
+            ..Request::default()
+        };
+        let mut structured = Message::new(Role::Tool);
+        structured.values.insert(
+            "result".into(),
+            json!({"documents":[{"title":"a","content":"long result"}]}),
+        );
+        structured
+            .metadata
+            .insert("call_id".into(), json!("call_001"));
+        let with_structured = Request {
+            messages: Messages::new([structured]),
+            ..Request::default()
+        };
+        let with_tool = Request {
+            messages: base.messages.clone(),
+            tools: vec![ToolDefinition {
+                name: "search".into(),
+                description: "Search documents by query".into(),
+                parameters: serde_json::from_value(json!({
+                    "type":"object",
+                    "properties":{"query":{"type":"string"}},
+                    "required":["query"]
+                }))
+                .expect("valid tool schema"),
+            }],
+            ..Request::default()
+        };
+
+        assert!(estimate_input_tokens(&with_structured) > estimate_input_tokens(&base));
+        assert!(estimate_input_tokens(&with_tool) > estimate_input_tokens(&base));
     }
 
     #[tokio::test]

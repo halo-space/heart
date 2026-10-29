@@ -387,10 +387,9 @@ pub(super) fn apply(
                         "invalid ordinary feedback wait",
                     ));
                 }
-                let step = crate::runtime::agent::tool_steps::current(steps, &call.call_id)
-                    .ok_or_else(|| {
-                        Error::new("INVALID_STATE", "feedback has no current operation")
-                    })?;
+                let step = crate::runtime::agent::step::current(steps, &call.call_id).ok_or_else(
+                    || Error::new("INVALID_STATE", "feedback has no current operation"),
+                )?;
                 if step
                     .call
                     .as_ref()
@@ -439,7 +438,7 @@ pub(super) fn apply(
             ack,
         } => {
             let result = (|| {
-                let step = crate::runtime::agent::tool_steps::current(steps, &call.call_id)
+                let step = crate::runtime::agent::step::current(steps, &call.call_id)
                     .filter(|step| step.call.as_ref() == Some(&call))
                     .ok_or_else(|| {
                         Error::new("INVALID_STATE", "feedback operation is no longer current")

@@ -60,7 +60,10 @@ async fn main() -> Result<(), Error> {
             max_tokens: Some(256),
             ..Default::default()
         },
-    )?;
+    )?
+    .with_size(10_000)
+    .with_limit(8_000)
+    .with_retain(1_000);
     let history = Messages::new([
         text(Role::User, "北京天气好的话，我周末想去露营。"),
         text(

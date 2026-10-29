@@ -47,9 +47,106 @@ fn output(value: &str, total: u64) -> Messages {
     Messages::new([message])
 }
 
+fn tool_call(call_id: &str) -> Message {
+    let mut message = Message::new(Role::Assistant);
+    message.content.push(Part {
+        r#type: "tool_call".into(),
+        data: crate::components::model::content::part::object(json!({
+            "call_id": call_id,
+            "name": "search",
+            "arguments": {}
+        })),
+    });
+    message
+}
+
+fn tool_result(call_id: &str) -> Message {
+    let mut message = Message::new(Role::Tool);
+    message
+        .metadata
+        .insert("call_id".into(), Value::String(call_id.into()));
+    message.content.push(Part {
+        r#type: "text".into(),
+        data: crate::components::model::content::part::object(json!({
+            "value": "result"
+        })),
+    });
+    message
+}
+
+#[test]
+fn compression_drops_an_unfinished_tool_group_but_keeps_complete_groups() {
+    let complete = vec![
+        text(Role::User, "before"),
+        tool_call("call_001"),
+        tool_result("call_001"),
+        text(Role::Assistant, "after"),
+    ];
+    assert_eq!(safe_messages(complete.clone()), complete);
+
+    let incomplete = vec![
+        text(Role::User, "before"),
+        tool_call("call_002"),
+        text(Role::Assistant, "unfinished continuation"),
+    ];
+    let retained = safe_messages(incomplete);
+    assert_eq!(retained.len(), 1);
+    assert_eq!(retained[0].content[0].data["value"], "before");
+}
+
+#[test]
+fn compression_truncates_only_the_tool_result_view() {
+    let mut result = tool_result("call_003");
+    let long = "x".repeat(MAX_TOOL_RESULT_CHARS + 100);
+    result.content[0].data["value"] = Value::String(long);
+    result.values.insert(
+        "documents".into(),
+        json!({"items":[{"content":"y".repeat(MAX_TOOL_RESULT_CHARS + 100)}]}),
+    );
+
+    let original = result.clone();
+    let compressed = truncate_tool_results(vec![result]);
+    let compressed = &compressed[0];
+    assert_eq!(
+        original.content[0].data["value"].as_str().unwrap().len(),
+        MAX_TOOL_RESULT_CHARS + 100
+    );
+    assert!(
+        compressed.content[0].data["value"]
+            .as_str()
+            .unwrap()
+            .contains("tool result truncated for compression input")
+    );
+    assert!(
+        compressed.values["documents"]["items"][0]["content"]
+            .as_str()
+            .unwrap()
+            .contains("tool result truncated for compression input")
+    );
+}
+
+#[tokio::test]
+async fn compression_window_keeps_a_contiguous_prefix_and_retains_the_suffix() {
+    let compressor = Compressor::new(Some(1)).window(Some(4), Some(2));
+    let config = config().await.with_compression(compressor);
+    let pairs = vec![
+        (1, text(Role::User, "u1"), text(Role::Assistant, "a1"), 1),
+        (2, text(Role::User, "u2"), text(Role::Assistant, "a2"), 1),
+        (3, text(Role::User, "u3"), text(Role::Assistant, "a3"), 1),
+    ];
+
+    let selected = super::super::compression_window(&config, pairs);
+    assert_eq!(
+        selected.iter().map(|pair| pair.0).collect::<Vec<_>>(),
+        [1, 2]
+    );
+}
+
 #[derive(Clone)]
 struct Compressor {
     size: Option<u64>,
+    limit: Option<u64>,
+    retain: Option<u64>,
     calls: Arc<AtomicUsize>,
     inputs: Arc<Mutex<Vec<Messages>>>,
     gate: Option<Arc<Semaphore>>,
@@ -60,6 +157,8 @@ impl Compressor {
     fn new(size: Option<u64>) -> Self {
         Self {
             size,
+            limit: None,
+            retain: None,
             calls: Arc::new(AtomicUsize::new(0)),
             inputs: Arc::new(Mutex::new(Vec::new())),
             gate: None,
@@ -73,11 +172,29 @@ impl Compressor {
     fn release(&self) {
         self.gate.as_ref().unwrap().add_permits(1);
     }
+
+    fn window(mut self, limit: Option<u64>, retain: Option<u64>) -> Self {
+        self.limit = limit;
+        self.retain = retain;
+        self
+    }
 }
 
 impl crate::compression::Compressor for Compressor {
     fn size(&self) -> Option<u64> {
         self.size
+    }
+
+    fn limit(&self) -> Option<u64> {
+        self.limit
+    }
+
+    fn retain(&self) -> Option<u64> {
+        self.retain
+    }
+
+    fn count(&self, input: &Messages) -> u64 {
+        input.as_slice().len() as u64
     }
     async fn compress(
         &self,

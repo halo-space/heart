@@ -22,7 +22,7 @@ pub mod permission;
 pub mod preparation;
 pub(crate) mod reply;
 pub(crate) mod scope;
-pub(crate) mod tool_steps;
+pub(crate) mod step;
 pub(crate) mod usage;
 pub mod wait;
 

@@ -715,6 +715,17 @@ impl Chat for Model { type Stream = stream::Iter<std::vec::IntoIter<Result<Event
 Compression is separate and opt-in. A configured compressor may replace the Chat range covered by the current Session summary when the application
 explicitly checks the threshold; the current request is never switched to a newly written summary midway through execution.
 
+The built-in Chat compressor can bound the summary input and retain a recent uncovered suffix:
+
+```rust
+let compressor = core::compression::Compressor::new(chat, request)?
+    .with_size(10_000)  // start background compression at this threshold
+    .with_limit(8_000)  // estimated historical input sent to the summary model
+    .with_retain(1_000); // newest uncovered history kept for a later request
+```
+
+The default Token estimate is approximate. Applications can provide their own estimator with `.with_count(...)`. `limit` and `retain` affect only the temporary summary input; original Chat records, Tool results and Runtime Steps remain intact.
+
 ### 10.8 Local Workspace and Skill
 
 ```rust

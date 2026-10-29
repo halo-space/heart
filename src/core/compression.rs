@@ -10,6 +10,9 @@ pub struct Compressor<C> {
     chat: C,
     request: Request,
     size: Option<u64>,
+    limit: Option<u64>,
+    retain: Option<u64>,
+    count: fn(&Messages) -> u64,
 }
 
 impl<C: Chat> Compressor<C> {
@@ -21,6 +24,9 @@ impl<C: Chat> Compressor<C> {
             chat,
             request,
             size: None,
+            limit: None,
+            retain: None,
+            count: default_count,
         })
     }
 
@@ -31,11 +37,47 @@ impl<C: Chat> Compressor<C> {
         self.size = Some(size);
         self
     }
+
+    /// Limit the historical input sent to the compression model.
+    pub fn with_limit(mut self, limit: u64) -> Self {
+        self.limit = Some(limit);
+        self
+    }
+
+    /// Keep the newest uncovered historical input for a later request.
+    pub fn with_retain(mut self, retain: u64) -> Self {
+        self.retain = Some(retain);
+        self
+    }
+
+    /// Use an application-provided estimate for temporary compression input.
+    pub fn with_count(mut self, count: fn(&Messages) -> u64) -> Self {
+        self.count = count;
+        self
+    }
+}
+
+fn default_count(input: &Messages) -> u64 {
+    serde_json::to_vec(input)
+        .map(|bytes| u64::try_from(bytes.len().saturating_add(3) / 4).unwrap_or(u64::MAX))
+        .unwrap_or(u64::MAX)
 }
 
 impl<C: Chat> compression::Compressor for Compressor<C> {
     fn size(&self) -> Option<u64> {
         self.size
+    }
+
+    fn limit(&self) -> Option<u64> {
+        self.limit
+    }
+
+    fn retain(&self) -> Option<u64> {
+        self.retain
+    }
+
+    fn count(&self, input: &Messages) -> u64 {
+        (self.count)(input)
     }
 
     async fn compress(

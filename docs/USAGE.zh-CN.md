@@ -922,6 +922,17 @@ async fn main() -> Result<(), Error> {
 压缩是独立能力：只有应用或 Harness 配置了压缩组件并主动触发检查，才会用摘要替换已覆盖的 Chat 范围；本次请求不会中途
 切换到新摘要。
 
+内置 Chat 压缩器可以限制摘要输入和保留的近期历史：
+
+```rust
+let compressor = core::compression::Compressor::new(chat, request)?
+    .with_size(10_000)  // 达到该阈值才启动后台压缩
+    .with_limit(8_000)  // 摘要模型最多接收的历史 Token 估算
+    .with_retain(1_000); // 留给后续请求继续使用的最新未覆盖历史
+```
+
+默认使用粗略 Token 估算；需要时可以通过 `.with_count(...)` 传入应用自己的估算函数。`limit` 和 `retain` 只作用于摘要输入视图，原始 Chat、Tool 结果和 Runtime Step 不会被截断。
+
 ### 10.8 Workspace 和 Skill：本地发现、内容读取和安全边界
 
 Workspace 的本地实现只操作它的根目录。以下程序创建临时目录、写入一个标准 `SKILL.md`、读取 Skill 内容并列出目录；它不执行

@@ -699,7 +699,7 @@ pub(crate) fn apply(
     match change {
         Change::PermissionStage { call, state, ack } => {
             let result = (|| {
-                let step = crate::runtime::agent::tool_steps::current(steps, &call.call_id)
+                let step = crate::runtime::agent::step::current(steps, &call.call_id)
                     .ok_or_else(|| Error::new("INVALID_STATE", "permission has no Tool owner"))?;
                 if !matches!(step.stage.as_deref(), Some("before" | "call"))
                     || step.call.as_ref() != Some(&call)
@@ -718,7 +718,7 @@ pub(crate) fn apply(
         }
         Change::ToolStage { call, message, ack } => {
             let result = (|| {
-                let step = crate::runtime::agent::tool_steps::current(steps, &call.call_id)
+                let step = crate::runtime::agent::step::current(steps, &call.call_id)
                     .ok_or_else(|| Error::new("INVALID_STATE", "Tool stage has no current Step"))?;
                 let expected = if message.is_some() { "call" } else { "before" };
                 if step.stage.as_deref() != Some(expected)
@@ -732,9 +732,9 @@ pub(crate) fn apply(
                     ));
                 }
                 if let Some(message) = message {
-                    crate::runtime::agent::tool_steps::returned(steps, &call, &message);
+                    crate::runtime::agent::step::returned(steps, &call, &message);
                 } else {
-                    crate::runtime::agent::tool_steps::prepared(steps, &call);
+                    crate::runtime::agent::step::prepared(steps, &call);
                 }
                 Ok(None)
             })();
@@ -751,10 +751,9 @@ pub(crate) fn apply(
             ack,
         } => {
             let result = (|| {
-                let step = crate::runtime::agent::tool_steps::current(steps, &call.call_id)
-                    .ok_or_else(|| {
-                        Error::new("INVALID_STATE", "approval has no current Tool Step")
-                    })?;
+                let step = crate::runtime::agent::step::current(steps, &call.call_id).ok_or_else(
+                    || Error::new("INVALID_STATE", "approval has no current Tool Step"),
+                )?;
                 if let Some(record) = step.waits.get(&id)
                     && (record.kind != "approval"
                         || record.status != "waiting"
@@ -810,7 +809,7 @@ pub(crate) fn apply(
             ack,
         } => {
             let result = (|| {
-                let step = crate::runtime::agent::tool_steps::current(steps, &call.call_id)
+                let step = crate::runtime::agent::step::current(steps, &call.call_id)
                     .filter(|step| step.call.as_ref() == Some(&call))
                     .ok_or_else(|| {
                         Error::new("INVALID_STATE", "approved operation is no longer current")

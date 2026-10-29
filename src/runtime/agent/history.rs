@@ -478,6 +478,7 @@ where
     let mut total: u64 = 0;
     let mut endpoints = None;
     let mut blocked = false;
+    let mut pairs = Vec::new();
     for value in chats.into_iter().skip(after) {
         // A running/incomplete earlier Chat may complete later. A closed range
         // must not swallow it just because a later Chat completed first.
@@ -508,15 +509,24 @@ where
                 .collect(),
         });
         if !blocked {
-            extraction_input.push(user.clone());
-            extraction_input.push(message.clone());
-            compression_input.push(user.clone());
-            compression_input.push(message.clone());
-            total = total.saturating_add(compression::tokens(value.usage.as_ref()));
-            endpoints = Some((endpoints.map_or(value.id, |(from, _)| from), value.id));
+            pairs.push((
+                value.id,
+                user.clone(),
+                message.clone(),
+                compression::tokens(value.usage.as_ref()),
+            ));
         }
         messages.push(user);
         messages.push(message);
+    }
+    let selected = compression_window(&config, pairs);
+    for (id, user, message, usage) in selected {
+        extraction_input.push(user.clone());
+        extraction_input.push(message.clone());
+        compression_input.push(user);
+        compression_input.push(message);
+        total = total.saturating_add(usage);
+        endpoints = Some((endpoints.map_or(id, |(from, _)| from), id));
     }
     for scope in &config.scopes {
         let agent_id = (scope == "agent").then_some(identity.agent_id);
@@ -567,6 +577,54 @@ where
         );
     }
     Ok(messages)
+}
+
+fn compression_window<S, L>(
+    config: &memory::Config<S, L>,
+    mut pairs: Vec<(i64, Message, Message, u64)>,
+) -> Vec<(i64, Message, Message, u64)>
+where
+    S: short::Store,
+    L: Memory,
+{
+    let retain = config.compression_retain().filter(|value| *value > 0);
+    let limit = config.compression_limit().filter(|value| *value > 0);
+    if retain.is_none() && limit.is_none() {
+        return pairs;
+    }
+
+    let mut end = pairs.len();
+    if let Some(retain) = retain {
+        let mut kept = 0_u64;
+        while end > 0 {
+            let (_, user, assistant, _) = &pairs[end - 1];
+            let pair_tokens =
+                config.compression_count(&Messages::new([user.clone(), assistant.clone()]));
+            if kept.saturating_add(pair_tokens) > retain {
+                break;
+            }
+            kept = kept.saturating_add(pair_tokens);
+            end -= 1;
+        }
+    }
+
+    if let Some(limit) = limit {
+        let mut used = 0_u64;
+        let mut limited_end = 0;
+        while limited_end < end {
+            let (_, user, assistant, _) = &pairs[limited_end];
+            let pair_tokens =
+                config.compression_count(&Messages::new([user.clone(), assistant.clone()]));
+            if limited_end > 0 && used.saturating_add(pair_tokens) > limit {
+                break;
+            }
+            used = used.saturating_add(pair_tokens);
+            limited_end += 1;
+        }
+        end = limited_end;
+    }
+    pairs.truncate(end);
+    pairs
 }
 
 fn coverage(session: &session::Session, chats: &[chat::Chat]) -> Result<usize, Error> {
