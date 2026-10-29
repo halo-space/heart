@@ -10,7 +10,7 @@ Heart 的 Cargo 包名是 `halo-agent`，Rust 库名是 `halo`，要求 Rust 1.9
 
 ```toml
 [dependencies]
-halo = { package = "halo-agent", version = "0.1.0" }
+halo = { package = "halo-agent", version = "0.1.1" }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
