@@ -39,6 +39,7 @@ impl<C: Chat> Chat for ObservedChat<C> {
 }
 
 #[tokio::test]
+#[ignore = "requires DEEPSEEK_API_KEY and sends a live model request"]
 async fn one_external_reply_must_not_be_broadcast_to_multiple_waiting_nodes() {
     let original: Input = serde_json::from_value(json!({
         "metadata":{"chat_id":501,"session_id":601},
