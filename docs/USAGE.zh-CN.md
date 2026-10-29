@@ -38,6 +38,7 @@ cargo run --offline --example workflow_events
 | ReAct、Tool、Permission | [`examples/agent_permission.rs`](../examples/agent_permission.rs) | `cargo run --example agent_permission` |
 | Middleware | [`examples/agent_middleware.rs`](../examples/agent_middleware.rs) | `cargo run --example agent_middleware` |
 | Workflow 事件流 | [`examples/workflow_events.rs`](../examples/workflow_events.rs) | `cargo run --example workflow_events` |
+| Checkpoint 保存与恢复 | [`examples/checkpoint.rs`](../examples/checkpoint.rs) | `cargo run --offline --example checkpoint` |
 | `#[node]` 和强类型节点 | [`examples/node_macro.rs`](../examples/node_macro.rs) | `cargo run --example node_macro` |
 | Planner、Evaluator | [`examples/planning_evaluation.rs`](../examples/planning_evaluation.rs) | `cargo run --example planning_evaluation` |
 | Prompt、压缩 | [`examples/compress.rs`](../examples/compress.rs) | `HALO_API_KEY=... cargo run --example compress` |
@@ -190,6 +191,41 @@ let agent = agent::chat()
 ```
 
 没有配置 Memory 就不会自动读取历史；没有配置 Checkpoint 就不能跨进程恢复。默认内存实现只在当前进程有效。
+
+### 3.4 Agent Checkpoint：保存终态并重建
+
+Checkpoint 是按 `chat_id` 保存的一份完整 Agent 运行现场。它不只保存最终文本，还保存当前消息、Usage、等待信息、节点状态和必要的执行事实。
+下面的代码接着 10.1 中已经创建好的 `chat` 和 `input` 使用：
+
+```rust
+use std::sync::Arc;
+use futures_util::StreamExt;
+use halo::agent::{self, checkpoint::Checkpoint as _, Cancellation};
+use halo::agent::core;
+
+let checkpoint = Arc::new(core::checkpoint::InMemory::new());
+let agent = agent::chat()
+    .model(chat)
+    .checkpoint(checkpoint.clone())
+    .build()?;
+
+let chat_id = input
+    .metadata
+    .get("chat_id")
+    .and_then(serde_json::Value::as_i64)
+    .expect("input.metadata.chat_id is required when Checkpoint is configured");
+let mut events = agent.run(input.clone(), false, Cancellation::new()).await?;
+while let Some(event) = events.next().await {
+    println!("event = {:?}", event?);
+}
+drop(events);
+
+let saved = checkpoint.load(chat_id, &Cancellation::new()).await?;
+println!("saved status = {}", saved["status"]);
+```
+
+进程重启后，应用用同一个 `chat_id`、同一个 Checkpoint 后端和重新初始化的 Model/Agent 配置再次调用 `run`；Runtime 会先读取已保存现场。
+终态现场直接返回已保存的 Complete，等待现场则由同一个 `reply` 入口继续。`InMemory` 只用于当前进程示例，跨进程时替换为应用自己的持久化 Checkpoint 实现。
 
 ## 4. ReAct Agent
 

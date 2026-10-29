@@ -36,6 +36,7 @@ In your own Cargo project, add the dependencies above and copy any example to `s
 | ReAct, Tool and Permission | [`examples/agent_permission.rs`](../examples/agent_permission.rs) | `cargo run --example agent_permission` |
 | Middleware | [`examples/agent_middleware.rs`](../examples/agent_middleware.rs) | `cargo run --example agent_middleware` |
 | Workflow event stream | [`examples/workflow_events.rs`](../examples/workflow_events.rs) | `cargo run --example workflow_events` |
+| Checkpoint save and restore | [`examples/checkpoint.rs`](../examples/checkpoint.rs) | `cargo run --offline --example checkpoint` |
 | `#[node]` and typed nodes | [`examples/node_macro.rs`](../examples/node_macro.rs) | `cargo run --example node_macro` |
 | Planner and Evaluator | [`examples/planning_evaluation.rs`](../examples/planning_evaluation.rs) | `cargo run --example planning_evaluation` |
 | Prompt and compression | [`examples/compress.rs`](../examples/compress.rs) | `HALO_API_KEY=... cargo run --example compress` |
@@ -167,6 +168,42 @@ let agent = agent::chat()
 
 MCP servers should be connected and discovered before mounting. Permission is checked before an actual Tool/MCP call. Tool
 `before/call/after/eval` is the Tool lifecycle and is separate from Agent middleware.
+
+### 3.3 Agent Checkpoint: save and reconstruct
+
+Checkpoint stores one complete Agent runtime scene by `chat_id`. It contains more than the final text: messages, Usage, waiting records, node state
+and the execution facts needed to continue. The following snippet continues with the `chat` and `input` initialized in section 10.1:
+
+```rust
+use std::sync::Arc;
+use futures_util::StreamExt;
+use halo::agent::{self, checkpoint::Checkpoint as _, Cancellation};
+use halo::agent::core;
+
+let checkpoint = Arc::new(core::checkpoint::InMemory::new());
+let agent = agent::chat()
+    .model(chat)
+    .checkpoint(checkpoint.clone())
+    .build()?;
+
+let chat_id = input
+    .metadata
+    .get("chat_id")
+    .and_then(serde_json::Value::as_i64)
+    .expect("input.metadata.chat_id is required when Checkpoint is configured");
+let mut events = agent.run(input.clone(), false, Cancellation::new()).await?;
+while let Some(event) = events.next().await {
+    println!("event = {:?}", event?);
+}
+drop(events);
+
+let saved = checkpoint.load(chat_id, &Cancellation::new()).await?;
+println!("saved status = {}", saved["status"]);
+```
+
+After a process restart, construct the Model and Agent again with the same `chat_id` and Checkpoint backend, then call `run` with the input. The
+Runtime loads the saved scene first: a terminal scene returns its saved Complete, while a waiting scene continues through the same `reply` entry
+point. `InMemory` is only for this in-process example; use an application persistence implementation for cross-process recovery.
 
 ## 4. ReAct Agent
 
