@@ -8,7 +8,7 @@ This guide shows how to use Heart from a Rust application to build Agents and Wo
 
 ```toml
 [dependencies]
-halo = { package = "halo-agent", version = "0.1.1" }
+halo = { package = "halo-agent", version = "0.1.2" }
 futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
