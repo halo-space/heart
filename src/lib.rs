@@ -10,7 +10,7 @@ pub(crate) mod cancellation;
 mod components;
 pub(crate) mod core;
 pub(crate) mod pkg;
-pub mod runtime;
+pub(crate) mod runtime;
 
 pub(crate) use components::checkpoint;
 pub(crate) use components::compression;

@@ -16,11 +16,11 @@ use halo::{
     agent::model::chat::{Chat, Request},
     agent::plan::Plan,
     agent::provider::deepseek::DeepSeek,
-    agent::{self, Agent, Input},
-    runtime::agent::{
+    agent::runtime::agent::{
         State,
         graph::{Graph, State as PlanState},
     },
+    agent::{self, Agent, Input},
 };
 use serde_json::json;
 

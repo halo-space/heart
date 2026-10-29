@@ -19,12 +19,12 @@ use halo::{
     agent::message::Role,
     agent::model::{content::part::Part, token::Usage},
     agent::node::{Node, Signal, Wait},
-    agent::{Agent, Input},
-    runtime::workflow::{
+    agent::workflow::{
         CompiledWorkflow, FieldSource, InputBinding, NodeAttrs, Runtime, WorkflowBuilder,
         graph::{self, END, START},
         node,
     },
+    agent::{Agent, Input},
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -779,12 +779,9 @@ fn native_tool_batch_observes_saved_successes_once_without_error_messages() {
         for max_retries in [0, 1] {
             let good = Arc::new(AtomicUsize::new(0));
             let bad = Arc::new(AtomicUsize::new(0));
-            let tools = halo::runtime::workflow::tool::ToolNode::new(batch_tool(
-                "good",
-                good.clone(),
-                false,
-            ))
-            .tool(batch_tool("bad", bad.clone(), true));
+            let tools =
+                halo::agent::workflow::tool::ToolNode::new(batch_tool("good", good.clone(), false))
+                    .tool(batch_tool("bad", bad.clone(), true));
             let mut builder = WorkflowBuilder::new("observed-tool-batch");
             builder.add_node("tools", tools).unwrap();
             builder

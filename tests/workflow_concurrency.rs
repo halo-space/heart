@@ -5,11 +5,11 @@ use std::sync::{
 };
 
 use futures_util::{StreamExt, poll};
-use halo::agent::{Cancellation, Error, Message, Messages};
-use halo::runtime::workflow::{
+use halo::agent::workflow::{
     CompiledWorkflow, Runtime, WorkflowBuilder,
     graph::{END, START},
 };
+use halo::agent::{Cancellation, Error, Message, Messages};
 use serde_json::json;
 
 #[derive(Default)]

@@ -16,12 +16,12 @@ use halo::{
     agent::message::Role,
     agent::model::token::Usage,
     agent::node::{Node, Signal, Wait},
-    agent::{Agent, Input},
-    runtime::workflow::{
+    agent::workflow::{
         CompiledWorkflow, RetryPolicy, Runtime, WorkflowBuilder,
         graph::{self, END, START},
         node,
     },
+    agent::{Agent, Input},
 };
 
 struct CountedAgent {

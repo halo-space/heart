@@ -9,11 +9,11 @@ use futures_util::StreamExt;
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
     agent::node::{Node, Signal, Wait},
-    node,
-    runtime::workflow::{
+    agent::workflow::{
         Runtime, WorkflowBuilder,
         graph::{END, START},
     },
+    node,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};

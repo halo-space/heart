@@ -9,11 +9,11 @@ use halo::{
     agent::checkpoint::Checkpoint,
     agent::core,
     agent::message::Role,
-    agent::{self, Agent, Input},
-    runtime::agent::{
+    agent::runtime::agent::{
         State,
         wait::{Node, Wait},
     },
+    agent::{self, Agent, Input},
 };
 use serde_json::{Value, json};
 
@@ -51,13 +51,13 @@ fn input() -> Input {
 }
 
 fn step(id: &str, reply_id: i64) -> Value {
-    serde_json::to_value(halo::runtime::agent::node::Step {
+    serde_json::to_value(halo::agent::runtime::agent::node::Step {
         id: id.into(),
         kind: "human".into(),
         status: "waiting".into(),
         waits: [(
             reply_id,
-            halo::runtime::agent::node::Wait {
+            halo::agent::runtime::agent::node::Wait {
                 count: 1,
                 kind: "approval".into(),
                 status: "waiting".into(),

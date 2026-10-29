@@ -57,6 +57,18 @@ pub mod workflow {
     pub use crate::runtime::workflow::*;
 }
 
+/// Runtime implementation details needed by low-level integrations.
+///
+/// The crate deliberately exposes them below `halo::agent`; runtime is not a
+/// separate top-level public module. Most applications should use
+/// `agent::chat`, `agent::react`, `agent::workflow`, and the Agent contract.
+#[doc(hidden)]
+pub mod runtime {
+    pub mod agent {
+        pub use crate::runtime::agent::{State, graph, node, react, wait};
+    }
+}
+
 /// Construct the default Chat Agent implementation.
 pub fn chat() -> chat::Builder {
     chat::builder()

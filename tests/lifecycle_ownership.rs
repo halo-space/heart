@@ -8,12 +8,12 @@ use halo::{
     agent::node::{Node, Signal},
     agent::provider::vllm::{Config, Vllm, chat::Chat as VllmChat},
     agent::tool::{Call, Evaluation, Tool, ToolDefinition},
-    agent::{self},
-    runtime::workflow::{
+    agent::workflow::{
         CompiledWorkflow, Runtime, WorkflowBuilder,
         graph::{END, START},
         tool::ToolNode,
     },
+    agent::{self},
 };
 use serde_json::{Value, json};
 use std::sync::{

@@ -19,11 +19,11 @@ use halo::{
     agent::middleware::Middleware,
     agent::model::chat::{self as model_chat, Chat, Request},
     agent::provider::vllm::{self, Vllm},
-    agent::{self, Agent, Input, Payload},
-    runtime::workflow::{
+    agent::workflow::{
         CompiledWorkflow, Runtime, WorkflowBuilder,
         graph::{END, START},
     },
+    agent::{self, Agent, Input, Payload},
 };
 use serde_json::{Value, json};
 use session::Store as _;

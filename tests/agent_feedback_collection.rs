@@ -7,7 +7,7 @@ use halo::{
     agent::core,
     agent::message::Role,
     agent::model::content::part::Part,
-    runtime::agent::{
+    agent::runtime::agent::{
         State,
         node::{Step, Wait},
         wait,
@@ -78,7 +78,7 @@ async fn three_feedback_parts_preserve_required_count_and_progress_through_check
             waits: BTreeMap::from([(5001, record)]),
             ..Default::default()
         }],
-        waits: vec![halo::runtime::agent::wait::Wait {
+        waits: vec![halo::agent::runtime::agent::wait::Wait {
             nodes: vec![],
             step: "human_0".into(),
         }],

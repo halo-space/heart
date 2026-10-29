@@ -89,7 +89,7 @@ impl Tool for AskForApproval {
                 "model requested a different feedback count than the test scenario",
             ));
         }
-        let feedback = halo::runtime::agent::wait::ask(prompt, count, cancellation).await?;
+        let feedback = halo::agent::runtime::agent::wait::ask(prompt, count, cancellation).await?;
         Ok(Message::function(json!({"user_feedback":feedback.0})))
     }
 }

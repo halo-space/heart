@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use halo::agent::{Message, Messages};
 use halo::{
     agent::message::Role,
-    runtime::agent::{
+    agent::runtime::agent::{
         State,
         node::{Step, Wait},
     },

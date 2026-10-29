@@ -1,5 +1,5 @@
+use halo::agent::runtime::agent::{graph::Graph, node::Status};
 use halo::agent::{self, Agent, Cancellation, Input};
-use halo::runtime::agent::{graph::Graph, node::Status};
 
 fn configured_chat() -> halo::agent::provider::vllm::chat::Chat {
     let provider = halo::agent::provider::vllm::Vllm::builder()
@@ -24,7 +24,7 @@ fn chat_uses_the_agent_public_entry_without_a_runtime_owner() {
 
 #[test]
 fn react_and_configured_tools_are_agent_assembly_not_runtime_kinds() {
-    let agent: halo::runtime::agent::react::Agent<_> =
+    let agent: halo::agent::runtime::agent::react::Agent<_> =
         agent::react().model(configured_chat()).build().unwrap();
     run_future_needs_no_caller_pinning(&agent);
 }

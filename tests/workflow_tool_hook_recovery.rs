@@ -7,7 +7,7 @@ use halo::{
     agent::message::Role,
     agent::model::content::part::Part,
     agent::tool::{Call, Evaluation, Tool, ToolDefinition},
-    runtime::workflow::{
+    agent::workflow::{
         CompiledWorkflow, RetryPolicy, Runtime, WorkflowBuilder,
         graph::{END, START},
         tool::ToolNode,

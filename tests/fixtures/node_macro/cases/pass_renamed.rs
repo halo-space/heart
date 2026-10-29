@@ -47,7 +47,7 @@ impl Review {
     }
 }
 fn main() {
-    let mut builder = heart::runtime::workflow::WorkflowBuilder::new("renamed");
+    let mut builder = heart::agent::workflow::WorkflowBuilder::new("renamed");
     builder.add_node("ordinary", ordinary).unwrap();
     builder.add_node("component", Component).unwrap();
     builder.add_node("review", Review).unwrap();

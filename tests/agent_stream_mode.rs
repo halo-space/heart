@@ -11,7 +11,7 @@ use halo::agent::{
 };
 use halo::{
     agent::core,
-    runtime::agent::{
+    agent::runtime::agent::{
         State,
         node::{Step, Wait},
         wait,

@@ -7,6 +7,10 @@ use std::sync::{
 
 use futures_util::StreamExt;
 use halo::{
+    agent::workflow::{
+        Runtime, WorkflowBuilder,
+        graph::{END, START},
+    },
     agent::{
         self, Cancellation, Error, Message, Messages,
         checkpoint::Checkpoint as _,
@@ -20,10 +24,6 @@ use halo::{
             vllm::{Config, Vllm},
         },
         tool::{Call, Tool, ToolDefinition},
-    },
-    runtime::workflow::{
-        Runtime, WorkflowBuilder,
-        graph::{END, START},
     },
 };
 use serde_json::json;
@@ -156,7 +156,7 @@ async fn workflow_runs_embedded_agent_with_real_model() {
         .expect("Workflow should persist the Agent execution");
     assert_eq!(
         execution.status,
-        halo::runtime::workflow::node::ExecutionStatus::Succeeded
+        halo::agent::workflow::node::ExecutionStatus::Succeeded
     );
     assert!(execution.attempts[0].usage.is_some());
     println!("LIVE_WORKFLOW_AGENT_OUTPUT={final_text}");

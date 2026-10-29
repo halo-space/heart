@@ -17,6 +17,6 @@ async fn calculate(input: Input, _: Cancellation) -> Result<Output, Error> {
 }
 
 fn main() {
-    let mut builder = r#type::runtime::workflow::WorkflowBuilder::new("keyword");
+    let mut builder = r#type::agent::workflow::WorkflowBuilder::new("keyword");
     builder.add_node("calculate", calculate).unwrap();
 }

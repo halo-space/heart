@@ -13,11 +13,11 @@ use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
     agent::function::Function,
     agent::plan::Plan,
-    agent::tool::{self, Call, Tool, ToolDefinition},
-    runtime::agent::{
+    agent::runtime::agent::{
         graph::{Graph, Start},
         node::Status,
     },
+    agent::tool::{self, Call, Tool, ToolDefinition},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
