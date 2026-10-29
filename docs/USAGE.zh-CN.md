@@ -50,6 +50,7 @@ cargo run --offline --example workflow_events
 | 真实 DeepSeek Agent、Tool 和 fastrace | [`examples/agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example agent_live_deepseek` |
 | 三个并发 SubAgent | [`examples/agent_live_three_subagents.rs`](../examples/agent_live_three_subagents.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example agent_live_three_subagents` |
 | VLLM Chat Completions | [`examples/provider_vllm.rs`](../examples/provider_vllm.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example provider_vllm` |
+| 基础组件契约（Function、Prompt、Search、Embed、Sandbox、Event） | [`examples/component_contracts.rs`](../examples/component_contracts.rs) | `cargo run --offline --example component_contracts` |
 
 网络示例只在明确执行命令时访问外部服务；密钥只从环境变量读取，不写入源码。`cargo check --examples` 不会发起模型或 MCP 请求，适合先验证代码。
 
@@ -63,6 +64,41 @@ harness/      面向长任务 Agent 的高阶组合能力
 ```
 
 没有配置的能力不会自动启用：没有 Model 不能运行 Agent，没有 Sandbox 就没有命令工具，没有 Checkpoint 就不能跨进程恢复。
+
+### 1.2 组件逐项索引
+
+下面的索引覆盖 `halo::agent` 下的公共组件契约。每一行都说明组件负责什么、如何使用以及对应的完整示例；具体实现位于
+`halo::agent::core`，运行现场仍由 `halo::agent::workflow` 或 Agent 运行时负责。`component_contracts` 是离线的基础契约示例，
+不会伪造模型响应，也不会访问外部服务。
+
+| 组件 | 作用和边界 | 使用示例 |
+| --- | --- | --- |
+| `agent::Agent`、`agent::chat`、`agent::react` | Agent 只接收统一 `Input`，通过事件流交付模型/工具调用结果；运行现场、等待和恢复由运行时拥有。 | [`agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs)、[`agent_permission.rs`](../examples/agent_permission.rs) |
+| `agent::Input`、`Message`、`Messages` | 统一用户输入、模型上下文和节点间业务数据；`metadata` 与有序 `payload` 分开保存。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) |
+| `error::Error` | 所有组件共享 `code/message/details` 错误外壳；各组件只增加自己的错误码，不改变外层结构。 | 所有示例的 `Result<_, halo::agent::Error>`；[`component_contracts.rs`](../examples/component_contracts.rs) |
+| `event::Event` | 对外观察流的 `Delta`/`Complete`；不承担 Runtime State 或恢复。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`workflow_events.rs`](../examples/workflow_events.rs) |
+| `model::chat` | Chat Provider 的 `Request`、工具描述、`Event` 流和 `Usage` 约定；Provider 负责网络适配。 | [`provider_chat.rs`](../examples/provider_chat.rs)、[`provider_deepseek.rs`](../examples/provider_deepseek.rs)、[`provider_vllm.rs`](../examples/provider_vllm.rs) |
+| `model::embed`、`model::token`、`model::content` | 单条向量请求、共享 Token Usage 和规范化内容 Part；Embed 返回统一 `Message`。 | [`component_contracts.rs`](../examples/component_contracts.rs)；真实 Provider 配置见模型章节 |
+| `function::Function` | 不知道图、节点或执行 ID 的独立异步业务函数；输入输出类型由调用方决定。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`node_macro.rs`](../examples/node_macro.rs) |
+| `tool::Tool` | 具有定义和 `before/call/after/eval` 生命周期的工具契约；执行结果和错误由调用方收口。 | [`agent_live_tool.rs`](../examples/agent_live_tool.rs)、[`agent_permission.rs`](../examples/agent_permission.rs) |
+| `workspace::Workspace` | 文件、命令、Glob/Grep 等工作区能力的统一入口；Local 和 Server 由实现决定，默认能力按挂载启用。 | [10.8 Workspace 与 Skill](#108-workspace和skill本地发现内容读取和安全边界) |
+| `skill::Skill` | 技能的元数据、说明和内容读取契约；发现和缓存由 Workspace 实现，模型只看到可用描述。 | [10.8 Workspace 与 Skill](#108-workspace和skill本地发现内容读取和安全边界) |
+| `mcp::Server` | MCP 连接和工具发现契约；挂载前完成连接与发现，运行时直接调用已发现工具。 | [10.9 MCP](#109-mcp先连接和发现再挂载) |
+| `permission::Permission` | 在实际 Tool/MCP 调用前给出允许或拒绝；不执行工具，也不持有 Agent State。 | [`agent_permission.rs`](../examples/agent_permission.rs) |
+| `middleware::Middleware` | 对模型、工具、权限、压缩等阶段提供统一 `before/after` 钩子；重试策略是可选实现。 | [`agent_middleware.rs`](../examples/agent_middleware.rs) |
+| `prompt::Template`、`Variables` | 按定义顺序渲染单条 Message 和命名历史 `Messages`，不执行模型调用。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`compress.rs`](../examples/compress.rs) |
+| `compression::Compression` | 将历史 Message 压缩为新的摘要 Message；阈值和触发时机由 Harness/应用配置。 | [`compress.rs`](../examples/compress.rs) |
+| `memory` | 短期 Session/Chat 和长期 `summary/fact/preference` 的存储契约；后端可为内存、PG、ES 等。 | [`short_memory.rs`](../examples/short_memory.rs)、[`agent_memory.rs`](../examples/agent_memory.rs) |
+| `checkpoint::Checkpoint` | 保存和读取一次运行的完整可恢复现场；不等同于 Chat 审计或 Trace。 | [`checkpoint.rs`](../examples/checkpoint.rs) |
+| `sandbox::Sandbox` | 受明确请求约束的执行边界；`core::sandbox::Local` 是本地进程实现，不自动提供隔离。 | [`component_contracts.rs`](../examples/component_contracts.rs) |
+| `knowledge::Search` | `keyword`、`vector`、`hybrid` 三种请求契约；不内部创建 Embed 或决定索引后端。 | [`component_contracts.rs`](../examples/component_contracts.rs)、Document/Knowledge 章节 |
+| `document` | Loader、Parser、Transformer、Chunker、RAPTOR 和 Graph 的文档处理能力；写入哪个知识库由应用决定。 | [`document_parse.rs`](../examples/document_parse.rs)、[`document_liteparse.rs`](../examples/document_liteparse.rs) |
+| `node::Node`、`node::Schema` | Workflow 节点输入输出契约和强类型 Schema；节点函数不直接管理 Runtime State。 | [`node_macro.rs`](../examples/node_macro.rs)、[`workflow_events.rs`](../examples/workflow_events.rs) |
+| `plan::Plan`、`reason::Reason`、`evaluation::Evaluator` | Agent 的计划图、推理与业务结果评估；不负责保存 Runtime 现场。 | [`planning_evaluation.rs`](../examples/planning_evaluation.rs) |
+| `workflow` | START/END、普通边、条件边、Join、Fan-out、子图和 Workflow Checkpoint 的运行入口。 | [`workflow_events.rs`](../examples/workflow_events.rs)、[`checkpoint.rs`](../examples/checkpoint.rs) |
+
+组件契约与具体实现的使用顺序固定为：先创建或注入实现，再把它传给 Agent/Workflow；没有注入的组件不会隐式启用。
+例如 `model::chat::Chat`、`memory`、`checkpoint` 和 `workspace` 都是独立能力，可以按应用需要组合，不能通过一次构造偷偷创建第二套运行时。
 
 ## 2. 统一输入、消息和事件
 

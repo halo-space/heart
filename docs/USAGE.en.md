@@ -48,6 +48,7 @@ In your own Cargo project, add the dependencies above and copy any example to `s
 | Live DeepSeek Agent, Tool and fastrace | [`examples/agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example agent_live_deepseek` |
 | Three concurrent SubAgents | [`examples/agent_live_three_subagents.rs`](../examples/agent_live_three_subagents.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example agent_live_three_subagents` |
 | VLLM Chat Completions | [`examples/provider_vllm.rs`](../examples/provider_vllm.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example provider_vllm` |
+| Core component contracts (Function, Prompt, Search, Embed, Sandbox, Event) | [`examples/component_contracts.rs`](../examples/component_contracts.rs) | `cargo run --offline --example component_contracts` |
 
 Network examples contact external services only when their command is explicitly run. Credentials are read from environment variables and never
 written to source. `cargo check --examples` validates all example code without making model or MCP requests.
@@ -63,6 +64,42 @@ harness/      Higher-level long-running Agent assembly
 
 Capabilities are opt-in. Without a model there is no runnable Agent, without a Sandbox there is no shell capability, and without a Checkpoint
 backend there is no cross-process recovery.
+
+### 1.2 Component-by-component index
+
+This index covers the public contracts under `halo::agent`. Each row explains the component's responsibility, its boundary, and a complete
+example. Concrete implementations live under `halo::agent::core`; execution state remains owned by the Agent or Workflow runtime. The
+`component_contracts` example is offline and exercises real local contracts without fabricating a model response or contacting an external service.
+
+| Component | Responsibility and boundary | Example |
+| --- | --- | --- |
+| `agent::Agent`, `agent::chat`, `agent::react` | Agents take the common `Input` and deliver model/tool results through the event stream; the runtime owns state, waiting and recovery. | [`agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs), [`agent_permission.rs`](../examples/agent_permission.rs) |
+| `agent::Input`, `Message`, `Messages` | Common user input, model context and node data; `metadata` is separate from ordered `payload`. | [`component_contracts.rs`](../examples/component_contracts.rs), [`agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) |
+| `error::Error` | Shared `code/message/details` error envelope; components add codes without changing the outer shape. | Every example returns `Result<_, halo::agent::Error>`; [`component_contracts.rs`](../examples/component_contracts.rs) |
+| `event::Event` | Public `Delta`/`Complete` observation stream; it is not Runtime State or recovery data. | [`component_contracts.rs`](../examples/component_contracts.rs), [`workflow_events.rs`](../examples/workflow_events.rs) |
+| `model::chat` | Chat Provider request, tool description, event stream and usage contract; Providers own network adaptation. | [`provider_chat.rs`](../examples/provider_chat.rs), [`provider_deepseek.rs`](../examples/provider_deepseek.rs), [`provider_vllm.rs`](../examples/provider_vllm.rs) |
+| `model::embed`, `model::token`, `model::content` | Single-input embedding, shared token usage and canonical content Parts; Embed returns the shared `Message` shape. | [`component_contracts.rs`](../examples/component_contracts.rs); see the model section for real Providers |
+| `function::Function` | Standalone async business function with caller-defined input and output; it knows nothing about graph or execution IDs. | [`component_contracts.rs`](../examples/component_contracts.rs), [`node_macro.rs`](../examples/node_macro.rs) |
+| `tool::Tool` | Tool definition and `before/call/after/eval` lifecycle; the caller closes the result and error. | [`agent_live_tool.rs`](../examples/agent_live_tool.rs), [`agent_permission.rs`](../examples/agent_permission.rs) |
+| `workspace::Workspace` | Unified file, command, Glob/Grep and mounted capability access; Local/Server is selected by the implementation. | [10.8 Workspace and Skill](#108-workspace-and-skill-local-discovery-content-loading-and-safety) |
+| `skill::Skill` | Skill metadata, instructions and content loading; discovery and caching belong to Workspace. | [10.8 Workspace and Skill](#108-workspace-and-skill-local-discovery-content-loading-and-safety) |
+| `mcp::Server` | MCP connection and tool discovery contract; connect and discover before mounting, then invoke discovered tools. | [10.9 MCP](#109-mcp-initialize-discover-then-mount) |
+| `permission::Permission` | Allows or denies an actual Tool/MCP call; it does not execute tools or own Agent State. | [`agent_permission.rs`](../examples/agent_permission.rs) |
+| `middleware::Middleware` | Common `before/after` hooks for model, tool, permission and compression stages; retry is an optional implementation. | [`agent_middleware.rs`](../examples/agent_middleware.rs) |
+| `prompt::Template`, `Variables` | Renders Messages and named history in declared order; it never invokes a model. | [`component_contracts.rs`](../examples/component_contracts.rs), [`compress.rs`](../examples/compress.rs) |
+| `compression::Compression` | Compresses Message history into a new summary Message; threshold and scheduling are configured by Harness/application code. | [`compress.rs`](../examples/compress.rs) |
+| `memory` | Short-term Session/Chat and long-term `summary/fact/preference` storage contracts; backends may be in-memory, PG or ES. | [`short_memory.rs`](../examples/short_memory.rs), [`agent_memory.rs`](../examples/agent_memory.rs) |
+| `checkpoint::Checkpoint` | Saves and loads one complete recoverable runtime snapshot; it is not Chat audit data or a Trace. | [`checkpoint.rs`](../examples/checkpoint.rs) |
+| `sandbox::Sandbox` | Explicit execution boundary; `core::sandbox::Local` runs local processes and is not an isolation mechanism. | [`component_contracts.rs`](../examples/component_contracts.rs) |
+| `knowledge::Search` | Separate `keyword`, `vector` and `hybrid` request contracts; it does not create Embed instances or choose storage. | [`component_contracts.rs`](../examples/component_contracts.rs), Document/Knowledge section |
+| `document` | Loader, Parser, Transformer, Chunker, RAPTOR and Graph document capabilities; applications choose where to write results. | [`document_parse.rs`](../examples/document_parse.rs), [`document_liteparse.rs`](../examples/document_liteparse.rs) |
+| `node::Node`, `node::Schema` | Workflow node input/output and typed Schema contracts; node functions do not manage Runtime State. | [`node_macro.rs`](../examples/node_macro.rs), [`workflow_events.rs`](../examples/workflow_events.rs) |
+| `plan::Plan`, `reason::Reason`, `evaluation::Evaluator` | Agent plan graph, reasoning and business-result evaluation; they do not persist Runtime State. | [`planning_evaluation.rs`](../examples/planning_evaluation.rs) |
+| `workflow` | START/END, ordinary and conditional edges, Join, Fan-out, subgraphs and Workflow Checkpoint execution. | [`workflow_events.rs`](../examples/workflow_events.rs), [`checkpoint.rs`](../examples/checkpoint.rs) |
+
+The composition order is fixed: create or inject an implementation, then pass it to an Agent or Workflow. Unconfigured components stay
+disabled. `model::chat::Chat`, `memory`, `checkpoint` and `workspace` are independent capabilities that applications can combine without
+silently creating a second runtime.
 
 ## 2. Common input, messages and events
 
