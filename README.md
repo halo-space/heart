@@ -61,6 +61,8 @@ cargo run --example provider_vllm
 | ReAct、Tool、Permission | [`examples/agent_permission.rs`](examples/agent_permission.rs) |
 | Middleware | [`examples/agent_middleware.rs`](examples/agent_middleware.rs) |
 | Workflow 事件流 | [`examples/workflow_events.rs`](examples/workflow_events.rs) |
+| Checkpoint 保存与恢复 | [`examples/checkpoint.rs`](examples/checkpoint.rs) |
+| 基础组件契约（Function、Prompt、Search、Embed、Sandbox、Event） | [`examples/component_contracts.rs`](examples/component_contracts.rs) |
 | Planner、Evaluator | [`examples/planning_evaluation.rs`](examples/planning_evaluation.rs) |
 | Prompt 与压缩 | [`examples/compress.rs`](examples/compress.rs) |
 | Session/Memory CRUD | [`examples/short_memory.rs`](examples/short_memory.rs) |
