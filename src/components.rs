@@ -17,6 +17,7 @@ pub mod node;
 pub mod permission;
 pub mod plan;
 pub mod prompt;
+pub mod protocol;
 pub mod reason;
 pub mod sandbox;
 pub mod skill;

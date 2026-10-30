@@ -77,6 +77,7 @@ example. Concrete implementations live under `halo::agent::core`; execution stat
 | `agent::Input`, `Message`, `Messages` | Common user input, model context and node data; `metadata` is separate from ordered `payload`. | [`component_contracts.rs`](../examples/component_contracts.rs), [`agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) |
 | `error::Error` | Shared `code/message/details` error envelope; components add codes without changing the outer shape. | Every example returns `Result<_, halo::agent::Error>`; [`component_contracts.rs`](../examples/component_contracts.rs) |
 | `event::Event` | Public `Delta`/`Complete` observation stream; it is not Runtime State or recovery data. | [`component_contracts.rs`](../examples/component_contracts.rs), [`workflow_events.rs`](../examples/workflow_events.rs) |
+| `agent::protocol::ag_ui` | Converts Heart Event Stream to AG-UI events; called by the HTTP layer without changing Runtime contracts. | Section 2.3 |
 | `model::chat` | Chat Provider request, tool description, event stream and usage contract; Providers own network adaptation. | [`provider_chat.rs`](../examples/provider_chat.rs), [`provider_deepseek.rs`](../examples/provider_deepseek.rs), [`provider_vllm.rs`](../examples/provider_vllm.rs) |
 | `model::embed`, `model::token`, `model::content` | Single-input embedding, shared token usage and canonical content Parts; Embed returns the shared `Message` shape. | [`component_contracts.rs`](../examples/component_contracts.rs); see the model section for real Providers |
 | `function::Function` | Standalone async business function with caller-defined input and output; it knows nothing about graph or execution IDs. | [`component_contracts.rs`](../examples/component_contracts.rs), [`node_macro.rs`](../examples/node_macro.rs) |
@@ -142,7 +143,48 @@ pub enum Event {
 
 Events are observations, not Runtime State. Workflow downstream nodes read their input from node State.
 
-### 2.3 Trace reporting
+### 2.3 AG-UI protocol output
+
+AG-UI is an output protocol adapter. It is not part of the Agent, Workflow, or Harness runtime
+configuration. Agents, Workflows, and Harnesses first produce Heart's own `Event` stream; the
+HTTP layer decides whether to convert that stream to AG-UI.
+
+```text
+Agent / Workflow / Harness
+    -> Heart Event Stream
+    -> HTTP layer calls AG-UI
+    -> halo::agent::protocol::ag_ui
+    -> SSE / HTTP response
+```
+
+Internal callers continue consuming Heart's `Event::Delta` and `Event::Complete`. An HTTP handler
+can call the AG-UI adapter at the response boundary. Conversion is performed event by event so
+streaming remains live. Only the actual end of the top-level run becomes AG-UI `RUN_FINISHED`; a
+`Complete` from one model, tool, or child-agent invocation only completes that invocation.
+
+The public entry point is:
+
+```rust
+halo::agent::protocol::ag_ui
+```
+
+An HTTP response handler can call the adapter at the response boundary:
+
+```rust
+let context =
+    halo::agent::protocol::ag_ui::Context::new("session-1", "chat-1");
+let output = halo::agent::protocol::ag_ui::adapt(events, context);
+// Encode output as SSE or another HTTP response.
+```
+
+When the HTTP layer needs to send runtime state, it can use
+`halo::agent::protocol::ag_ui::snapshot(state)` or
+`halo::agent::protocol::ag_ui::delta(change)` at the same output boundary.
+
+AG-UI does not change Runtime State, Checkpoint, waiting, reply, or Message contracts. Future
+protocols use the same output boundary and are selected by the HTTP or other transport layer.
+
+### 2.4 Trace reporting
 
 Heart uses `fastrace` for Agent and Workflow execution traces. The application selects a Reporter during startup and calls `flush` before shutdown:
 

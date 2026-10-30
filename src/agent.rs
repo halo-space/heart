@@ -15,6 +15,11 @@ pub use crate::runtime::agent::subagent::SubAgent;
 pub use crate::runtime::agent::{chat, react};
 pub use crate::runtime::trace;
 
+/// Protocol adapters used by the outer HTTP or transport layer.
+pub mod protocol {
+    pub use crate::core::protocol::ag_ui;
+}
+
 pub use crate::components::message;
 pub use crate::components::{
     checkpoint, evaluation, event, function, knowledge, mcp, memory, model, permission, plan,

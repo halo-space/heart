@@ -16,6 +16,7 @@ pub mod node;
 pub(crate) mod operation;
 pub mod permission;
 pub mod plan;
+pub mod protocol;
 pub mod provider;
 pub mod reason;
 pub mod sandbox;

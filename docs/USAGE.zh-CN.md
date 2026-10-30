@@ -77,6 +77,7 @@ harness/      面向长任务 Agent 的高阶组合能力
 | `agent::Input`、`Message`、`Messages` | 统一用户输入、模型上下文和节点间业务数据；`metadata` 与有序 `payload` 分开保存。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) |
 | `error::Error` | 所有组件共享 `code/message/details` 错误外壳；各组件只增加自己的错误码，不改变外层结构。 | 所有示例的 `Result<_, halo::agent::Error>`；[`component_contracts.rs`](../examples/component_contracts.rs) |
 | `event::Event` | 对外观察流的 `Delta`/`Complete`；不承担 Runtime State 或恢复。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`workflow_events.rs`](../examples/workflow_events.rs) |
+| `agent::protocol::ag_ui` | 将 Heart Event Stream 转换为 AG-UI 事件；由 HTTP 层调用，不改变 Runtime 契约。 | 本节 2.3 |
 | `model::chat` | Chat Provider 的 `Request`、工具描述、`Event` 流和 `Usage` 约定；Provider 负责网络适配。 | [`provider_chat.rs`](../examples/provider_chat.rs)、[`provider_deepseek.rs`](../examples/provider_deepseek.rs)、[`provider_vllm.rs`](../examples/provider_vllm.rs) |
 | `model::embed`、`model::token`、`model::content` | 单条向量请求、共享 Token Usage 和规范化内容 Part；Embed 返回统一 `Message`。 | [`component_contracts.rs`](../examples/component_contracts.rs)；真实 Provider 配置见模型章节 |
 | `function::Function` | 不知道图、节点或执行 ID 的独立异步业务函数；输入输出类型由调用方决定。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`node_macro.rs`](../examples/node_macro.rs) |
@@ -147,7 +148,47 @@ pub enum Event {
 
 事件是观察流，不是 Runtime State。Workflow 下游从节点 State 读取业务结果，不从事件副本拼装依赖数据。
 
-### 2.3 链路追踪
+### 2.3 AG-UI 协议输出
+
+AG-UI 是输出协议适配层，不属于 Agent、Workflow 或 Harness 的运行时配置。Agent、Workflow
+和 Harness 先产生 Heart 自己的 `Event` 流，HTTP 层决定是否转换为 AG-UI。
+
+```text
+Agent / Workflow / Harness
+    -> Heart Event Stream
+    -> HTTP 层调用 AG-UI
+    -> halo::agent::protocol::ag_ui
+    -> SSE / HTTP 响应
+```
+
+应用内部直接使用 Agent 或 Workflow 时，继续消费原始 `Event::Delta` 和
+`Event::Complete`。提供 HTTP 接口时，在 HTTP 处理器中调用 AG-UI 适配。转换按事件实时进行，
+不会等待整个运行结束；只有顶层运行真正结束时才发送 AG-UI 的 `RUN_FINISHED`。单次模型、
+工具或子 Agent 调用的 `Complete` 仍然只是内部调用完成。
+
+协议入口为：
+
+```rust
+halo::agent::protocol::ag_ui
+```
+
+HTTP 层可以在响应处理器中直接调用适配器：
+
+```rust
+let context =
+    halo::agent::protocol::ag_ui::Context::new("session-1", "chat-1");
+let output = halo::agent::protocol::ag_ui::adapt(events, context);
+// 将 output 编码为 SSE 或其他 HTTP 响应。
+```
+
+HTTP 层需要发送运行状态时，可以在同一输出边界调用
+`halo::agent::protocol::ag_ui::snapshot(state)` 或
+`halo::agent::protocol::ag_ui::delta(change)`。
+
+AG-UI 不改变 Runtime State、Checkpoint、waiting、reply 或 Message 契约。未来的其他协议也
+复用同一输出边界，由 HTTP 或其他传输层选择具体协议。
+
+### 2.4 链路追踪
 
 Heart 使用 `fastrace` 记录 Agent 和 Workflow 的执行层级。应用在启动时选择 Reporter，运行结束或进程退出前调用一次 `flush`：
 
