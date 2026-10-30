@@ -3,6 +3,15 @@
 //! Harness supplies long-task defaults and uses a configured Workspace. It
 //! delegates execution to the Runtime ReAct Agent and Core components; it does
 //! not introduce a second execution loop or a Workflow lifecycle.
+//!
+//! The directory modules keep Harness policy and context defaults separate
+//! from the assembly builder. Context compression, result offloading and
+//! external task control belong here as they are added; their execution still
+//! delegates to existing Runtime and Core contracts.
+
+pub mod context;
+pub mod observe;
+pub mod policy;
 
 use crate::Cancellation;
 use crate::components::agent::{Agent as AgentContract, Error, Input};
@@ -12,13 +21,14 @@ use crate::components::workspace::Workspace;
 use crate::core::dispatch::Dispatch;
 use crate::runtime::agent::{react, subagent::SubAgent};
 
-const LONG_TASK_PROMPT: &str = "You are a capable agent for multi-step tasks. Break substantial work into clear steps, use the available tools to gather evidence and make changes, verify important results, and report what is complete and what remains. Do not claim that an action succeeded unless its result confirms it.";
+pub use context::DEFAULT_SYSTEM_PROMPT;
 
 /// Start building the long-task Harness preset.
 pub fn builder() -> Builder {
     Builder {
-        inner: react::builder().system_prompt(LONG_TASK_PROMPT),
+        inner: react::builder().system_prompt(context::system_prompt(None)),
         workspace: None,
+        policy: policy::Policy::default(),
     }
 }
 
@@ -27,6 +37,7 @@ pub fn builder() -> Builder {
 pub struct Builder<M = ()> {
     inner: react::Builder<M>,
     workspace: Option<Dispatch>,
+    policy: policy::Policy,
 }
 
 impl<M> Builder<M> {
@@ -34,12 +45,16 @@ impl<M> Builder<M> {
         Builder {
             inner: self.inner.model(model),
             workspace: self.workspace,
+            policy: self.policy,
         }
     }
 
     /// Replace the Harness long-task prompt with an application prompt.
     pub fn system_prompt(mut self, prompt: impl Into<String>) -> Self {
-        self.inner = self.inner.system_prompt(prompt);
+        let prompt = prompt.into();
+        self.inner = self
+            .inner
+            .system_prompt(context::system_prompt(Some(&prompt)));
         self
     }
 
@@ -90,11 +105,13 @@ impl<M> Builder<M> {
     }
 
     pub fn with_max_iters(mut self, max_iters: usize) -> Self {
+        self.policy.max_iters = max_iters;
         self.inner = self.inner.with_max_iters(max_iters);
         self
     }
 
     pub fn with_max_concurrency(mut self, max_concurrency: usize) -> Self {
+        self.policy.max_concurrency = max_concurrency;
         self.inner = self.inner.with_max_concurrency(max_concurrency);
         self
     }
@@ -110,6 +127,7 @@ where
     M: Chat + 'static,
 {
     pub fn build(self) -> Result<Agent<M>, Error> {
+        self.policy.validate()?;
         let dispatch = Dispatch::new().merge(self.workspace.unwrap_or_default())?;
         let inner = self.inner.with_dispatch(dispatch).build()?;
         Ok(Agent { inner })
