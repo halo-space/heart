@@ -17,7 +17,19 @@ pub use crate::runtime::trace;
 
 /// Protocol adapters used by the outer HTTP or transport layer.
 pub mod protocol {
+    pub use crate::core::protocol::a2a;
     pub use crate::core::protocol::ag_ui;
+}
+
+/// External service dispatch built on top of Agent and Workflow runtimes.
+/// Transport bindings are intentionally kept outside the Runtime itself.
+pub mod server {
+    pub use crate::server::a2a;
+    pub use crate::server::axum;
+    pub use crate::server::client;
+    pub use crate::server::sse;
+    pub use crate::server::tasks;
+    pub use crate::server::webhook;
 }
 
 pub use crate::components::message;

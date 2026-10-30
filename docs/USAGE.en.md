@@ -78,6 +78,7 @@ example. Concrete implementations live under `halo::agent::core`; execution stat
 | `error::Error` | Shared `code/message/details` error envelope; components add codes without changing the outer shape. | Every example returns `Result<_, halo::agent::Error>`; [`component_contracts.rs`](../examples/component_contracts.rs) |
 | `event::Event` | Public `Delta`/`Complete` observation stream; it is not Runtime State or recovery data. | [`component_contracts.rs`](../examples/component_contracts.rs), [`workflow_events.rs`](../examples/workflow_events.rs) |
 | `agent::protocol::ag_ui` | Converts Heart Event Stream to AG-UI events; called by the HTTP layer without changing Runtime contracts. | Section 2.3 |
+| `agent::protocol::a2a` | Remote-Agent Agent Card/Task/Artifact contracts and Heart Event conversion; `session_id` maps to A2A `contextId`, while `task_id` remains the remote task identifier. | Section 2.4 |
 | `model::chat` | Chat Provider request, tool description, event stream and usage contract; Providers own network adaptation. | [`provider_chat.rs`](../examples/provider_chat.rs), [`provider_deepseek.rs`](../examples/provider_deepseek.rs), [`provider_vllm.rs`](../examples/provider_vllm.rs) |
 | `model::embed`, `model::token`, `model::content` | Single-input embedding, shared token usage and canonical content Parts; Embed returns the shared `Message` shape. | [`component_contracts.rs`](../examples/component_contracts.rs); see the model section for real Providers |
 | `function::Function` | Standalone async business function with caller-defined input and output; it knows nothing about graph or execution IDs. | [`component_contracts.rs`](../examples/component_contracts.rs), [`node_macro.rs`](../examples/node_macro.rs) |
@@ -162,7 +163,8 @@ can call the AG-UI adapter at the response boundary. Conversion is performed eve
 streaming remains live. Only the actual end of the top-level run becomes AG-UI `RUN_FINISHED`; a
 `Complete` from one model, tool, or child-agent invocation only completes that invocation.
 
-The public entry point is:
+The public entry point is. Heart provides the protocol contracts and converts Heart Events to an
+A2A Task/Artifact stream; the outer HTTP service owns HTTP/JSON-RPC/SSE/Webhook transport:
 
 ```rust
 halo::agent::protocol::ag_ui
@@ -184,7 +186,88 @@ When the HTTP layer needs to send runtime state, it can use
 AG-UI does not change Runtime State, Checkpoint, waiting, reply, or Message contracts. Future
 protocols use the same output boundary and are selected by the HTTP or other transport layer.
 
-### 2.4 Trace reporting
+### 2.4 A2A remote-agent protocol
+
+A2A is used for remote Agent communication across processes or machines. It is different from
+AG-UI: AG-UI exposes runtime events to clients, while A2A exchanges tasks and results between
+Agents. In-process SubAgents, Agent-as-Tool, and Workflow Nodes do not use A2A.
+
+The public entry point is:
+
+```rust
+halo::agent::protocol::a2a
+```
+
+The outer Axum Server bindings are exposed as:
+
+```rust
+halo::agent::server::a2a
+halo::agent::server::axum
+halo::agent::server::sse
+halo::agent::server::client
+halo::agent::server::webhook
+```
+
+The first Axum route set mounts one Agent service:
+
+```rust
+let service = std::sync::Arc::new(halo::agent::server::a2a::Service::new(agent));
+let app = halo::agent::server::axum::router(service);
+```
+
+Applications can provide their own Task projection backend by implementing
+`halo::agent::server::tasks::Store`:
+
+```rust
+let service = halo::agent::server::a2a::Service::with_store(agent, store);
+```
+
+`Store` persists Task, Artifact, idempotency, and status facts. The Server Service owns live
+cancellation and event subscriptions; Runtime State and Checkpoint remain Runtime concerns.
+
+`message/send` creates a Task and drives the Agent in the background. `message/stream` returns
+SSE. A message with an existing `taskId` is delivered through `reply`; `tasks/get`,
+`tasks/cancel`, and `tasks/resubscribe` read the same Task projection. If an HTTP connection
+closes, the background driver continues consuming Agent events and updating the Task. The
+default Task projection is in memory; Runtime Checkpoint remains the recovery source of truth.
+
+An HTTP handler can convert the top-level Heart `Event` stream at the response boundary:
+
+```rust
+let context = halo::agent::protocol::a2a::Context::new(2001, 3001, "task-3001");
+let output = halo::agent::protocol::a2a::adapt(events, context);
+// The Axum Server layer encodes output as A2A JSON-RPC, SSE, or another binding.
+```
+
+Heart maps its identifiers to A2A as follows:
+
+```text
+session_id  -> A2A contextId: the shared conversation context
+chat_id     -> the current Heart Chat/Agent run
+task_id     -> one concrete remote A2A task
+```
+
+The adapter sends `session_id` as A2A `contextId` by default. If the remote server generates a
+different `contextId`, the adapter keeps the mapping internally and does not expose a second
+`remote_context_id` field to the application. The remote `task_id` continues that remote task;
+it does not replace the local `chat_id`.
+
+Remote `input_required` and `auth_required` states map to Heart `waiting`. A later reply continues
+the same remote task with the same session context. A2A delivers concrete task results through
+`Artifact` Parts; Heart maps those Parts to the existing Message/Event/Content contracts and does
+not introduce a `tool_result` wrapper.
+
+A2A stays outside the Agent and Workflow Runtime. The HTTP layer chooses JSON-RPC, HTTP+JSON, SSE,
+or Webhook transport and invokes the protocol adapter:
+
+```text
+Agent / Workflow
+    -> Heart Event / State
+    -> halo::agent::protocol::a2a
+    -> HTTP layer
+```
+
+### 2.5 Trace reporting
 
 Heart uses `fastrace` for Agent and Workflow execution traces. The application selects a Reporter during startup and calls `flush` before shutdown:
 

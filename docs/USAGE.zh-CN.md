@@ -78,6 +78,7 @@ harness/      面向长任务 Agent 的高阶组合能力
 | `error::Error` | 所有组件共享 `code/message/details` 错误外壳；各组件只增加自己的错误码，不改变外层结构。 | 所有示例的 `Result<_, halo::agent::Error>`；[`component_contracts.rs`](../examples/component_contracts.rs) |
 | `event::Event` | 对外观察流的 `Delta`/`Complete`；不承担 Runtime State 或恢复。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`workflow_events.rs`](../examples/workflow_events.rs) |
 | `agent::protocol::ag_ui` | 将 Heart Event Stream 转换为 AG-UI 事件；由 HTTP 层调用，不改变 Runtime 契约。 | 本节 2.3 |
+| `agent::protocol::a2a` | 远程 Agent Agent Card/Task/Artifact 协议契约和 Heart Event 转换；`session_id` 对应 A2A `contextId`，`task_id` 保留为远端任务标识。 | 本节 2.4 |
 | `model::chat` | Chat Provider 的 `Request`、工具描述、`Event` 流和 `Usage` 约定；Provider 负责网络适配。 | [`provider_chat.rs`](../examples/provider_chat.rs)、[`provider_deepseek.rs`](../examples/provider_deepseek.rs)、[`provider_vllm.rs`](../examples/provider_vllm.rs) |
 | `model::embed`、`model::token`、`model::content` | 单条向量请求、共享 Token Usage 和规范化内容 Part；Embed 返回统一 `Message`。 | [`component_contracts.rs`](../examples/component_contracts.rs)；真实 Provider 配置见模型章节 |
 | `function::Function` | 不知道图、节点或执行 ID 的独立异步业务函数；输入输出类型由调用方决定。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`node_macro.rs`](../examples/node_macro.rs) |
@@ -188,7 +189,86 @@ HTTP 层需要发送运行状态时，可以在同一输出边界调用
 AG-UI 不改变 Runtime State、Checkpoint、waiting、reply 或 Message 契约。未来的其他协议也
 复用同一输出边界，由 HTTP 或其他传输层选择具体协议。
 
-### 2.4 链路追踪
+### 2.4 A2A 远程 Agent 协议
+
+A2A 用于跨进程或跨机器调用远程 Agent。它和 AG-UI 不同：AG-UI 面向前端事件展示，A2A
+面向 Agent 之间的任务通信。进程内的 SubAgent、Agent-as-Tool 和 Workflow Node 不通过
+A2A 调用。
+
+公共入口为：当前已实现协议数据契约和 Heart Event 到 A2A Task/Artifact 流的转换；具体
+HTTP/JSON-RPC/SSE/Webhook 传输由 Axum Server 层负责：
+
+```rust
+halo::agent::protocol::a2a
+```
+
+Server 相关入口为：
+
+```rust
+halo::agent::server::a2a
+halo::agent::server::axum
+halo::agent::server::sse
+halo::agent::server::client
+halo::agent::server::webhook
+```
+
+Axum 首版路由挂载一个 Agent Service：
+
+```rust
+let service = std::sync::Arc::new(halo::agent::server::a2a::Service::new(agent));
+let app = halo::agent::server::axum::router(service);
+```
+
+应用需要自己的 Task 投影后端时，实现 `halo::agent::server::tasks::Store`，再使用：
+
+```rust
+let service = halo::agent::server::a2a::Service::with_store(agent, store);
+```
+
+`Store` 只保存 Task、Artifact、幂等消息和状态事实；取消信号与事件订阅由 Server Service
+管理，Runtime State 和 Checkpoint 仍由 Runtime 管理。
+
+`message/send` 创建 Task 并后台驱动 Agent；`message/stream` 返回 SSE；带已有 `taskId`
+的后续消息通过 `reply` 继续 waiting；`tasks/get`、`tasks/cancel` 和
+`tasks/resubscribe` 读取同一个 Task 投影。HTTP 连接断开时，后台驱动仍继续消费 Agent
+事件并更新 Task。Task 投影默认在内存中，Runtime Checkpoint 仍是恢复真相。
+
+HTTP 处理器拿到 Heart 的顶层 `Event` 流后，可以在输出边界转换为 A2A Task/Artifact 流：
+
+```rust
+let context = halo::agent::protocol::a2a::Context::new(2001, 3001, "task-3001");
+let output = halo::agent::protocol::a2a::adapt(events, context);
+// Axum Server 层继续把 output 编码为 A2A JSON-RPC、SSE 或其他绑定。
+```
+
+Heart 的会话字段和 A2A 字段按下面的关系使用：
+
+```text
+session_id  -> A2A contextId：同一会话上下文
+chat_id     -> Heart 本次 Chat/Agent 运行
+task_id     -> 远端 A2A 的一次具体任务
+```
+
+适配器默认把 `session_id` 发送为 A2A `contextId`。如果远端服务生成了不同的
+`contextId`，适配器只在内部保存映射，不向应用增加 `remote_context_id`。远端返回的
+`task_id` 只用于继续该远端任务，不替代本地 `chat_id`。
+
+远端任务需要补充信息时，A2A 的 `input_required` 或 `auth_required` 映射为 Heart 的
+`waiting`。后续回复继续携带同一个远端 `task_id` 和会话上下文。A2A 的实际结果通过
+`Artifact` Parts 传递，Heart 只转换到已有的 Message/Event/Content 契约，不新增
+`tool_result` 包装。
+
+A2A 适配不进入 Agent 或 Workflow Runtime；HTTP 层根据接口需要选择 JSON-RPC、HTTP+JSON、
+SSE 或 Webhook，并调用协议适配器：
+
+```text
+Agent / Workflow
+    -> Heart Event / State
+    -> halo::agent::protocol::a2a
+    -> HTTP 层
+```
+
+### 2.5 链路追踪
 
 Heart 使用 `fastrace` 记录 Agent 和 Workflow 的执行层级。应用在启动时选择 Reporter，运行结束或进程退出前调用一次 `flush`：
 

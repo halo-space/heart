@@ -23,6 +23,7 @@ test = false
 bench = false
 
 [dependencies]
+axum = { version = "0.8.9", default-features = false, features = ["json", "http1", "tokio"] }
 heart-node-macros = { path = "src/runtime/workflow/macros", version = "0.1.1" }
 futures-core = "0.3"
 futures-util = { version = "0.3", features = ["alloc"] }

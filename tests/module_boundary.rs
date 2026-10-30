@@ -35,6 +35,8 @@ fn core_does_not_depend_on_runtime() {
     let source = source("src/core");
     assert!(!source.contains("crate::runtime"));
     assert!(!source.contains("use crate::runtime"));
+    assert!(!source.contains("crate::server"));
+    assert!(!source.contains("crate::harness"));
 }
 
 #[test]
@@ -42,6 +44,20 @@ fn components_do_not_depend_on_business_layers() {
     let source = source("src/components");
     assert!(!source.contains("crate::core"));
     assert!(!source.contains("crate::runtime"));
+    assert!(!source.contains("crate::harness"));
+    assert!(!source.contains("crate::server"));
+}
+
+#[test]
+fn runtime_does_not_depend_on_outer_service_layers() {
+    let source = source("src/runtime");
+    assert!(!source.contains("crate::server"));
+    assert!(!source.contains("crate::harness"));
+}
+
+#[test]
+fn server_does_not_depend_on_harness() {
+    let source = source("src/server");
     assert!(!source.contains("crate::harness"));
 }
 

@@ -11,6 +11,7 @@ mod components;
 pub(crate) mod core;
 pub(crate) mod pkg;
 pub(crate) mod runtime;
+pub(crate) mod server;
 
 pub(crate) use components::checkpoint;
 pub(crate) use components::compression;
