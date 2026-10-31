@@ -205,9 +205,10 @@ pub trait Loader: Send + Sync {
 }
 
 pub trait Parser: Send + Sync {
-    /// Immutable format identifiers supported by this implementation.
-    /// Callers can inspect this list to select a parser, but cannot change it.
-    const FORMATS: &'static [&'static str];
+    /// Immutable input identifiers supported by this implementation. Values
+    /// are usually file extensions, but logical identifiers such as `text`
+    /// and `markdown` are also allowed.
+    const EXTS: &'static [&'static str];
 
     fn parse(
         &self,

@@ -595,7 +595,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 本地 `.env` 至少配置 `HEART_EMBED_API_KEY`；如使用兼容网关或其他模型名，可另配 `HEART_EMBED_BASE_URL`、`HEART_EMBED_MODEL`。不要提交密钥。
 
-OpenAI 的 Embeddings API 也已由 `core::provider::openai::OpenAI` 提供，无需额外 Provider 类型。默认地址为 `https://api.openai.com/v1`，例如使用 `text-embedding-3-small`；请求维度通过 `embed::Request.dimensions` 传入。配置 `OPENAI_API_KEY` 后，`scripts/test-real.sh` 会执行真实 OpenAI 向量验收。
+OpenAI 的 Embeddings API 也已由 `core::provider::openai::OpenAI` 提供，无需额外 Provider 类型。默认地址为 `https://api.openai.com/v1`，例如使用 `text-embedding-3-small`；请求维度通过 `embed::Request.dimensions` 传入。配置 `OPENAI_API_KEY` 后，可以按下方真实验收命令执行 OpenAI 向量验收；本地 `scripts/test-real.sh` 只是工作区辅助脚本，不随 crate 发布。
 
 ## 7. Workspace、Skill 和 MCP
 
@@ -1190,9 +1190,8 @@ cargo test --offline --lib
 
 真实模型验收必须调用实际 Provider，不用固定模型响应替代。配置好本地 `.env` 后，可运行 Agent 工具调用和父子 Agent 委派的真实测试：
 
-```bash
-./scripts/test-real.sh
-```
+本地工作区可以使用 `scripts/test-real.sh` 一次运行整套真实验收；该脚本不属于发布包。发布包使用下方列出的独立 `cargo test` 命令，
+并从本地 `.env` 读取真实凭据。
 
 该脚本从未提交的本地 `.env` 读取 Provider 凭据，不输出密钥；它逐项运行真实 Provider、Planner、Evaluator、Compressor、长期记忆提取/合并、Chat/ReAct Agent 的真实工具调用、父子 Agent、Agent 用户反馈恢复、流式/非流式 Agent、Chat 持久化收口、Workflow 内嵌 Agent、Skill、以及本地 MCP stdio/HTTP 服务验收。配置 `HEART_EMBED_API_KEY` 后，会使用智谱 Embedding-3 运行 Semantic Chunker 的真实向量验收；`HEART_EMBED_BASE_URL` 和 `HEART_EMBED_MODEL` 可选，默认分别为 `https://open.bigmodel.cn/api/paas/v4` 和 `embedding-3`。未配置 API Key 时会明确跳过，不以模拟向量代替。配置 `HEART_ES_URL` 与隔离测试索引后，也会运行真实 Elasticsearch 测试；配置 `HEART_WORKSPACE_TEST_IMAGE` 后，会运行真实 Docker Workspace 测试。它不连接远端 MCP 地址。也可以按需单独执行下方的测试命令。
 

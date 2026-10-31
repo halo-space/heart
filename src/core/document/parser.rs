@@ -505,7 +505,7 @@ fn validate_csv_quotes(
 }
 
 impl document::Parser for Parser {
-    const FORMATS: &'static [&'static str] = &[
+    const EXTS: &'static [&'static str] = &[
         "text", "txt", "markdown", "md", "csv", "json", "pdf", "doc", "docx", "docm", "dot",
         "dotm", "dotx", "xlsx", "xls", "xlsm", "xlsb", "pptx", "ppt", "pptm", "pot", "potm",
         "potx", "odt", "ott", "ods", "ots", "odp", "otp", "rtf", "pages", "key", "numbers", "tsv",

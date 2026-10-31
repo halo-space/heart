@@ -63,7 +63,7 @@ impl Client {
     ) -> Result<Self, Error> {
         check(cancellation)?;
         check_runtime()?;
-        let url = reqwest_mcp::Url::parse(endpoint)
+        let url = reqwest::Url::parse(endpoint)
             .map_err(|_| Error::new("INVALID_ARGUMENTS", "invalid MCP endpoint"))?;
         if !matches!(url.scheme(), "http" | "https")
             || url.host_str().is_none()
@@ -93,19 +93,19 @@ impl Client {
                         "MCP protocol headers cannot be overridden",
                     ));
                 }
-                let name = reqwest_mcp::header::HeaderName::from_bytes(key.as_bytes())
+                let name = reqwest::header::HeaderName::from_bytes(key.as_bytes())
                     .map_err(|_| Error::new("INVALID_ARGUMENTS", "invalid MCP header"))?;
                 let mut value =
-                    reqwest_mcp::header::HeaderValue::from_str(value.as_str().ok_or_else(
-                        || Error::new("INVALID_ARGUMENTS", "MCP header value must be text"),
-                    )?)
+                    reqwest::header::HeaderValue::from_str(value.as_str().ok_or_else(|| {
+                        Error::new("INVALID_ARGUMENTS", "MCP header value must be text")
+                    })?)
                     .map_err(|_| Error::new("INVALID_ARGUMENTS", "invalid MCP header value"))?;
                 value.set_sensitive(true);
                 Ok((name, value))
             })
             .collect::<Result<std::collections::HashMap<_, _>, Error>>()?;
-        let http = reqwest_mcp::Client::builder()
-            .redirect(reqwest_mcp::redirect::Policy::none())
+        let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(TIMEOUT)
             .build()
             .map_err(|_| Error::new("TRANSPORT", "cannot create MCP HTTP client"))?;

@@ -272,6 +272,24 @@ fn encode_request(
     }
     let mut options = config.options.clone();
     options.extend(request.options.clone());
+    let reserved = [
+        "model",
+        "messages",
+        "stream",
+        "temperature",
+        "max_tokens",
+        "max_completion_tokens",
+        "top_p",
+        "stop",
+        "tools",
+        "tool_choice",
+        "response_format",
+        "stream_options",
+        "input",
+        "dimensions",
+        "encoding_format",
+    ];
+    validate_options(&options, &reserved)?;
     if kind == Kind::DeepSeek {
         if matches!(
             request.response_format,
@@ -307,48 +325,7 @@ fn encode_request(
             ));
         }
     }
-    let mut body = Map::new();
-    let allowed: &[&str] = match kind {
-        Kind::OpenAI => &[
-            "reasoning_effort",
-            "seed",
-            "frequency_penalty",
-            "presence_penalty",
-            "logit_bias",
-            "user",
-            "service_tier",
-            "store",
-            "logprobs",
-            "top_logprobs",
-        ],
-        Kind::DeepSeek => &[
-            "thinking",
-            "reasoning_effort",
-            "frequency_penalty",
-            "presence_penalty",
-            "logprobs",
-            "top_logprobs",
-        ],
-        Kind::Vllm => &[
-            "seed",
-            "frequency_penalty",
-            "presence_penalty",
-            "repetition_penalty",
-            "top_k",
-            "min_p",
-            "logprobs",
-            "top_logprobs",
-            "chat_template_kwargs",
-        ],
-        // Zhipu currently exposes Embed through this connection; Chat is not
-        // part of the public Zhipu provider surface.
-        Kind::Zhipu => &[],
-    };
-    for key in allowed {
-        if let Some(value) = options.get(*key) {
-            body.insert((*key).into(), value.clone());
-        }
-    }
+    let mut body = options;
     body.insert("model".into(), config.model_name.clone().into());
     body.insert(
         "messages".into(),
@@ -411,6 +388,17 @@ fn encode_request(
         });
     }
     Ok(Value::Object(body))
+}
+
+fn validate_options(options: &Map<String, Value>, reserved: &[&str]) -> Result<(), Error> {
+    if let Some(key) = options.keys().find(|key| reserved.contains(&key.as_str())) {
+        return Err(Error::new(
+            "INVALID_ARGUMENTS",
+            "provider options contain a reserved request field",
+        )
+        .with_details(format!("field={key}")));
+    }
+    Ok(())
 }
 
 fn part_value(part: &Part) -> Result<&str, Error> {
@@ -954,22 +942,11 @@ pub struct Embed {
 
 impl model::embed::Embed for Embed {
     async fn embed(&self, request: model::embed::Request) -> Result<Message, Error> {
-        request.validate()?;
-        if self.connection.kind == Kind::Zhipu {
-            super::zhipu::validate_dimensions(request.dimensions)?;
-        }
-        let mut options = self.config.options.clone();
-        options.extend(request.options);
-        let mut body = json!({"model": self.config.model_name, "input": request.input, "encoding_format": "float"});
-        if let Some(dimensions) = request.dimensions {
-            body["dimensions"] = dimensions.into();
-        }
-        if let Some(user) = options.get("user") {
-            body["user"] = user.clone();
-        }
+        let dimensions = request.dimensions;
+        let body = encode_embed_request(self.connection.kind, &self.config, &request)?;
         let value: Value = self
             .connection
-            .post("embeddings", body)
+            .post("embeddings", Value::Object(body))
             .await?
             .json()
             .await
@@ -994,7 +971,7 @@ impl model::embed::Embed for Embed {
             vector,
             self.connection.kind.name(),
             &self.config.model_name,
-            request.dimensions,
+            dimensions,
         )?;
         message
             .metadata
@@ -1002,6 +979,31 @@ impl model::embed::Embed for Embed {
         message.usage = parse_usage(value.get("usage"))?;
         Ok(message)
     }
+}
+
+fn encode_embed_request(
+    kind: Kind,
+    config: &model::embed::Config,
+    request: &model::embed::Request,
+) -> Result<Map<String, Value>, Error> {
+    request.validate()?;
+    if kind == Kind::Zhipu {
+        super::zhipu::validate_dimensions(request.dimensions)?;
+    }
+    let mut options = config.options.clone();
+    options.extend(request.options.clone());
+    validate_options(
+        &options,
+        &["model", "input", "encoding_format", "dimensions"],
+    )?;
+    let mut body = options;
+    body.insert("model".into(), config.model_name.clone().into());
+    body.insert("input".into(), request.input.clone().into());
+    body.insert("encoding_format".into(), "float".into());
+    if let Some(dimensions) = request.dimensions {
+        body.insert("dimensions".into(), dimensions.into());
+    }
+    Ok(body)
 }
 
 #[cfg(test)]
@@ -1146,6 +1148,51 @@ mod tests {
         assert_eq!(message.content[0].data["value"], "先分析问题");
         assert_eq!(message.content[1].r#type, "text");
         assert_eq!(message.content[1].data["value"], "这是答案");
+    }
+
+    #[test]
+    fn provider_options_are_forwarded_and_reserved_fields_are_rejected() {
+        let config = model::chat::Config::new("test");
+        let request = Request {
+            messages: Messages::new([Message::new(Role::User)]),
+            options: Map::from_iter([("provider_extension".into(), json!({"enabled": true}))]),
+            ..Default::default()
+        };
+        let wire = encode_request(Kind::OpenAI, &config, &request).unwrap();
+        assert_eq!(wire["provider_extension"]["enabled"], true);
+
+        let request = Request {
+            messages: Messages::new([Message::new(Role::User)]),
+            options: Map::from_iter([("messages".into(), json!([]))]),
+            ..Default::default()
+        };
+        let error = encode_request(Kind::OpenAI, &config, &request).unwrap_err();
+        assert_eq!(error.code, "INVALID_ARGUMENTS");
+        assert_eq!(error.details.as_deref(), Some("field=messages"));
+    }
+
+    #[test]
+    fn embed_options_are_forwarded_and_reserved_fields_are_rejected() {
+        let config = model::embed::Config {
+            model_name: "embed-v1".into(),
+            options: Map::new(),
+        };
+        let request = model::embed::Request {
+            input: "北京".into(),
+            dimensions: None,
+            options: Map::from_iter([("provider_extension".into(), json!("fast"))]),
+        };
+        let wire = encode_embed_request(Kind::OpenAI, &config, &request).unwrap();
+        assert_eq!(wire["provider_extension"], "fast");
+
+        let request = model::embed::Request {
+            input: "北京".into(),
+            dimensions: None,
+            options: Map::from_iter([("input".into(), json!("other"))]),
+        };
+        let error = encode_embed_request(Kind::OpenAI, &config, &request).unwrap_err();
+        assert_eq!(error.code, "INVALID_ARGUMENTS");
+        assert_eq!(error.details.as_deref(), Some("field=input"));
     }
 
     #[test]

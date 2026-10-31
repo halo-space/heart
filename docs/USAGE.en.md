@@ -576,7 +576,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 Set `HEART_EMBED_API_KEY` in the local `.env`. For a compatible gateway or a different model name, optionally set `HEART_EMBED_BASE_URL` and `HEART_EMBED_MODEL`. Never commit credentials.
 
-The OpenAI Embeddings API is also available through the existing `core::provider::openai::OpenAI`; no separate Provider type is needed. It defaults to `https://api.openai.com/v1` and can use `text-embedding-3-small`; pass a requested vector size via `embed::Request.dimensions`. Setting `OPENAI_API_KEY` enables the live OpenAI vector acceptance in `scripts/test-real.sh`.
+The OpenAI Embeddings API is also available through the existing `core::provider::openai::OpenAI`; no separate Provider type is needed. It defaults to `https://api.openai.com/v1` and can use `text-embedding-3-small`; pass a requested vector size via `embed::Request.dimensions`. Setting `OPENAI_API_KEY` enables the live OpenAI vector acceptance through the commands listed below; the local `scripts/test-real.sh` helper is not part of the published crate.
 
 ## 7. Workspace, Skill and MCP
 
@@ -926,9 +926,8 @@ cargo test --offline --lib
 
 Live model acceptance must call the actual provider; fixed model responses are not a substitute. After configuring the local `.env`, run the live Agent tool-call and parent/child delegation tests:
 
-```bash
-./scripts/test-real.sh
-```
+The local workspace may use `scripts/test-real.sh` to run the complete live suite. That helper is not shipped in the published crate;
+published-package users should run the individual `cargo test` commands listed below with credentials from the local `.env`.
 
 The script reads provider credentials from the untracked local `.env` without printing secrets. It runs real Provider, Planner, Evaluator, Compressor, long-memory extraction/merge, Chat/ReAct Agent tool calls, parent/child Agent, Agent human-feedback recovery, streaming/non-streaming Agent, Chat persistence closeout, Workflow with an embedded Agent, Skill, and local MCP stdio/HTTP acceptance tests. Configure `HEART_EMBED_API_KEY` to run real Semantic Chunker acceptance with Zhipu Embedding-3; `HEART_EMBED_BASE_URL` and `HEART_EMBED_MODEL` are optional and default to `https://open.bigmodel.cn/api/paas/v4` and `embedding-3`. Without the API key that case is explicitly skipped (no synthetic vectors are substituted). With `HEART_ES_URL` and an isolated test index configured, it also runs real Elasticsearch tests; with `HEART_WORKSPACE_TEST_IMAGE`, it runs real Docker Workspace tests. It does not connect to any remote MCP endpoint. Individual commands are listed below for selective runs.
 
