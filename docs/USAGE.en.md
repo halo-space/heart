@@ -47,6 +47,7 @@ In your own Cargo project, add the dependencies above and copy any example to `s
 | DeepSeek Chat Completions | [`examples/provider_deepseek.rs`](../examples/provider_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example provider_deepseek` |
 | Live DeepSeek Agent, Tool and fastrace | [`examples/agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example agent_live_deepseek` |
 | Three concurrent SubAgents | [`examples/agent_live_three_subagents.rs`](../examples/agent_live_three_subagents.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example agent_live_three_subagents` |
+| Static Team Leader with three members | [`examples/agent_live_team.rs`](../examples/agent_live_team.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example agent_live_team` |
 | VLLM Chat Completions | [`examples/provider_vllm.rs`](../examples/provider_vllm.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example provider_vllm` |
 | Core component contracts (Function, Prompt, Search, Embed, Sandbox, Event) | [`examples/component_contracts.rs`](../examples/component_contracts.rs) | `cargo run --offline --example component_contracts` |
 
@@ -89,7 +90,7 @@ example. Concrete implementations live under `halo::agent::core`; execution stat
 | `permission::Permission` | Allows or denies an actual Tool/MCP call; it does not execute tools or own Agent State. | [`agent_permission.rs`](../examples/agent_permission.rs) |
 | `middleware::Middleware` | Common `before/after` hooks for model, tool, permission and compression stages; retry is an optional implementation. | [`agent_middleware.rs`](../examples/agent_middleware.rs) |
 | `prompt::Template`, `Variables` | Renders Messages and named history in declared order; it never invokes a model. | [`component_contracts.rs`](../examples/component_contracts.rs), [`compress.rs`](../examples/compress.rs) |
-| `compression::Compression` | Compresses Message history into a new summary Message; threshold and scheduling are configured by Harness/application code. | [`compress.rs`](../examples/compress.rs) |
+| `compression::Compressor` | Compresses Message history into a new summary Message; threshold and scheduling are configured by Harness/application code. | [`compress.rs`](../examples/compress.rs) |
 | `memory` | Short-term Session/Chat and long-term `summary/fact/preference` storage contracts; backends may be in-memory, PG or ES. | [`short_memory.rs`](../examples/short_memory.rs), [`agent_memory.rs`](../examples/agent_memory.rs) |
 | `checkpoint::Checkpoint` | Saves and loads one complete recoverable runtime snapshot; it is not Chat audit data or a Trace. | [`checkpoint.rs`](../examples/checkpoint.rs) |
 | `sandbox::Sandbox` | Explicit execution boundary; `core::sandbox::Local` runs local processes and is not an isolation mechanism. | [`component_contracts.rs`](../examples/component_contracts.rs) |

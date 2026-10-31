@@ -12,6 +12,7 @@ pub(crate) mod hooks;
 pub(crate) mod lifecycle;
 pub mod react;
 pub mod subagent;
+pub mod team;
 
 pub(crate) mod checkpoint;
 pub mod completion;

@@ -18,6 +18,7 @@ pub type Error = crate::Error;
 /// identities stay in Input/Runtime, not internal Message metadata. Other
 /// input metadata is retained while payload becomes ordered model content.
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Input {
     #[serde(default)]
     pub metadata: Map<String, Value>,
@@ -26,6 +27,7 @@ pub struct Input {
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct Payload {
     #[serde(rename = "type")]
     pub r#type: String,

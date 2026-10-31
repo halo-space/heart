@@ -49,6 +49,7 @@ cargo run --offline --example workflow_events
 | DeepSeek Chat Completions | [`examples/provider_deepseek.rs`](../examples/provider_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example provider_deepseek` |
 | 真实 DeepSeek Agent、Tool 和 fastrace | [`examples/agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example agent_live_deepseek` |
 | 三个并发 SubAgent | [`examples/agent_live_three_subagents.rs`](../examples/agent_live_three_subagents.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example agent_live_three_subagents` |
+| 静态 Team Leader 与三个成员 | [`examples/agent_live_team.rs`](../examples/agent_live_team.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example agent_live_team` |
 | VLLM Chat Completions | [`examples/provider_vllm.rs`](../examples/provider_vllm.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example provider_vllm` |
 | 基础组件契约（Function、Prompt、Search、Embed、Sandbox、Event） | [`examples/component_contracts.rs`](../examples/component_contracts.rs) | `cargo run --offline --example component_contracts` |
 
@@ -89,7 +90,7 @@ harness/      面向长任务 Agent 的高阶组合能力
 | `permission::Permission` | 在实际 Tool/MCP 调用前给出允许或拒绝；不执行工具，也不持有 Agent State。 | [`agent_permission.rs`](../examples/agent_permission.rs) |
 | `middleware::Middleware` | 对模型、工具、权限、压缩等阶段提供统一 `before/after` 钩子；重试策略是可选实现。 | [`agent_middleware.rs`](../examples/agent_middleware.rs) |
 | `prompt::Template`、`Variables` | 按定义顺序渲染单条 Message 和命名历史 `Messages`，不执行模型调用。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`compress.rs`](../examples/compress.rs) |
-| `compression::Compression` | 将历史 Message 压缩为新的摘要 Message；阈值和触发时机由 Harness/应用配置。 | [`compress.rs`](../examples/compress.rs) |
+| `compression::Compressor` | 将历史 Message 压缩为新的摘要 Message；阈值和触发时机由 Harness/应用配置。 | [`compress.rs`](../examples/compress.rs) |
 | `memory` | 短期 Session/Chat 和长期 `summary/fact/preference` 的存储契约；后端可为内存、PG、ES 等。 | [`short_memory.rs`](../examples/short_memory.rs)、[`agent_memory.rs`](../examples/agent_memory.rs) |
 | `checkpoint::Checkpoint` | 保存和读取一次运行的完整可恢复现场；不等同于 Chat 审计或 Trace。 | [`checkpoint.rs`](../examples/checkpoint.rs) |
 | `sandbox::Sandbox` | 受明确请求约束的执行边界；`core::sandbox::Local` 是本地进程实现，不自动提供隔离。 | [`component_contracts.rs`](../examples/component_contracts.rs) |

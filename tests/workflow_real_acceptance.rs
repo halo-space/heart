@@ -63,6 +63,11 @@ fn next_workflow_approval_id() -> i64 {
     NEXT.fetch_add(1, Ordering::SeqCst)
 }
 
+fn next_team_id() -> i64 {
+    static NEXT: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(9_300_100);
+    NEXT.fetch_add(1, Ordering::SeqCst)
+}
+
 impl Permission for AskForApproval {
     async fn check(&self, _: &PermissionRequest, _: &Cancellation) -> Result<Decision, Error> {
         Ok(Decision {
@@ -160,6 +165,92 @@ async fn workflow_runs_embedded_agent_with_real_model() {
     );
     assert!(execution.attempts[0].usage.is_some());
     println!("LIVE_WORKFLOW_AGENT_OUTPUT={final_text}");
+}
+
+#[tokio::test]
+#[ignore = "requires HEART_VLLM_BASE_URL, HEART_VLLM_API_KEY and HEART_VLLM_MODEL"]
+async fn workflow_runs_embedded_static_team_with_real_model() {
+    let provider = Vllm::new(Config {
+        base_url: std::env::var("HEART_VLLM_BASE_URL").expect("set HEART_VLLM_BASE_URL"),
+        api_key: std::env::var("HEART_VLLM_API_KEY").expect("set HEART_VLLM_API_KEY"),
+        ..Config::default()
+    })
+    .expect("construct real VLLM provider");
+    let model = || {
+        provider
+            .chat(
+                chat::Config::new(std::env::var("HEART_VLLM_MODEL").expect("set HEART_VLLM_MODEL"))
+                    .options(serde_json::Map::from_iter([(
+                        "chat_template_kwargs".into(),
+                        json!({"enable_thinking": false}),
+                    )])),
+            )
+            .expect("construct real VLLM Chat")
+    };
+    let researcher = agent::chat()
+        .model(model())
+        .system_prompt("你是 researcher。收到任务后只回复 RESEARCH_OK。")
+        .build()
+        .expect("build researcher");
+    let team = agent::team()
+        .leader(
+            agent::react()
+                .model(model())
+                .system_prompt(
+                    "你是 Team Leader。必须且只调用一次 team_assign，把完整 agent::Input 任务交给 researcher。成员完成后只回复一句汇总。",
+                ),
+        )
+        .member(
+            agent::SubAgent::new("researcher", researcher)
+                .expect("register researcher")
+                .description("负责研究"),
+        )
+        .with_id_fn(next_team_id)
+        .build()
+        .expect("build Team");
+    let mut builder = WorkflowBuilder::new("live-team-workflow");
+    builder
+        .add_agent_node("team", team)
+        .expect("add Team as Workflow Agent node");
+    builder.add_edge(START, "team").expect("connect START");
+    builder.add_edge("team", END).expect("connect END");
+    let workflow = builder.compile().expect("compile Team Workflow");
+    let mut runtime = Runtime::new(9_300_001, workflow).expect("create Workflow Runtime");
+    let mut user = Message::new(Role::User);
+    user.content.push(Part {
+        r#type: "text".into(),
+        data: json!({"value":"协调 researcher 完成研究并汇总结果。"})
+            .as_object()
+            .unwrap()
+            .clone(),
+    });
+    let mut events = runtime
+        .run(
+            Messages::new([user]),
+            Arc::new(next_team_id),
+            Cancellation::new(),
+        )
+        .await
+        .expect("run Team Workflow");
+    let mut member_events = 0usize;
+    while let Some(event) = events.next().await {
+        let event = event.expect("Team Workflow event");
+        let message = match event {
+            Event::Delta { message } | Event::Complete { message, .. } => message,
+        };
+        if message.metadata.contains_key("node_id") {
+            member_events += 1;
+        }
+    }
+    drop(events);
+    assert!(
+        member_events > 0,
+        "Workflow must expose embedded Team member events"
+    );
+    assert_eq!(
+        runtime.state().nodes["team"].status,
+        halo::agent::workflow::node::Status::Succeeded
+    );
 }
 
 #[tokio::test]

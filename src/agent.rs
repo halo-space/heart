@@ -12,6 +12,7 @@ pub use crate::components::message::{Message, Messages};
 /// this re-export keeps application code on the single `halo::agent` entry.
 pub use crate::core::provider;
 pub use crate::runtime::agent::subagent::SubAgent;
+pub use crate::runtime::agent::team;
 pub use crate::runtime::agent::{chat, react};
 pub use crate::runtime::trace;
 
@@ -94,4 +95,9 @@ pub fn chat() -> chat::Builder {
 /// Construct the ReAct implementation through the shared Agent namespace.
 pub fn react() -> react::Builder {
     react::builder()
+}
+
+/// Construct the first static Team composition around a ReAct Leader.
+pub fn team() -> team::Builder {
+    team::builder()
 }

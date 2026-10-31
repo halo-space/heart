@@ -20,6 +20,19 @@ use std::task::{Context, Poll};
 type ErasedStream = Pin<Box<dyn futures_core::Stream<Item = Result<Event, Error>> + 'static>>;
 type RunFuture = Pin<Box<dyn Future<Output = Result<ErasedStream, Error>> + 'static>>;
 
+struct SerializedStream {
+    inner: ErasedStream,
+    _guard: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl futures_core::Stream for SerializedStream {
+    type Item = Result<Event, Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        self.inner.as_mut().poll_next(cx)
+    }
+}
+
 trait ErasedAgent: Send + Sync {
     fn run(&self, input: Input, cancellation: Cancellation) -> RunFuture;
 }
@@ -50,6 +63,7 @@ pub struct SubAgent {
     name: String,
     description: String,
     runner: Arc<dyn ErasedAgent>,
+    serial: Arc<tokio::sync::Mutex<()>>,
 }
 
 impl SubAgent {
@@ -68,6 +82,7 @@ impl SubAgent {
             name,
             description: String::new(),
             runner: Arc::new(TypedAgent(Arc::new(agent))),
+            serial: Arc::new(tokio::sync::Mutex::new(())),
         })
     }
 
@@ -84,15 +99,62 @@ impl SubAgent {
         &self.description
     }
 
-    pub(crate) fn definition(&self) -> crate::components::tool::ToolDefinition {
+    pub(crate) fn definition(subagents: &[SubAgent]) -> crate::components::tool::ToolDefinition {
+        Self::definition_named(subagents, "agent_spawn", "Delegate a child task")
+    }
+
+    pub(crate) fn definition_named(
+        subagents: &[SubAgent],
+        tool_name: &str,
+        operation: &str,
+    ) -> crate::components::tool::ToolDefinition {
+        let members = subagents
+            .iter()
+            .map(|subagent| {
+                if subagent.description.is_empty() {
+                    format!("- {}", subagent.name)
+                } else {
+                    format!("- {}: {}", subagent.name, subagent.description)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let input_schema = serde_json::json!({
+            "type": "object",
+            "properties": {
+                "metadata": {"type": "object", "additionalProperties": true},
+                "payload": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "type": {"type": "string", "enum": ["text", "audio", "image", "file", "json"]},
+                            "data": {
+                                "type": "object",
+                                "properties": {"value": {}},
+                                "required": ["value"],
+                                "additionalProperties": true
+                            },
+                            "mime_type": {"type": ["string", "null"]}
+                        },
+                        "required": ["type", "data"],
+                        "additionalProperties": false
+                    }
+                }
+            },
+            "required": ["payload"],
+            "additionalProperties": false
+        });
         crate::components::tool::ToolDefinition {
-            name: "agent_spawn".into(),
-            description: "Delegate a child task to one of the registered SubAgents. The child input must be an agent::Input object.".into(),
+            name: tool_name.into(),
+            description: format!(
+                "{operation} to one of the registered members. The member input must be an agent::Input object. Registered members:\n{members}"
+            ),
             parameters: serde_json::from_value(serde_json::json!({
                 "type": "object",
                 "properties": {
                     "name": {"type": "string"},
-                    "input": {"type": "object"}
+                    "input": input_schema
                 },
                 "required": ["name", "input"],
                 "additionalProperties": false
@@ -106,7 +168,16 @@ impl SubAgent {
     }
 
     pub(crate) fn run(&self, input: Input, cancellation: Cancellation) -> RunFuture {
-        self.runner.run(input, cancellation)
+        let runner = Arc::clone(&self.runner);
+        let serial = Arc::clone(&self.serial);
+        Box::pin(async move {
+            let guard = serial.lock_owned().await;
+            let stream = runner.run(input, cancellation).await?;
+            Ok(Box::pin(SerializedStream {
+                inner: stream,
+                _guard: guard,
+            }) as ErasedStream)
+        })
     }
 }
 

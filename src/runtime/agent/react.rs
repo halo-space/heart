@@ -71,6 +71,7 @@ pub struct Builder<M = ()> {
     id_fn: Option<fn() -> i64>,
     evaluator: Option<EvaluatorHandle>,
     checkpoint: Option<CheckpointSave>,
+    team_mode: bool,
 }
 
 pub fn builder() -> Builder {
@@ -87,6 +88,7 @@ pub fn builder() -> Builder {
         id_fn: None,
         evaluator: None,
         checkpoint: None,
+        team_mode: false,
     }
 }
 
@@ -105,6 +107,7 @@ impl<M> Builder<M> {
             id_fn: self.id_fn,
             evaluator: self.evaluator,
             checkpoint: self.checkpoint,
+            team_mode: self.team_mode,
         }
     }
 
@@ -115,6 +118,12 @@ impl<M> Builder<M> {
 
     pub(crate) fn with_dispatch(mut self, dispatch: Dispatch) -> Self {
         self.dispatch = dispatch;
+        self
+    }
+
+    pub(crate) fn with_team_members(mut self, subagents: Vec<SubAgent>) -> Self {
+        self.subagents = subagents;
+        self.team_mode = true;
         self
     }
 
@@ -269,6 +278,7 @@ where
             id_fn: self.id_fn,
             evaluator: self.evaluator,
             checkpoint: self.checkpoint,
+            team_mode: self.team_mode,
         })
     }
 }
@@ -287,6 +297,7 @@ pub struct Agent<M> {
     id_fn: Option<fn() -> i64>,
     evaluator: Option<EvaluatorHandle>,
     checkpoint: Option<CheckpointSave>,
+    team_mode: bool,
 }
 
 fn validate_subagents(subagents: &[SubAgent]) -> Result<(), Error> {
@@ -495,6 +506,7 @@ where
             model: std::sync::Arc::clone(&self.model),
             dispatch: std::sync::Arc::new(dispatch),
             subagents: self.subagents.clone(),
+            team_mode: self.team_mode,
             max_iters: self.max_iters,
             max_concurrency: self.max_concurrency,
             cancellation,
@@ -652,6 +664,7 @@ struct ReActState<M: Chat> {
     model: std::sync::Arc<M>,
     dispatch: std::sync::Arc<Dispatch>,
     subagents: std::sync::Arc<Vec<SubAgent>>,
+    team_mode: bool,
     max_iters: usize,
     max_concurrency: usize,
     cancellation: Cancellation,
@@ -819,25 +832,31 @@ async fn execute_prepared_tool(
 fn decode_subagent_input(
     call: &Call,
     parent: &Map<String, Value>,
+    operation: &str,
 ) -> Result<(String, Input), Error> {
     let name = call
         .arguments
         .get("name")
         .and_then(Value::as_str)
         .filter(|name| !name.trim().is_empty())
-        .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "agent_spawn name is missing"))?
+        .ok_or_else(|| Error::new("INVALID_ARGUMENTS", format!("{operation} name is missing")))?
         .to_owned();
-    let input = call
-        .arguments
-        .get("input")
-        .cloned()
-        .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "agent_spawn input is missing"))?;
+    let input =
+        call.arguments.get("input").cloned().ok_or_else(|| {
+            Error::new("INVALID_ARGUMENTS", format!("{operation} input is missing"))
+        })?;
     let mut input: Input = serde_json::from_value(input).map_err(|_| {
         Error::new(
             "INVALID_ARGUMENTS",
-            "agent_spawn input must be agent::Input",
+            format!("{operation} input must be agent::Input"),
         )
     })?;
+    if operation == "team_assign" && input.payload.is_empty() {
+        return Err(Error::new(
+            "INVALID_ARGUMENTS",
+            "team_assign input.payload must contain at least one item",
+        ));
+    }
     crate::runtime::agent::subagent::inherit_identity(&mut input, parent)?;
     let depth = parent.get("depth").and_then(Value::as_u64).unwrap_or(1);
     if depth >= 2 {
@@ -858,14 +877,21 @@ async fn execute_subagent(
     id_fn: Option<fn() -> i64>,
     observer: Option<crate::runtime::agent::subagent::Observer>,
 ) -> Result<SubAgentProgress, Box<SubAgentFailure>> {
-    let (name, input) = decode_subagent_input(&call, &parent).map_err(SubAgentFailure::new)?;
+    let team_mode = call.name == "team_assign";
+    let operation = if team_mode {
+        "team_assign"
+    } else {
+        "agent_spawn"
+    };
+    let (name, input) =
+        decode_subagent_input(&call, &parent, operation).map_err(SubAgentFailure::new)?;
     let subagent = subagents
         .iter()
         .find(|subagent| subagent.has_name(&name))
         .ok_or_else(|| {
             SubAgentFailure::new(Error::new(
                 "NOT_FOUND",
-                "agent_spawn target is not registered",
+                format!("{operation} target is not registered"),
             ))
         })?;
     crate::runtime::agent::subagent::run(
@@ -881,20 +907,22 @@ async fn execute_subagent(
 }
 
 fn subagent_error_message(call: &Call, error: &Error) -> Message {
-    let value = json!({
+    let error_value = json!({
         "code": error.code,
         "message": error.message,
         "details": error.details,
-        "call_id": call.call_id,
-        "name": call.name,
     });
     Message {
-        role: Role::Function,
+        role: Role::Tool,
         content: vec![Part {
             r#type: "text".into(),
-            data: part_data(json!({"value": value.to_string()})),
+            data: part_data(json!({"value": error_value.to_string()})),
         }],
-        values: Map::from_iter([(String::from("error"), value)]),
+        values: Map::from_iter([
+            (String::from("error"), error_value),
+            (String::from("call_id"), Value::String(call.call_id.clone())),
+            (String::from("name"), Value::String(call.name.clone())),
+        ]),
         metadata: Map::new(),
         usage: None,
     }
@@ -1527,7 +1555,10 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 state.pending_plans.push_back((index, call));
                 continue;
             }
-            if call.name == "agent_spawn" && !state.subagents.is_empty() {
+            if ((state.team_mode && call.name == "team_assign")
+                || (!state.team_mode && call.name == "agent_spawn"))
+                && !state.subagents.is_empty()
+            {
                 let cached = if state.is_plan_task {
                     crate::runtime::agent::subagent::message(
                         &state.child_nodes,
@@ -2531,12 +2562,20 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 let mut tools = state.dispatch.tool_catalog();
                 tools.push(plan_definition());
                 if !state.subagents.is_empty() {
-                    tools.push(state.subagents[0].definition());
+                    tools.push(if state.team_mode {
+                        SubAgent::definition_named(&state.subagents, "team_assign", "Assign a task")
+                    } else {
+                        SubAgent::definition(&state.subagents)
+                    });
                 }
                 tools
             };
             if state.is_plan_task && !state.subagents.is_empty() {
-                tools.push(state.subagents[0].definition());
+                tools.push(if state.team_mode {
+                    SubAgent::definition_named(&state.subagents, "team_assign", "Assign a task")
+                } else {
+                    SubAgent::definition(&state.subagents)
+                });
             }
             if state.plan_finalizing {
                 tools.clear();

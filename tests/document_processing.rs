@@ -93,11 +93,11 @@ fn parser_construction_rejects_malformed_and_unsupported_configurations() {
     }
 }
 
-#[test]
-fn liteparse_reads_a_real_pdf_through_the_document_parser_contract() {
+#[tokio::test(flavor = "current_thread")]
+async fn liteparse_reads_a_real_pdf_through_the_document_parser_contract() {
     let data = include_bytes!("fixtures/liteparse.pdf");
     let parser = document::parser::new("general", json!({"format":"pdf"})).unwrap();
-    let pages = block_on(parser.parse(data, &Cancellation::new())).unwrap();
+    let pages = parser.parse(data, &Cancellation::new()).await.unwrap();
     assert_eq!(pages.len(), 1);
     assert!(pages[0].content.contains("Heart LiteParse integration"));
     assert_eq!(pages[0].metadata["parser"], "liteparse");
@@ -108,7 +108,7 @@ fn liteparse_reads_a_real_pdf_through_the_document_parser_contract() {
     assert!(pages[0].id.is_none() && pages[0].doc_id.is_none());
 
     let one = document::parser::new("one", json!({"format":"pdf"})).unwrap();
-    let documents = block_on(one.parse(data, &Cancellation::new())).unwrap();
+    let documents = one.parse(data, &Cancellation::new()).await.unwrap();
     assert_eq!(documents.len(), 1);
     assert!(documents[0].content.contains("Heart LiteParse integration"));
     assert!(documents[0].metadata.get("location").is_none());

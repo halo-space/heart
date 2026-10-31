@@ -1607,7 +1607,7 @@ where
                 .unwrap_or_default();
             let mut tool_definitions = tool_definitions;
             if !self.subagents.is_empty() {
-                tool_definitions.push(self.subagents[0].definition());
+                tool_definitions.push(SubAgent::definition(&self.subagents));
             }
             let model = Arc::clone(&self.model);
             // A child-wait checkpoint already contains the exact child Call.
@@ -2125,20 +2125,22 @@ async fn execute_subagent(
 }
 
 fn subagent_error_message(call: &Call, error: &Error) -> Message {
-    let value = json!({
+    let error_value = json!({
         "code": error.code,
         "message": error.message,
         "details": error.details,
-        "call_id": call.call_id,
-        "name": call.name,
     });
     Message {
-        role: Role::Function,
+        role: Role::Tool,
         content: vec![Part {
             r#type: "text".into(),
-            data: part_data(json!({"value": value.to_string()})),
+            data: part_data(json!({"value": error_value.to_string()})),
         }],
-        values: Map::from_iter([(String::from("error"), value)]),
+        values: Map::from_iter([
+            (String::from("error"), error_value),
+            (String::from("call_id"), Value::String(call.call_id.clone())),
+            (String::from("name"), Value::String(call.name.clone())),
+        ]),
         metadata: Map::new(),
         usage: None,
     }

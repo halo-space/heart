@@ -296,6 +296,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 model: state.model.clone(),
                 dispatch: state.dispatch.clone(),
                 subagents: state.subagents.clone(),
+                team_mode: state.team_mode,
                 max_iters: state.max_iters,
                 max_concurrency: state.max_concurrency,
                 cancellation: state.cancellation.clone(),

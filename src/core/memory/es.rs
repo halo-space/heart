@@ -9,7 +9,7 @@ use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use elasticsearch::{
-    CreateParts, Elasticsearch, GetParts, SearchParts, UpdateParts, indices::IndicesExistsParts,
+    CreateParts, Elasticsearch, GetParts, IndexParts, SearchParts, indices::IndicesExistsParts,
 };
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
@@ -136,7 +136,7 @@ impl MemoryContract for Memory {
             metadata: request.metadata,
         };
         self.backend
-            .update(
+            .replace(
                 request.id,
                 source_with_vector(&item, request.vector),
                 Some((current.seq_no, current.primary_term)),
@@ -392,7 +392,7 @@ pub mod short {
             value.created_time = current.source.created_time;
             value.updated_time = now_ms();
             self.backend
-                .update(
+                .replace(
                     value.id,
                     serde_json::to_value(&value).map_err(encode_error)?,
                     Some((current.seq_no, current.primary_term)),
@@ -469,7 +469,7 @@ pub mod short {
             value.created_time = current.source.created_time;
             value.updated_time = now_ms();
             self.backend
-                .update(
+                .replace(
                     value.id,
                     serde_json::to_value(&value).map_err(encode_error)?,
                     Some((current.seq_no, current.primary_term)),
@@ -595,7 +595,7 @@ impl Backend {
         }))
     }
 
-    async fn update(
+    async fn replace(
         &self,
         id: i64,
         source: Value,
@@ -604,8 +604,8 @@ impl Backend {
         let id = id.to_string();
         let mut request = self
             .client
-            .update(UpdateParts::IndexId(&self.index, &id))
-            .body(json!({"doc": source, "doc_as_upsert": false}));
+            .index(IndexParts::IndexId(&self.index, &id))
+            .body(source);
         if let Some((seq_no, primary_term)) = concurrency {
             request = request.if_seq_no(seq_no).if_primary_term(primary_term);
         }

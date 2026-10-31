@@ -49,10 +49,9 @@ pub(crate) fn selected(steps: &mut Vec<Step>, calls: &[Call]) -> Result<(), Erro
             "model selected duplicate Call identities in one batch",
         ));
     }
-    for call in calls
-        .iter()
-        .filter(|call| call.name != "plan" && call.name != "agent_spawn")
-    {
+    for call in calls.iter().filter(|call| {
+        call.name != "plan" && call.name != "agent_spawn" && call.name != "team_assign"
+    }) {
         new_step(steps, call);
     }
     Ok(())

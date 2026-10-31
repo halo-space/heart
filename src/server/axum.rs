@@ -253,24 +253,21 @@ where
             let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<StreamResponse>();
             let background = service.clone();
             tokio::task::spawn_blocking(move || {
-                let result = local_blocking(background.stream_from(context.clone(), input));
-                if let Ok(events) = result {
-                    let _ = local_blocking(async move {
-                        futures_util::pin_mut!(events);
-                        let mut connected = true;
-                        while let Some(item) = events.next().await {
-                            match item {
-                                Ok(response) => {
-                                    if connected && sender.send(response).is_err() {
-                                        connected = false;
-                                    }
+                let _ = local_blocking(async move {
+                    let events = background.stream_from(context, input).await?;
+                    futures_util::pin_mut!(events);
+                    while let Some(item) = events.next().await {
+                        match item {
+                            Ok(response) => {
+                                if sender.send(response).is_err() {
+                                    break;
                                 }
-                                Err(_) => break,
                             }
+                            Err(_) => break,
                         }
-                        Ok(())
-                    });
-                }
+                    }
+                    Ok::<(), Error>(())
+                });
             });
             let output = stream::unfold(receiver, |mut receiver| async move {
                 receiver.recv().await.map(|response| {

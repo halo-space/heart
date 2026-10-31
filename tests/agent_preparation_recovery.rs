@@ -137,7 +137,14 @@ impl Model {
         .unwrap();
         let model_name = std::env::var("HEART_VLLM_MODEL").expect("set HEART_VLLM_MODEL");
         Self {
-            inner: provider.chat(model_chat::Config::new(model_name)).unwrap(),
+            inner: provider
+                .chat(
+                    model_chat::Config::new(model_name).options(serde_json::Map::from_iter([(
+                        "chat_template_kwargs".into(),
+                        json!({"enable_thinking": false}),
+                    )])),
+                )
+                .unwrap(),
             requests: Default::default(),
         }
     }

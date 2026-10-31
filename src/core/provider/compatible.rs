@@ -751,7 +751,11 @@ impl Accumulator {
                     .get("index")
                     .and_then(Value::as_u64)
                     .ok_or_else(|| Error::new("INVALID_RESPONSE", "tool call index is missing"))?;
-                if call.get("type").is_some_and(|kind| kind != "function") {
+                if call
+                    .get("type")
+                    .and_then(Value::as_str)
+                    .is_some_and(|kind| kind != "function")
+                {
                     return Err(Error::new(
                         "UNSUPPORTED",
                         format!(
