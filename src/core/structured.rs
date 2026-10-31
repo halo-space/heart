@@ -54,6 +54,7 @@ pub(super) async fn run_message<C: Chat>(
     super::operation::check(cancellation)?;
     let mut request = base.clone();
     request.messages.0.extend(input.0);
+    let request = crate::components::model::chat::fit_request(request, chat.context_limit())?;
     let stream = super::operation::cancellable(chat.stream(request), cancellation).await?;
     let mut stream = std::pin::pin!(stream);
     loop {

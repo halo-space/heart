@@ -86,6 +86,14 @@ async fn complete_request<C: model::chat::Chat>(
     if cancellation.is_cancelled() {
         return Err(Error::new("CANCELLED", "document model call cancelled"));
     }
+    let request = crate::components::model::chat::fit_request(request, chat.context_limit())
+        .map_err(|error| {
+            let mut mapped = Error::new(error.code, error.message);
+            if let Some(details) = error.details {
+                mapped = mapped.with_details(details);
+            }
+            mapped
+        })?;
     let mut stream_future = Box::pin(chat.stream(request));
     let stream = std::future::poll_fn(|context| {
         cancellation.register(context.waker());

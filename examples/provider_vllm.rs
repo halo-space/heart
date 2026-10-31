@@ -26,6 +26,7 @@ async fn main() -> Result<(), halo::agent::model::Error> {
         model_name: std::env::var("HEART_VLLM_MODEL").map_err(|_| {
             halo::agent::model::Error::new("INVALID_ARGUMENTS", "HEART_VLLM_MODEL is required")
         })?,
+        context_limit: None,
         options: serde_json::Map::from_iter([
             ("top_k".into(), json!(20)),
             (

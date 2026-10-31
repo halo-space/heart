@@ -1,11 +1,10 @@
 use serde::{Deserialize, Serialize};
-use serde_json::Map;
 use std::collections::BTreeMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::Error;
 use crate::components::message::{Message, Messages};
-use crate::components::model::token::{InputDetails, OutputDetails, Usage};
+use crate::components::model::token::Usage;
 use crate::components::tool::{Call, Evaluation};
 
 /// Runtime state of one logical Agent Plan node.
@@ -327,7 +326,7 @@ impl State {
                 Error::new("INVALID_STATE", "agent node has no current execution")
             })?;
             execution.usage = execution.attempts.iter().fold(None, |aggregate, attempt| {
-                merge_usage(aggregate, attempt.usage.clone())
+                crate::components::model::token::merge(aggregate, attempt.usage.clone())
             });
             execution.error = error;
             execution.usage.clone()
@@ -353,52 +352,11 @@ fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
-fn merge_usage(left: Option<Usage>, right: Option<Usage>) -> Option<Usage> {
-    match (left, right) {
-        (Some(left), Some(right)) => Some(Usage {
-            input: add_count(left.input, right.input),
-            output: add_count(left.output, right.output),
-            total: add_count(left.total, right.total),
-            input_details: if left.input_details.is_some() || right.input_details.is_some() {
-                Some(InputDetails {
-                    cached: add_count(
-                        left.input_details.and_then(|value| value.cached),
-                        right.input_details.and_then(|value| value.cached),
-                    ),
-                })
-            } else {
-                None
-            },
-            output_details: if left.output_details.is_some() || right.output_details.is_some() {
-                Some(OutputDetails {
-                    think: add_count(
-                        left.output_details.and_then(|value| value.think),
-                        right.output_details.and_then(|value| value.think),
-                    ),
-                })
-            } else {
-                None
-            },
-            details: Map::new(),
-        }),
-        (left, right) => left.or(right).map(|mut usage| {
-            usage.details.clear();
-            usage
-        }),
-    }
-}
-
-fn add_count(left: Option<u64>, right: Option<u64>) -> Option<u64> {
-    match (left, right) {
-        (Some(left), Some(right)) => left.checked_add(right),
-        (Some(value), None) | (None, Some(value)) => Some(value),
-        (None, None) => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::components::model::token::{InputDetails, OutputDetails};
+    use serde_json::Map;
     use serde_json::json;
 
     #[test]
@@ -445,7 +403,9 @@ mod tests {
         assert_eq!(execution.attempts[1].usage, Some(second));
         assert!(execution.attempts[0].created_time.is_some());
         assert!(execution.attempts[0].finished_time.is_some());
-        let missing = merge_usage(Some(Usage::default()), Some(Usage::default())).unwrap();
+        let missing =
+            crate::components::model::token::merge(Some(Usage::default()), Some(Usage::default()))
+                .unwrap();
         assert_eq!(missing.input, None);
         assert_eq!(missing.input_details, None);
         assert_eq!(missing.output_details, None);

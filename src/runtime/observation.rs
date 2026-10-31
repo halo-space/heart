@@ -1,7 +1,31 @@
 //! Private projection helpers, not a second event or execution model.
 
+use crate::model::token::Usage;
 use crate::runtime::trace::fastrace::Root as TraceRoot;
 use crate::{Error, Message, event::Event};
+
+/// Record settled model usage with the same field names for foreground Events
+/// and background Memory work. The audit is a trace projection only; it never
+/// changes Runtime usage or the Chat billing record.
+pub(crate) fn observe_usage(trace: &TraceRoot, event: &'static str, usage: Option<&Usage>) {
+    trace.event_properties(event, usage_properties(usage));
+}
+
+fn usage_properties(usage: Option<&Usage>) -> Vec<(String, String)> {
+    let mut properties = Vec::new();
+    if let Some(usage) = usage {
+        if let Some(input) = usage.input {
+            properties.push(("usage.input".into(), input.to_string()));
+        }
+        if let Some(output) = usage.output {
+            properties.push(("usage.output".into(), output.to_string()));
+        }
+        if let Some(total) = usage.total {
+            properties.push(("usage.total".into(), total.to_string()));
+        }
+    }
+    properties
+}
 
 /// Project one public Event result into the configured fastrace span.
 ///
@@ -19,17 +43,7 @@ pub(crate) fn observe_trace(trace: &TraceRoot, result: &Result<Event, Error>) {
             if let Some(reason) = finish_reason {
                 properties.push(("finish_reason".into(), reason.clone()));
             }
-            if let Some(usage) = usage {
-                if let Some(input) = usage.input {
-                    properties.push(("usage.input".into(), input.to_string()));
-                }
-                if let Some(output) = usage.output {
-                    properties.push(("usage.output".into(), output.to_string()));
-                }
-                if let Some(total) = usage.total {
-                    properties.push(("usage.total".into(), total.to_string()));
-                }
-            }
+            properties.extend(usage_properties(usage.as_ref()));
             if let Some(reply_id) = message.metadata.get("reply_id").and_then(|v| v.as_i64()) {
                 properties.push(("reply_id".into(), reply_id.to_string()));
             }

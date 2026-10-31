@@ -19,6 +19,7 @@ pub(super) async fn run<C: Chat>(
     check(cancellation)?;
     let mut request = base.clone();
     request.messages.0.extend(input.0);
+    let request = crate::components::model::chat::fit_request(request, chat.context_limit())?;
     let stream = cancellable(chat.stream(request), cancellation).await?;
     consume(stream, cancellation).await
 }

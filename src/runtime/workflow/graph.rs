@@ -287,7 +287,7 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                                 error: None,
                                 ..Step::default()
                             });
-                            usage = sum_usage(usage, call_usage);
+                            usage = crate::components::model::token::merge(usage, call_usage);
                             if message.role == Role::Assistant {
                                 final_assistant = Some(message.clone());
                             }
@@ -398,10 +398,6 @@ fn agent_attempt(
         agent: scene,
         ..Default::default()
     }
-}
-
-fn sum_usage(left: Option<Usage>, right: Option<Usage>) -> Option<Usage> {
-    crate::components::model::token::merge(left, right)
 }
 
 /// Internal heterogeneous execution boundary, not a second public Node API.
@@ -917,10 +913,13 @@ impl State {
                         child.recompute_usage();
                         attempt.usage = child.unseen_call_usage(&mut child_calls);
                     }
-                    execution_usage = sum_usage(execution_usage, attempt.usage.clone());
+                    execution_usage = crate::components::model::token::merge(
+                        execution_usage,
+                        attempt.usage.clone(),
+                    );
                 }
                 execution.usage = execution_usage;
-                usage = sum_usage(usage, execution.usage.clone());
+                usage = crate::components::model::token::merge(usage, execution.usage.clone());
             }
         }
         self.usage = usage;
@@ -938,7 +937,7 @@ impl State {
                     } else {
                         None
                     };
-                    usage = sum_usage(usage, settled);
+                    usage = crate::components::model::token::merge(usage, settled);
                 }
             }
         }

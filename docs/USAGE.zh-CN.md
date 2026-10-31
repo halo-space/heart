@@ -549,7 +549,7 @@ let chat = provider.chat(
 )?;
 ```
 
-VLLM 的 `delta.reasoning` 转成统一的 `think` Part，普通输出转成 `text` Part。供应商特有参数放在 `Config.options` 或 `Request.options`。
+VLLM 的 `delta.reasoning` 转成统一的 `think` Part，普通输出转成 `text` Part。供应商特有参数放在 `Config.options` 或 `Request.options`。兼容 Provider 可在 `Config.context_limit` 中设置上下文上限（估算 Token），Runtime 会在每次模型调用前保留系统提示、Session 摘要和最新完整消息组，并裁剪更早历史；`max_tokens` 会从可用上下文预算中预留。
 
 DeepSeek 使用自己的 Provider 类型，模型名也只放在 DeepSeek 的 Chat 配置中：
 
@@ -682,6 +682,7 @@ async fn main() -> Result<(), halo::agent::Error> {
     })?;
     let chat = provider.chat(chat::Config {
         model_name: std::env::var("HEART_VLLM_MODEL").expect("HEART_VLLM_MODEL is required"),
+        context_limit: None,
         options: serde_json::Map::from_iter([
             ("chat_template_kwargs".into(), json!({"enable_thinking": true})),
         ]),

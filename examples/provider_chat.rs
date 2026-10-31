@@ -27,6 +27,7 @@ async fn main() -> Result<(), halo::agent::model::Error> {
         model_name: std::env::var("OPENAI_MODEL").map_err(|_| {
             halo::agent::model::Error::new("INVALID_ARGUMENTS", "OPENAI_MODEL is required")
         })?,
+        context_limit: None,
         options: Map::new(),
     })?;
     let mut message = Message::new(Role::User);

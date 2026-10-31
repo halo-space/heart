@@ -2622,6 +2622,21 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 ));
             }
         };
+        let request =
+            match crate::runtime::agent::chat::fit_request(request, state.model.context_limit()) {
+                Ok(request) => request,
+                Err(error) => {
+                    state.done = true;
+                    return emitted((
+                        if state.cancellation.is_cancelled() {
+                            Ok(cancelled_event(&mut state))
+                        } else {
+                            Err(error)
+                        },
+                        state,
+                    ));
+                }
+            };
         state.input_tokens = crate::runtime::agent::chat::estimate_input_tokens(&request);
         state.completion = None;
         state.request = Some(Box::new(request.clone()));

@@ -46,6 +46,7 @@ async fn main() -> Result<(), Error> {
     })?;
     let chat = provider.chat(chat::Config {
         model_name,
+        context_limit: None,
         options: Map::new(),
     })?;
     let template = prompt::Template::new().message(text(

@@ -1,6 +1,8 @@
 //! Stage-preserving long Memory processing. Production progress is saved in
 //! Session metadata before external writes and after acknowledged completion.
 use crate::runtime::cancellation::cancellable;
+use crate::runtime::observation::observe_usage;
+use crate::runtime::trace::fastrace::Root as TraceRoot;
 use crate::{
     Cancellation, Error, Messages,
     memory::{self, Item, Memory, Request},
@@ -238,6 +240,9 @@ pub(super) async fn resume_job<L: Memory, P: Progress>(
     next_id: fn() -> i64,
     cancellation: &Cancellation,
 ) -> Result<(), Error> {
+    // Extraction is a background model call without a foreground Event. Its
+    // Usage is audited separately and is never added to the Chat ledger.
+    let trace = TraceRoot::start("memory.extraction");
     if job.tasks.is_none() {
         let output = cancellable(
             component.extract(job.input.clone(), cancellation),
@@ -247,6 +252,7 @@ pub(super) async fn resume_job<L: Memory, P: Progress>(
         let [message] = output.as_slice() else {
             return Err(invalid());
         };
+        observe_usage(&trace, "memory.extraction.usage", message.usage.as_ref());
         if message.role != Role::Assistant || !message.content.is_empty() {
             return Err(invalid());
         }

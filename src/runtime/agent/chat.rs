@@ -1624,6 +1624,7 @@ where
                 };
                 let request =
                     prepare_model(&self.hooks, &model_steps, request, &cancellation).await?;
+                let request = fit_request(request, model.context_limit())?;
                 let input_tokens = estimate_input_tokens(&request);
                 preparation_input_tokens = input_tokens;
                 *request_scene.lock().expect("Model request lock poisoned") =
@@ -1664,6 +1665,7 @@ where
                             ..Request::default()
                         };
                         let request = prepare_model(&hooks, &steps, request, &cancellation).await?;
+                        let request = fit_request(request, model.context_limit())?;
                         input_tokens.store(estimate_input_tokens(&request), Ordering::Relaxed);
                         *request_scene.lock().expect("Model request lock poisoned") =
                             Some(Box::new(request.clone()));
@@ -2604,63 +2606,16 @@ fn collect_delta(partial: &mut Message, delta: &Message) {
     partial.metadata.extend(delta.metadata.clone());
 }
 
-pub(crate) fn estimate_input_tokens(request: &Request) -> u64 {
-    let message_bytes: usize = request
-        .messages
-        .as_slice()
-        .iter()
-        .map(|message| {
-            let role_bytes = format!("{:?}", message.role).len();
-            let content_bytes = message.content.iter().map(part_bytes).sum::<usize>();
-            // values and metadata are part of the model input contract. They
-            // carry structured Function/Tool results, call identities and
-            // media references even when the content parts contain little text.
-            let values_bytes = serde_json::to_vec(&message.values)
-                .map(|value| value.len())
-                .unwrap_or(0);
-            let metadata_bytes = serde_json::to_vec(&message.metadata)
-                .map(|value| value.len())
-                .unwrap_or(0);
-            role_bytes
-                .saturating_add(content_bytes)
-                .saturating_add(values_bytes)
-                .saturating_add(metadata_bytes)
-        })
-        .sum();
-    let tool_bytes: usize = request
-        .tools
-        .iter()
-        .map(|tool| {
-            tool.name.len()
-                + tool.description.len()
-                + serde_json::Value::Object(tool.parameters.clone())
-                    .to_string()
-                    .len()
-        })
-        .sum();
-    estimate_tokens(message_bytes.saturating_add(tool_bytes))
-}
+pub(crate) use crate::components::model::chat::{estimate_input_tokens, fit_request};
 
 pub(super) fn estimate_output_tokens(message: &Message) -> u64 {
-    estimate_tokens(message.content.iter().map(part_bytes).sum())
-}
-
-fn part_bytes(part: &Part) -> usize {
-    let body = part
-        .data
-        .get("value")
-        .and_then(serde_json::Value::as_str)
-        .map(str::len)
-        .unwrap_or_else(|| {
-            serde_json::Value::Object(part.data.clone())
-                .to_string()
-                .len()
-        });
-    part.r#type.len().saturating_add(body)
-}
-
-fn estimate_tokens(bytes: usize) -> u64 {
-    u64::try_from(bytes.saturating_add(3) / 4).unwrap_or(u64::MAX)
+    crate::components::model::chat::estimate_tokens(
+        message
+            .content
+            .iter()
+            .map(crate::components::model::chat::part_bytes)
+            .sum(),
+    )
 }
 
 #[cfg(test)]
@@ -3108,6 +3063,62 @@ mod tests {
 
         assert!(estimate_input_tokens(&with_structured) > estimate_input_tokens(&base));
         assert!(estimate_input_tokens(&with_tool) > estimate_input_tokens(&base));
+    }
+
+    #[test]
+    fn context_limit_keeps_summary_and_newest_message() {
+        fn text(role: Role, value: &str) -> Message {
+            let mut message = Message::new(role);
+            message.content.push(Part {
+                r#type: "text".into(),
+                data: part_data(json!({"value": value})),
+            });
+            message
+        }
+
+        let summary = text(Role::User, "[Session summary]\nprevious context");
+        let newest = text(Role::User, "current question");
+        let kept = Request {
+            messages: Messages::new([summary.clone(), newest.clone()]),
+            ..Request::default()
+        };
+        let limit = estimate_input_tokens(&kept);
+        let request = Request {
+            messages: Messages::new([
+                text(Role::User, "old history that should be removed"),
+                summary,
+                text(Role::Assistant, "old answer"),
+                newest,
+            ]),
+            ..Request::default()
+        };
+        let fitted = fit_request(request, Some(limit)).expect("history should be clipped");
+        assert_eq!(fitted.messages.as_slice().len(), 2);
+        assert!(
+            fitted.messages.as_slice()[0].content[0].data["value"]
+                .as_str()
+                .unwrap()
+                .starts_with("[Session summary]")
+        );
+        assert_eq!(
+            fitted.messages.as_slice()[1].content[0].data["value"],
+            "current question"
+        );
+    }
+
+    #[test]
+    fn context_limit_reports_when_pinned_messages_do_not_fit() {
+        let mut system = Message::new(Role::System);
+        system.content.push(Part {
+            r#type: "text".into(),
+            data: part_data(json!({"value": "a long system instruction"})),
+        });
+        let request = Request {
+            messages: Messages::new([system]),
+            ..Request::default()
+        };
+        let error = fit_request(request, Some(1)).expect_err("limit must be enforced");
+        assert_eq!(error.code, "CONTEXT_LENGTH_EXCEEDED");
     }
 
     #[tokio::test]

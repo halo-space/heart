@@ -20,6 +20,8 @@ use crate::{
 use super::{extraction, progress};
 use crate::components::memory::short::session::Store as _;
 use crate::runtime::agent::hooks::Hooks;
+use crate::runtime::observation::observe_usage;
+use crate::runtime::trace::fastrace::Root as TraceRoot;
 
 type Key = (usize, i64);
 static ACTIVE: OnceLock<Mutex<HashSet<Key>>> = OnceLock::new();
@@ -92,6 +94,9 @@ pub(super) fn start<S, L>(
         .name("heart-compression".into())
         .spawn(move || {
             let _claim = claim;
+            // Background Memory calls have no public Event stream. Keep their
+            // settled model usage visible through the existing trace audit.
+            let trace = TraceRoot::start("memory.compression");
             let work = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 let runtime = tokio::runtime::Builder::new_current_thread()
                     .enable_all()
@@ -135,6 +140,7 @@ pub(super) fn start<S, L>(
                                 .reduce(|a, b| {
                                     crate::model::token::merge(Some(a), Some(b)).unwrap()
                                 });
+                            observe_usage(&trace, "memory.compression.usage", usage.as_ref());
                             let output = hooks.after_compress(output, &cancellation).await?;
                             let state = progress::State::Summary {
                                 base: Box::new(progress::Base::new(&snapshot)),

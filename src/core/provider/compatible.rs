@@ -200,6 +200,13 @@ impl Stream for Events {
 
 impl model::chat::Chat for Chat {
     type Stream = Events;
+
+    fn context_limit(&self) -> Option<u64> {
+        // The limit is a common model capability, not a provider wire option.
+        // Runtime sees it only through Chat::context_limit().
+        self.config.context_limit.filter(|limit| *limit > 0)
+    }
+
     async fn stream(&self, request: Request) -> Result<Events, Error> {
         let body = encode_request(self.connection.kind, &self.config, &request)?;
         let format = request.response_format.clone();
@@ -1053,6 +1060,7 @@ mod tests {
     fn deepseek_required_tool_choice_uses_explicit_thinking_options() {
         let config = model::chat::Config {
             model_name: "test".into(),
+            context_limit: None,
             options: Map::new(),
         };
         let mut request = Request {
@@ -1097,6 +1105,7 @@ mod tests {
     fn vllm_options_and_reasoning_use_the_shared_chat_contract() {
         let config = model::chat::Config {
             model_name: "Qwen3.5-122B-A10B".into(),
+            context_limit: None,
             options: Map::new(),
         };
         let request = Request {
@@ -1209,6 +1218,7 @@ mod tests {
         );
         let config = model::chat::Config {
             model_name: "test".into(),
+            context_limit: None,
             options: Map::new(),
         };
         let request = Request {

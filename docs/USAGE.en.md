@@ -530,7 +530,7 @@ let chat = provider.chat(
 ```
 
 VLLM `delta.reasoning` becomes the shared `think` Part and ordinary output becomes `text`. Provider-specific options stay in
-`model::chat::Config.options` or `chat::Request.options`.
+`model::chat::Config.options` or `chat::Request.options`. Compatible providers may set `Config.context_limit` (estimated input tokens); before each model call Runtime keeps system prompts, the Session summary, and the newest complete message groups, then trims older history. `max_tokens` is reserved from the context budget.
 
 DeepSeek uses its own Provider type, and its model name is configured in the DeepSeek Chat binding:
 
@@ -650,6 +650,7 @@ async fn main() -> Result<(), halo::agent::Error> {
     })?;
     let chat = provider.chat(chat::Config {
         model_name: std::env::var("HEART_VLLM_MODEL").expect("HEART_VLLM_MODEL is required"),
+        context_limit: None,
         options: serde_json::Map::from_iter([("chat_template_kwargs".into(), json!({"enable_thinking": true}))]),
     })?;
     let agent = agent::chat().model(chat).system_prompt("You are concise").build()?;
