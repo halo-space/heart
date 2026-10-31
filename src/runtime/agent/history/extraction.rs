@@ -174,7 +174,7 @@ pub(super) trait Progress {
         &mut self,
         job: &Job,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<(), Error>>;
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
 }
 
 /// Drop requeues failures/panics; no mutex is held while a component awaits.

@@ -36,20 +36,20 @@ pub trait Store: Send + Sync {
         &self,
         value: Session,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Session, Error>>;
+    ) -> impl std::future::Future<Output = Result<Session, Error>> + Send;
     fn read(
         &self,
         id: i64,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Session, Error>>;
+    ) -> impl std::future::Future<Output = Result<Session, Error>> + Send;
     fn update(
         &self,
         value: Session,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Session, Error>>;
+    ) -> impl std::future::Future<Output = Result<Session, Error>> + Send;
     fn delete(
         &self,
         id: i64,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<(), Error>>;
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
 }

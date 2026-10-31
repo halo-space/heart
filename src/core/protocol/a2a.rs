@@ -119,7 +119,7 @@ fn input_payload(part: &Part) -> Result<Payload, Error> {
     })
 }
 
-type InputStream<'a> = Pin<Box<dyn Stream<Item = Result<HeartEvent, Error>> + 'a>>;
+type InputStream<'a> = Pin<Box<dyn Stream<Item = Result<HeartEvent, Error>> + Send + 'a>>;
 
 /// Convert a top-level Heart run into an A2A task lifecycle stream.
 ///
@@ -131,9 +131,9 @@ type InputStream<'a> = Pin<Box<dyn Stream<Item = Result<HeartEvent, Error>> + 'a
 pub fn adapt<'a, S>(
     events: S,
     context: Context,
-) -> impl Stream<Item = Result<StreamResponse, Error>> + 'a
+) -> impl Stream<Item = Result<StreamResponse, Error>> + Send + 'a
 where
-    S: Stream<Item = Result<HeartEvent, Error>> + 'a,
+    S: Stream<Item = Result<HeartEvent, Error>> + Send + 'a,
 {
     let state = State {
         source: Box::pin(events),

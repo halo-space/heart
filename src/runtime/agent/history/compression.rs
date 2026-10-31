@@ -90,152 +90,141 @@ pub(super) fn start<S, L>(
     let Some(claim) = Claim::take(key) else {
         return;
     };
-    let spawned = std::thread::Builder::new()
-        .name("heart-compression".into())
-        .spawn(move || {
-            let _claim = claim;
-            // Background Memory calls have no public Event stream. Keep their
-            // settled model usage visible through the existing trace audit.
-            let trace = TraceRoot::start("memory.compression");
-            let work = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                let runtime = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|_| Error::new("BACKEND", "cannot start background compression"))?;
-                runtime.block_on(async move {
-                    // Independent of cancellation of the foreground Chat. Backend
-                    // timeouts remain the backend's responsibility.
-                    let cancellation = Cancellation::new();
-                    let current = config.short.session().read(snapshot.id, &cancellation).await?;
-                    if current != snapshot {
-                        // Another writer already advanced the snapshot. Only a
-                        // subsequent request may start work from the latest state.
-                        return Ok(());
-                    }
-                    let mut journal = progress::Journal::new(config.short.clone(), current);
-                    let state = match progress::read(&journal.current)? {
-                        Some(state) => state,
-                        None if compress => {
-                            let (from, to) = endpoints.unwrap();
-                            let job = if config.extraction.is_some() {
-                                Some(extraction::Job::new(
-                                    snapshot.user_id,
-                                    extraction.agent_id,
-                                    from,
-                                    to,
-                                    extraction.input,
-                                )?)
-                            } else {
-                                None
-                            };
-                            let input = truncate_tool_results(safe_messages(input));
-                            let input = hooks
-                                .before_compress(Messages::new(input), &cancellation)
-                                .await?;
-                            let output = component.compress(input, &cancellation).await?;
-                            let usage = output
-                                .as_slice()
-                                .iter()
-                                .filter_map(|m| m.usage.clone())
-                                .reduce(|a, b| {
-                                    crate::model::token::merge(Some(a), Some(b)).unwrap()
-                                });
-                            observe_usage(&trace, "memory.compression.usage", usage.as_ref());
-                            let output = hooks.after_compress(output, &cancellation).await?;
-                            let state = progress::State::Summary {
-                                base: Box::new(progress::Base::new(&snapshot)),
-                                summary: summary(&output)?,
-                                usage: usage.map(Box::new),
-                                from,
-                                to,
-                                extraction: job,
-                            };
-                            // Save the successfully prepared result before the
-                            // summary commit. A lost response resumes this scene.
-                            journal.save(Some(&state), &cancellation).await?;
-                            state
-                        }
-                        None => return Ok(()),
-                    };
-                    let job = match state {
-                        progress::State::Summary {
-                            base,
-                            summary,
-                            usage,
+    tokio::spawn(async move {
+        let _claim = claim;
+        // Background Memory calls have no public Event stream. Keep their
+        // settled model usage visible through the existing trace audit.
+        let trace = TraceRoot::start("memory.compression");
+        let work = async move {
+            // Independent of cancellation of the foreground Chat. Backend
+            // timeouts remain the backend's responsibility.
+            let cancellation = Cancellation::new();
+            let current = config
+                .short
+                .session()
+                .read(snapshot.id, &cancellation)
+                .await?;
+            if current != snapshot {
+                // Another writer already advanced the snapshot. Only a
+                // subsequent request may start work from the latest state.
+                return Ok(());
+            }
+            let mut journal = progress::Journal::new(config.short.clone(), current);
+            let state = match progress::read(&journal.current)? {
+                Some(state) => state,
+                None if compress => {
+                    let (from, to) = endpoints.unwrap();
+                    let job = if config.extraction.is_some() {
+                        Some(extraction::Job::new(
+                            snapshot.user_id,
+                            extraction.agent_id,
                             from,
                             to,
-                            extraction,
-                        } => {
-                            if !base.matches(&journal.current) {
-                                // A different summary has superseded this
-                                // snapshot; preserve it and drop stale work only.
-                                journal.save(None, &cancellation).await?;
-                                return Ok(());
-                            }
-                            let mut updated = journal.current.clone();
-                            updated.summary = Some(summary);
-                            updated.usage = usage.map(|value| *value); // Replace, never accumulate.
-                            let from = updated
-                                .metadata
-                                .get("from")
-                                .and_then(serde_json::Value::as_i64)
-                                .unwrap_or(from);
-                            updated.metadata.insert("from".into(), from.into());
-                            updated.metadata.insert("to".into(), to.into());
-                            let next = extraction
-                                .as_ref()
-                                .map(|job| progress::State::Extraction { job: job.clone() });
-                            // Summary, coverage, Usage and extraction handoff
-                            // are committed by the same existing conditional CRUD.
-                            progress::encode(&mut updated, next.as_ref())?;
-                            journal.update(updated, &cancellation).await?;
-                            extraction
-                        }
-                        progress::State::Extraction { job } => Some(job),
+                            extraction.input,
+                        )?)
+                    } else {
+                        None
                     };
-                    if let Some(mut job) = job {
-                        let extractor = config.extraction.as_ref().ok_or_else(|| {
-                            Error::new(
-                                "INVALID_ARGUMENTS",
-                                "pending Memory extraction requires its configured component",
-                            )
-                        })?;
-                        extraction::resume_job(
-                            &mut job,
-                            &mut journal,
-                            extractor,
-                            config.long.as_ref(),
-                            config.vectorizer(),
-                            config.id_fn.ok_or_else(|| {
-                                Error::new(
-                                    "INVALID_ARGUMENTS",
-                                    "automatic extraction requires an ID function",
-                                )
-                            })?,
-                            &cancellation,
-                        )
+                    let input = truncate_tool_results(safe_messages(input));
+                    let input = hooks
+                        .before_compress(Messages::new(input), &cancellation)
                         .await?;
+                    let output = component.compress(input, &cancellation).await?;
+                    let usage = output
+                        .as_slice()
+                        .iter()
+                        .filter_map(|m| m.usage.clone())
+                        .reduce(|a, b| crate::model::token::merge(Some(a), Some(b)).unwrap());
+                    observe_usage(&trace, "memory.compression.usage", usage.as_ref());
+                    let output = hooks.after_compress(output, &cancellation).await?;
+                    let state = progress::State::Summary {
+                        base: Box::new(progress::Base::new(&snapshot)),
+                        summary: summary(&output)?,
+                        usage: usage.map(Box::new),
+                        from,
+                        to,
+                        extraction: job,
+                    };
+                    // Save the successfully prepared result before the
+                    // summary commit. A lost response resumes this scene.
+                    journal.save(Some(&state), &cancellation).await?;
+                    state
+                }
+                None => return Ok(()),
+            };
+            let job = match state {
+                progress::State::Summary {
+                    base,
+                    summary,
+                    usage,
+                    from,
+                    to,
+                    extraction,
+                } => {
+                    if !base.matches(&journal.current) {
+                        // A different summary has superseded this
+                        // snapshot; preserve it and drop stale work only.
                         journal.save(None, &cancellation).await?;
+                        return Ok(());
                     }
-                    Ok::<_, Error>(())
-                })
-            }));
-            match work {
-                Ok(Ok(())) => (),
-                // Do not log private history, model output or backend credentials.
-                Ok(Err(_)) => {
-                    eprintln!(
-                        "heart: background memory processing failed; continue from saved progress on a later request"
+                    let mut updated = journal.current.clone();
+                    updated.summary = Some(summary);
+                    updated.usage = usage.map(|value| *value); // Replace, never accumulate.
+                    let from = updated
+                        .metadata
+                        .get("from")
+                        .and_then(serde_json::Value::as_i64)
+                        .unwrap_or(from);
+                    updated.metadata.insert("from".into(), from.into());
+                    updated.metadata.insert("to".into(), to.into());
+                    let next = extraction
+                        .as_ref()
+                        .map(|job| progress::State::Extraction { job: job.clone() });
+                    // Summary, coverage, Usage and extraction handoff
+                    // are committed by the same existing conditional CRUD.
+                    progress::encode(&mut updated, next.as_ref())?;
+                    journal.update(updated, &cancellation).await?;
+                    extraction
+                }
+                progress::State::Extraction { job } => Some(job),
+            };
+            if let Some(mut job) = job {
+                let extractor = config.extraction.as_ref().ok_or_else(|| {
+                    Error::new(
+                        "INVALID_ARGUMENTS",
+                        "pending Memory extraction requires its configured component",
                     )
-                }
-                Err(_) => {
-                    eprintln!("heart: background Session compression panicked; claim released")
-                }
+                })?;
+                extraction::resume_job(
+                    &mut job,
+                    &mut journal,
+                    extractor,
+                    config.long.as_ref(),
+                    config.vectorizer(),
+                    config.id_fn.ok_or_else(|| {
+                        Error::new(
+                            "INVALID_ARGUMENTS",
+                            "automatic extraction requires an ID function",
+                        )
+                    })?,
+                    &cancellation,
+                )
+                .await?;
+                journal.save(None, &cancellation).await?;
             }
-        });
-    if spawned.is_err() {
-        eprintln!("heart: cannot launch background Session compression; retry on a later request");
-    }
+            Ok::<_, Error>(())
+        }
+        .await;
+        match work {
+            Ok(()) => (),
+            // Do not log private history, model output or backend credentials.
+            Err(_) => {
+                eprintln!(
+                    "heart: background memory processing failed; continue from saved progress on a later request"
+                )
+            }
+        }
+    });
 }
 
 fn summary(output: &Messages) -> Result<String, Error> {

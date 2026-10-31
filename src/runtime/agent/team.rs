@@ -93,7 +93,7 @@ impl<M> AgentContract for Agent<M>
 where
     M: Chat + 'static,
 {
-    type Stream = Pin<Box<dyn Stream<Item = Result<Event, Error>> + 'static>>;
+    type Stream = Pin<Box<dyn Stream<Item = Result<Event, Error>> + Send + 'static>>;
 
     async fn run(
         &self,

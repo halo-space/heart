@@ -651,12 +651,12 @@ fn terminal_run_observes_cached_results_without_calls_or_new_ids() {
 
 struct LocalEvents {
     events: std::vec::IntoIter<Result<Event, Error>>,
-    marker: std::rc::Rc<()>,
+    marker: Arc<()>,
 }
 impl Stream for LocalEvents {
     type Item = Result<Event, Error>;
     fn poll_next(mut self: Pin<&mut Self>, _: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        assert_eq!(std::rc::Rc::strong_count(&self.marker), 1);
+        assert_eq!(Arc::strong_count(&self.marker), 1);
         Poll::Ready(self.events.next())
     }
 }
@@ -676,13 +676,13 @@ impl Agent for LocalAgent {
     async fn run(&self, _: Input, _stream: bool, _: Cancellation) -> Result<Self::Stream, Error> {
         Ok(LocalEvents {
             events: vec![Ok(complete("local", 21, 4))].into_iter(),
-            marker: std::rc::Rc::new(()),
+            marker: Arc::new(()),
         })
     }
 }
 
 #[test]
-fn native_non_send_agent_stream_needs_no_spawn_or_extra_executor() {
+fn native_send_agent_stream_runs_without_extra_executor() {
     block_on(async {
         let mut runtime =
             Runtime::new(1009, graph_with_agent(LocalAgent, 1, Default::default())).unwrap();

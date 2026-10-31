@@ -6,12 +6,14 @@ use serde_json::{Map, Value};
 use crate::{Cancellation, Error, event::Event};
 
 type Save = Arc<
-    dyn Fn(i64, Value, Cancellation) -> Pin<Box<dyn Future<Output = Result<(), Error>>>>
+    dyn Fn(i64, Value, Cancellation) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send>>
         + Send
         + Sync,
 >;
 type Load = Arc<
-    dyn Fn(i64, Cancellation) -> Pin<Box<dyn Future<Output = Result<Value, Error>>>> + Send + Sync,
+    dyn Fn(i64, Cancellation) -> Pin<Box<dyn Future<Output = Result<Value, Error>> + Send>>
+        + Send
+        + Sync,
 >;
 
 #[derive(Clone)]

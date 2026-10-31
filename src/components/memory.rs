@@ -290,20 +290,20 @@ pub trait Memory: Send + Sync {
         &self,
         request: Request,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Item, Error>>;
+    ) -> impl std::future::Future<Output = Result<Item, Error>> + Send;
 
     fn update(
         &self,
         request: Request,
         version: u64,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Item, Error>>;
+    ) -> impl std::future::Future<Output = Result<Item, Error>> + Send;
 
     fn delete(
         &self,
         id: i64,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<(), Error>>;
+    ) -> impl std::future::Future<Output = Result<(), Error>> + Send;
 
     fn get(
         &self,
@@ -312,7 +312,7 @@ pub trait Memory: Send + Sync {
         session_id: Option<i64>,
         r#type: Type,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Option<Item>, Error>>;
+    ) -> impl std::future::Future<Output = Result<Option<Item>, Error>> + Send;
 
     fn list(
         &self,
@@ -321,23 +321,23 @@ pub trait Memory: Send + Sync {
         session_id: Option<i64>,
         r#type: Type,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Vec<Item>, Error>>;
+    ) -> impl std::future::Future<Output = Result<Vec<Item>, Error>> + Send;
 
     fn keyword(
         &self,
         request: keyword::Request,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Vec<Item>, Error>>;
+    ) -> impl std::future::Future<Output = Result<Vec<Item>, Error>> + Send;
 
     fn vector(
         &self,
         request: vector::Request,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Vec<Item>, Error>>;
+    ) -> impl std::future::Future<Output = Result<Vec<Item>, Error>> + Send;
 
     fn hybrid(
         &self,
         request: hybrid::Request,
         cancellation: &Cancellation,
-    ) -> impl std::future::Future<Output = Result<Vec<Item>, Error>>;
+    ) -> impl std::future::Future<Output = Result<Vec<Item>, Error>> + Send;
 }

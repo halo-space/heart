@@ -9,7 +9,7 @@ use halo::agent::model::content::part::Part;
 use halo::agent::plan::Plan;
 use halo::agent::{Cancellation, Error, Message, Messages};
 use serde_json::{Value, json};
-use std::rc::Rc;
+use std::sync::Arc;
 
 fn plan_value() -> Value {
     json!({
@@ -91,9 +91,9 @@ fn evaluation_contract_round_trips_business_feedback_without_result_wrapper() {
 }
 
 #[test]
-fn user_function_evaluator_supports_native_non_send_futures_and_feedback() {
+fn user_function_evaluator_supports_native_send_futures_and_feedback() {
     let evaluator = |_: halo::agent::Input, _: Messages, _: Cancellation| async move {
-        let marker = Rc::new(1);
+        let marker = Arc::new(1);
         std::future::ready(()).await;
         assert_eq!(*marker, 1);
         Ok::<_, Error>(evaluation(false))

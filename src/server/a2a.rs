@@ -231,16 +231,8 @@ where
         let (context, input) = self.begin(request).await?;
         let task_id = context.task_id.clone();
         let service = self.clone();
-        tokio::task::spawn_blocking(move || {
-            let result = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .and_then(|runtime| {
-                    runtime
-                        .block_on(service.drive(context, input))
-                        .map_err(|error| std::io::Error::other(error.message))
-                });
-            let _ = result;
+        tokio::spawn(async move {
+            let _ = service.drive(context, input).await;
         });
         self.store.task(&task_id).await
     }
@@ -261,7 +253,8 @@ where
         &self,
         context: Context,
         input: Input,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamResponse, Error>> + '_>>, Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamResponse, Error>> + Send + 'static>>, Error>
+    {
         let cancellation = self.live.cancellation(&context.task_id)?;
         let stream = match self.agent.run(input, true, cancellation).await {
             Ok(stream) => stream,
@@ -312,7 +305,8 @@ where
     pub async fn stream(
         &self,
         request: SendMessageRequest,
-    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamResponse, Error>> + '_>>, Error> {
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<StreamResponse, Error>> + Send + 'static>>, Error>
+    {
         let (context, input) = self.begin(request).await?;
         self.stream_from(context, input).await
     }

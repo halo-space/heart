@@ -42,12 +42,15 @@ mod tools;
 use super::lifecycle::Failure;
 use execution::TaskProgress;
 
-type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + 'static>>;
+type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + Send + 'static>>;
 type EvaluatorHandle =
     std::sync::Arc<dyn Fn(Input, Messages, Cancellation) -> EvaluationFuture + Send + Sync>;
 type CheckpointSave = Backend;
-type ProgressFuture<M> =
-    Pin<Box<dyn Future<Output = Option<(Option<Result<Event, Error>>, ReActState<M>)>> + 'static>>;
+type ProgressFuture<M> = Pin<
+    Box<
+        dyn Future<Output = Option<(Option<Result<Event, Error>>, ReActState<M>)>> + Send + 'static,
+    >,
+>;
 
 fn plan_definition() -> ToolDefinition {
     ToolDefinition {
@@ -327,7 +330,7 @@ impl<M> crate::components::agent::Agent for Agent<M>
 where
     M: Chat + 'static,
 {
-    type Stream = Pin<Box<dyn Stream<Item = Result<Event, Error>> + 'static>>;
+    type Stream = Pin<Box<dyn Stream<Item = Result<Event, Error>> + Send + 'static>>;
 
     async fn reply(&self, input: Input, cancellation: Cancellation) -> Result<(), Error> {
         self.replies.submit(input, &cancellation)
@@ -682,7 +685,7 @@ struct ReActState<M: Chat> {
     checkpoint: Option<CheckpointSave>,
     checkpoint_id: Option<i64>,
     plan_execution: bool,
-    active_tasks: FuturesUnordered<Pin<Box<dyn Future<Output = TaskProgress<M>> + 'static>>>,
+    active_tasks: FuturesUnordered<Pin<Box<dyn Future<Output = TaskProgress<M>> + Send + 'static>>>,
     /// Handles to the actual task accounting, never another serialized scene.
     task_runs: BTreeMap<String, execution::Active>,
     task_slots: Arc<tokio::sync::Semaphore>,
@@ -699,7 +702,7 @@ struct ReActState<M: Chat> {
     planning_error: Option<Error>,
     resume_input: Option<Input>,
     pending_calls: VecDeque<(usize, Call)>,
-    active_tools: FuturesUnordered<Pin<Box<dyn Future<Output = ToolProgress> + 'static>>>,
+    active_tools: FuturesUnordered<Pin<Box<dyn Future<Output = ToolProgress> + Send + 'static>>>,
     tool_progress: VecDeque<ToolProgress>,
     child_events: VecDeque<Result<Event, Error>>,
     child_relay: crate::runtime::agent::subagent::Relay,

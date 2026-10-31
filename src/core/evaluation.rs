@@ -53,7 +53,7 @@ impl<C: Chat> evaluation::Evaluator for Evaluator<C> {
 impl<F, Fut> evaluation::Evaluator for F
 where
     F: Fn(Input, Messages, Cancellation) -> Fut + Send + Sync,
-    Fut: Future<Output = Result<Evaluation, Error>>,
+    Fut: Future<Output = Result<Evaluation, Error>> + Send,
 {
     async fn evaluate(
         &self,

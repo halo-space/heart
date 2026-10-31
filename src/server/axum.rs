@@ -144,11 +144,10 @@ struct TaskRequest {
 
 /// Build the first Axum A2A endpoint set for one Agent.
 ///
-/// `message/send` starts the task projection and drives the Agent on a
-/// blocking thread with a current-thread Tokio runtime. This is required by
-/// the current native-async Agent contract, whose implementation futures are
-/// not required to be `Send`. `message/stream` keeps the projection stream
-/// attached to the HTTP response, so a waiting Agent can receive `reply`.
+/// `message/send` starts the task projection and drives the Agent in a
+/// detached task on the caller's Tokio executor. `message/stream` keeps the
+/// projection stream attached to the HTTP response, so a waiting Agent can
+/// receive `reply`.
 pub fn router<A, S>(service: Arc<Service<A, S>>) -> Router
 where
     A: Agent + Send + Sync + 'static,
@@ -186,14 +185,7 @@ where
                 }
             };
             if params.message.task_id.is_some() {
-                let service = service.clone();
-                let result =
-                    tokio::task::spawn_blocking(move || local_blocking(service.reply(params)))
-                        .await
-                        .map_err(|error| {
-                            Error::new("INTERNAL", format!("A2A local task failed: {error}"))
-                        })
-                        .and_then(|result| result);
+                let result = service.reply(params).await;
                 return json_result(id, result);
             }
             let (context, input) = match service.begin(params).await {
@@ -202,8 +194,8 @@ where
             };
             let task_id = context.task_id.clone();
             let background = service.clone();
-            tokio::task::spawn_blocking(move || {
-                let _ = local_blocking(background.drive(context, input));
+            tokio::spawn(async move {
+                let _ = background.drive(context, input).await;
             });
             match service.task(&task_id).await {
                 Ok(task) => {
@@ -224,14 +216,7 @@ where
                 }
             };
             if let Some(task_id) = params.message.task_id.clone() {
-                let background = service.clone();
-                let reply =
-                    tokio::task::spawn_blocking(move || local_blocking(background.reply(params)))
-                        .await
-                        .map_err(|error| {
-                            Error::new("INTERNAL", format!("A2A local task failed: {error}"))
-                        })
-                        .and_then(|result| result);
+                let reply = service.reply(params).await;
                 if let Err(error) = reply {
                     return Json(Response::from_error(id, &error)).into_response();
                 }
@@ -252,22 +237,21 @@ where
             };
             let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<StreamResponse>();
             let background = service.clone();
-            tokio::task::spawn_blocking(move || {
-                let _ = local_blocking(async move {
-                    let events = background.stream_from(context, input).await?;
-                    futures_util::pin_mut!(events);
-                    while let Some(item) = events.next().await {
-                        match item {
-                            Ok(response) => {
-                                if sender.send(response).is_err() {
-                                    break;
-                                }
+            tokio::spawn(async move {
+                let Ok(events) = background.stream_from(context, input).await else {
+                    return;
+                };
+                futures_util::pin_mut!(events);
+                while let Some(item) = events.next().await {
+                    match item {
+                        Ok(response) => {
+                            if sender.send(response).is_err() {
+                                break;
                             }
-                            Err(_) => break,
                         }
+                        Err(_) => break,
                     }
-                    Ok::<(), Error>(())
-                });
+                }
             });
             let output = stream::unfold(receiver, |mut receiver| async move {
                 receiver.recv().await.map(|response| {
@@ -341,17 +325,6 @@ fn json_result<T: Serialize>(id: Value, result: Result<T, Error>) -> HttpRespons
         }
         Err(error) => Json(Response::from_error(id, &error)).into_response(),
     }
-}
-
-fn local_blocking<F, T>(future: F) -> Result<T, Error>
-where
-    F: std::future::Future<Output = Result<T, Error>>,
-{
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .build()
-        .map_err(|error| Error::new("INTERNAL", error.to_string()))?
-        .block_on(future)
 }
 
 #[cfg(test)]

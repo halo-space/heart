@@ -17,8 +17,9 @@ use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 
-type ErasedStream = Pin<Box<dyn futures_core::Stream<Item = Result<Event, Error>> + 'static>>;
-type RunFuture = Pin<Box<dyn Future<Output = Result<ErasedStream, Error>> + 'static>>;
+type ErasedStream =
+    Pin<Box<dyn futures_core::Stream<Item = Result<Event, Error>> + Send + 'static>>;
+type RunFuture = Pin<Box<dyn Future<Output = Result<ErasedStream, Error>> + Send + 'static>>;
 
 struct SerializedStream {
     inner: ErasedStream,

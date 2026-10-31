@@ -11,16 +11,19 @@ use crate::components::message::{Message, Role};
 use crate::components::model::content::part::Part;
 pub use crate::components::protocol::ag_ui::{Context, Event};
 
-type InputStream<'a> = Pin<Box<dyn Stream<Item = Result<HeartEvent, Error>> + 'a>>;
+type InputStream<'a> = Pin<Box<dyn Stream<Item = Result<HeartEvent, Error>> + Send + 'a>>;
 
 /// Convert one Heart Event stream to an AG-UI stream.
 ///
 /// The outer HTTP or transport layer invokes this when it selects AG-UI.
 /// The adapter emits RUN_STARTED before consuming Heart events and emits
 /// either RUN_FINISHED or RUN_ERROR when the source ends.
-pub fn adapt<'a, S>(events: S, context: Context) -> impl Stream<Item = Result<Event, Error>> + 'a
+pub fn adapt<'a, S>(
+    events: S,
+    context: Context,
+) -> impl Stream<Item = Result<Event, Error>> + Send + 'a
 where
-    S: Stream<Item = Result<HeartEvent, Error>> + 'a,
+    S: Stream<Item = Result<HeartEvent, Error>> + Send + 'a,
 {
     let state = State {
         source: Box::pin(events),

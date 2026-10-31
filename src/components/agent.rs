@@ -36,7 +36,7 @@ pub struct Payload {
 }
 
 pub trait Agent: Send + Sync {
-    type Stream: Stream<Item = Result<Event, Error>> + 'static;
+    type Stream: Stream<Item = Result<Event, Error>> + Send + 'static;
 
     /// Fix outward delivery for this invocation: true delivers Delta and
     /// Complete, false delivers Complete only. Errors and per-call Complete
@@ -50,7 +50,7 @@ pub trait Agent: Send + Sync {
         input: Input,
         stream: bool,
         cancellation: Cancellation,
-    ) -> impl Future<Output = Result<Self::Stream, Error>>;
+    ) -> impl Future<Output = Result<Self::Stream, Error>> + Send;
 
     /// Submit feedback to a live question. Business events stay on run's stream.
     /// The cancellation value scopes this reply submission, not other runs.
@@ -58,5 +58,5 @@ pub trait Agent: Send + Sync {
         &self,
         input: Input,
         cancellation: Cancellation,
-    ) -> impl Future<Output = Result<(), Error>>;
+    ) -> impl Future<Output = Result<(), Error>> + Send;
 }

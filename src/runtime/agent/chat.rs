@@ -243,19 +243,19 @@ fn validate_subagents(subagents: &[SubAgent]) -> Result<(), Error> {
     Ok(())
 }
 
-type CompletionFuture = Pin<Box<dyn Future<Output = Result<Event, Error>> + 'static>>;
-type CheckpointFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + 'static>>;
-type ProviderFuture<S> = Pin<Box<dyn Future<Output = Result<S, Error>> + 'static>>;
+type CompletionFuture = Pin<Box<dyn Future<Output = Result<Event, Error>> + Send + 'static>>;
+type CheckpointFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
+type ProviderFuture<S> = Pin<Box<dyn Future<Output = Result<S, Error>> + Send + 'static>>;
 type ToolBatch = (Vec<Message>, Option<crate::model::token::Usage>);
 type ToolBatchFuture =
-    Pin<Box<dyn Future<Output = Result<ToolBatch, Box<ToolBatchFailure>>> + 'static>>;
+    Pin<Box<dyn Future<Output = Result<ToolBatch, Box<ToolBatchFailure>>> + Send + 'static>>;
 type ProviderFactory<S> = Arc<
     dyn Fn(Messages, Cancellation, Arc<AtomicU64>, Arc<Mutex<Vec<Step>>>) -> ProviderFuture<S>
         + Send
         + Sync,
 >;
 type EvaluatorHandle = Arc<dyn Fn(Input, Messages, Cancellation) -> EvaluationFuture + Send + Sync>;
-type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + 'static>>;
+type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + Send + 'static>>;
 type CheckpointSave = Backend;
 
 struct ToolBatchConfig {

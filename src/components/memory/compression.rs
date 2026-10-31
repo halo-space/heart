@@ -3,7 +3,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use crate::{Cancellation, Error, Messages, compression::Compressor};
 
-type FutureResult = Pin<Box<dyn Future<Output = Result<Messages, Error>> + 'static>>;
+type FutureResult = Pin<Box<dyn Future<Output = Result<Messages, Error>> + Send + 'static>>;
 
 trait Entry: Send + Sync {
     fn size(&self) -> Option<u64>;

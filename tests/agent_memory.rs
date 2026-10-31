@@ -160,10 +160,11 @@ impl Memory for Long {
         cancellation: &Cancellation,
     ) -> Result<Option<memory::Item>, Error> {
         self.state.stage("long", cancellation).await?;
-        // Native async contracts must allow a non-Send component future.
-        let local = std::rc::Rc::new(());
+        // Memory futures are Send so the same backend can run on the server
+        // executor and in detached background tasks.
+        let local = std::sync::Arc::new(());
         futures_util::future::ready(()).await;
-        assert_eq!(std::rc::Rc::strong_count(&local), 1);
+        assert_eq!(std::sync::Arc::strong_count(&local), 1);
         self.state
             .calls
             .lock()

@@ -37,7 +37,7 @@ type CheckpointSave = Arc<
             i64,
             Value,
             crate::Cancellation,
-        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + 'static>>
+        ) -> Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>
         + Send
         + Sync,
 >;
@@ -267,8 +267,10 @@ impl Runtime {
         initial_messages: Messages,
         next_exec_id: Arc<dyn Fn() -> i64 + Send + Sync>,
         cancellation: crate::Cancellation,
-    ) -> Result<impl futures_core::Stream<Item = Result<crate::event::Event, Error>> + '_, Error>
-    {
+    ) -> Result<
+        impl futures_core::Stream<Item = Result<crate::event::Event, Error>> + Send + '_,
+        Error,
+    > {
         let mut engine = {
             let mut home = self
                 .engine
@@ -2470,7 +2472,7 @@ fn invoke_with_retry(
     attempt_start: u32,
     committed: node::Attempt,
     recovery_reply: Option<RecoveryReply>,
-) -> Pin<Box<dyn Future<Output = Invocation> + 'static>> {
+) -> Pin<Box<dyn Future<Output = Invocation> + Send + 'static>> {
     Box::pin(async move {
         let mut attempts = Vec::new();
         if !matches!(&target, Target::Graph { .. })
@@ -2958,7 +2960,11 @@ fn retry_graph_state(workflow: &CompiledWorkflow, previous: &graph::State) -> gr
 }
 
 type SubgraphFuture = std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<(Value, graph::State), SubgraphFailure>> + 'static>,
+    Box<
+        dyn std::future::Future<Output = Result<(Value, graph::State), SubgraphFailure>>
+            + Send
+            + 'static,
+    >,
 >;
 
 struct SubgraphScenes {

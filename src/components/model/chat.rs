@@ -307,7 +307,7 @@ pub trait Chat: Send + Sync {
     fn stream(
         &self,
         request: Request,
-    ) -> impl std::future::Future<Output = Result<Self::Stream, Error>>;
+    ) -> impl std::future::Future<Output = Result<Self::Stream, Error>> + Send;
 }
 
 #[cfg(test)]
