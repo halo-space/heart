@@ -49,28 +49,14 @@ pub struct Local {
 }
 
 impl Local {
-    pub(super) fn skill_catalog(&self) -> Vec<SkillDefinition> {
-        let mut definitions = self.dispatch.skill_catalog();
-        let root = self.root.join("skills");
-        let Ok(entries) = std::fs::read_dir(root) else {
-            return definitions;
-        };
-        definitions.extend(
-            entries
-                .filter_map(Result::ok)
-                .filter_map(|entry| {
-                    let path = entry.path();
-                    if !entry.file_type().ok()?.is_dir() {
-                        return None;
-                    }
-                    let markdown = std::fs::read_to_string(path.join("SKILL.md")).ok()?;
-                    let skill = crate::core::skill::Skill::from_markdown(&markdown).ok()?;
-                    let name = entry.file_name().to_str()?.to_owned();
-                    (skill.definition().name == name).then(|| skill.definition().clone())
-                })
-                .collect::<Vec<_>>(),
-        );
-        definitions
+    async fn skill_catalog(
+        &self,
+        cancellation: &Cancellation,
+    ) -> Result<Vec<SkillDefinition>, Error> {
+        Ok(Dispatch::from(self.clone())
+            .with_discovered_skills(cancellation)
+            .await?
+            .skill_catalog())
     }
 
     /// Opens an existing application-owned directory. Does not invent or
@@ -239,8 +225,8 @@ impl crate::workspace::Workspace for Local {
         self.mcp_catalog()
     }
 
-    fn skill(&self) -> Vec<SkillDefinition> {
-        self.skill_catalog()
+    fn skill<'a>(&'a self, cancellation: &'a Cancellation) -> crate::workspace::SkillFuture<'a> {
+        Box::pin(async move { self.skill_catalog(cancellation).await })
     }
 
     fn execute<'a>(

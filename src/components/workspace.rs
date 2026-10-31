@@ -17,6 +17,11 @@ pub type Error = crate::Error;
 pub type ToolFuture<'a> =
     Pin<Box<dyn Future<Output = Result<(Message, Evaluation), Error>> + Send + 'a>>;
 
+/// Future returned while a Workspace discovers its Skill catalog. Discovery
+/// may read a local directory, query a database, or call a remote service.
+pub type SkillFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Vec<SkillDefinition>, Error>> + Send + 'a>>;
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
@@ -50,9 +55,11 @@ pub trait Workspace: Send + Sync {
     /// are included in `tools`; this list preserves the MCP server identity.
     fn mcp(&self) -> Vec<McpDefinition>;
 
-    /// Skill metadata exposed by this Workspace. Instructions stay lazy and
+    /// Discover Skill metadata asynchronously. Instructions stay lazy and
     /// are read through the ordinary `skill` Tool call.
-    fn skill(&self) -> Vec<SkillDefinition>;
+    fn skill<'a>(&'a self, _cancellation: &'a Cancellation) -> SkillFuture<'a> {
+        Box::pin(async { Ok(Vec::new()) })
+    }
 
     fn execute<'a>(&'a self, call: Call, cancellation: &'a Cancellation) -> ToolFuture<'a>;
 }
@@ -73,8 +80,8 @@ where
         (**self).mcp()
     }
 
-    fn skill(&self) -> Vec<SkillDefinition> {
-        (**self).skill()
+    fn skill<'a>(&'a self, cancellation: &'a Cancellation) -> SkillFuture<'a> {
+        (**self).skill(cancellation)
     }
 
     fn execute<'a>(&'a self, call: Call, cancellation: &'a Cancellation) -> ToolFuture<'a> {

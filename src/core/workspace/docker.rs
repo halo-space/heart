@@ -238,8 +238,14 @@ impl Docker {
         Dispatch::from(self.clone()).mcp_catalog()
     }
 
-    pub(super) fn skill_catalog(&self) -> Vec<crate::skill::Definition> {
-        self.dispatch.skill_catalog()
+    async fn skill_catalog(
+        &self,
+        cancellation: &Cancellation,
+    ) -> Result<Vec<crate::skill::Definition>, Error> {
+        Ok(Dispatch::from(self.clone())
+            .with_discovered_skills(cancellation)
+            .await?
+            .skill_catalog())
     }
 
     /// Execute one configured or built-in Workspace Tool.
@@ -267,8 +273,8 @@ impl crate::workspace::Workspace for Docker {
         self.mcp_catalog()
     }
 
-    fn skill(&self) -> Vec<crate::skill::Definition> {
-        self.skill_catalog()
+    fn skill<'a>(&'a self, cancellation: &'a Cancellation) -> crate::workspace::SkillFuture<'a> {
+        Box::pin(async move { self.skill_catalog(cancellation).await })
     }
 
     fn execute<'a>(

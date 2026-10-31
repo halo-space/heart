@@ -3,7 +3,6 @@
 //! component contract; callers use the Agent and Workspace `.tools(...)`,
 //! `.mcps(...)` and `.skills(...)` methods.
 
-use std::any::Any;
 use std::collections::BTreeSet;
 use std::future::Future;
 use std::pin::Pin;
@@ -159,29 +158,6 @@ impl SkillReader {
             },
         }
     }
-}
-
-fn core_workspace_skill_loaders<W>(workspace: &W) -> Vec<Arc<dyn SkillLoader>>
-where
-    W: Workspace + 'static,
-{
-    let any = workspace as &dyn Any;
-
-    // ES Workspace keeps application-provided database Loaders in its
-    // internal Dispatch. Reusing that Dispatch preserves the Loader's shared
-    // version cache while avoiding any public Workspace API expansion.
-    if let Some(workspace) = any.downcast_ref::<crate::core::workspace::es::Workspace>() {
-        return Dispatch::from(workspace.clone()).skill_loaders;
-    }
-
-    // Docker's directory discovery is opt-in and is attached by its normal
-    // `From<Docker>` adapter. Copy only those internal Loader entries; the
-    // public Workspace catalog still comes from `workspace.skill()`.
-    if let Some(workspace) = any.downcast_ref::<crate::core::workspace::Docker>() {
-        return Dispatch::from(workspace.clone()).skill_loaders;
-    }
-
-    Vec::new()
 }
 
 impl Tool for SkillReader {
@@ -371,6 +347,7 @@ pub struct Dispatch {
     skills: Vec<Arc<dyn SkillEntry>>,
     skill_loaders: Vec<Arc<dyn SkillLoader>>,
     skill_reader: bool,
+    workspace: Option<Arc<dyn Workspace>>,
 }
 
 /// Internal inputs accepted by the public Agent/Workspace `.tools(...)`
@@ -433,6 +410,7 @@ impl Dispatch {
             skills: Vec::new(),
             skill_loaders: Vec::new(),
             skill_reader: false,
+            workspace: None,
         }
     }
 
@@ -443,27 +421,7 @@ impl Dispatch {
     where
         W: Workspace + 'static,
     {
-        // Workspace::skill() is intentionally synchronous and remains the
-        // public catalog for already-known Skills. Built-in Server/Docker
-        // Workspaces may also own async Loaders, so copy those internal
-        // sources into this Agent-facing table before the first run. The
-        // normal `prepared` phase then discovers them and injects only their
-        // definitions into the system prompt, just like explicitly registered
-        // Loaders. This downcast is an implementation detail; custom
-        // Workspace implementations continue to use their synchronous
-        // `skill()` catalog without a new public hook.
-        let workspace_loaders = core_workspace_skill_loaders(&workspace);
         let workspace: Arc<dyn Workspace> = Arc::new(workspace);
-        let skills = workspace
-            .skill()
-            .into_iter()
-            .map(|definition| {
-                Arc::new(WorkspaceSkill {
-                    workspace: Arc::clone(&workspace),
-                    definition,
-                }) as Arc<dyn SkillEntry>
-            })
-            .collect::<Vec<_>>();
         let entries = workspace
             .tool()
             .into_iter()
@@ -474,26 +432,26 @@ impl Dispatch {
                 }) as Arc<dyn Entry>
             })
             .collect();
-        let mut dispatch = Self {
+        Self {
             entries,
             mcp_catalog: workspace.mcp(),
-            skills: skills.clone(),
-            skill_loaders: workspace_loaders,
+            skills: Vec::new(),
+            skill_loaders: Vec::new(),
             skill_reader: false,
-        };
-        if !skills.is_empty() {
-            dispatch.entries.push(Arc::new(TypedEntry {
-                tool: Arc::new(SkillReader::new(skills)),
-            }));
-            dispatch.skill_reader = true;
+            workspace: Some(workspace),
         }
-        dispatch
     }
 
     /// Combine two independently assembled tool sets. Local Tool and Skill
     /// names and already-discovered MCP Tool names are checked when the set
     /// is prepared for a run.
     pub fn merge(mut self, other: Self) -> Result<Self, Error> {
+        if self.workspace.is_some() && other.workspace.is_some() {
+            return Err(Error::new(
+                "INVALID_ARGUMENTS",
+                "only one Workspace can be attached to an Agent",
+            ));
+        }
         self = self.append(other);
         self.validate_names(&self.entries)?;
         self.validate_skill_names()?;
@@ -506,6 +464,9 @@ impl Dispatch {
         self.skills.extend(other.skills);
         self.skill_loaders.extend(other.skill_loaders);
         self.skill_reader |= other.skill_reader;
+        if self.workspace.is_none() {
+            self.workspace = other.workspace;
+        }
         self
     }
 
@@ -585,9 +546,32 @@ impl Dispatch {
             skills,
             skill_loaders: Vec::new(),
             skill_reader: self.skill_reader,
+            workspace: None,
         };
         view.validate_skill_names()?;
         Ok(view)
+    }
+
+    async fn with_workspace_skills(&self, cancellation: &Cancellation) -> Result<Self, Error> {
+        let Some(workspace) = &self.workspace else {
+            return Ok(self.clone());
+        };
+        let definitions = workspace.skill(cancellation).await?;
+        let mut skills = self.skills.clone();
+        skills.extend(definitions.into_iter().map(|definition| {
+            Arc::new(WorkspaceSkill {
+                workspace: Arc::clone(workspace),
+                definition,
+            }) as Arc<dyn SkillEntry>
+        }));
+        Ok(Self {
+            entries: self.entries.clone(),
+            mcp_catalog: self.mcp_catalog.clone(),
+            skills,
+            skill_loaders: self.skill_loaders.clone(),
+            skill_reader: self.skill_reader,
+            workspace: None,
+        })
     }
 
     /// Add the Skill catalog to the Agent system prompt. Tool and MCP schemas
@@ -658,7 +642,11 @@ impl Dispatch {
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "tool discovery cancelled"));
         }
-        let discovered = self.with_discovered_skills(cancellation).await?;
+        let discovered = self
+            .with_workspace_skills(cancellation)
+            .await?
+            .with_discovered_skills(cancellation)
+            .await?;
         let mut entries = discovered.entries.clone();
         for entry in &entries {
             let definition = entry.definition();
@@ -680,6 +668,7 @@ impl Dispatch {
             skills: discovered.skills,
             skill_loaders: Vec::new(),
             skill_reader,
+            workspace: None,
         })
     }
 

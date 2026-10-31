@@ -303,10 +303,6 @@ fn mcp_and_workspace_are_explicit_adapters() {
             Vec::new()
         }
 
-        fn skill(&self) -> Vec<halo::agent::skill::Definition> {
-            Vec::new()
-        }
-
         fn execute<'a>(
             &'a self,
             _call: halo::agent::tool::Call,

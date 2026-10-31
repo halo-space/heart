@@ -634,10 +634,6 @@ async fn real_model_workspace_permission_denial() {
             Vec::new()
         }
 
-        fn skill(&self) -> Vec<halo::agent::skill::Definition> {
-            Vec::new()
-        }
-
         fn execute<'a>(
             &'a self,
             call: Call,

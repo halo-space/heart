@@ -159,6 +159,8 @@ async fn workspace_preserves_ready_tools_mcps_and_skills() {
         .await
         .unwrap();
     assert_eq!(result.content[0].data["value"], "remote result");
+    let skills = Workspace::skill(&workspace, &cancellation).await.unwrap();
+    assert_eq!(skills[0].name, "research");
 }
 
 #[tokio::test]
@@ -258,8 +260,17 @@ impl Workspace for DatabaseWorkspace {
         Vec::new()
     }
 
-    fn skill(&self) -> Vec<SkillDefinition> {
-        Vec::new()
+    fn skill<'a>(
+        &'a self,
+        _cancellation: &'a Cancellation,
+    ) -> halo::agent::workspace::SkillFuture<'a> {
+        Box::pin(async {
+            Ok(vec![SkillDefinition {
+                name: "database_help".into(),
+                description: Some("Database query guidance".into()),
+                ..Default::default()
+            }])
+        })
     }
 
     fn execute<'a>(
@@ -384,6 +395,10 @@ async fn definition_only_server_keeps_tool_validation_cancellation_and_results()
             .clone()
     );
     assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let skills = Workspace::skill(&capabilities, &Cancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(skills[0].name, "database_help");
 }
 
 #[test]
