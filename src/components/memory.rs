@@ -88,6 +88,8 @@ pub mod hybrid {
 mod compression;
 pub mod extraction;
 pub mod short;
+mod vectorize;
+pub(crate) use vectorize::Configured as Vectorizer;
 
 /// Agent-local composition of existing short and long memory components.
 /// This is configuration, not another storage contract or execution state.
@@ -97,6 +99,7 @@ pub struct Config<S, L> {
     pub(crate) scopes: Vec<String>,
     pub(crate) compression: Option<compression::Configured>,
     pub(crate) extraction: Option<extraction::Configured>,
+    pub(crate) vectorizer: Option<Vectorizer>,
     pub(crate) id_fn: Option<fn() -> i64>,
 }
 
@@ -108,6 +111,7 @@ impl<S, L> Clone for Config<S, L> {
             scopes: self.scopes.clone(),
             compression: self.compression.clone(),
             extraction: self.extraction.clone(),
+            vectorizer: self.vectorizer.clone(),
             id_fn: self.id_fn,
         }
     }
@@ -130,6 +134,7 @@ where
             scopes: Vec::new(),
             compression: None,
             extraction: None,
+            vectorizer: None,
             id_fn: None,
         }
     }
@@ -231,6 +236,21 @@ where
     {
         self.extraction = Some(extraction::Configured::new(extractor));
         self
+    }
+
+    /// Prepare vectors for automatic long-memory writeback with an application
+    /// supplied Embed component. The long-memory backend never owns or calls
+    /// Embed; it only receives the resulting vector in `memory::Request`.
+    pub fn with_embed<E>(mut self, embed: E) -> Self
+    where
+        E: crate::model::embed::Embed + 'static,
+    {
+        self.vectorizer = Some(Vectorizer::new(embed));
+        self
+    }
+
+    pub(crate) fn vectorizer(&self) -> Option<Vectorizer> {
+        self.vectorizer.clone()
     }
 
     /// Supply the application's ID function, not a fixed ID. Configuration does

@@ -205,6 +205,7 @@ pub(super) fn start<S, L>(
                             &mut journal,
                             extractor,
                             config.long.as_ref(),
+                            config.vectorizer(),
                             config.id_fn.ok_or_else(|| {
                                 Error::new(
                                     "INVALID_ARGUMENTS",

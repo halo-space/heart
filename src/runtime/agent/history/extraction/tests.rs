@@ -14,6 +14,7 @@ async fn write<L: Memory>(
     next_id: fn() -> i64,
     cancellation: &Cancellation,
 ) -> Result<(), Error> {
+    let trace = crate::runtime::trace::fastrace::Root::noop();
     if !prepare(
         task,
         user_id,
@@ -21,6 +22,8 @@ async fn write<L: Memory>(
         to,
         component,
         store,
+        None,
+        &trace,
         next_id,
         cancellation,
     )

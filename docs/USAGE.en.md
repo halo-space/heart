@@ -853,6 +853,20 @@ let compressor = core::compression::Compressor::new(chat, request)?
 
 The default Token estimate is approximate. Applications can provide their own estimator with `.with_count(...)`. `limit` and `retain` affect only the temporary summary input; original Chat records, Tool results and Runtime Steps remain intact.
 
+When long-memory vector search is enabled, the application creates the `model::embed::Embed` component and attaches it to the Memory composition:
+
+```rust
+let embed = provider.embed(model::embed::Config {
+    model_name: "embedding-3".into(),
+    options: Default::default(),
+})?;
+let memory = memory::Config::new(short, core::memory::InMemory::with_vector_dimension(2048)?)
+    .with_embed(embed);
+```
+
+`with_embed` only prepares vectors before automatic long-memory writeback. The Memory backend never owns or calls Embed; it receives the prepared
+`memory::Request.vector`. Without this configuration no vector is generated and vector search is not silently downgraded.
+
 ### 10.8 Local Workspace and Skill
 
 ```rust
@@ -924,7 +938,7 @@ The live acceptance checks use real providers and runtime data for Provider call
 `agent_feedback_real_acceptance` has a real DeepSeek model select a feedback-waiting Tool, then verifies that a user reply correlated by `reply_id` resumes the same Agent and produces a final answer.
 `agent_stream_real_acceptance` uses real DeepSeek calls to verify that `stream=true` emits Delta/Complete and `stream=false` emits Complete only.
 The live closeout test in `agent_chat_closeout_real_acceptance` also verifies that the actual Provider Message and Usage are persisted in Chat state.
-`semantic_chunking_real_acceptance` exercises Semantic Chunker with real Zhipu Embedding-3 vectors when `HEART_EMBED_API_KEY` is configured; optionally override the API base URL or model with `HEART_EMBED_BASE_URL` and `HEART_EMBED_MODEL`.
+`semantic_chunking_real_acceptance` exercises Semantic Chunker with real Zhipu Embedding-3 vectors when `HEART_EMBED_API_KEY` is configured; `memory_vector_real_acceptance` also verifies vector preparation and retrieval during automatic long-memory writeback. Optionally override the API base URL or model with `HEART_EMBED_BASE_URL` and `HEART_EMBED_MODEL`.
 The default `cargo test` suite contains offline unit and state-machine tests for direct state transitions, validation, and event-protocol rules; it does not synthesize successful Chat or Embed responses. These checks are not live-model end-to-end acceptance and do not replace the real acceptance script.
 Docker Workspace container, bind-mount and cancellation tests do not pull images. Point them at an image already present locally, then run explicitly:
 

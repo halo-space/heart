@@ -1056,6 +1056,20 @@ let compressor = core::compression::Compressor::new(chat, request)?
 
 默认使用粗略 Token 估算；需要时可以通过 `.with_count(...)` 传入应用自己的估算函数。`limit` 和 `retain` 只作用于摘要输入视图，原始 Chat、Tool 结果和 Runtime Step 不会被截断。
 
+长期记忆需要向量检索时，由应用显式创建 `model::embed::Embed` 并挂到 Memory 组合配置：
+
+```rust
+let embed = provider.embed(model::embed::Config {
+    model_name: "embedding-3".into(),
+    options: Default::default(),
+})?;
+let memory = memory::Config::new(short, core::memory::InMemory::with_vector_dimension(2048)?)
+    .with_embed(embed);
+```
+
+`with_embed` 只负责在自动长期记忆写回前准备向量；Memory 后端不持有或调用 Embed，只接收
+`memory::Request.vector`。未配置时不生成向量，也不从向量能力降级到其他检索。
+
 ### 10.8 Workspace 和 Skill：本地发现、内容读取和安全边界
 
 Workspace 的本地实现只操作它的根目录。以下程序创建临时目录、写入一个标准 `SKILL.md`、读取 Skill 内容并列出目录；它不执行
@@ -1188,7 +1202,7 @@ cargo test --offline --lib
 `agent_feedback_real_acceptance` 由真实 DeepSeek 选择等待反馈的 Tool，测试用户通过 `reply_id` 回答后同一 Agent 继续运行并输出最终结果。
 `agent_stream_real_acceptance` 使用真实 DeepSeek 分别验证 `stream=true` 会发出 Delta/Complete、`stream=false` 只发出 Complete。
 `agent_chat_closeout_real_acceptance` 中的真实收口测试还验证真实 Provider 返回的最终 Message 和 Usage 被写入 Chat 状态。
-配置 `HEART_EMBED_API_KEY` 后，`semantic_chunking_real_acceptance` 会调用智谱 Embedding-3 并用实际向量验证 Semantic Chunker；可选通过 `HEART_EMBED_BASE_URL`、`HEART_EMBED_MODEL` 覆盖默认地址和模型。
+配置 `HEART_EMBED_API_KEY` 后，`semantic_chunking_real_acceptance` 会调用智谱 Embedding-3 并用实际向量验证 Semantic Chunker；同时 `memory_vector_real_acceptance` 会验证 Agent 自动长期记忆写回的向量准备和检索。可选通过 `HEART_EMBED_BASE_URL`、`HEART_EMBED_MODEL` 覆盖默认地址和模型。
 默认 `cargo test` 还包含离线单元与状态机测试，用于直接校验状态转移、输入校验和事件协议，不会合成成功的 Chat 或 Embed 响应。这些测试不等同于真实模型端到端验收，也不会替代上述真实验收脚本。
 Docker Workspace 的真实容器、挂载和取消测试不会自动拉取镜像；指定已经下载的镜像后显式运行：
 

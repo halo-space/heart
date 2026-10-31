@@ -135,7 +135,9 @@ impl Job {
                         || request.from > self.from
                         || request.from < 0
                         || request.to < self.to
-                        || request.vector.is_some()
+                        || request.vector.as_ref().is_some_and(|vector| {
+                            vector.is_empty() || vector.iter().any(|value| !value.is_finite())
+                        })
                     {
                         return Err(invalid());
                     }
@@ -224,6 +226,7 @@ async fn resume<L: Memory>(
         &mut Local,
         component,
         store,
+        None,
         next_id,
         cancellation,
     )
@@ -237,6 +240,7 @@ pub(super) async fn resume_job<L: Memory, P: Progress>(
     progress: &mut P,
     component: &memory::extraction::Configured,
     store: &L,
+    vectorizer: Option<memory::Vectorizer>,
     next_id: fn() -> i64,
     cancellation: &Cancellation,
 ) -> Result<(), Error> {
@@ -293,6 +297,8 @@ pub(super) async fn resume_job<L: Memory, P: Progress>(
             job.to,
             component,
             store,
+            vectorizer.as_ref(),
+            &trace,
             next_id,
             cancellation,
         )
@@ -345,6 +351,8 @@ async fn prepare<L: Memory>(
     to: i64,
     component: &memory::extraction::Configured,
     store: &L,
+    vectorizer: Option<&memory::Vectorizer>,
+    trace: &TraceRoot,
     next_id: fn() -> i64,
     cancellation: &Cancellation,
 ) -> Result<bool, Error> {
@@ -384,6 +392,17 @@ async fn prepare<L: Memory>(
         {
             return Ok(true);
         }
+    }
+    if let (Some(prepared), Some(vectorizer)) = (task.prepared.as_mut(), vectorizer)
+        && prepared.previous == current
+        && prepared.request.vector.is_none()
+    {
+        let output = vectorizer
+            .embed(prepared.request.content.clone(), cancellation)
+            .await?;
+        observe_usage(trace, "memory.embedding.usage", output.usage.as_ref());
+        prepared.request.vector = Some(parse_vector(&output)?);
+        return Ok(false);
     }
     if task
         .prepared
@@ -425,6 +444,13 @@ async fn prepare<L: Memory>(
                 (id, task.content.clone(), from, to, None)
             }
         };
+        let vector = if let Some(vectorizer) = vectorizer {
+            let output = vectorizer.embed(content.clone(), cancellation).await?;
+            observe_usage(trace, "memory.embedding.usage", output.usage.as_ref());
+            Some(parse_vector(&output)?)
+        } else {
+            None
+        };
         task.prepared = Some(Prepared {
             previous: current,
             request: Request {
@@ -437,11 +463,35 @@ async fn prepare<L: Memory>(
                 to,
                 content,
                 metadata,
-                vector: None,
+                vector,
             },
         });
     }
     Ok(false)
+}
+
+fn parse_vector(message: &crate::Message) -> Result<Vec<f32>, Error> {
+    let values = message
+        .values
+        .get("vector")
+        .and_then(serde_json::Value::as_array)
+        .ok_or_else(|| Error::new("INVALID_RESPONSE", "embedding Message has no vector"))?;
+    if values.is_empty() {
+        return Err(Error::new("INVALID_RESPONSE", "embedding vector is empty"));
+    }
+    values
+        .iter()
+        .map(|value| {
+            let number = value
+                .as_f64()
+                .ok_or_else(|| Error::new("INVALID_RESPONSE", "embedding vector is not numeric"))?
+                as f32;
+            number
+                .is_finite()
+                .then_some(number)
+                .ok_or_else(|| Error::new("INVALID_RESPONSE", "embedding vector is not finite"))
+        })
+        .collect()
 }
 
 async fn write_prepared<L: Memory>(
