@@ -151,6 +151,11 @@ Multimodal tool calls use the same loop: the Agent executes an assistant `tool_c
 `role: tool` Message. That Message may contain multiple text or media Parts and is appended to the next model `Messages`; no
 `tool_result` wrapper is used.
 
+Media Parts do not add a separate Rust type. They use `data.source` with `kind` set to `url`, `base64`, or `id`; `value` is the
+URL, a complete Data URL, or an opaque application resource ID. `mime_type`, `filename`, and input `detail` may be added when
+needed. `base64` must be a nonempty `data:<mime>;base64,<payload>` value; the framework does not fetch or delete `id` references.
+Resource size, retention and external cleanup belong to the Provider/application.
+
 Model context uses `Message`/`Messages`. Provider reasoning fields are normalized to a `think` content Part and ordinary output to `text`.
 The shared event contract is:
 

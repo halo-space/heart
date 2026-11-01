@@ -513,14 +513,26 @@ fn encode_message(kind: Kind, message: &Message) -> Result<Value, Error> {
                         "image source value is empty",
                     ));
                 }
-                if !matches!(
-                    source.get("kind").and_then(Value::as_str),
-                    Some("url" | "base64")
-                ) {
-                    return Err(Error::new(
-                        "UNSUPPORTED",
-                        "image source kind is unsupported",
-                    ));
+                match source.get("kind").and_then(Value::as_str) {
+                    Some("url") => {}
+                    Some("base64") => {
+                        let valid_data_url = url
+                            .strip_prefix("data:")
+                            .and_then(|value| value.split_once(";base64,"))
+                            .is_some_and(|(_, payload)| !payload.is_empty());
+                        if !valid_data_url {
+                            return Err(Error::new(
+                                "INVALID_ARGUMENTS",
+                                "base64 image source must be a nonempty data URL",
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(Error::new(
+                            "UNSUPPORTED",
+                            "image source kind is unsupported",
+                        ));
+                    }
                 }
                 let mut image = json!({"url": url});
                 if let Some(detail) = source.get("detail") {
@@ -1055,6 +1067,17 @@ mod tests {
         assert_eq!(
             encode_message(Kind::OpenAI, &message).unwrap_err().code,
             "UNSUPPORTED"
+        );
+        message.content[0].data["source"]["kind"] = json!("base64");
+        message.content[0].data["source"]["value"] = json!("not-a-data-url");
+        assert_eq!(
+            encode_message(Kind::OpenAI, &message).unwrap_err().code,
+            "INVALID_ARGUMENTS"
+        );
+        message.content[0].data["source"]["value"] = json!("data:image/png;base64,ZmFrZQ==");
+        assert_eq!(
+            encode_message(Kind::OpenAI, &message).unwrap()["content"][0]["image_url"]["url"],
+            "data:image/png;base64,ZmFrZQ=="
         );
     }
 

@@ -148,6 +148,10 @@ TTS 也直接使用统一的 `event::Event`：`stream=false` 只产生 `Complete
 多模态 Tool 调用沿用同一循环：assistant 的 `tool_call` 由 Agent 执行，Tool 直接返回 `role: tool` Message；该 Message
 可以包含多个文本或媒体 Part，再进入下一轮模型 `Messages`，不使用 `tool_result` 包装。
 
+媒体 Part 不增加独立 Rust 类型，统一使用 `data.source`：`kind` 为 `url`、`base64` 或 `id`，`value` 为对应的 URL、完整
+Data URL 或应用资源 ID；需要时可增加 `mime_type`、`filename` 和输入处理用的 `detail`。`base64` 必须是非空的
+`data:<mime>;base64,<内容>`，`id` 只作为不透明引用，不由框架自动读取或删除。资源大小、保存期限和外部清理由 Provider/应用负责。
+
 ### 2.2 Message 和 Event
 
 模型上下文使用 `Message`/`Messages`。`Message` 包含 `role`、`content`、`values`、`metadata` 和可选 `usage`。
