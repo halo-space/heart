@@ -1,8 +1,8 @@
 # Heart
 
-Heart 是一个用 Rust 构建的 Agent 与 Workflow 执行内核。它把公共契约、具体组件实现和运行时执行分开，帮助应用组合模型、工具、MCP、Skill、Workspace、Memory、Checkpoint 与事件流。
+Heart 是一个用 Rust 构建的 Agent 与 Workflow 开发框架。它从公共组件契约、具体实现到异步运行时提供完整的组合能力，帮助应用构建可嵌入、可恢复、可扩展的智能体和工作流。
 
-Heart 提供的是可嵌入的库，不是带页面、账号系统或托管服务的完整应用。能力按配置启用：没有配置 Model、Sandbox、Memory 或 Checkpoint，就不会自动获得对应能力。
+项目覆盖模型接入、工具执行、MCP、Skill、Workspace、Memory、Checkpoint、事件流、权限、压缩、Server 和协议适配。应用可以根据自己的产品场景选择组件和存储后端，再通过统一的 `halo::agent` 入口接入现有系统。
 
 > **版本状态：Alpha（0.1.x 开发阶段）**
 >
