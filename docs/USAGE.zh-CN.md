@@ -1,163 +1,294 @@
 # Heart 使用手册
 
-本手册介绍如何在 Rust 应用中使用 Heart 构建 Agent 和 Workflow。示例按当前公开 API 编写。
+> 本手册是 Heart 的实际使用入口，按设计章节 `00–18` 编排。它解释“应用应该怎么调用”，不重新定义设计契约；设计原文位于 `design/chapters/`，发生冲突时以代码中当前公开 API 和设计决议为准。
 
-[English version](USAGE.en.md)
+Heart 是一个 Rust Agent/Workflow 执行库。它提供模型、工具、MCP、Skill、Workspace、Memory、Checkpoint、压缩、权限、文档和协议适配能力，但不提供页面、账号系统或托管数据库。应用选择并组合这些能力，运行时负责现场、状态、事件和恢复。
 
-## 1. 安装
+当前版本是 Alpha `0.1.x`，要求 Rust `1.99.1` 或更高版本。Cargo 包名是 `halo-agent`，Rust 导入名是 `halo`。
 
-Heart 的 Cargo 包名是 `halo-agent`，Rust 库名是 `halo`，要求 Rust 1.99.1 或更新版本。
+## 目录
+
+| 设计章节 | 设计原文 | 手册中的使用主题 |
+| --- | --- | --- |
+| [00 架构](#00-架构和安装) | [`00-architecture`](../design/chapters/00-architecture.zh-CN.md) | 分层、安装、公开入口 |
+| [01 概览](#01-第一次运行) | [`01-overview`](../design/chapters/01-overview.zh-CN.md) | Agent、Workflow、组件的选择 |
+| [02 Runtime](#02-runtime运行现场) | [`02-runtime-execution`](../design/chapters/02-runtime-execution.zh-CN.md) | `chat_id`、State、取消、等待 |
+| [03 Agent](#03-agent) | [`03-agent-execution`](../design/chapters/03-agent-execution.zh-CN.md) | Chat、ReAct、Reply、工具调用 |
+| [04 Message](#04-输入消息和事件) | [`04-message-contract`](../design/chapters/04-message-contract.zh-CN.md) | `Input`、`Message`、`Event` |
+| [05 Checkpoint](#05-checkpoint和恢复) | [`05-checkpoint`](../design/chapters/05-checkpoint.zh-CN.md) | 保存完整现场、恢复执行 |
+| [06–08 Workflow](#06-08-workflow图和执行关系) | [`06`](../design/chapters/06-workflow-execution-relations.zh-CN.md) / [`07`](../design/chapters/07-workflow-runtime-core.zh-CN.md) / [`08`](../design/chapters/08-workflow-graph-relations.zh-CN.md) | 节点、边、Join、Fan-out、子图 |
+| [09–10 对比](#09-10-与其他框架的关系) | [`09`](../design/chapters/09-framework-comparison.zh-CN.md) / [`10`](../design/chapters/10-framework-comparison-relations.zh-CN.md) | LangGraph、Eino、DSL 适配边界 |
+| [11 决议](#11-已经固定的使用规则) | [`11-decision-checklist`](../design/chapters/11-decision-checklist.zh-CN.md) | 命名和行为约束 |
+| [12 问题](#12-当前限制和后续范围) | [`12-open-questions`](../design/chapters/12-open-questions.zh-CN.md) | 当前版本不覆盖的能力 |
+| [13 组件](#13-组件使用索引) | [`13-component-catalog`](../design/chapters/13-component-catalog.zh-CN.md) | 每个组件的入口和示例 |
+| [14 持久化](#14-短期长期记忆和持久化) | [`14-application-persistence`](../design/chapters/14-application-persistence.zh-CN.md) | Short/Long Memory、Usage |
+| [15 验证](#15-测试和发布) | [`15-todo`](../design/chapters/15-todo.zh-CN.md) | 编译、测试、真实服务验证 |
+| [16 压缩/A2A](#16-压缩与-a2a) | [`16-a2a`](../design/chapters/16-a2a-protocol.zh-CN.md) / [`16-compression`](../design/chapters/16-compression-plan.zh-CN.md) | 后台压缩和协议转换 |
+| [17 Server](#17-server和-http) | [`17-server`](../design/chapters/17-server.zh-CN.md) | Axum、JSON-RPC、SSE |
+| [18 Team](#18-team和多-agent) | [`18-team`](../design/chapters/18-team.zh-CN.md) | 静态成员、Leader、并发 |
+
+完整可运行示例在 [`examples/`](../examples/)；本手册只展示最小代码，遇到参数细节应直接运行对应示例。
+
+---
+
+## 00-架构和安装
+
+### 0.1 分层
+
+Heart 的单 crate 分层固定为：
+
+```text
+components  -> 公共契约和数据结构
+core        -> 组件的具体实现
+runtime     -> Agent/Workflow 的状态、图和异步执行
+harness     -> 高阶组合，如历史、压缩、权限和生命周期
+server      -> HTTP、A2A、JSON-RPC、SSE 和 Webhook 外层绑定
+```
+
+应用只需要从 `halo::agent` 进入：
+
+```rust
+use halo::agent::{self, Agent, Cancellation, Error, Input, Payload};
+```
+
+不要从 `halo::core::agent` 或内部 `runtime` 路径接入 Agent。`core` 是实现层，`runtime` 是执行层；应用通过 `halo::agent::chat()`、`halo::agent::react()` 和 `halo::agent::workflow` 使用它们。
+
+### 0.2 添加依赖
 
 ```toml
 [dependencies]
-halo = { package = "halo-agent", version = "0.1.2" }
+halo-agent = "0.1"
 futures-util = "0.3"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-schemars = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-### 1.1 从零运行第一个示例
-
-仓库中的 `examples/` 是可直接编译运行的完整程序，不是伪代码。进入 Heart 仓库后，可以先用不需要网络和密钥的示例验证环境：
+项目要求 Rust `1.99.1`：
 
 ```bash
-cargo check --offline --examples
-cargo run --offline --example agent_middleware
-cargo run --offline --example node_macro
-cargo run --offline --example workflow_events
+rustup override set 1.99.1
+cargo check
 ```
 
-如果是在自己的 Cargo 项目中使用，把上面的依赖加入 `Cargo.toml`，再把任意示例复制到 `src/main.rs`。示例与本手册的对应关系如下，
-每一行都可以直接作为运行入口：
+### 0.3 真实模型的环境变量
 
-| 能力 | 可运行示例 | 命令 |
-| --- | --- | --- |
-| Chat Agent、Memory | [`examples/agent_memory.rs`](../examples/agent_memory.rs) | `cargo run --example agent_memory` |
-| ReAct、Tool、Permission | [`examples/agent_permission.rs`](../examples/agent_permission.rs) | `cargo run --example agent_permission` |
-| Middleware | [`examples/agent_middleware.rs`](../examples/agent_middleware.rs) | `cargo run --example agent_middleware` |
-| Workflow 事件流 | [`examples/workflow_events.rs`](../examples/workflow_events.rs) | `cargo run --example workflow_events` |
-| Checkpoint 保存与恢复 | [`examples/checkpoint.rs`](../examples/checkpoint.rs) | `cargo run --offline --example checkpoint` |
-| `#[node]` 和强类型节点 | [`examples/node_macro.rs`](../examples/node_macro.rs) | `cargo run --example node_macro` |
-| Planner、Evaluator | [`examples/planning_evaluation.rs`](../examples/planning_evaluation.rs) | `cargo run --example planning_evaluation` |
-| Prompt、压缩 | [`examples/compress.rs`](../examples/compress.rs) | `HALO_API_KEY=... cargo run --example compress` |
-| Session/Memory CRUD | [`examples/short_memory.rs`](../examples/short_memory.rs) | `cargo run --example short_memory` |
-| Document Loader/Parser/Transformer | [`examples/document_parse.rs`](../examples/document_parse.rs) | `cargo run --example document_parse -- ./input.csv` |
-| PDF/Office/图片解析 | [`examples/document_liteparse.rs`](../examples/document_liteparse.rs) | `cargo run --example document_liteparse -- ./input.pdf` |
-| OpenAI-compatible Chat | [`examples/provider_chat.rs`](../examples/provider_chat.rs) | `OPENAI_API_KEY=... cargo run --example provider_chat` |
-| DeepSeek Chat Completions | [`examples/provider_deepseek.rs`](../examples/provider_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example provider_deepseek` |
-| 真实 DeepSeek Agent、Tool 和 fastrace | [`examples/agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example agent_live_deepseek` |
-| 三个并发 SubAgent | [`examples/agent_live_three_subagents.rs`](../examples/agent_live_three_subagents.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example agent_live_three_subagents` |
-| 静态 Team Leader 与三个成员 | [`examples/agent_live_team.rs`](../examples/agent_live_team.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example agent_live_team` |
-| VLLM Chat Completions | [`examples/provider_vllm.rs`](../examples/provider_vllm.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example provider_vllm` |
-| 基础组件契约（Function、Prompt、Search、Embed、Sandbox、Event） | [`examples/component_contracts.rs`](../examples/component_contracts.rs) | `cargo run --offline --example component_contracts` |
+密钥只通过环境变量传入，不写入源码和 README：
 
-网络示例只在明确执行命令时访问外部服务；密钥只从环境变量读取，不写入源码。`cargo check --examples` 不会发起模型或 MCP 请求，适合先验证代码。
+```bash
+export DEEPSEEK_API_KEY='...'
+export DEEPSEEK_BASE_URL='https://api.deepseek.com'
+export DEEPSEEK_MODEL='deepseek-flash'
 
-目录职责：
-
-```text
-components/   公共契约：Agent、Model、Message、Event、Tool、Memory、Checkpoint
-core/         具体实现：Provider、Chat/ReAct、Workspace、Sandbox、Memory 后端
-runtime/      Agent 与 Workflow 的状态、图和执行控制
-harness/      面向长任务 Agent 的高阶组合能力
+# VLLM/OpenAI-compatible 服务
+export HEART_VLLM_BASE_URL='http://127.0.0.1:8000/v1'
+export HEART_VLLM_API_KEY='...'
+export HEART_VLLM_MODEL='Qwen3.5-122B-A10B'
 ```
 
-没有配置的能力不会自动启用：没有 Model 不能运行 Agent，没有 Sandbox 就没有命令工具，没有 Checkpoint 就不能跨进程恢复。
+真实 Provider 示例：[`provider_deepseek.rs`](../examples/provider_deepseek.rs)、[`provider_vllm.rs`](../examples/provider_vllm.rs)。
 
-### 1.2 组件逐项索引
+---
 
-下面的索引覆盖 `halo::agent` 下的公共组件契约。每一行都说明组件负责什么、如何使用以及对应的完整示例；具体实现位于
-`halo::agent::core`，运行现场仍由 `halo::agent::workflow` 或 Agent 运行时负责。`component_contracts` 是离线的基础契约示例，
-不会伪造模型响应，也不会访问外部服务。
+## 01-第一次运行
 
-| 组件 | 作用和边界 | 使用示例 |
-| --- | --- | --- |
-| `agent::Agent`、`agent::chat`、`agent::react` | Agent 只接收统一 `Input`，通过事件流交付模型/工具调用结果；运行现场、等待和恢复由运行时拥有。 | [`agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs)、[`agent_permission.rs`](../examples/agent_permission.rs) |
-| `agent::Input`、`Message`、`Messages` | 统一用户输入、模型上下文和节点间业务数据；`metadata` 与有序 `payload` 分开保存。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) |
-| `error::Error` | 所有组件共享 `code/message/details` 错误外壳；各组件只增加自己的错误码，不改变外层结构。 | 所有示例的 `Result<_, halo::agent::Error>`；[`component_contracts.rs`](../examples/component_contracts.rs) |
-| `event::Event` | 对外观察流的 `Delta`/`Complete`；不承担 Runtime State 或恢复。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`workflow_events.rs`](../examples/workflow_events.rs) |
-| `agent::protocol::ag_ui` | 将 Heart Event Stream 转换为 AG-UI 事件；由 HTTP 层调用，不改变 Runtime 契约。 | 本节 2.3 |
-| `agent::protocol::a2a` | 远程 Agent Agent Card/Task/Artifact 协议契约和 Heart Event 转换；`session_id` 对应 A2A `contextId`，`task_id` 保留为远端任务标识。 | 本节 2.4 |
-| `model::chat` | Chat Provider 的 `Request`、工具描述、`Event` 流和 `Usage` 约定；Provider 负责网络适配。 | [`provider_chat.rs`](../examples/provider_chat.rs)、[`provider_deepseek.rs`](../examples/provider_deepseek.rs)、[`provider_vllm.rs`](../examples/provider_vllm.rs) |
-| `model::embed`、`model::tts`、`model::multimodal`、`model::token`、`model::content` | 单条向量请求、TTS/多模态独立 Request、共享 Token Usage 和规范化内容 Part；Embed 返回统一 `Message`，流式模型共用 `event::Event`。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`provider_gemini_v2.rs`](../examples/provider_gemini_v2.rs) |
-| `function::Function` | 不知道图、节点或执行 ID 的独立异步业务函数；输入输出类型由调用方决定。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`node_macro.rs`](../examples/node_macro.rs) |
-| `tool::Tool` | 具有定义和 `before/call/after/eval` 生命周期的工具契约；执行结果和错误由调用方收口。 | [`agent_live_tool.rs`](../examples/agent_live_tool.rs)、[`agent_permission.rs`](../examples/agent_permission.rs) |
-| `workspace::Workspace` | 文件、命令、Glob/Grep 等工作区能力的统一入口；Local 和 Server 由实现决定，默认能力按挂载启用。 | [10.8 Workspace 与 Skill](#108-workspace和skill本地发现内容读取和安全边界) |
-| `skill::Skill` | 技能的元数据、说明和内容读取契约；发现和缓存由 Workspace 实现，模型只看到可用描述。 | [10.8 Workspace 与 Skill](#108-workspace和skill本地发现内容读取和安全边界) |
-| `mcp::Server` | MCP 连接和工具发现契约；挂载前完成连接与发现，运行时直接调用已发现工具。 | [10.9 MCP](#109-mcp先连接和发现再挂载) |
-| `permission::Permission` | 在实际 Tool/MCP 调用前给出允许或拒绝；不执行工具，也不持有 Agent State。 | [`agent_permission.rs`](../examples/agent_permission.rs) |
-| `middleware::Middleware` | 对模型、工具、权限、压缩等阶段提供统一 `before/after` 钩子；重试策略是可选实现。 | [`agent_middleware.rs`](../examples/agent_middleware.rs) |
-| `prompt::Template`、`Variables` | 按定义顺序渲染单条 Message 和命名历史 `Messages`，不执行模型调用。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`compress.rs`](../examples/compress.rs) |
-| `compression::Compressor` | 将历史 Message 压缩为新的摘要 Message；阈值和触发时机由 Harness/应用配置。 | [`compress.rs`](../examples/compress.rs) |
-| `memory` | 短期 Session/Chat 和长期 `summary/fact/preference` 的存储契约；后端可为内存、PG、ES 等。 | [`short_memory.rs`](../examples/short_memory.rs)、[`agent_memory.rs`](../examples/agent_memory.rs) |
-| `checkpoint::Checkpoint` | 保存和读取一次运行的完整可恢复现场；不等同于 Chat 审计或 Trace。 | [`checkpoint.rs`](../examples/checkpoint.rs) |
-| `sandbox::Sandbox` | 受明确请求约束的执行边界；`core::sandbox::Local` 是本地进程实现，不自动提供隔离。 | [`component_contracts.rs`](../examples/component_contracts.rs) |
-| `knowledge::Search` | `keyword`、`vector`、`hybrid` 三种请求契约；不内部创建 Embed 或决定索引后端。 | [`component_contracts.rs`](../examples/component_contracts.rs)、Document/Knowledge 章节 |
-| `document` | Loader、Parser、Transformer、Chunker、RAPTOR 和 Graph 的文档处理能力；写入哪个知识库由应用决定。 | [`document_parse.rs`](../examples/document_parse.rs)、[`document_liteparse.rs`](../examples/document_liteparse.rs) |
-| `node::Node`、`node::Schema` | Workflow 节点输入输出契约和强类型 Schema；节点函数不直接管理 Runtime State。 | [`node_macro.rs`](../examples/node_macro.rs)、[`workflow_events.rs`](../examples/workflow_events.rs) |
-| `plan::Plan`、`reason::Reason`、`evaluation::Evaluator` | Agent 的计划图、推理与业务结果评估；不负责保存 Runtime 现场。 | [`planning_evaluation.rs`](../examples/planning_evaluation.rs) |
-| `workflow` | START/END、普通边、条件边、Join、Fan-out、子图和 Workflow Checkpoint 的运行入口。 | [`workflow_events.rs`](../examples/workflow_events.rs)、[`checkpoint.rs`](../examples/checkpoint.rs) |
-
-组件契约与具体实现的使用顺序固定为：先创建或注入实现，再把它传给 Agent/Workflow；没有注入的组件不会隐式启用。
-例如 `model::chat::Chat`、`memory`、`checkpoint` 和 `workspace` 都是独立能力，可以按应用需要组合，不能通过一次构造偷偷创建第二套运行时。
-
-## 2. 统一输入、消息和事件
-
-### 2.1 Agent 输入
-
-Chat Agent 和 ReAct Agent 共同使用 `agent::Input`，不分别定义业务输入类型：
+一次最小的真实 Chat Agent 由四步组成：创建 Provider、绑定 Chat、构建 Agent、消费事件流。
 
 ```rust
-use halo::agent::{Input, Payload};
-use serde_json::{Map, json};
+use futures_util::StreamExt;
+use halo::agent::{self, Agent, Cancellation, Error, Input, Payload};
+use halo::agent::event::Event;
+use halo::agent::model::chat;
+use halo::agent::provider::deepseek::DeepSeek;
+use serde_json::json;
 
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let provider = DeepSeek::builder()
+        .base_url(std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com".into()))
+        .api_key(std::env::var("DEEPSEEK_API_KEY").map_err(|_| Error::new("AUTHENTICATION", "DEEPSEEK_API_KEY is required"))?)
+        .build()?;
+    let chat = provider.chat(chat::Config::new(
+        std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-flash".into()),
+    ))?;
+    let agent = agent::chat().model(chat).build()?;
+    let input = Input {
+        metadata: Default::default(),
+        payload: vec![Payload {
+            r#type: "text".into(),
+            data: json!({"value": "用一句话介绍 Heart"}),
+            mime_type: None,
+        }],
+    };
+    let mut events = agent.run(input, true, Cancellation::new()).await?;
+    while let Some(event) = events.next().await {
+        match event? {
+            Event::Delta { message } => println!("delta: {message:?}"),
+            Event::Complete { message, usage, .. } => println!("complete: {message:?}, usage={usage:?}"),
+        }
+    }
+    Ok(())
+}
+```
+
+`run(input, true, cancellation)` 固定返回共享事件流；`true` 让调用方看到 `Delta` 和 `Complete`，`false` 只交付每次完整的 `Complete`。Agent 不是守护进程：一次 `run` 有明确开始和结束，等待人工反馈时通过 `reply` 恢复。
+
+Workflow 的最小示例见 [第 06–08 章](#06-08-workflow图和执行关系) 和 [`workflow_events.rs`](../examples/workflow_events.rs)。
+
+---
+
+## 02-Runtime：运行现场
+
+### 2.1 身份
+
+一次顶层执行使用应用提供的 `chat_id`。它同时是 Chat、Checkpoint 和事件关联的业务身份；组件不会替应用生成业务 ID。需要生成新执行 ID 时，通过 Builder 的 `with_id_fn(|| i64)` 传入应用函数。
+
+```rust
+let agent = agent::react()
+    .model(chat)
+    .with_id_fn(|| next_id())
+    .build()?;
+```
+
+`Cancellation` 是一次调用的取消范围。每次独立 `run` 创建新的实例；把 clone 传给同一执行的并发工作，不要在多个独立运行之间复用。
+
+### 2.2 State、Event 和持久化的关系
+
+```text
+Event Stream       -> 对外实时观察
+Runtime State      -> 当前执行现场和恢复真相
+Checkpoint         -> State 的外部持久化快照
+短期/长期 Memory   -> 会话历史和记忆内容
+OpenTelemetry Trace -> 可选的链路观察投影，不是短期记忆记录
+```
+
+事件不是 State 的替代物。`Delta` 只用于实时观察；完整消息由 `Complete` 交付。取消时，已经交付的内容保留在最终状态，未发生的步骤不会被伪造为成功。
+
+### 2.3 取消、等待和回复
+
+取消是执行控制信号，`waiting` 是业务状态。节点需要人工输入、审批或外部回调时，Runtime 保存等待事实并停止当前调用；用户随后用同一个对话身份调用 `reply`，Runtime 从等待队列中按先进先出匹配并继续。
+
+```rust
+// Agent：提交一条用户回复；回复结果继续从原 run 的事件流交付。
+agent.reply(reply_input, Cancellation::new()).await?;
+
+// Workflow：同样使用 Messages 作为回复数据。
+runtime.reply(response_messages, Cancellation::new()).await?;
+```
+
+运行已正常收口后，Checkpoint 可以标记完成；进程仍在运行但等待用户输入时，继续使用当前 Runtime 的等待状态，不要另建一套状态。
+
+---
+
+## 03-Agent
+
+### 3.1 Chat Agent
+
+Chat Agent 负责普通模型对话，也可以配置 Tool、MCP、Skill、Permission、Middleware、Memory、Checkpoint 和 Evaluator。Chat 不拥有 Planner 循环；如果最终 Evaluator 拒绝结果，运行以错误收口。
+
+```rust
+let agent = agent::chat()
+    .model(chat)
+    .system_prompt("你是一个简洁、准确的助手")
+    .tools(vec![weather_tool])
+    .mcps(vec![connected_mcp])
+    .skills(vec![research_skill])?
+    .permission(permission)
+    .middleware(retry)
+    .checkpoint(checkpoint)
+    .memory(memory)
+    .evaluator(evaluator)
+    .with_max_concurrency(100)
+    .build()?;
+```
+
+Chat 使用 [`agent_live_tool.rs`](../examples/agent_live_tool.rs) 可验证真实工具调用。
+
+### 3.2 ReAct Agent
+
+ReAct 自带模型调用、工具循环和内置 Planner。模型决定是否调用 Tool、调用哪些 Tool 以及传递哪些参数；内部能力组装层负责把已注册的 Tool、MCP、Skill 描述提供给模型并执行实际调用。工具调用成功后结果作为下一轮模型上下文，工具直接错误也直接进入下一轮上下文；不额外包装成 `tool_result(error)`。
+
+```rust
+let agent = agent::react()
+    .model(chat)
+    .system_prompt("先查资料，再给出可核验的结论")
+    .tools(vec![search_tool, calculator_tool])
+    .mcps(mcp_servers)
+    .skills(skills)?
+    .permission(permission)
+    .evaluator(evaluator)
+    .with_max_iters(20)
+    .with_max_concurrency(100)
+    .checkpoint(checkpoint)
+    .build()?;
+```
+
+ReAct 运行由 `max_iters` 限制模型循环次数，工具批次由 `max_concurrency` 限制并发。工具自己的 `before / call / after / eval` 是同一契约的可选 Hook；重试和状态归 Runtime/中间件控制，Tool 不自行创建 Attempt。
+
+### 3.3 Agent 输入和返回
+
+Agent 不把 `Messages` 当成业务 API 的输入类型。业务输入统一是 `agent::Input`；运行时再把 payload 组织为模型 `Messages`。
+
+```rust
 let input = Input {
-    metadata: Map::from_iter([
-        ("chat_id".into(), json!(1001)),
-        ("session_id".into(), json!(2001)),
-        ("agent_id".into(), json!(3001)),
+    metadata: serde_json::Map::from_iter([
+        ("chat_id".into(), 1001.into()),
+        ("session_id".into(), 2001.into()),
     ]),
     payload: vec![Payload {
         r#type: "text".into(),
-        data: json!({"value": "北京今天的天气怎么样？"}),
+        data: serde_json::json!({"value": "北京天气怎么样？"}),
         mime_type: None,
     }],
 };
 ```
 
-`metadata` 保存应用身份、语言和其他上下文；`payload` 是用户提交的有序内容。音频、图片和文件仍使用
-`type/data/mime_type`，二进制数据应由应用保存后传稳定引用，不直接把 Base64 大对象放入输入。
+图片、音频、文件使用同一个 Payload 结构，数据放在 `data`，可选 MIME 放在 `mime_type`。未配置对应 Provider 或处理能力时，输入会被明确拒绝，不会静默转换。
 
-Agent 内部将 `Input` 转成用户 `Message`，再组织成模型 `Messages`。Chat 模型由 Agent 组织
-`model::chat::Request`；多模态模型由 Agent 组织 `model::multimodal::Request`。Agent 的输入契约不携带
-`model_config`、`voice` 或 `modalities` 等模型专属字段，模型默认参数在 Builder/模型 Config 中绑定。
-两种模型的流式输出都使用统一的 `event::Event`；TTS 是独立的后处理能力，不作为 Agent 的推理模型。
+### 3.4 SubAgent 和 Team
 
-Agent 内部适配器只负责把已有 `Messages`、工具定义和本次调用参数转换为 Chat 或多模态 Request，再把 Provider 结果转换为
-统一的 `event::Event`。它不执行工具、不管理 Memory/Permission/Checkpoint、不决定重试，也不修改 Agent Runtime State。
+SubAgent 是一个已经构建好的 Agent 实例，通过 `.subagents(...)` 提供给父 Agent 的委派路径；它不是 Tool，也不是动态注册表。
 
-多模态 Request 使用独立的 `model::multimodal::ToolChoice`，字段形状与 Chat 对齐但不复用 Chat 类型；其余公共字段为
-`messages/tools/stream/temperature/max_tokens/top_p/stop/options`，
-额外使用 `modalities` 表示期望的输出类型；多模态拥有自己的 `ResponseFormat`，但不定义第二套 Event。
+Team 是静态成员组合：成员在 Builder 阶段确定，Leader 决定把任务交给哪个成员，成员并发执行后回到 Leader。当前版本不支持运行中动态创建成员。示例：[`agent_live_team.rs`](../examples/agent_live_team.rs)、[`agent_live_three_subagents.rs`](../examples/agent_live_three_subagents.rs)。
 
-TTS 也直接使用统一的 `event::Event`：`stream=false` 只产生 `Complete`，`stream=true` 产生音频 `Delta` 和最终
-`Complete`。TTS 输入是 `Messages` 中的文本 Part，音频输出仍使用 `type = "audio"` 和现有 `data.source`，不增加第二套事件或分片字段。
+---
 
-多模态 Tool 调用沿用同一循环：assistant 的 `tool_call` 由 Agent 执行，Tool 直接返回 `role: tool` Message；该 Message
-可以包含多个文本或媒体 Part，再进入下一轮模型 `Messages`，不使用 `tool_result` 包装。
+## 04-输入、消息和事件
 
-媒体 Part 不增加独立 Rust 类型，统一使用 `data.source`：`kind` 为 `url`、`base64` 或 `id`，`value` 为对应的 URL、完整
-Data URL 或应用资源 ID；需要时可增加 `mime_type`、`filename` 和输入处理用的 `detail`。`base64` 必须是非空的
-`data:<mime>;base64,<内容>`，`id` 只作为不透明引用，不由框架自动读取或删除。资源大小、保存期限和外部清理由 Provider/应用负责。
+### 4.1 Input
 
-### 2.2 Message 和 Event
+`Input` 只有两个公共字段：
 
-模型上下文使用 `Message`/`Messages`。`Message` 包含 `role`、`content`、`values`、`metadata` 和可选 `usage`。
-模型思考统一使用 `content` 中 `type = "think"` 的 Part，普通输出使用 `type = "text"`。
+```rust
+pub struct Input {
+    pub metadata: Map<String, Value>,
+    pub payload: Vec<Payload>,
+}
 
-Agent、Workflow 和 Chat Provider 对外使用统一事件：
+pub struct Payload {
+    pub r#type: String,
+    pub data: Value,
+    pub mime_type: Option<String>,
+}
+```
+
+`metadata` 放 `chat_id`、`session_id`、语言、位置等业务关联信息；`payload` 表示用户实际提交的有序内容。`payload.type` 是数据类型，例如 `text`、`image`、`audio`、`file`、`json`；`data` 是该类型的数据。
+
+### 4.2 Message
+
+```rust
+pub struct Message {
+    pub role: Role,
+    pub content: Vec<model::content::part::Part>,
+    pub values: Map<String, Value>,
+    pub metadata: Map<String, Value>,
+    pub usage: Option<model::token::Usage>,
+}
+```
+
+`content` 保存模型可观察的内容片段；`values` 保存结构化业务结果；`metadata` 保存来源和关联信息；`usage` 保存本次模型调用的 Token 使用。模型思考统一使用 `content` 中 `type = "think"` 的 Part，普通输出使用 `type = "text"`。
+
+角色固定为 `system`、`developer`、`user`、`assistant`、`tool`、`function`。Tool 调用消息和工具返回消息都使用这个统一 Message 结构，不再额外发明一套工具结果包装。
+
+### 4.3 Event
 
 ```rust
 pub enum Event {
@@ -170,1068 +301,407 @@ pub enum Event {
 }
 ```
 
-事件是观察流，不是 Runtime State。Workflow 下游从节点 State 读取业务结果，不从事件副本拼装依赖数据。
+事件是所有可流式组件、Agent 和 Workflow 的共同观察契约。Provider 的供应商字段在 Core Adapter 中转换为统一 `think`、`text`、`tool_call` 等 Part；上层不需要知道 DeepSeek、VLLM 或其他供应商的原始字段。
 
-### 2.3 AG-UI 协议输出
-
-AG-UI 是输出协议适配层，不属于 Agent、Workflow 或 Harness 的运行时配置。Agent、Workflow
-和 Harness 先产生 Heart 自己的 `Event` 流，HTTP 层决定是否转换为 AG-UI。
-
-```text
-Agent / Workflow / Harness
-    -> Heart Event Stream
-    -> HTTP 层调用 AG-UI
-    -> halo::agent::protocol::ag_ui
-    -> SSE / HTTP 响应
-```
-
-应用内部直接使用 Agent 或 Workflow 时，继续消费原始 `Event::Delta` 和
-`Event::Complete`。提供 HTTP 接口时，在 HTTP 处理器中调用 AG-UI 适配。转换按事件实时进行，
-不会等待整个运行结束；只有顶层运行真正结束时才发送 AG-UI 的 `RUN_FINISHED`。单次模型、
-工具或子 Agent 调用的 `Complete` 仍然只是内部调用完成。
-
-协议入口为：
+### 4.4 Chat Request
 
 ```rust
-halo::agent::protocol::ag_ui
+let request = model::chat::Request {
+    messages,
+    tools,
+    tool_choice: Some(model::chat::ToolChoice::Auto),
+    stream: true,
+    temperature: Some(0.7),
+    max_tokens: Some(1024),
+    top_p: Some(0.8),
+    stop: None,
+    response_format: None,
+    options: serde_json::Map::new(),
+};
 ```
 
-HTTP 层可以在响应处理器中直接调用适配器：
+模型公共参数放在 Request；供应商差异参数放在 `model::chat::Config.options` 或 Request 的 `options`。Provider 初始化参数（地址、密钥、超时）与单次调用参数分开。
+
+---
+
+## 05-Checkpoint 和恢复
+
+Checkpoint 保存一次 Runtime 的完整 JSON 现场，包含状态、图、节点执行事实、等待队列和恢复所需数据。它不是 Chat 历史，也不是 Trace；后端只实现 `save/load/delete/validate_state`。
 
 ```rust
-let context =
-    halo::agent::protocol::ag_ui::Context::new("session-1", "chat-1");
-let output = halo::agent::protocol::ag_ui::adapt(events, context);
-// 将 output 编码为 SSE 或其他 HTTP 响应。
+let checkpoint = std::sync::Arc::new(halo::agent::core::checkpoint::InMemory::new());
+let runtime = halo::agent::workflow::Runtime::new(chat_id, workflow.clone())?
+    .with_checkpoint(checkpoint.clone());
+// 运行并消费事件流后，保存完整 State。
+runtime.save_checkpoint(&*checkpoint, &Cancellation::new()).await?;
+let snapshot = checkpoint.load(chat_id, &Cancellation::new()).await?;
+let restored = halo::agent::workflow::Runtime::from_snapshot(chat_id, workflow, snapshot)?;
 ```
 
-HTTP 层需要发送运行状态时，可以在同一输出边界调用
-`halo::agent::protocol::ag_ui::snapshot(state)` 或
-`halo::agent::protocol::ag_ui::delta(change)`。
+恢复使用同一个 Workflow Definition 和 Version，再把保存的现场加载到新的 Runtime。Runtime 只从 Checkpoint 读取已保存事实，不从“某个节点是否有输出”猜测成功；错误 Attempt、等待节点和已完成节点都以 State 中的事实为准。
 
-AG-UI 不改变 Runtime State、Checkpoint、waiting、reply 或 Message 契约。未来的其他协议也
-复用同一输出边界，由 HTTP 或其他传输层选择具体协议。
+Checkpoint 后端可以是内存、数据库或应用自己的服务。没有配置 Checkpoint，就没有跨进程恢复能力；没有配置 Memory，也不会自动保存会话历史。
 
-### 2.4 A2A 远程 Agent 协议
+---
 
-A2A 用于跨进程或跨机器调用远程 Agent。它和 AG-UI 不同：AG-UI 面向前端事件展示，A2A
-面向 Agent 之间的任务通信。进程内的 SubAgent、Agent-as-Tool 和 Workflow Node 不通过
-A2A 调用。
+## 06–08-Workflow 图和执行关系
 
-公共入口为：当前已实现协议数据契约和 Heart Event 到 A2A Task/Artifact 流的转换；具体
-HTTP/JSON-RPC/SSE/Webhook 传输由 Axum Server 层负责：
+### 6.1 构建节点
+
+普通异步函数可以直接作为 Node。输入和输出由函数的类型决定，`Messages` 是唯一允许的非 object 根类型。
 
 ```rust
-halo::agent::protocol::a2a
+use halo::agent::workflow::{WorkflowBuilder, graph::{START, END}};
+use halo::agent::{Cancellation, Error, Messages};
+use schemars::JsonSchema;
+use serde::Serialize;
+
+#[derive(Serialize, JsonSchema)]
+struct Answer { value: String }
+
+let mut builder = WorkflowBuilder::new("weather");
+builder.add_node("answer", |_: Messages, _: Cancellation| async {
+    Ok::<_, Error>(Answer { value: "晴朗".into() })
+})?;
+builder.add_edge(START, "answer")?;
+builder.add_edge("answer", END)?;
+let workflow = builder.compile()?;
 ```
 
-Server 相关入口为：
+`add_node` 不要求用户先手工包装一个 Node 对象；组件如果要作为 Workflow 节点使用，可以实现 Node 契约，或者通过普通异步函数调用组件。`add_agent_node` 和 `add_graph_node` 用于明确嵌入 Agent 或已编译子图。
+
+### 6.2 四类常用关系
 
 ```rust
-halo::agent::server::a2a
-halo::agent::server::axum
-halo::agent::server::sse
-halo::agent::server::client
-halo::agent::server::webhook
+builder.add_edge(START, "a")?;
+builder.add_edge("a", "b")?;
+builder.add_join(["b", "c"], "merge")?;
+builder.add_conditional_edges("route", route, ["a", "b"])?;
+builder.add_fan_out_edges("split", "worker")?;
+builder.add_loop_edge("retry", "work", |messages| should_retry(messages))?;
 ```
 
-Axum 首版路由挂载一个 Agent Service：
+- `add_edge` 是普通关系：任一成功来源满足激活条件即可；多个来源的结果仍保存在各自 Node State，目标节点按 `attrs.input` 取所需字段。
+- `add_join` 是显式等待关系：列出的所有来源都成功后才能激活目标；一个来源最终失败，Join 不会伪造成功。
+- `add_conditional_edges` 先执行来源节点的路由函数，实际选择必须属于声明的目标集合。
+- `add_fan_out_edges` 表示同一来源向多条执行分支分发，分支执行可并发；每个执行实例有自己的执行身份，结果回收遵循运行时状态。
+- `add_loop_edge` 是受条件控制的循环关系；不能创建自环、重复边或非法图环路。
+
+节点和边都是编译期图定义。`START` 和 `END` 是边界端点，应用不把它们当普通 Node 保存。
+
+### 6.3 属性绑定和失败关系
+
+节点的输入通过 `NodeAttrs.input` 绑定上游 Node State 的字段；模型、函数和工具不需要知道 Workflow 的全局状态结构。失败关系用 `add_failure_edges` 声明，Runtime 负责记录失败 Attempt、应用重试策略和决定后续路径。
 
 ```rust
-let service = std::sync::Arc::new(halo::agent::server::a2a::Service::new(agent));
-let app = halo::agent::server::axum::router(service);
+builder.add_failure_edges(["search"], ["fallback"], "node_failed")?;
+builder.add_failure_edges(["a", "b"], ["recover"], "join_failed")?;
 ```
 
-应用需要自己的 Task 投影后端时，实现 `halo::agent::server::tasks::Store`，再使用：
+普通 Node 的重试次数、退避和取消由 Runtime/中间件决定；Node 本身只返回成功结果或统一 Error。
+
+### 6.4 Workflow Runtime
 
 ```rust
-let service = halo::agent::server::a2a::Service::with_store(agent, store);
-```
-
-`Store` 只保存 Task、Artifact、幂等消息和状态事实；取消信号与事件订阅由 Server Service
-管理，Runtime State 和 Checkpoint 仍由 Runtime 管理。
-
-`message/send` 创建 Task 并后台驱动 Agent；`message/stream` 返回 SSE；带已有 `taskId`
-的后续消息通过 `reply` 继续 waiting；`tasks/get`、`tasks/cancel` 和
-`tasks/resubscribe` 读取同一个 Task 投影。HTTP 连接断开时，后台驱动仍继续消费 Agent
-事件并更新 Task。Task 投影默认在内存中，Runtime Checkpoint 仍是恢复真相。
-
-HTTP 处理器拿到 Heart 的顶层 `Event` 流后，可以在输出边界转换为 A2A Task/Artifact 流：
-
-```rust
-let context = halo::agent::protocol::a2a::Context::new(2001, 3001, "task-3001");
-let output = halo::agent::protocol::a2a::adapt(events, context);
-// Axum Server 层继续把 output 编码为 A2A JSON-RPC、SSE 或其他绑定。
-```
-
-Heart 的会话字段和 A2A 字段按下面的关系使用：
-
-```text
-session_id  -> A2A contextId：同一会话上下文
-chat_id     -> Heart 本次 Chat/Agent 运行
-task_id     -> 远端 A2A 的一次具体任务
-```
-
-适配器默认把 `session_id` 发送为 A2A `contextId`。如果远端服务生成了不同的
-`contextId`，适配器只在内部保存映射，不向应用增加 `remote_context_id`。远端返回的
-`task_id` 只用于继续该远端任务，不替代本地 `chat_id`。
-
-远端任务需要补充信息时，A2A 的 `input_required` 或 `auth_required` 映射为 Heart 的
-`waiting`。后续回复继续携带同一个远端 `task_id` 和会话上下文。A2A 的实际结果通过
-`Artifact` Parts 传递，Heart 只转换到已有的 Message/Event/Content 契约，不新增
-`tool_result` 包装。
-
-A2A 适配不进入 Agent 或 Workflow Runtime；HTTP 层根据接口需要选择 JSON-RPC、HTTP+JSON、
-SSE 或 Webhook，并调用协议适配器：
-
-```text
-Agent / Workflow
-    -> Heart Event / State
-    -> halo::agent::protocol::a2a
-    -> HTTP 层
-```
-
-### 2.5 链路追踪
-
-Heart 使用 `fastrace` 记录 Agent 和 Workflow 的执行层级。应用在启动时选择 Reporter，运行结束或进程退出前调用一次 `flush`：
-
-```rust
-use halo::agent::trace::fastrace::{flush, set_reporter, Config, ConsoleReporter};
-
-fn init_trace() {
-    set_reporter(ConsoleReporter, Config::default());
-}
-
-fn shutdown_trace() {
-    flush();
-}
-```
-
-Reporter 由应用选择，Heart 不把某个后端写进 Runtime 契约。除了控制台 Reporter，还可以传入 fastrace 的 Jaeger 或 OpenTelemetry Reporter。链路中记录运行层级、节点和执行 ID、Delta/Complete、结束原因、Usage、等待关联 ID 和错误码；完整 Message、Checkpoint 和 Runtime State 仍由各自的状态与持久化机制保存。
-
-## 3. Chat Agent
-
-Chat Agent 是普通对话循环。它可以使用已挂载的 Tool、MCP 和 Skill；需要动态计划、迭代和重规划时使用 ReAct Agent。
-
-### 3.1 构造和运行
-
-下面是 Agent 入口的最小结构片段；其中 `chat` 和 `input` 需要由应用按第 6 节初始化。它不是模型实现，也不会自行产生回答。
-需要真实大模型的完整程序见[10.1 真实 VLLM Chat Agent](#101-真实-vllm-chat-agent从-input-到-deltacomplete)。
-
-```rust
-use futures_util::StreamExt;
-use halo::agent::{Cancellation};
-use halo::agent;
-
-let agent = agent::chat()
-    .model(chat)
-    .system_prompt("你是一个可靠的中文助手")
-    .build()?;
-
-let mut events = agent.run(input, true, Cancellation::new()).await?;
+let mut runtime = halo::agent::workflow::Runtime::new(1001, workflow)?
+    .with_max_concurrency(100)?;
+let mut events = runtime
+    .run(Messages::default(), next_exec_id, Cancellation::new())
+    .await?;
 while let Some(event) = events.next().await {
     println!("{:?}", event?);
 }
+let state = runtime.state();
 ```
 
-`chat` 是已初始化的 `model::chat::Chat` 实例。`run(input, true, cancellation)` 对外交付 Delta 和 Complete；
-传 `false` 时只交付 Complete，但返回类型不变。一次运行中的每次模型调用或工具调用都可以产生自己的 Complete。
+Workflow 一次按当前可执行前沿推进。一个 Step 内可以并发执行多个节点，但 Join 必须等待全部来源完成；`State` 保存图、节点状态、执行实例、Attempt、结果和等待队列。子图通过 `add_graph_node` 作为一个明确的图边界嵌入父图，不会变成父图的普通节点集合。
 
-取消时仍应继续消费事件流直到收口，以取得取消 Complete 和已产生的 Usage。
+### 6.5 Workflow 与 Agent 的关系
 
-### 3.2 挂载能力
+Workflow 可以通过 `add_agent_node` 调用一个已经构建好的 Agent；Agent 也可以把 Workflow 作为外部能力使用。两者共享 Message/Event/Checkpoint 语义，但各自保有自己的 Runtime State。不要把 Agent 的计划图当成 Workflow 编排图。
 
-```rust
-let agent = agent::chat()
-    .model(chat)
-    .tools(vec![search_tool])
-    .mcps(servers)
-    .skills(skills)?
-    .permission(permission)
-    .middleware(middleware)
-    .memory(memory_config)
-    .checkpoint(checkpoint)
-    .build()?;
+---
+
+## 09–10-与其他框架的关系
+
+Heart 借鉴 LangGraph 的 `START/END`、条件边、子图和 Checkpoint 现场；借鉴 Eino 的组件契约、Provider 适配和编排边界；借鉴 AgentScope 的 Toolkit、Workspace、Permission、Plan 和 Harness 组合方式。
+
+这些框架的 DSL 不直接成为 Heart Runtime 的内部状态。应用可在入口层把 Dify、Coze 或自定义 DSL 转成 Heart 的 Native Definition：
+
+```text
+外部 DSL JSON
+    -> 解析和字段校验
+    -> 节点能力绑定（应用提供函数/Agent/组件）
+    -> WorkflowBuilder / Agent Plan
+    -> compile
+    -> Runtime
 ```
 
-Chat 和 ReAct 都支持这些入口。MCP Server 应在挂载前连接并完成工具发现；运行期间不会临时重新发现工具。
-Permission 只在实际 Tool/MCP 调用前检查；Tool 的 `before/call/after/eval` 是工具生命周期，不是 Agent Middleware。
+DSL 只描述图和参数，不能绕过已注册的函数、工具、Agent 或子图；未知能力在构建或计划提交阶段失败。Heart 不增加公共 Registry、Capabilities 或动态能力注册表。
 
-### 3.3 Memory 和 Checkpoint
+A2A、AG-UI、JSON-RPC、SSE 和 Webhook 是协议/传输层适配，不改变 Runtime 的 State 和 Event 契约。HTTP 层可以将已有 Event 转换成对外协议事件。
 
-Memory 由应用配置后传给 Agent，负责短期 Session/Chat（Chat.state 保存最终完整 State）和长期
-`summary`/`fact`/`preference`。Checkpoint 保存一次 Agent 运行的完整恢复现场；Chat.state 是收口审计快照，不是恢复来源：
+---
+
+## 11-已经固定的使用规则
+
+1. 公共入口统一从 `halo::agent` 开始；不使用 `halo::core::agent` 兼容路径。
+2. 一次顶层执行用 `chat_id`；不要再引入第二套 `run_id` 业务身份。
+3. Agent 业务输入是 `agent::Input`；模型输入是 `model::chat::Request` 和 `Messages`。
+4. `Event::Delta` 是实时增量，`Event::Complete` 是一次完整交付；不要从 Delta 伪造 Complete。
+5. 模型思考统一为 `content` Part 的 `type = "think"`。
+6. 工具执行错误直接返回统一 Error 并进入后续模型上下文；不额外包装 `tool_result(error)`。
+7. Tool 的 `before / call / after / eval` 是同一 Tool 契约的可选阶段；重试由 Runtime/中间件控制。
+8. Memory、Checkpoint 和 Chat 各有边界：Checkpoint 是恢复现场，Memory 是历史/长期记忆，Chat 是外部对话收口；OpenTelemetry Trace 只负责链路观察，不增加另一张短期记忆表。
+9. Session 是短期会话聚合；长期记忆只使用 `summary`、`fact`、`preference` 等固定类型，是否向量化由应用提供 Embed 和后端决定。
+10. 没有配置某项能力，就没有该能力；框架不会隐式创建模型、数据库、Sandbox、MCP 或 Memory。
+11. 所有公开异步能力使用 Rust 原生 `async fn`，不要求 `async_trait`。
+12. `core` 实现组件，`runtime` 管运行现场，`harness` 做组合；不在组件中复制运行循环。
+
+---
+
+## 12-当前限制和后续范围
+
+以下内容属于后续版本或应用层职责，当前手册不把它们当作已完成能力：
+
+- 更完整的 Document Parser/布局解析和 OCR 策略；当前保留 Parser、Chunker、RAPTOR、Graph 的契约和 LiteParse 适配入口。
+- Provider 的完整 TTS、多模态输入输出和供应商特有字段扩展。
+- 更完整的服务器部署、任务队列、跨进程等待恢复和分布式锁。
+- 业务应用的 DSL 编辑器、账号权限、数据库 schema、向量库/图数据库写入编排。
+- 更复杂的 Team 动态成员管理；当前 Team 成员在构建时确定。
+
+这些边界不会阻止应用实现自定义组件。应用可以实现契约并传入 Builder，不需要修改 Runtime。
+
+---
+
+## 13-组件使用索引
+
+### 13.1 Model Provider
+
+Provider 初始化客户端，`.chat(chat::Config)` 绑定模型；每次调用使用 `chat::Request`。
 
 ```rust
-let agent = agent::chat()
-    .model(chat)
-    .memory(memory_config)
-    .checkpoint(checkpoint)
-    .build()?;
+let provider = halo::agent::provider::vllm::Vllm::new(config)?;
+let chat = provider.chat(halo::agent::model::chat::Config::new("model-name"))?;
 ```
 
-没有配置 Memory 就不会自动读取历史；没有配置 Checkpoint 就不能跨进程恢复。默认内存实现只在当前进程有效。
+当前实现包含 DeepSeek、VLLM/OpenAI-compatible、OpenAI、Gemini 和 Zhipu。真实调用示例：[`provider_deepseek.rs`](../examples/provider_deepseek.rs)、[`provider_vllm.rs`](../examples/provider_vllm.rs)。
 
-### 3.4 Agent Checkpoint：保存终态并重建
+### 13.2 Tool、Function 和 Permission
 
-Checkpoint 是按 `chat_id` 保存的一份完整 Agent 运行现场。它不只保存最终文本，还保存当前消息、Usage、等待信息、节点状态和必要的执行事实。
-下面的代码接着 10.1 中已经创建好的 `chat` 和 `input` 使用：
+Tool 必须提供稳定 `ToolDefinition` 和异步 `call`；参数 Schema 根必须是 object。`before` 可以校验/补齐参数，`after` 可以修改返回 Message，`eval` 可以反馈业务结果。
 
 ```rust
-use std::sync::Arc;
-use futures_util::StreamExt;
-use halo::agent::{self, checkpoint::Checkpoint as _, Cancellation};
-use halo::agent::core;
-
-let checkpoint = Arc::new(core::checkpoint::InMemory::new());
-let agent = agent::chat()
-    .model(chat)
-    .checkpoint(checkpoint.clone())
-    .build()?;
-
-let chat_id = input
-    .metadata
-    .get("chat_id")
-    .and_then(serde_json::Value::as_i64)
-    .expect("input.metadata.chat_id is required when Checkpoint is configured");
-let mut events = agent.run(input.clone(), false, Cancellation::new()).await?;
-while let Some(event) = events.next().await {
-    println!("event = {:?}", event?);
+impl halo::agent::tool::Tool for Weather {
+    fn definition(&self) -> &ToolDefinition { &DEFINITION }
+    async fn call(&self, call: &Call, cancel: &Cancellation) -> Result<Message, Error> {
+        // 访问真实服务，返回 Message::function(...)
+    }
 }
-drop(events);
-
-let saved = checkpoint.load(chat_id, &Cancellation::new()).await?;
-println!("saved status = {}", saved["status"]);
 ```
 
-进程重启后，应用用同一个 `chat_id`、同一个 Checkpoint 后端和重新初始化的 Model/Agent 配置再次调用 `run`；Runtime 会先读取已保存现场。
-终态现场直接返回已保存的 Complete，等待现场则由同一个 `reply` 入口继续。`InMemory` 只用于当前进程示例，跨进程时替换为应用自己的持久化 Checkpoint 实现。
+Permission 只在实际 Tool/MCP 调用前检查。内置策略可从 `halo::agent::core::permission` 使用：`default`、`explore`、`edit`、`bypass`；没有挂载 Permission 就不启用权限阶段。参考 [`agent_permission.rs`](../examples/agent_permission.rs)。
 
-## 4. ReAct Agent
+### 13.3 Workspace、MCP、Skill
 
-ReAct 使用同一个 `Input` 和事件流入口，但内部增加迭代、工具批次和可选的 Agent 计划图：
+Workspace 决定 local/server 数据源；local 操作本地文件，server 操作应用配置的数据库或远端存储。Workspace 自带基础文件工具，MCP 和 Skill 需要应用显式接入。
 
 ```rust
 let agent = agent::react()
     .model(chat)
-    .system_prompt("先判断任务，再选择合适的已挂载能力")
-    .tools(vec![search_tool, calculator_tool])
-    .mcps(servers)
-    .skills(skills)?
-    .with_max_iters(20)
-    .with_max_concurrency(100)
-    .memory(memory_config)
-    .checkpoint(checkpoint)
+    .tools(local_tools)
+    .mcps(connected_servers)
+    .skills(discovered_skills)?
     .build()?;
 ```
 
-边界如下：
+Skill 可以按 Workspace 的 loader 发现，应用负责在初始化阶段处理 hash、缓存和同步；运行过程中只使用已加载的技能描述和脚本。MCP 连接和工具发现应在 Agent 构建前完成，运行时只负责调用。
 
-- Agent 决定是否调用工具、调用哪个工具以及参数；
-- 挂载能力负责真正执行 Tool、MCP 和 Skill；
-- Agent 运行图负责任务依赖、并发、状态和结果保存；
-- Tool 失败反馈给当前模型上下文，不伪装成正常业务结果，也不直接把整个 Agent 打成失败；
-- Agent `evaluator` 判断最终结果，不替代 Tool 错误处理；
-- 计划只能引用已经注册的能力，未知能力在计划更新时返回输入错误。
+### 13.4 Prompt
 
-### 4.1 等待和反馈
-
-审批、人工输入或外部回调会使运行进入 `waiting`。反馈通过同一个 Agent 对象的 `reply` 提交，不另造 `resume` 输入类型：
+Prompt Template 只负责模板渲染，不负责 Tool 调度：
 
 ```rust
-agent.reply(
-    Input {
-        metadata: serde_json::Map::from_iter([
-            ("chat_id".into(), serde_json::json!(1001)),
-            ("reply_id".into(), serde_json::json!(9001)),
-        ]),
-        payload: vec![Payload {
-            r#type: "json".into(),
-            data: serde_json::json!({"approved": true}),
-            mime_type: None,
-        }],
-    },
-    Cancellation::new(),
-).await?;
+let template = halo::agent::prompt::Template::new()
+    .message(system_message("你是助手"))
+    .messages("history")
+    .message(user_message("问题：{question}"));
+let variables = halo::agent::prompt::Variables::new()
+    .value("question", serde_json::json!("北京天气怎么样"))
+    .messages("history", history);
+let messages = template.format(&variables)?;
 ```
 
-反馈按等待队列 FIFO 消费；收齐当前等待步骤所需反馈后，原 `run` 流继续输出。原进程结束后，从完整 Checkpoint 重建 Agent，
-再提交相同的 reply；已成功的模型、工具和兄弟节点不会重放。
+### 13.5 Memory 和 Compression
 
-## 5. Workflow
-
-Workflow 是显式图编排，不使用 Agent Planner。节点可以是普通异步函数、Agent 或已编译子图。Runtime 负责图调度、状态、Join、
-Fan-out、等待和 Checkpoint。
-
-### 5.1 普通函数节点
-
-普通函数直接交给 `WorkflowBuilder::add_node`；不需要包装类。普通节点的输入输出应为对象根 Schema，`Messages` 是消息型例外：
+短期 Memory 由一个后端负责 Session/Chat；长期 Memory 使用统一 `memory::Request/Item`，支持 `summary`、`fact`、`preference`。Agent 通过 `memory::Config::new(short, long)` 组合：
 
 ```rust
-use halo::agent::{Cancellation, Error};
-use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-
-#[derive(Deserialize, JsonSchema)]
-struct SearchInput { query: String }
-
-#[derive(Serialize, JsonSchema)]
-struct SearchOutput { documents: Vec<String> }
-
-async fn search(input: SearchInput, _: Cancellation) -> Result<SearchOutput, Error> {
-    Ok(SearchOutput { documents: vec![input.query] })
-}
+let memory = halo::agent::memory::Config::new(short_store, long_store)
+    .with_scopes(["user", "agent"])
+    .with_compression(compressor)
+    .with_extractor(extractor)
+    .with_id_fn(next_id);
 ```
 
-Runtime 根据节点的 `attrs.input` 从上游 State 组织 `SearchInput`，每个节点可以有自己的业务输入结构。
+没有 `with_compression` 就不启用自动压缩；压缩是用户触发请求时检查并后台执行，不阻塞当前主流程。压缩阈值使用摘要覆盖范围之后的 Chat Usage 累加；新摘要只保留当前一份，并记录用于展示的 Usage。
 
-### 5.2 构图和运行
+### 13.6 Checkpoint、Sandbox、Document、Search 和 Embed
 
-```rust
-use futures_util::StreamExt;
-use halo::agent::{Cancellation, Error, Messages};
-use halo::agent::workflow::{graph::{END, START, GraphError}, Runtime, WorkflowBuilder};
-use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
+- `Checkpoint` 保存完整 Runtime State；实现 `save/load/delete/validate_state`。
+- `Sandbox` 是执行能力契约；本地实现从 `halo::agent::core::sandbox::Local` 使用。
+- `Document` 组件定义 Source/Document/Chunk/Parser/Chunker 等数据边界；解析策略可以由应用选择。
+- `knowledge::Search` 的 keyword/vector/hybrid 请求各自有明确参数；具体索引后端由应用实现。
+- `model::embed::Embed` 是模型组件；调用返回统一 Message，向量放在 `values`，模型和维度放在 `metadata`。
 
-fn graph_error(error: GraphError) -> Error {
-    Error { code: error.code, message: error.message, details: error.details }
-}
+综合组件示例见 [`component_contracts.rs`](../examples/component_contracts.rs)。
 
-let mut builder = WorkflowBuilder::new("search-workflow");
-builder.add_node("search", search).map_err(graph_error)?;
-builder.add_edge(START, "search").map_err(graph_error)?;
-builder.add_edge("search", END).map_err(graph_error)?;
-let workflow = builder.compile().map_err(graph_error)?;
-let runtime = Runtime::new(1001, workflow)?;
-let ids = Arc::new(AtomicI64::new(1));
-let mut events = runtime.run(
-    Messages::default(),
-    Arc::new(move || ids.fetch_add(1, Ordering::SeqCst)),
-    Cancellation::new(),
-).await?;
-while let Some(event) = events.next().await {
-    println!("{:?}", event?);
-}
-```
-
-ID 生成函数由应用提供，例如雪花 ID；Heart 不初始化 ID 服务。读取 Runtime State 前先消费并释放运行流。
-
-### 5.3 关系、Join 和 Fan-out
-
-```rust
-builder.add_conditional_edges("router", route, ["search", "fallback"])?;
-builder.add_join(["search", "fallback"], "merge")?;
-builder.add_fan_out_edges("planner", "worker")?;
-```
-
-普通关系按任一成功来源激活；Join 等待所有声明来源成功；条件关系只能选择预先声明的目标；Fan-out 可以并发执行，恢复时只重试失败子集。
-
-### 5.4 嵌入 Agent 和子图
-
-```rust
-builder.add_agent_node("researcher", researcher_agent)?;
-builder.add_graph_node("child", &compiled_child_workflow)?;
-builder.add_edge(START, "researcher")?;
-builder.add_edge("researcher", "child")?;
-builder.add_edge("child", END)?;
-```
-
-Agent 使用自己的 Agent State，子图保留自己的图边界；父 Workflow 只把它们作为节点调度，不把 Workflow Node State 和 Agent State 混成一个类型。
-
-### 5.5 Workflow 反馈和恢复
-
-Workflow 反馈入口是 `Runtime::reply(Messages, Cancellation)`。原运行仍消费原事件流；进程结束后从完整快照重建：
-
-```rust
-let snapshot = checkpoint.load(1001, &Cancellation::new()).await?;
-let runtime = Runtime::from_snapshot(1001, workflow, snapshot)?;
-runtime.reply(feedback, Cancellation::new()).await?;
-```
-
-恢复加载完整 Runtime State：已完成节点、失败标记、等待队列、图版本和业务数据都来自快照，不从头重放模型、工具和节点。
-
-## 6. Model Provider
-
-Provider 初始化参数和单次调用参数分开。当前 OpenAI、DeepSeek 和 VLLM 使用 Chat Completions；不实现 Responses API。
-
-```rust
-use halo::agent::core::provider::vllm::Vllm;
-use halo::agent::model::chat;
-use serde_json::{Map, json};
-
-let provider = Vllm::builder()
-    .base_url("http://127.0.0.1:8000/v1")
-    .api_key(std::env::var("HEART_VLLM_API_KEY")?)
-    .build()?;
-let chat = provider.chat(
-    chat::Config::new("Qwen3.5-122B-A10B").options(Map::from_iter([(
-        "chat_template_kwargs".into(),
-        json!({"enable_thinking": true}),
-    )])),
-)?;
-```
-
-VLLM 的 `delta.reasoning` 转成统一的 `think` Part，普通输出转成 `text` Part。供应商特有参数放在 `Config.options` 或 `Request.options`。兼容 Provider 可在 `Config.context_limit` 中设置上下文上限（估算 Token），Runtime 会在每次模型调用前保留系统提示、Session 摘要和最新完整消息组，并裁剪更早历史；`max_tokens` 会从可用上下文预算中预留。
-
-DeepSeek 使用自己的 Provider 类型，模型名也只放在 DeepSeek 的 Chat 配置中：
-
-```rust
-let provider = halo::agent::core::provider::deepseek::DeepSeek::builder()
-    .base_url("https://api.deepseek.com")
-    .api_key(std::env::var("DEEPSEEK_API_KEY")?)
-    .build()?;
-let chat = provider.chat(halo::agent::model::chat::Config::new("deepseek-flash"))?;
-```
-
-VLLM 示例中的 Qwen 模型属于 VLLM 服务，不与 DeepSeek Provider 混用。
-
-智谱 Embedding-3 是独立的 Embed Provider，不依赖 Chat Provider。默认请求地址为智谱 V4 API，`dimensions` 可省略（服务默认 2048），或在 256–2048 范围内显式设置：
-
-```rust
-use halo::agent::{
-    model::embed::{self, Embed as _},
-    provider::zhipu::Zhipu,
-};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let provider = Zhipu::builder()
-        .api_key(std::env::var("HEART_EMBED_API_KEY")?)
-        .build()?;
-    let embed = provider.embed(embed::Config {
-        model_name: "embedding-3".into(),
-        options: Default::default(),
-    })?;
-    let message = embed
-        .embed(embed::Request {
-            input: "语义搜索的测试文本".into(),
-            dimensions: Some(1024),
-            options: Default::default(),
-        })
-        .await?;
-    let vector = message.values.get("vector").expect("embedding vector");
-    println!("dimension={}, usage={:?}", vector.as_array().unwrap().len(), message.usage);
-    Ok(())
-}
-```
-
-本地 `.env` 至少配置 `HEART_EMBED_API_KEY`；如使用兼容网关或其他模型名，可另配 `HEART_EMBED_BASE_URL`、`HEART_EMBED_MODEL`。不要提交密钥。
-
-OpenAI 的 Embeddings API 也已由 `core::provider::openai::OpenAI` 提供，无需额外 Provider 类型。默认地址为 `https://api.openai.com/v1`，例如使用 `text-embedding-3-small`；请求维度通过 `embed::Request.dimensions` 传入。配置 `OPENAI_API_KEY` 后，可以按下方真实验收命令执行 OpenAI 向量验收；本地 `scripts/test-real.sh` 只是工作区辅助脚本，不随 crate 发布。
-
-## 7. Workspace、Skill 和 MCP
-
-Workspace 决定执行环境是本地文件还是服务器数据库。Local Workspace 默认提供列目录、读取、写入、精确编辑、Glob、Grep 和单文件删除；
-命令执行必须显式配置 Sandbox。
-
-```rust
-let workspace = halo::agent::core::workspace::Local::new("./workspace")?
-    .sandbox(halo::agent::core::sandbox::Local::default())
-    .tools(custom_tool)
-    .mcps(servers)
-    .skills(skills)?;
-```
-
-Skill 使用 `.skills(loader)` 载入：Local Loader 从目录发现，Server Loader 从数据库读取。Loader 可以覆盖 `version` 返回数据库修订号或内容指纹；
-Workspace 会在同一实例内复用已发现的 Skill 快照，只有版本变化才重新读取。MCP Server 必须先连接并完成工具发现，
-再挂载到 Workspace 或 Agent。Provider Key 和 MCP 地址只放本地 `.env`，不要提交到 Git。
-
-## 8. 取消、错误和测试
-
-- `Cancellation` 是一次独立运行的取消范围；每个独立 Agent/Workflow 运行创建新的实例。
-- `Complete` 是一次模型、工具或节点的可观察结果，不等同于整个 Runtime 成功。
-- Checkpoint 是恢复真相；Chat.state 是最终审计快照。
-- 工具错误保留为工具错误并反馈给当前 Agent，不伪装成正常结果。
-
-```bash
-cargo fmt --all --check
-cargo check --all-targets
-cargo test --all-targets --all-features
-cargo clippy --all-targets --all-features -- -D warnings
-```
-
-## 9. 当前版本边界
-
-PDF/Office/图片的通用解析默认使用 LiteParse；领域专用 Parser 方法和 Python 函数接入属于后续版本。V2 已提供 Gemini TTS 与多模态 Provider 适配，真实调用需要本地配置 `GEMINI_API_KEY`；统一真实验收由 `scripts/test-real.sh` 执行，图片验收还需要 `GEMINI_TEST_IMAGE_DATA_URL`。具体格式和运行依赖见 [Document 解析手册](DOCUMENT.zh-CN.md)。
-
-## 10. 完整可运行配方
-
-前面的片段用于解释概念；本节把每个常用入口都写成可以直接复制到一个新 Cargo 项目的
-`src/main.rs` 的完整程序。先建立项目并把 Heart 作为依赖：
-
-```bash
-cargo new heart-guide-demo
-cd heart-guide-demo
-```
-
-将本手册第 10 节中的任意一个程序保存为 `src/main.rs`，再执行：
-
-```bash
-cargo run
-```
-
-示例只使用当前公开契约。需要网络、凭据或外部服务的示例会在标题中明确标出；离线示例中的本地 Chat 仅用于测试 Agent 契约，不代表大模型能力。
-
-### 10.1 真实 VLLM Chat Agent：从 Input 到 Delta/Complete
-
-下面使用真实的 OpenAI-compatible VLLM Chat Completions 服务，不伪造模型输出。先设置服务地址、密钥和模型名：
-
-```bash
-export HEART_VLLM_BASE_URL=http://127.0.0.1:8000/v1
-export HEART_VLLM_API_KEY=replace-me
-export HEART_VLLM_MODEL=Qwen3.5-122B-A10B
-```
-
-这个例子展示：
-
-1. `Vllm::new` 初始化 Provider，`provider.chat(...)` 绑定具体模型；
-2. Agent 的输入仍然是 `Input`，由 Agent 内部组织模型 `Messages`；
-3. `stream = true` 同时观察模型返回的 `Delta` 和 `Complete`；
-4. 模型的思考内容由 Provider 统一映射为 `think`，普通回答映射为 `text`。
-
-```rust
-use futures_util::StreamExt;
-use halo::agent::{self, Agent, Cancellation, Input, Payload};
-use halo::agent::{event::Event, model::chat, provider::vllm::{Config, Vllm}};
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), halo::agent::Error> {
-    let provider = Vllm::new(Config {
-        base_url: std::env::var("HEART_VLLM_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000/v1".into()),
-        api_key: std::env::var("HEART_VLLM_API_KEY").expect("HEART_VLLM_API_KEY is required"),
-        ..Config::default()
-    })?;
-    let chat = provider.chat(chat::Config {
-        model_name: std::env::var("HEART_VLLM_MODEL").expect("HEART_VLLM_MODEL is required"),
-        context_limit: None,
-        options: serde_json::Map::from_iter([
-            ("chat_template_kwargs".into(), json!({"enable_thinking": true})),
-        ]),
-    })?;
-    let agent = agent::chat()
-        .model(chat)
-        .system_prompt("你是一个简洁的中文助手")
-        .build()?;
-
-    let input = Input {
-        metadata: serde_json::Map::from_iter([
-            ("chat_id".into(), json!(1001)),
-            ("session_id".into(), json!(2001)),
-            ("agent_id".into(), json!(3001)),
-        ]),
-        payload: vec![Payload {
-            r#type: "text".into(),
-            data: json!({"value": "北京今天适合出门吗？"}),
-            mime_type: None,
-        }],
-    };
-
-    let mut events = agent.run(input, true, Cancellation::new()).await?;
-    while let Some(event) = events.next().await {
-        match event? {
-            Event::Delta { message } => println!("delta = {:?}", message.content),
-            Event::Complete { message, usage, finish_reason } => {
-                println!("complete = {:?}", message.content);
-                println!("usage = {usage:?}, finish_reason = {finish_reason:?}");
-            }
-        }
-    }
-    Ok(())
-}
-```
-
-### 10.2 ReAct：工具、Permission 和工具错误反馈
-
-下面用确定性的模型替身模拟“第一次返回工具调用、第二次读取工具结果”的闭环，不代表真实模型推理。真实模型只需把模型替身替换为 10.1 中初始化的 Provider Chat。工具本身实现 `Tool` 契约；
-Permission 只在真正执行工具时检查，模型只负责选择工具和参数。把 `.tools(Lookup)` 改成多个工具时可以传
-`vec![Lookup, OtherTool]`，不需要额外的工具集合公共对象。
-
-```rust
-use std::sync::{LazyLock, atomic::{AtomicUsize, Ordering}};
-use futures_util::{StreamExt, stream};
-use halo::agent::{Cancellation, Error};
-use halo::agent::{
-    event::Event,
-    message::{Message, Role},
-    model::{chat::{Chat, Request}, content::part::Part},
-    permission::{Behavior, Decision, Request as PermissionRequest},
-    tool::{Call, Tool, ToolDefinition},
-};
-use serde_json::json;
-
-struct Lookup;
-impl Tool for Lookup {
-    fn definition(&self) -> &ToolDefinition {
-        static DEFINITION: LazyLock<ToolDefinition> = LazyLock::new(|| ToolDefinition {
-            name: "lookup".into(),
-            description: "读取一个固定的天气结果".into(),
-            parameters: serde_json::from_value(json!({
-                "type": "object", "properties": {}, "additionalProperties": false
-            })).unwrap(),
-        });
-        &DEFINITION
-    }
-
-    async fn call(&self, _call: &Call, _cancellation: &Cancellation) -> Result<Message, Error> {
-        Ok(Message::function(json!({"temperature": 22, "condition": "晴"})))
-    }
-}
-
-struct DemoModel(AtomicUsize);
-impl Chat for DemoModel {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-
-    async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
-        let mut output = Message::new(Role::Assistant);
-        if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
-            output.content.push(Part {
-                r#type: "tool_call".into(),
-                data: json!({"call_id":"call_1","name":"lookup","arguments":{}})
-                    .as_object().unwrap().clone(),
-            });
-        } else {
-            let saw_tool = request.messages.as_slice().iter()
-                .any(|message| message.role == Role::Tool);
-            output.values.insert("answer".into(), json!(if saw_tool {
-                "北京 22 度，天气晴朗。"
-            } else {
-                "没有工具结果。"
-            }));
-        }
-        Ok(stream::iter(vec![Ok(Event::Complete {
-            message: output,
-            usage: None,
-            finish_reason: Some("stop".into()),
-        })]))
-    }
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Error> {
-    let permission = halo::agent::core::permission::Permission::new(
-        |request: PermissionRequest, _cancel: Cancellation| async move {
-            if request.action == "call" && request.resource == "lookup" {
-                Ok(Decision { behavior: Behavior::Allow, reason: None })
-            } else {
-                Ok(Decision { behavior: Behavior::Deny, reason: Some("not allowed".into()) })
-            }
-        },
-    );
-
-    let agent = agent::react()
-        .model(DemoModel(AtomicUsize::new(0)))
-        .tools(Lookup)
-        .permission(permission)
-        .with_max_iters(20)
-        .build()?;
-    let mut events = agent.run(agent::Input::default(), true, Cancellation::new()).await?;
-    while let Some(event) = events.next().await {
-        println!("{:?}", event?);
-    }
-    Ok(())
-}
-```
-
-如果 `Tool::call` 返回错误，ReAct 会把原始错误作为当前模型下一轮可见的工具错误上下文；这不是一个成功的业务
-结果，也不会把整个 Agent 直接改成失败。`Tool::eval` 只有在用户实现它时才判断业务结果，失败后由当前 Agent 的
-规划/执行流程决定是否继续。
-
-### 10.3 Workflow：普通节点、State 和事件流
-
-这个例子是一个完整的单节点 Workflow。它展示了 `START/END`、应用提供的执行 ID 函数、事件流和最终 State。
-注意：必须在事件流被消费并释放后再读取 `runtime.state()`。
-
-```rust
-use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
-use futures_util::StreamExt;
-use halo::agent::{Cancellation, Error, Messages, event::Event, workflow::{GraphError, Runtime, WorkflowBuilder, graph::{START, END}}};
-use schemars::JsonSchema;
-use serde::Serialize;
-
-#[derive(Serialize, JsonSchema)]
-struct Answer { answer: i64 }
-
-fn graph_error(error: GraphError) -> Error {
-    Error { code: error.code, message: error.message, details: error.details }
-}
-
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Error> {
-    let mut builder = WorkflowBuilder::new("answer-workflow");
-    builder.add_node("answer", |_: Messages, _: Cancellation| async {
-        Ok::<_, Error>(Answer { answer: 42 })
-    }).map_err(graph_error)?;
-    builder.add_edge(START, "answer").map_err(graph_error)?;
-    builder.add_edge("answer", END).map_err(graph_error)?;
-
-    let workflow = builder.compile().map_err(graph_error)?;
-    let runtime = Runtime::new(1001, workflow)?;
-    let ids = Arc::new(AtomicI64::new(1));
-    let mut events = runtime.run(
-        Messages::default(),
-        Arc::new(move || ids.fetch_add(1, Ordering::SeqCst)),
-        Cancellation::new(),
-    ).await?;
-    while let Some(event) = events.next().await {
-        match event? {
-            Event::Delta { message } => println!("delta = {:?}", message.content),
-            Event::Complete { message, usage, .. } => println!("complete = {:?}, usage = {usage:?}", message.content),
-        }
-    }
-    drop(events);
-    println!("workflow state = {:?}", runtime.state());
-    Ok(())
-}
-```
-
-普通节点的输入输出是强类型对象；只有消息型节点才直接使用 `Messages`。Runtime 按节点的 `attrs.input` 从上游
-State 读取字段，不把多个节点结果偷偷拼成一个新的全局消息。
-
-### 10.4 Workflow 图关系：条件、Join、Fan-out 和子图
-
-图的关系在编译期声明，执行时才产生本次运行的 `State`。下面的程序只用 `Messages` 作为节点 I/O，重点演示四种
-编排动作；它会编译并打印版本，便于在应用构图阶段先验证非法边、重复边和 Join 冲突。
-
-```rust
-use halo::agent::{Cancellation, Error, Messages, workflow::{GraphError, WorkflowBuilder, graph::{START, END}}};
-
-fn graph_error(error: GraphError) -> Error { Error { code: error.code, message: error.message, details: error.details } }
-
-#[tokio::main]
-async fn main() -> Result<(), Error> {
-    let mut builder = WorkflowBuilder::new("relations");
-    for id in ["router", "left", "right", "merge", "worker"] {
-        builder.add_node(id, |input: Messages, _cancel: Cancellation| async move {
-            Ok::<_, Error>(input)
-        }).map_err(graph_error)?;
-    }
-    builder.add_edge(START, "router").map_err(graph_error)?;
-    builder.add_conditional_edges(
-        "router",
-        |_messages| Ok(vec!["left".to_owned(), "right".to_owned()]),
-        ["left", "right"],
-    ).map_err(graph_error)?;
-    builder.add_join(["left", "right"], "merge").map_err(graph_error)?;
-    builder.add_fan_out_edges("merge", "worker").map_err(graph_error)?;
-    builder.add_edge("worker", END).map_err(graph_error)?;
-    let compiled = builder.compile().map_err(graph_error)?;
-    println!("definition_id = {}, version = {}", compiled.definition().definition_id, compiled.definition().version);
-    Ok(())
-}
-```
-
-语义要点：普通边不等待其他前驱；Join 必须等所有声明来源成功；条件边只能返回声明过的目标；Fan-out 的子项可以
-并发，但恢复时只重试失败子集。若要把一个已编译 Workflow 嵌入父图，使用 `add_graph_node("child", &child)`，不要把
-子图伪装成普通函数节点。
-
-### 10.5 Workflow Checkpoint：保存现场后恢复
-
-Checkpoint 保存的是完整 Runtime State，而不是 Chat.state 审计快照。生产环境通常让 Runtime 在成功或最终异常收口时写一次快照；示例使用
-内存后端演示同一进程内的保存和恢复，跨进程时只需替换 `core::checkpoint::InMemory`。
-
-```rust
-use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
-use futures_util::StreamExt;
-use halo::agent::{Cancellation, Error, Messages, core, workflow::{GraphError, Runtime, WorkflowBuilder, graph::{START, END}}};
-use schemars::JsonSchema;
-use serde::Serialize;
-
-#[derive(Serialize, JsonSchema)]
-struct Output { value: String }
-fn graph_error(e: GraphError) -> Error { Error { code: e.code, message: e.message, details: e.details } }
-
-#[tokio::main]
-async fn main() -> Result<(), Error> {
-    let mut builder = WorkflowBuilder::new("checkpoint-demo");
-    builder.add_node("done", |_: Messages, _: Cancellation| async {
-        Ok::<_, Error>(Output { value: "saved".into() })
-    }).map_err(graph_error)?;
-    builder.add_edge(START, "done").map_err(graph_error)?;
-    builder.add_edge("done", END).map_err(graph_error)?;
-    let workflow = builder.compile().map_err(graph_error)?;
-    let checkpoint = core::checkpoint::InMemory::new();
-    let runtime = Runtime::new(7001, workflow.clone())?.with_checkpoint(checkpoint);
-    let ids = Arc::new(AtomicI64::new(1));
-    let mut events = runtime.run(Messages::default(), Arc::new(move || ids.fetch_add(1, Ordering::SeqCst)), Cancellation::new()).await?;
-    while let Some(_event) = events.next().await {}
-    drop(events);
-    let snapshot = runtime.snapshot()?;
-    println!("snapshot status = {}", snapshot["status"]);
-
-    // Persisted deployments normally load this JSON from the Checkpoint backend.
-    let mut restored = Runtime::from_snapshot(7001, workflow, snapshot)?;
-    println!("restored status = {:?}", restored.state().status);
-    Ok(())
-}
-```
-
-如果进程在等待人工反馈时结束，重新创建 Runtime 后调用 `reply(Messages, Cancellation)`；如果只是同一进程的活跃运行，
-直接调用原 Runtime 的 `reply`，不要再创建第二个运行流。
-
-### 10.6 VLLM：真实 Chat Completions 调用
-
-这是唯一需要外部服务和密钥的基础示例。把配置写进项目根目录的 `.env`（该文件已经被 `.gitignore` 忽略），例如：
-
-```dotenv
-HEART_VLLM_BASE_URL=http://127.0.0.1:8000/v1
-HEART_VLLM_API_KEY=replace-me
-HEART_VLLM_MODEL=Qwen3.5-122B-A10B
-```
-
-运行前把变量导入当前 Shell：
-
-```bash
-set -a; source .env; set +a
-cargo run
-```
-
-将下面完整程序保存为 `src/main.rs`：
-
-```rust
-use futures_util::StreamExt;
-use halo::agent::{event::Event, message::{Message, Messages, Role}, model::{chat, chat::Chat, content::part::Part}, core::provider::vllm::Vllm};
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), halo::agent::model::Error> {
-    let provider = Vllm::builder()
-        .base_url(std::env::var("HEART_VLLM_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000/v1".into()))
-        .api_key(std::env::var("HEART_VLLM_API_KEY").map_err(|_| halo::agent::model::Error::new("AUTHENTICATION", "HEART_VLLM_API_KEY is required"))?)
-        .build()?;
-    let chat = provider.chat(chat::Config::new(std::env::var("HEART_VLLM_MODEL").map_err(|_| halo::agent::model::Error::new("INVALID_ARGUMENTS", "HEART_VLLM_MODEL is required"))?).options(serde_json::Map::from_iter([("chat_template_kwargs".into(), json!({"enable_thinking": true}))])))?;
-    let mut user = Message::new(Role::User);
-    user.content.push(Part { r#type: "text".into(), data: json!({"value":"介绍平路运河"}).as_object().unwrap().clone() });
-    let mut events = chat.stream(chat::Request { messages: Messages::new([user]), stream: true, max_tokens: Some(512), ..Default::default() }).await?;
-    while let Some(event) = events.next().await {
-        match event? {
-            Event::Delta { message } => for part in message.content { print!("{}", part.data["value"].as_str().unwrap_or_default()); },
-            Event::Complete { usage, finish_reason, .. } => println!("\nusage={usage:?}, finish_reason={finish_reason:?}"),
-        }
-    }
-    Ok(())
-}
-```
-
-当前 VLLM 适配的是 `/v1/chat/completions`，不是 Responses API。VLLM 的 `delta.reasoning` 对外统一为 `think`，普通输出统一为
-`text`；Provider 初始化参数和单次 `chat::Request` 参数不能混用。
-
-### 10.7 Memory：短期记录、长期记忆和显式召回
-
-下面的程序完全离线运行，先写入 Session、Chat 和一条长期 Preference，再构造 Agent。它说明 Memory 不会在没有配置时自动启用，
-短期数据和长期数据也不是同一张记录。
-
-```rust
-use futures_util::{StreamExt, stream};
-use halo::agent::{Cancellation, Error, Message};
-use halo::agent::{
-    self, Agent, Input, Payload,
-    core,
-    event::Event,
-    memory::{self, Memory},
-    memory::short::{self, chat, session},
-    message::Role,
-    model::{chat::{Chat, Request}, content::part::Part},
-};
-use serde_json::{Map, json};
-use memory::short::chat::Store as _;
-use memory::short::session::Store as _;
-
-struct Model;
-impl Chat for Model {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-    async fn stream(&self, _request: Request) -> Result<Self::Stream, Error> {
-        let mut message = Message::new(Role::Assistant);
-        message.content.push(Part { r#type: "text".into(), data: json!({"value":"晴天，适合露营。"}).as_object().unwrap().clone() });
-        Ok(stream::iter(vec![Ok(Event::Complete { message, usage: None, finish_reason: Some("stop".into()) })]))
-    }
-}
-
-#[tokio::main]
-async fn main() -> Result<(), Error> {
-    let cancellation = Cancellation::new();
-    let short = core::memory::short::InMemory::new();
-    let long = core::memory::InMemory::new();
-    let config = memory::Config::new(short, long).with_scopes(["user", "agent"]);
-    config.session().create(session::Session { id: 1, tenant_id: 1, user_id: 2, r#type: short::Type::Agent, title: Some("天气".into()), summary: None, usage: None, status: session::Status::Active, metadata: Map::new(), created_time: 0, updated_time: 0 }, &cancellation).await?;
-    config.chat().create(chat::Chat { id: 2, tenant_id: 1, user_id: 2, agent_id: 3, session_id: 1, r#type: short::Type::Agent, status: chat::Status::Completed, input: Some(chat::Request { metadata: Map::new(), payload: vec![chat::Payload { r#type: "text".into(), data: json!({"value":"北京天气？"}), mime_type: None }] }), message: None, usage: None, graph: None, state: None, metadata: Map::new(), started_time: None, completed_time: None, created_time: 0, updated_time: 0 }, &cancellation).await?;
-    config.long().write(memory::Request { id: 3, r#type: memory::Type::Preference, user_id: 2, agent_id: None, session_id: None, from: 1, to: 2, content: "用户喜欢露营".into(), metadata: None, vector: None }, &cancellation).await?;
-    let agent = agent::chat().model(Model).memory(config).build()?;
-    let input = Input { metadata: Map::from_iter([("chat_id".into(), json!(3)), ("session_id".into(), json!(1)), ("user_id".into(), json!(2)), ("agent_id".into(), json!(3))]), payload: vec![Payload { r#type: "text".into(), data: json!({"value":"天气好就去露营"}), mime_type: None }] };
-    let mut events = agent.run(input, false, Cancellation::new()).await?;
-    while let Some(event) = events.next().await { println!("{:?}", event?); }
-    Ok(())
-}
-```
-
-压缩是独立能力：只有应用或 Harness 配置了压缩组件并主动触发检查，才会用摘要替换已覆盖的 Chat 范围；本次请求不会中途
-切换到新摘要。
-
-内置 Chat 压缩器可以限制摘要输入和保留的近期历史：
-
-```rust
-let compressor = core::compression::Compressor::new(chat, request)?
-    .with_size(10_000)  // 达到该阈值才启动后台压缩
-    .with_limit(8_000)  // 摘要模型最多接收的历史 Token 估算
-    .with_retain(1_000); // 留给后续请求继续使用的最新未覆盖历史
-```
-
-默认使用粗略 Token 估算；需要时可以通过 `.with_count(...)` 传入应用自己的估算函数。`limit` 和 `retain` 只作用于摘要输入视图，原始 Chat、Tool 结果和 Runtime Step 不会被截断。
-
-长期记忆需要向量检索时，由应用显式创建 `model::embed::Embed` 并挂到 Memory 组合配置：
-
-```rust
-let embed = provider.embed(model::embed::Config {
-    model_name: "embedding-3".into(),
-    options: Default::default(),
-})?;
-let memory = memory::Config::new(short, core::memory::InMemory::with_vector_dimension(2048)?)
-    .with_embed(embed);
-```
-
-`with_embed` 只负责在自动长期记忆写回前准备向量；Memory 后端不持有或调用 Embed，只接收
-`memory::Request.vector`。未配置时不生成向量，也不从向量能力降级到其他检索。
-
-### 10.8 Workspace 和 Skill：本地发现、内容读取和安全边界
-
-Workspace 的本地实现只操作它的根目录。以下程序创建临时目录、写入一个标准 `SKILL.md`、读取 Skill 内容并列出目录；它不执行
-Skill 中的脚本，也不自动赋予 Skill 工具权限。
-
-```rust
-use halo::agent::{Cancellation, Error, core, skill::Skill as _, workspace::Workspace};
-
-#[tokio::main]
-async fn main() -> Result<(), Error> {
-    let root = std::env::temp_dir().join(format!("heart-guide-{}", std::process::id()));
-    std::fs::create_dir_all(&root).map_err(|e| Error::new("IO_ERROR", e.to_string()))?;
-    let workspace = core::workspace::Local::new(&root)?;
-    let cancel = Cancellation::new();
-    workspace.write("research/SKILL.md", br#"---
-name: research
-description: 查找资料并列出来源
 ---
-# Instructions
-先确认来源，再给出结论。
-"#.to_vec(), &cancel).await?;
-    let paths = workspace.list(".", true, &cancel).await?;
-    let skill = core::skill::Skill::load(&workspace, "research/SKILL.md", &cancel).await?;
-    println!("workspace mode = {:?}", workspace.definition().mode);
-    println!("files = {paths:?}");
-    println!("skill = {:?}", skill.read(&cancel).await?);
-    let _ = std::fs::remove_dir_all(root);
-    Ok(())
-}
-```
 
-需要让 Agent 使用这个 Skill 时，在构造 Agent 时调用 `.skills([skill])?`；需要目录发现时实现 `skill::Loader`，再通过
-`.skills(loader)` 挂载。模型可通过共享 `skill` 阅读入口显式给出相对 `resource` 路径读取引用的文本资源；不会自动跟随引用或执行脚本。Server Workspace 不假装存在本地路径，而是由后端 Loader 从数据库读取同样的定义和资源。
+## 14-短期、长期记忆和持久化
 
-### 10.9 MCP：先连接和发现，再挂载
+### 14.1 短期记忆
 
-MCP 连接不是运行中临时发现。下面是完整的初始化形态；如果网络不可用，程序会在 `Server::http` 返回统一错误，Agent 不会被构造出来。
+短期记忆由 `session` 和 `chat` 组成：Session 聚合长期对话线程，Chat 保存一次外部输入和最终 Assistant Message。运行过程中的完整 State 属于 Checkpoint；`runtime::trace` 是可选的 OpenTelemetry 链路观察，不是另一种短期记忆记录。
 
-```rust
-use futures_util::stream;
-use halo::agent::{Cancellation, Error, Message};
-use halo::agent::{
-    self,
-    event::Event,
-    mcp::{Definition, Server as _},
-    message::Role,
-    model::chat::{Chat, Request},
-};
-use serde_json::Map;
+### 14.2 长期记忆
 
-struct MyChat;
-impl Chat for MyChat {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-    async fn stream(&self, _request: Request) -> Result<Self::Stream, Error> {
-        Ok(stream::iter(vec![Ok(Event::Complete {
-            message: Message::new(Role::Assistant), usage: None, finish_reason: Some("stop".into())
-        })]))
-    }
-}
+长期记忆记录使用固定字段：`id`、`type`、`user_id`、`agent_id`、`session_id`、`from`、`to`、`content`、`version`、`created_time`、`updated_time`、`metadata`。`from/to` 表示它覆盖的短期记录范围；应用负责选择合适的用户、Agent 或 Session 归属。
 
-#[tokio::main]
-async fn main() -> Result<(), Error> {
-    let endpoint = std::env::var("HEART_MCP_SSE_URL")
-        .map_err(|_| Error::new("INVALID_ARGUMENTS", "HEART_MCP_SSE_URL is required"))?;
-    let server = halo::agent::core::mcp::Server::http(
-        Definition { name: "weather".into(), description: Some("天气 MCP".into()), metadata: Map::new() },
-        &endpoint,
-        Map::new(),
-        &Cancellation::new(),
-    ).await?;
-    println!("discovered tools = {:?}", server.tools().iter().map(|t| &t.name).collect::<Vec<_>>());
-    let _agent = agent::chat().model(MyChat).mcps([server]).build()?;
-    Ok(())
-}
+长期后端不持有 Embed 实例。应用先调用 `model::embed`，再把文本和向量一起传给支持向量字段的后端；不支持向量的后端只保存文本和元数据。
 
-// 这里的 MyChat 只是让程序在 MCP 连接成功后仍能完整构造 Agent；真实应用替换为 VLLM/OpenAI Chat。
-```
+### 14.3 读写边界
 
-不要用内存 `Server` 替身把连接失败伪装成成功。需要本地验证 MCP 协议时，项目提供了一个独立 stdio MCP 服务进程：它的 `current_time` 工具读取真实系统时钟，测试通过 Heart 的 MCP 客户端发现并调用该工具，不使用预置业务响应：
+Memory 的最小契约是异步 CRUD 和按 Filter 查询；删除按 ID 物理删除，更新使用版本控制，写入/更新失败由后端返回统一 Error。Session 同时写入多个请求时由应用选择乐观锁或串行策略，框架不假设一个全局锁。
+
+参考：[`short_memory.rs`](../examples/short_memory.rs)、[`agent_memory.rs`](../examples/agent_memory.rs)。
+
+---
+
+## 15-测试和发布
+
+### 15.1 本地检查
 
 ```bash
-cargo test --offline --test mcp_stdio_acceptance -- --nocapture
-cargo test --offline --test mcp_http_acceptance -- --nocapture
+cargo fmt --check
+cargo check --all-targets
+cargo test --lib --no-fail-fast
+cargo clippy --lib --all-features -- -D warnings
 ```
 
-HTTP 验收测试会启动本地 Streamable HTTP MCP 服务，通过 Heart 的 HTTP 客户端执行初始化、工具发现和真实工具调用，并校验返回时间戳与系统时钟一致。
+### 15.2 真实服务验证
 
-MCP 验收使用项目自带的独立 stdio 服务进程和本地 Streamable HTTP 服务，不依赖远端 MCP 地址。Provider Key 等私密配置只放本地 `.env`，不能提交。
+需要模型、MCP、ES 或 Sandbox 的测试只从环境变量读取配置；不要把 Mock 响应当作真实验收。示例：
 
-### 10.10 Prompt、压缩、Permission 和 Middleware 的组合
+```bash
+DEEPSEEK_API_KEY=... \
+DEEPSEEK_MODEL=deepseek-flash \
+cargo run --example provider_deepseek
 
-这些是可选组件，不配置就不产生对应能力。实际项目可以先用确定性模型验证生命周期，再换成 VLLM：
+HEART_VLLM_BASE_URL=... \
+HEART_VLLM_API_KEY=... \
+HEART_VLLM_MODEL=... \
+cargo run --example agent_live_tool
+```
+
+没有外部服务的组件契约测试可以使用确定性的本地组件验证类型和状态转换；它们不应被描述成模型能力验收。
+
+### 15.3 版本和发布
+
+```bash
+cargo package --allow-dirty
+cargo publish --dry-run
+```
+
+当前 Alpha 版本不承诺 API 稳定性。发布前应同时检查 README 链接、中文/英文手册、examples 编译和环境变量说明。
+
+---
+
+## 16-压缩与 A2A
+
+### 16.1 压缩
+
+压缩组件只生成新的 Session 摘要，不改写原始 Chat。触发时读取摘要覆盖范围之后的 Chat，按每条 Chat 已记录的输入/输出 Usage 累加；压缩模型本次调用的 Usage 写到 Session 当前摘要信息中用于展示，不重复计入下一轮阈值。
+
+摘要提交后，后续请求使用“当前摘要 + 尚未覆盖的 Chat”；正在执行的请求不会中途替换成新摘要。压缩失败不影响原始 Chat，下一次用户主动请求可以再次检查并启动后台压缩。
+
+### 16.2 A2A
+
+A2A 是协议层，不是新的 Runtime。Server 将 `chat_id` 映射为远端任务的 `context_id`，把 Agent Event 转换成 JSON-RPC/SSE 事件，用户回复仍回到 Agent 的 `reply`。协议转换放在 HTTP 层，核心 Agent 和 Workflow 不需要开启“AG-UI/A2A 模式”。
+
+---
+
+## 17-Server 和 HTTP
+
+Server 由 Axum 提供外层绑定，Runtime 继续管理事件和运行状态。当前 JSON-RPC 方法包括 `message/send`、`message/stream`、`tasks/get`、`tasks/cancel` 和 `tasks/resubscribe`；SSE 只是事件传输形式。
 
 ```rust
-let agent = agent::chat()
-    .model(chat)
-    .system_prompt("只回答用户真正提出的问题")
-    .permission(permission)
-    .middleware(middleware)
-    .memory(memory_config)
-    .checkpoint(checkpoint)
+let service = std::sync::Arc::new(halo::agent::server::a2a::Service::with_store(agent, store));
+let router = halo::agent::server::axum::router(service);
+let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
+axum::serve(listener, router).await?;
+```
+
+Server 的 Task Store 保存外部任务投影；Agent/Workflow Runtime 仍是实际执行真相。Server 不复制 State、事件排序或等待恢复逻辑。Webhook、客户端和 SSE 适配可从 `halo::agent::server` 访问。
+
+---
+
+## 18-Team 和多 Agent
+
+Team 是静态组合，不是运行中动态创建 Agent。构建阶段确定成员，Leader 负责把任务路由给成员，成员使用各自的 Agent Runtime 执行，结果回到 Team 的事件流。
+
+```rust
+let researcher = agent::react()
+    .model(research_chat)
+    .tools(vec![search_tool])
+    .build()?;
+let writer = agent::chat()
+    .model(writer_chat)
+    .build()?;
+
+let team = agent::team()
+    .leader(agent::react().model(leader_chat))
+    .member(agent::SubAgent::new("researcher", researcher)?)
+    .member(agent::SubAgent::new("writer", writer)?)
     .build()?;
 ```
 
-`Middleware::before_model` 可调整本次模型请求，`after_execute` 可检查或补充完成消息；Tool 自身的 `before/after/eval` 只属于该 Tool
-调用。重试、取消和并发限制由 Runtime/Agent 控制，不由业务 Tool 私自重跑。
+团队成员共享外部 `chat_id/session_id` 关联，但保留各自执行状态。成员失败时由 Team/Agent Runtime 根据错误和计划决定重试、反馈或重规划；不要在成员内部偷偷创建第二个 Team 调度器。
 
-## 11. 验证清单
+---
 
-复制示例后，建议按这个顺序验证，先排除格式问题，再接入网络服务：
+## 附录 A：示例索引
 
-```bash
-cargo fmt --all --check
-cargo check --offline --lib --all-targets
-cargo check --offline --examples
-cargo test --offline --lib
-```
+| 示例 | 说明 |
+| --- | --- |
+| [`agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) | DeepSeek Chat Completions、think/text 映射 |
+| [`agent_live_tool.rs`](../examples/agent_live_tool.rs) | 真实 VLLM + 真实本地工具调用 |
+| [`agent_live_subagent.rs`](../examples/agent_live_subagent.rs) | SubAgent 委派 |
+| [`agent_live_team.rs`](../examples/agent_live_team.rs) | Team Leader 和成员 |
+| [`agent_live_three_subagents.rs`](../examples/agent_live_three_subagents.rs) | 多个静态 SubAgent |
+| [`agent_memory.rs`](../examples/agent_memory.rs) | Agent 与短/长期 Memory |
+| [`agent_middleware.rs`](../examples/agent_middleware.rs) | Middleware 生命周期 |
+| [`agent_permission.rs`](../examples/agent_permission.rs) | Permission 策略 |
+| [`workflow_events.rs`](../examples/workflow_events.rs) | Workflow Event Stream 和 State |
+| [`checkpoint.rs`](../examples/checkpoint.rs) | Checkpoint 保存与恢复 |
+| [`component_contracts.rs`](../examples/component_contracts.rs) | 基础组件契约 |
+| [`planning_evaluation.rs`](../examples/planning_evaluation.rs) | Planner、Evaluator |
+| [`compress.rs`](../examples/compress.rs) | Prompt 与压缩 |
+| [`short_memory.rs`](../examples/short_memory.rs) | Session/Chat/Long Memory CRUD |
+| [`provider_deepseek.rs`](../examples/provider_deepseek.rs) | DeepSeek Provider |
+| [`provider_vllm.rs`](../examples/provider_vllm.rs) | VLLM Provider |
 
-真实模型验收必须调用实际 Provider，不用固定模型响应替代。配置好本地 `.env` 后，可运行 Agent 工具调用和父子 Agent 委派的真实测试：
+## 附录 B：排错顺序
 
-本地工作区可以使用 `scripts/test-real.sh` 一次运行整套真实验收；该脚本不属于发布包。发布包使用下方列出的独立 `cargo test` 命令，
-并从本地 `.env` 读取真实凭据。
+1. 确认 Rust 版本和 `cargo check --all-targets`。
+2. 确认 Provider 的 `base_url`、`api_key`、`model_name`。
+3. 确认 Request 的 `messages`、Tool Schema 和 `stream`。
+4. 如果 Agent 没有调用工具，检查工具描述、模型能力、系统提示和服务日志。
+5. 如果出现 `WAITING`，通过 `reply` 提交对应输入，不要重新创建一个运行。
+6. 如果恢复失败，确认使用同一个 Definition/Version 和完整 Checkpoint JSON。
+7. 如果 Memory 没有数据，确认 Agent 挂载了 Memory，输入 metadata 含有应用所需的身份字段。
+8. 如果 HTTP 返回错误，先查看 Heart `Error { code, message, details }`，再查看 JSON-RPC 映射。
 
-该脚本从未提交的本地 `.env` 读取 Provider 凭据，不输出密钥；它逐项运行真实 Provider、Planner、Evaluator、Compressor、长期记忆提取/合并、Chat/ReAct Agent 的真实工具调用、父子 Agent、Agent 用户反馈恢复、流式/非流式 Agent、Chat 持久化收口、Workflow 内嵌 Agent、Skill、以及本地 MCP stdio/HTTP 服务验收。配置 `HEART_EMBED_API_KEY` 后，会使用智谱 Embedding-3 运行 Semantic Chunker 的真实向量验收；`HEART_EMBED_BASE_URL` 和 `HEART_EMBED_MODEL` 可选，默认分别为 `https://open.bigmodel.cn/api/paas/v4` 和 `embedding-3`。未配置 API Key 时会明确跳过，不以模拟向量代替。配置 `HEART_ES_URL` 与隔离测试索引后，也会运行真实 Elasticsearch 测试；配置 `HEART_WORKSPACE_TEST_IMAGE` 后，会运行真实 Docker Workspace 测试。它不连接远端 MCP 地址。也可以按需单独执行下方的测试命令。
+## 附录 C：英文手册
 
-真实验收中的 Provider、Planner、Evaluator、Compressor、记忆提取/合并、Chat/ReAct Agent 工具调用、父子 Agent 委派、MCP 调用、Skill、用户反馈恢复和 Workflow 内嵌 Agent 都使用真实 Provider/实际运行数据；模型没有执行预期调用、Provider 出错或外部服务不可用都应判失败，不能用预置模型响应补成通过。DeepSeek 验收需在 `.env` 配置 `DEEPSEEK_API_KEY`；`DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL` 可选，默认分别为官方 API 地址和 `deepseek-flash`。
-`component_real_acceptance` 验证真实 Planner 产出完整 DAG、Reasoner 返回 Provider Complete、Evaluator 对最终结果的判断、真实 Chat Agent 完成后由真实 Evaluator 复核、Extractor 的长期记忆结构化提取与合并，以及 Compressor 的真实 Complete 摘要。
-`workspace_skill_real_acceptance` 使用本地真实 `SKILL.md`，检查 Harness/Workspace 发现、模型按需读取 Skill 并依据其内容作答；`workflow_real_acceptance` 检查 Workflow 内嵌 Agent 节点调用真实 DeepSeek 并保存执行状态与 Usage。
-`agent_feedback_real_acceptance` 由真实 DeepSeek 选择等待反馈的 Tool，测试用户通过 `reply_id` 回答后同一 Agent 继续运行并输出最终结果。
-`agent_stream_real_acceptance` 使用真实 DeepSeek 分别验证 `stream=true` 会发出 Delta/Complete、`stream=false` 只发出 Complete。
-`agent_chat_closeout_real_acceptance` 中的真实收口测试还验证真实 Provider 返回的最终 Message 和 Usage 被写入 Chat 状态。
-配置 `HEART_EMBED_API_KEY` 后，`semantic_chunking_real_acceptance` 会调用智谱 Embedding-3 并用实际向量验证 Semantic Chunker；同时 `memory_vector_real_acceptance` 会验证 Agent 自动长期记忆写回的向量准备和检索。可选通过 `HEART_EMBED_BASE_URL`、`HEART_EMBED_MODEL` 覆盖默认地址和模型。
-默认 `cargo test` 还包含离线单元与状态机测试，用于直接校验状态转移、输入校验和事件协议，不会合成成功的 Chat 或 Embed 响应。这些测试不等同于真实模型端到端验收，也不会替代上述真实验收脚本。
-Docker Workspace 的真实容器、挂载和取消测试不会自动拉取镜像；指定已经下载的镜像后显式运行：
-
-```bash
-export HEART_WORKSPACE_TEST_IMAGE=docker.elastic.co/elasticsearch/elasticsearch:9.5.4
-cargo test --offline --test workspace_docker docker_workspace_real_container_smoke -- --ignored --nocapture
-cargo test --offline --test workspace_docker docker_workspace_real_bind_mount_smoke -- --ignored --nocapture
-cargo test --offline --test workspace_docker docker_workspace_real_cancellation_smoke -- --ignored --nocapture
-```
-
-若 `cargo test --all-targets` 报缺少被忽略的测试 fixture，说明本地测试目录不是发布内容，不要把 `.env`、测试数据或设计文档强行加入源码提交。
+English version: [`USAGE.en.md`](USAGE.en.md)。

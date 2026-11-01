@@ -1,163 +1,156 @@
-# Heart User Guide
+# Heart User Manual
 
-This guide shows how to use Heart from a Rust application to build Agents and Workflows. The examples follow the current public API.
+This is the practical manual for Heart. It follows the design chapter order `00–18` and explains how an application uses the current Rust API. It does not change the design documents. The source code is the final authority for the current public signatures.
 
-[中文使用手册](USAGE.zh-CN.md)
+Heart is an embeddable Rust library for Agent and Workflow execution. It provides contracts and implementations for models, tools, MCP, Skills, Workspace, Memory, Checkpoint, compression, permissions, documents, and protocol adapters. It does not provide a hosted UI, account system, or database service.
 
-## 1. Installation
+The current release is Alpha `0.1.x` and requires Rust `1.99.1` or newer. The Cargo package is `halo-agent`; the Rust library is imported as `halo`.
+
+## Chapter map
+
+| Chapters | Design source | Practical topic |
+| --- | --- | --- |
+| 00–01 | [`00`](../design/chapters/00-architecture.zh-CN.md), [`01`](../design/chapters/01-overview.zh-CN.md) | Architecture, installation, first run |
+| 02–03 | [`02`](../design/chapters/02-runtime-execution.zh-CN.md), [`03`](../design/chapters/03-agent-execution.zh-CN.md) | Runtime, Chat, ReAct, reply, Team |
+| 04–05 | [`04`](../design/chapters/04-message-contract.zh-CN.md), [`05`](../design/chapters/05-checkpoint.zh-CN.md) | Input, Message, Event, Checkpoint |
+| 06–08 | [`06`](../design/chapters/06-workflow-execution-relations.zh-CN.md), [`07`](../design/chapters/07-workflow-runtime-core.zh-CN.md), [`08`](../design/chapters/08-workflow-graph-relations.zh-CN.md) | Workflow graph, relations, State, subgraphs |
+| 09–12 | [`09`](../design/chapters/09-framework-comparison.zh-CN.md), [`10`](../design/chapters/10-framework-comparison-relations.zh-CN.md), [`11`](../design/chapters/11-decision-checklist.zh-CN.md), [`12`](../design/chapters/12-open-questions.zh-CN.md) | Framework comparison, decisions, limits |
+| 13–15 | [`13`](../design/chapters/13-component-catalog.zh-CN.md), [`14`](../design/chapters/14-application-persistence.zh-CN.md), [`15`](../design/chapters/15-todo.zh-CN.md) | Component catalogue, persistence, validation |
+| 16–18 | [`16 A2A`](../design/chapters/16-a2a-protocol.zh-CN.md), [`16 compression`](../design/chapters/16-compression-plan.zh-CN.md), [`17`](../design/chapters/17-server.zh-CN.md), [`18`](../design/chapters/18-team.zh-CN.md) | Compression, A2A, HTTP Server, Team |
+
+Runnable examples are in [`examples/`](../examples/). The Chinese manual is [`USAGE.zh-CN.md`](USAGE.zh-CN.md).
+
+---
+
+## 00–01. Architecture and first run
+
+Heart is one crate with this dependency direction:
+
+```text
+components -> public contracts and data
+core       -> concrete component implementations
+runtime    -> Agent/Workflow state and async execution
+harness    -> higher-level composition
+server     -> HTTP/A2A/JSON-RPC/SSE bindings
+```
+
+Use the stable entry point:
+
+```rust
+use halo::agent::{self, Agent, Cancellation, Error, Input, Payload};
+```
+
+Do not depend on internal `core::agent` or `runtime` paths for ordinary application code. Cargo setup:
 
 ```toml
 [dependencies]
-halo = { package = "halo-agent", version = "0.1.2" }
+halo-agent = "0.1"
 futures-util = "0.3"
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-schemars = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 ```
 
-### 1.1 Run the complete examples first
-
-The repository `examples/` directory contains complete programs that compile and run; the snippets in this guide are not pseudocode. Start with the
-offline examples:
-
-```bash
-cargo check --offline --examples
-cargo run --offline --example agent_middleware
-cargo run --offline --example node_macro
-cargo run --offline --example workflow_events
-```
-
-In your own Cargo project, add the dependencies above and copy any example to `src/main.rs`. Every row below is a runnable entry point:
-
-| Capability | Complete example | Command |
-| --- | --- | --- |
-| Chat Agent and Memory | [`examples/agent_memory.rs`](../examples/agent_memory.rs) | `cargo run --example agent_memory` |
-| ReAct, Tool and Permission | [`examples/agent_permission.rs`](../examples/agent_permission.rs) | `cargo run --example agent_permission` |
-| Middleware | [`examples/agent_middleware.rs`](../examples/agent_middleware.rs) | `cargo run --example agent_middleware` |
-| Workflow event stream | [`examples/workflow_events.rs`](../examples/workflow_events.rs) | `cargo run --example workflow_events` |
-| Checkpoint save and restore | [`examples/checkpoint.rs`](../examples/checkpoint.rs) | `cargo run --offline --example checkpoint` |
-| `#[node]` and typed nodes | [`examples/node_macro.rs`](../examples/node_macro.rs) | `cargo run --example node_macro` |
-| Planner and Evaluator | [`examples/planning_evaluation.rs`](../examples/planning_evaluation.rs) | `cargo run --example planning_evaluation` |
-| Prompt and compression | [`examples/compress.rs`](../examples/compress.rs) | `HALO_API_KEY=... cargo run --example compress` |
-| Session/Memory CRUD | [`examples/short_memory.rs`](../examples/short_memory.rs) | `cargo run --example short_memory` |
-| Document Loader/Parser/Transformer | [`examples/document_parse.rs`](../examples/document_parse.rs) | `cargo run --example document_parse -- ./input.csv` |
-| PDF/Office/image parsing | [`examples/document_liteparse.rs`](../examples/document_liteparse.rs) | `cargo run --example document_liteparse -- ./input.pdf` |
-| OpenAI-compatible Chat | [`examples/provider_chat.rs`](../examples/provider_chat.rs) | `OPENAI_API_KEY=... cargo run --example provider_chat` |
-| DeepSeek Chat Completions | [`examples/provider_deepseek.rs`](../examples/provider_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example provider_deepseek` |
-| Live DeepSeek Agent, Tool and fastrace | [`examples/agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) | `DEEPSEEK_API_KEY=... cargo run --example agent_live_deepseek` |
-| Three concurrent SubAgents | [`examples/agent_live_three_subagents.rs`](../examples/agent_live_three_subagents.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example agent_live_three_subagents` |
-| Static Team Leader with three members | [`examples/agent_live_team.rs`](../examples/agent_live_team.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example agent_live_team` |
-| VLLM Chat Completions | [`examples/provider_vllm.rs`](../examples/provider_vllm.rs) | `HEART_VLLM_BASE_URL=... HEART_VLLM_API_KEY=... HEART_VLLM_MODEL=... cargo run --example provider_vllm` |
-| Core component contracts (Function, Prompt, Search, Embed, Sandbox, Event) | [`examples/component_contracts.rs`](../examples/component_contracts.rs) | `cargo run --offline --example component_contracts` |
-
-Network examples contact external services only when their command is explicitly run. Credentials are read from environment variables and never
-written to source. `cargo check --examples` validates all example code without making model or MCP requests.
-
-The package and Rust crate are `halo`, and Rust 1.99.1 or newer is required.
-
-```text
-components/   Public contracts: Agent, Model, Message, Event, Tool, Memory, Checkpoint
-core/         Implementations: providers, Chat/ReAct, Workspace, Sandbox and storage backends
-runtime/      Agent and Workflow state, graphs and execution control
-harness/      Higher-level long-running Agent assembly
-```
-
-Capabilities are opt-in. Without a model there is no runnable Agent, without a Sandbox there is no shell capability, and without a Checkpoint
-backend there is no cross-process recovery.
-
-### 1.2 Component-by-component index
-
-This index covers the public contracts under `halo::agent`. Each row explains the component's responsibility, its boundary, and a complete
-example. Concrete implementations live under `halo::agent::core`; execution state remains owned by the Agent or Workflow runtime. The
-`component_contracts` example is offline and exercises real local contracts without fabricating a model response or contacting an external service.
-
-| Component | Responsibility and boundary | Example |
-| --- | --- | --- |
-| `agent::Agent`, `agent::chat`, `agent::react` | Agents take the common `Input` and deliver model/tool results through the event stream; the runtime owns state, waiting and recovery. | [`agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs), [`agent_permission.rs`](../examples/agent_permission.rs) |
-| `agent::Input`, `Message`, `Messages` | Common user input, model context and node data; `metadata` is separate from ordered `payload`. | [`component_contracts.rs`](../examples/component_contracts.rs), [`agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs) |
-| `error::Error` | Shared `code/message/details` error envelope; components add codes without changing the outer shape. | Every example returns `Result<_, halo::agent::Error>`; [`component_contracts.rs`](../examples/component_contracts.rs) |
-| `event::Event` | Public `Delta`/`Complete` observation stream; it is not Runtime State or recovery data. | [`component_contracts.rs`](../examples/component_contracts.rs), [`workflow_events.rs`](../examples/workflow_events.rs) |
-| `agent::protocol::ag_ui` | Converts Heart Event Stream to AG-UI events; called by the HTTP layer without changing Runtime contracts. | Section 2.3 |
-| `agent::protocol::a2a` | Remote-Agent Agent Card/Task/Artifact contracts and Heart Event conversion; `session_id` maps to A2A `contextId`, while `task_id` remains the remote task identifier. | Section 2.4 |
-| `model::chat` | Chat Provider request, tool description, event stream and usage contract; Providers own network adaptation. | [`provider_chat.rs`](../examples/provider_chat.rs), [`provider_deepseek.rs`](../examples/provider_deepseek.rs), [`provider_vllm.rs`](../examples/provider_vllm.rs) |
-| `model::embed`, `model::tts`, `model::multimodal`, `model::token`, `model::content` | Single-input embedding, independent TTS/multimodal Requests, shared token usage and canonical content Parts; Embed returns `Message`, while stream-capable models share `event::Event`. | [`component_contracts.rs`](../examples/component_contracts.rs), [`provider_gemini_v2.rs`](../examples/provider_gemini_v2.rs) |
-| `function::Function` | Standalone async business function with caller-defined input and output; it knows nothing about graph or execution IDs. | [`component_contracts.rs`](../examples/component_contracts.rs), [`node_macro.rs`](../examples/node_macro.rs) |
-| `tool::Tool` | Tool definition and `before/call/after/eval` lifecycle; the caller closes the result and error. | [`agent_live_tool.rs`](../examples/agent_live_tool.rs), [`agent_permission.rs`](../examples/agent_permission.rs) |
-| `workspace::Workspace` | Unified file, command, Glob/Grep and mounted capability access; Local/Server is selected by the implementation. | [10.8 Workspace and Skill](#108-workspace-and-skill-local-discovery-content-loading-and-safety) |
-| `skill::Skill` | Skill metadata, instructions and content loading; discovery and caching belong to Workspace. | [10.8 Workspace and Skill](#108-workspace-and-skill-local-discovery-content-loading-and-safety) |
-| `mcp::Server` | MCP connection and tool discovery contract; connect and discover before mounting, then invoke discovered tools. | [10.9 MCP](#109-mcp-initialize-discover-then-mount) |
-| `permission::Permission` | Allows or denies an actual Tool/MCP call; it does not execute tools or own Agent State. | [`agent_permission.rs`](../examples/agent_permission.rs) |
-| `middleware::Middleware` | Common `before/after` hooks for model, tool, permission and compression stages; retry is an optional implementation. | [`agent_middleware.rs`](../examples/agent_middleware.rs) |
-| `prompt::Template`, `Variables` | Renders Messages and named history in declared order; it never invokes a model. | [`component_contracts.rs`](../examples/component_contracts.rs), [`compress.rs`](../examples/compress.rs) |
-| `compression::Compressor` | Compresses Message history into a new summary Message; threshold and scheduling are configured by Harness/application code. | [`compress.rs`](../examples/compress.rs) |
-| `memory` | Short-term Session/Chat and long-term `summary/fact/preference` storage contracts; backends may be in-memory, PG or ES. | [`short_memory.rs`](../examples/short_memory.rs), [`agent_memory.rs`](../examples/agent_memory.rs) |
-| `checkpoint::Checkpoint` | Saves and loads one complete recoverable runtime snapshot; it is not Chat audit data or a Trace. | [`checkpoint.rs`](../examples/checkpoint.rs) |
-| `sandbox::Sandbox` | Explicit execution boundary; `core::sandbox::Local` runs local processes and is not an isolation mechanism. | [`component_contracts.rs`](../examples/component_contracts.rs) |
-| `knowledge::Search` | Separate `keyword`, `vector` and `hybrid` request contracts; it does not create Embed instances or choose storage. | [`component_contracts.rs`](../examples/component_contracts.rs), Document/Knowledge section |
-| `document` | Loader, Parser, Transformer, Chunker, RAPTOR and Graph document capabilities; applications choose where to write results. | [`document_parse.rs`](../examples/document_parse.rs), [`document_liteparse.rs`](../examples/document_liteparse.rs) |
-| `node::Node`, `node::Schema` | Workflow node input/output and typed Schema contracts; node functions do not manage Runtime State. | [`node_macro.rs`](../examples/node_macro.rs), [`workflow_events.rs`](../examples/workflow_events.rs) |
-| `plan::Plan`, `reason::Reason`, `evaluation::Evaluator` | Agent plan graph, reasoning and business-result evaluation; they do not persist Runtime State. | [`planning_evaluation.rs`](../examples/planning_evaluation.rs) |
-| `workflow` | START/END, ordinary and conditional edges, Join, Fan-out, subgraphs and Workflow Checkpoint execution. | [`workflow_events.rs`](../examples/workflow_events.rs), [`checkpoint.rs`](../examples/checkpoint.rs) |
-
-The composition order is fixed: create or inject an implementation, then pass it to an Agent or Workflow. Unconfigured components stay
-disabled. `model::chat::Chat`, `memory`, `checkpoint` and `workspace` are independent capabilities that applications can combine without
-silently creating a second runtime.
-
-## 2. Common input, messages and events
-
-Chat and ReAct use the same `agent::Input`:
+The smallest real Chat Agent is:
 
 ```rust
-use halo::agent::{Input, Payload};
-use serde_json::{Map, json};
-
+let provider = halo::agent::provider::deepseek::DeepSeek::builder()
+    .base_url(std::env::var("DEEPSEEK_BASE_URL").unwrap_or_else(|_| "https://api.deepseek.com".into()))
+    .api_key(std::env::var("DEEPSEEK_API_KEY")?)
+    .build()?;
+let chat = provider.chat(halo::agent::model::chat::Config::new("deepseek-flash"))?;
+let agent = halo::agent::chat().model(chat).build()?;
 let input = Input {
-    metadata: Map::from_iter([
-        ("chat_id".into(), json!(1001)),
-        ("session_id".into(), json!(2001)),
-        ("agent_id".into(), json!(3001)),
-    ]),
+    metadata: Default::default(),
     payload: vec![Payload {
         r#type: "text".into(),
-        data: json!({"value": "How is the weather in Beijing today?"}),
+        data: serde_json::json!({"value": "Introduce Heart in one sentence"}),
+        mime_type: None,
+    }],
+};
+let mut events = agent.run(input, true, Cancellation::new()).await?;
+while let Some(event) = futures_util::StreamExt::next(&mut events).await {
+    println!("{:?}", event?);
+}
+```
+
+The `stream` argument is fixed per invocation: `true` exposes `Delta` and `Complete`, while `false` exposes complete results only. A run is finite; a waiting run receives later user input through `reply`.
+
+Real provider examples: [`provider_deepseek.rs`](../examples/provider_deepseek.rs) and [`provider_vllm.rs`](../examples/provider_vllm.rs).
+
+---
+
+## 02–03. Runtime and Agent
+
+The application-owned top-level identity is `chat_id`. `Cancellation` belongs to one run; create a fresh value for every independent run and clone it only for work in that run.
+
+```text
+Event Stream -> external observation
+Runtime State -> execution and recovery truth
+Checkpoint -> persisted Runtime State
+Memory -> conversation history and long-term records
+OpenTelemetry Trace -> optional observability projection, not short memory
+```
+
+Chat Agent can use a model, tools, MCP, Skills, Permission, middleware, memory, checkpoint, and an evaluator:
+
+```rust
+let agent = halo::agent::chat()
+    .model(chat)
+    .system_prompt("You are a precise assistant")
+    .tools(tools)
+    .mcps(servers)
+    .skills(skills)?
+    .permission(permission)
+    .middleware(retry)
+    .checkpoint(checkpoint)
+    .memory(memory)
+    .with_max_concurrency(100)
+    .build()?;
+```
+
+ReAct has the same entry style and additionally runs the model/tool loop and built-in Planner:
+
+```rust
+let agent = halo::agent::react()
+    .model(chat)
+    .tools(tools)
+    .mcps(servers)
+    .skills(skills)?
+    .permission(permission)
+    .evaluator(evaluator)
+    .with_max_iters(20)
+    .with_max_concurrency(100)
+    .build()?;
+```
+
+The model chooses registered tools and arguments. Heart's internal dispatch layer exposes registered Tool, MCP, and Skill descriptions and executes the selected capability. Tool `before`, `call`, `after`, and `eval` are one optional lifecycle. Tool errors are returned directly to the next model context; Heart does not invent an extra `tool_result(error)` envelope.
+
+SubAgents are already-built Agents passed through `.subagents(...)`. Team members are fixed at build time; dynamic member creation is outside the current scope. See [`agent_live_subagent.rs`](../examples/agent_live_subagent.rs) and [`agent_live_team.rs`](../examples/agent_live_team.rs).
+
+---
+
+## 04. Input, Message, and Event
+
+Business input is `agent::Input`, not model `Messages`:
+
+```rust
+let input = halo::agent::Input {
+    metadata: serde_json::Map::from_iter([
+        ("chat_id".into(), 1001.into()),
+        ("session_id".into(), 2001.into()),
+    ]),
+    payload: vec![halo::agent::Payload {
+        r#type: "text".into(),
+        data: serde_json::json!({"value": "What is the weather?"}),
         mime_type: None,
     }],
 };
 ```
 
-`metadata` carries application identity and context. `payload` is ordered user content. Audio, images and files use the same
-`type/data/mime_type` shape; keep binary data outside the input and pass stable references when appropriate.
+`Payload.type` may be `text`, `image`, `audio`, `file`, or `json`; the corresponding value is in `data`, with an optional `mime_type`. Runtime projects the envelope into model `Messages`.
 
-The Agent converts `Input` into a user `Message` and then organizes model `Messages`. A Chat model receives an internally
-constructed `model::chat::Request`; a multimodal model receives a `model::multimodal::Request`. Agent input does not carry
-model-specific fields such as `model_config`, `voice`, or `modalities`; model defaults are bound by the Builder/model Config.
-Both model capabilities use the shared `event::Event` stream. TTS remains a separate post-processing capability rather than
-the Agent's reasoning model.
+Each `Message` contains `role`, `content`, `values`, `metadata`, and optional `usage`. The common roles are `system`, `developer`, `user`, `assistant`, `tool`, and `function`. Provider-specific reasoning is normalized to a `content` part with `type = "think"`; normal output uses `type = "text"`.
 
-The Agent's internal adapter only converts existing `Messages`, tool definitions, and invocation parameters into a Chat or
-multimodal Request, then normalizes Provider results into `event::Event`. It does not execute tools, manage Memory/Permission/
-Checkpoint, decide retries, or mutate Agent Runtime State.
-
-The multimodal Request owns an independent `model::multimodal::ToolChoice` with the same behavior as Chat but without reusing a Chat type; its other common fields are
-`messages/tools/stream/temperature/max_tokens/top_p/stop/options`
-and adds `modalities` for requested output types. Multimodal has its own `ResponseFormat`, but does not define a second Event type.
-
-TTS also uses the shared `event::Event`: `stream=false` emits only `Complete`, while `stream=true` emits audio `Delta` events
-and a final `Complete`. TTS reads text Parts from `Messages`, and audio output uses `type = "audio"` with the existing
-`data.source`; no second event protocol or chunk fields are added.
-
-Multimodal tool calls use the same loop: the Agent executes an assistant `tool_call`, and the Tool returns a direct
-`role: tool` Message. That Message may contain multiple text or media Parts and is appended to the next model `Messages`; no
-`tool_result` wrapper is used.
-
-Media Parts do not add a separate Rust type. They use `data.source` with `kind` set to `url`, `base64`, or `id`; `value` is the
-URL, a complete Data URL, or an opaque application resource ID. `mime_type`, `filename`, and input `detail` may be added when
-needed. `base64` must be a nonempty `data:<mime>;base64,<payload>` value; the framework does not fetch or delete `id` references.
-Resource size, retention and external cleanup belong to the Provider/application.
-
-Model context uses `Message`/`Messages`. Provider reasoning fields are normalized to a `think` content Part and ordinary output to `text`.
-The shared event contract is:
+All stream-capable layers use the shared event:
 
 ```rust
 pub enum Event {
@@ -170,807 +163,208 @@ pub enum Event {
 }
 ```
 
-Events are observations, not Runtime State. Workflow downstream nodes read their input from node State.
+`Delta` is observation only. `Complete` is the complete delivery for one model or runtime call. Do not reconstruct a fake complete message from an interrupted delta stream.
 
-### 2.3 AG-UI protocol output
+---
 
-AG-UI is an output protocol adapter. It is not part of the Agent, Workflow, or Harness runtime
-configuration. Agents, Workflows, and Harnesses first produce Heart's own `Event` stream; the
-HTTP layer decides whether to convert that stream to AG-UI.
+## 05. Checkpoint and recovery
 
-```text
-Agent / Workflow / Harness
-    -> Heart Event Stream
-    -> HTTP layer calls AG-UI
-    -> halo::agent::protocol::ag_ui
-    -> SSE / HTTP response
-```
-
-Internal callers continue consuming Heart's `Event::Delta` and `Event::Complete`. An HTTP handler
-can call the AG-UI adapter at the response boundary. Conversion is performed event by event so
-streaming remains live. Only the actual end of the top-level run becomes AG-UI `RUN_FINISHED`; a
-`Complete` from one model, tool, or child-agent invocation only completes that invocation.
-
-The public entry point is. Heart provides the protocol contracts and converts Heart Events to an
-A2A Task/Artifact stream; the outer HTTP service owns HTTP/JSON-RPC/SSE/Webhook transport:
+Checkpoint stores the complete Runtime State as JSON. It is separate from Chat history and Memory; OpenTelemetry Trace is only an observability projection. The contract is asynchronous `save`, `load`, `delete`, and `validate_state`.
 
 ```rust
-halo::agent::protocol::ag_ui
+let checkpoint = std::sync::Arc::new(halo::agent::core::checkpoint::InMemory::new());
+let runtime = halo::agent::workflow::Runtime::new(chat_id, workflow.clone())?
+    .with_checkpoint(checkpoint.clone());
+runtime.save_checkpoint(&*checkpoint, &Cancellation::new()).await?;
+let snapshot = checkpoint.load(chat_id, &Cancellation::new()).await?;
+let restored = halo::agent::workflow::Runtime::from_snapshot(chat_id, workflow, snapshot)?;
 ```
 
-An HTTP response handler can call the adapter at the response boundary:
+Restore uses the same compiled definition and version, then loads the saved scene. Runtime reads saved facts instead of inferring success from a missing or present output. Waiting queues, attempts, failures, and completed nodes remain part of the State.
+
+No configured Checkpoint means no cross-process recovery. [`checkpoint.rs`](../examples/checkpoint.rs) is the complete example.
+
+---
+
+## 06–08. Workflow graph and execution
+
+Ordinary async functions can be added directly as nodes:
 
 ```rust
-let context =
-    halo::agent::protocol::ag_ui::Context::new("session-1", "chat-1");
-let output = halo::agent::protocol::ag_ui::adapt(events, context);
-// Encode output as SSE or another HTTP response.
-```
-
-When the HTTP layer needs to send runtime state, it can use
-`halo::agent::protocol::ag_ui::snapshot(state)` or
-`halo::agent::protocol::ag_ui::delta(change)` at the same output boundary.
-
-AG-UI does not change Runtime State, Checkpoint, waiting, reply, or Message contracts. Future
-protocols use the same output boundary and are selected by the HTTP or other transport layer.
-
-### 2.4 A2A remote-agent protocol
-
-A2A is used for remote Agent communication across processes or machines. It is different from
-AG-UI: AG-UI exposes runtime events to clients, while A2A exchanges tasks and results between
-Agents. In-process SubAgents, Agent-as-Tool, and Workflow Nodes do not use A2A.
-
-The public entry point is:
-
-```rust
-halo::agent::protocol::a2a
-```
-
-The outer Axum Server bindings are exposed as:
-
-```rust
-halo::agent::server::a2a
-halo::agent::server::axum
-halo::agent::server::sse
-halo::agent::server::client
-halo::agent::server::webhook
-```
-
-The first Axum route set mounts one Agent service:
-
-```rust
-let service = std::sync::Arc::new(halo::agent::server::a2a::Service::new(agent));
-let app = halo::agent::server::axum::router(service);
-```
-
-Applications can provide their own Task projection backend by implementing
-`halo::agent::server::tasks::Store`:
-
-```rust
-let service = halo::agent::server::a2a::Service::with_store(agent, store);
-```
-
-`Store` persists Task, Artifact, idempotency, and status facts. The Server Service owns live
-cancellation and event subscriptions; Runtime State and Checkpoint remain Runtime concerns.
-
-`message/send` creates a Task and drives the Agent in the background. `message/stream` returns
-SSE. A message with an existing `taskId` is delivered through `reply`; `tasks/get`,
-`tasks/cancel`, and `tasks/resubscribe` read the same Task projection. If an HTTP connection
-closes, the background driver continues consuming Agent events and updating the Task. The
-default Task projection is in memory; Runtime Checkpoint remains the recovery source of truth.
-
-An HTTP handler can convert the top-level Heart `Event` stream at the response boundary:
-
-```rust
-let context = halo::agent::protocol::a2a::Context::new(2001, 3001, "task-3001");
-let output = halo::agent::protocol::a2a::adapt(events, context);
-// The Axum Server layer encodes output as A2A JSON-RPC, SSE, or another binding.
-```
-
-Heart maps its identifiers to A2A as follows:
-
-```text
-session_id  -> A2A contextId: the shared conversation context
-chat_id     -> the current Heart Chat/Agent run
-task_id     -> one concrete remote A2A task
-```
-
-The adapter sends `session_id` as A2A `contextId` by default. If the remote server generates a
-different `contextId`, the adapter keeps the mapping internally and does not expose a second
-`remote_context_id` field to the application. The remote `task_id` continues that remote task;
-it does not replace the local `chat_id`.
-
-Remote `input_required` and `auth_required` states map to Heart `waiting`. A later reply continues
-the same remote task with the same session context. A2A delivers concrete task results through
-`Artifact` Parts; Heart maps those Parts to the existing Message/Event/Content contracts and does
-not introduce a `tool_result` wrapper.
-
-A2A stays outside the Agent and Workflow Runtime. The HTTP layer chooses JSON-RPC, HTTP+JSON, SSE,
-or Webhook transport and invokes the protocol adapter:
-
-```text
-Agent / Workflow
-    -> Heart Event / State
-    -> halo::agent::protocol::a2a
-    -> HTTP layer
-```
-
-### 2.5 Trace reporting
-
-Heart uses `fastrace` for Agent and Workflow execution traces. The application selects a Reporter during startup and calls `flush` before shutdown:
-
-```rust
-use halo::agent::trace::fastrace::{flush, set_reporter, Config, ConsoleReporter};
-
-fn init_trace() {
-    set_reporter(ConsoleReporter, Config::default());
-}
-
-fn shutdown_trace() {
-    flush();
-}
-```
-
-The Reporter is chosen by the application and is not part of the Runtime contract. In addition to the console Reporter, the application can pass a Jaeger or OpenTelemetry Reporter supplied by the fastrace integrations. Traces contain execution hierarchy, node and execution IDs, Delta/Complete events, finish reason, Usage, waiting correlation IDs and error codes. Full Messages, Checkpoints and Runtime State remain owned by their existing state and persistence paths.
-
-## 3. Chat Agent
-
-Chat Agent is the ordinary conversation loop. It can use mounted Tool, MCP and Skill capabilities. Use ReAct when a task needs iterations,
-planning or replanning.
-
-The following is the smallest Agent entry-point fragment; the application must initialize `chat` and `input` as described in section 6.
-It is not a model implementation and does not fabricate a response. For a complete real-model program, see
-[10.1 Real VLLM Chat Agent](#101-real-vllm-chat-agent).
-
-```rust
-use futures_util::StreamExt;
-use halo::agent::{Cancellation};
-use halo::agent;
-
-let agent = agent::chat()
-    .model(chat)
-    .system_prompt("You are a reliable assistant")
-    .build()?;
-
-let mut events = agent.run(input, true, Cancellation::new()).await?;
-while let Some(event) = events.next().await {
-    println!("{:?}", event?);
-}
-```
-
-`stream = true` delivers Delta and Complete; `false` delivers Complete only, with the same return type. Each model or tool invocation may
-produce its own Complete event. Continue consuming the stream after cancellation to receive the cancellation Complete and accumulated Usage.
-
-Mount capabilities while building the Agent:
-
-```rust
-let agent = agent::chat()
-    .model(chat)
-    .tools(vec![search_tool])
-    .mcps(servers)
-    .skills(skills)?
-    .permission(permission)
-    .middleware(middleware)
-    .memory(memory_config)
-    .checkpoint(checkpoint)
-    .build()?;
-```
-
-MCP servers should be connected and discovered before mounting. Permission is checked before an actual Tool/MCP call. Tool
-`before/call/after/eval` is the Tool lifecycle and is separate from Agent middleware.
-
-### 3.3 Agent Checkpoint: save and reconstruct
-
-Checkpoint stores one complete Agent runtime scene by `chat_id`. It contains more than the final text: messages, Usage, waiting records, node state
-and the execution facts needed to continue. The following snippet continues with the `chat` and `input` initialized in section 10.1:
-
-```rust
-use std::sync::Arc;
-use futures_util::StreamExt;
-use halo::agent::{self, checkpoint::Checkpoint as _, Cancellation};
-use halo::agent::core;
-
-let checkpoint = Arc::new(core::checkpoint::InMemory::new());
-let agent = agent::chat()
-    .model(chat)
-    .checkpoint(checkpoint.clone())
-    .build()?;
-
-let chat_id = input
-    .metadata
-    .get("chat_id")
-    .and_then(serde_json::Value::as_i64)
-    .expect("input.metadata.chat_id is required when Checkpoint is configured");
-let mut events = agent.run(input.clone(), false, Cancellation::new()).await?;
-while let Some(event) = events.next().await {
-    println!("event = {:?}", event?);
-}
-drop(events);
-
-let saved = checkpoint.load(chat_id, &Cancellation::new()).await?;
-println!("saved status = {}", saved["status"]);
-```
-
-After a process restart, construct the Model and Agent again with the same `chat_id` and Checkpoint backend, then call `run` with the input. The
-Runtime loads the saved scene first: a terminal scene returns its saved Complete, while a waiting scene continues through the same `reply` entry
-point. `InMemory` is only for this in-process example; use an application persistence implementation for cross-process recovery.
-
-## 4. ReAct Agent
-
-ReAct uses the same input and event stream while adding iterations, tool batches and an optional Agent task graph:
-
-```rust
-let agent = agent::react()
-    .model(chat)
-    .system_prompt("Plan the task and select suitable mounted capabilities")
-    .tools(vec![search_tool, calculator_tool])
-    .mcps(servers)
-    .skills(skills)?
-    .with_max_iters(20)
-    .with_max_concurrency(100)
-    .memory(memory_config)
-    .checkpoint(checkpoint)
-    .build()?;
-```
-
-The Agent chooses whether to call a tool, which tool to call and its arguments. Mounted capabilities execute Tool, MCP and Skill operations.
-Tool errors are fed back to the current model context instead of being disguised as successful business output. An Agent evaluator judges the
-final result and does not replace Tool error handling.
-
-### Waiting and feedback
-
-Approval, human input and external callbacks put an Agent into `waiting`. Submit feedback through the same Agent object's `reply(Input, Cancellation)`:
-
-```rust
-agent.reply(
-    Input {
-        metadata: serde_json::Map::from_iter([
-            ("chat_id".into(), serde_json::json!(1001)),
-            ("reply_id".into(), serde_json::json!(9001)),
-        ]),
-        payload: vec![Payload {
-            r#type: "json".into(),
-            data: serde_json::json!({"approved": true}),
-            mime_type: None,
-        }],
-    },
-    Cancellation::new(),
-).await?;
-```
-
-Feedback is consumed FIFO. If the original process has ended, rebuild the Agent from the complete Checkpoint and submit the same reply; successful
-model calls, tools and sibling nodes are not replayed.
-
-## 5. Workflow
-
-Workflow is explicit graph orchestration and does not use the Agent Planner. A node can be an ordinary async function, an Agent, or a compiled child
-Workflow. Runtime owns graph scheduling, state, joins, fan-out, waiting and Checkpoints.
-
-### 5.1 Ordinary function nodes
-
-Ordinary functions can be passed directly to `WorkflowBuilder::add_node`; no wrapper class is required. Ordinary node I/O should have object-root
-schemas, with `Messages` as the message-oriented exception:
-
-```rust
-use halo::agent::{Cancellation, Error};
+use halo::agent::workflow::{WorkflowBuilder, graph::{START, END}};
+use halo::agent::{Cancellation, Error, Messages};
 use schemars::JsonSchema;
-use serde::{Deserialize, Serialize};
-
-#[derive(Deserialize, JsonSchema)]
-struct SearchInput { query: String }
+use serde::Serialize;
 
 #[derive(Serialize, JsonSchema)]
-struct SearchOutput { documents: Vec<String> }
+struct Answer { value: String }
 
-async fn search(input: SearchInput, _: Cancellation) -> Result<SearchOutput, Error> {
-    Ok(SearchOutput { documents: vec![input.query] })
-}
+let mut builder = WorkflowBuilder::new("example");
+builder.add_node("answer", |_: Messages, _: Cancellation| async {
+    Ok::<_, Error>(Answer { value: "done".into() })
+})?;
+builder.add_edge(START, "answer")?;
+builder.add_edge("answer", END)?;
+let workflow = builder.compile()?;
+let mut runtime = halo::agent::workflow::Runtime::new(1001, workflow)?;
 ```
 
-Runtime builds each node's business input from upstream State according to `attrs.input`; nodes may use different input types.
-
-### 5.2 Build and run
+Relations are explicit:
 
 ```rust
-use futures_util::StreamExt;
-use halo::agent::{Cancellation, Error, Messages};
-use halo::agent::workflow::{graph::{END, START, GraphError}, Runtime, WorkflowBuilder};
-use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
+builder.add_edge(START, "a")?;
+builder.add_join(["b", "c"], "merge")?;
+builder.add_conditional_edges("route", route, ["b", "c"])?;
+builder.add_fan_out_edges("split", "worker")?;
+builder.add_loop_edge("retry", "work", |messages| should_retry(messages))?;
+```
 
-fn graph_error(error: GraphError) -> Error {
-    Error { code: error.code, message: error.message, details: error.details }
-}
+An ordinary edge activates after a successful source; a Join waits for all listed sources. Conditional routes must select a declared target. Fan-out branches can run concurrently. `START` and `END` are graph boundary endpoints. `add_agent_node` embeds a built Agent; `add_graph_node` embeds a compiled subgraph with an explicit boundary.
 
-let mut builder = WorkflowBuilder::new("search-workflow");
-builder.add_node("search", search).map_err(graph_error)?;
-builder.add_edge(START, "search").map_err(graph_error)?;
-builder.add_edge("search", END).map_err(graph_error)?;
-let workflow = builder.compile().map_err(graph_error)?;
-let runtime = Runtime::new(1001, workflow)?;
-let ids = Arc::new(AtomicI64::new(1));
-let mut events = runtime.run(
-    Messages::default(),
-    Arc::new(move || ids.fetch_add(1, Ordering::SeqCst)),
-    Cancellation::new(),
-).await?;
-while let Some(event) = events.next().await {
+Run and observe the shared event stream:
+
+```rust
+let mut events = runtime
+    .run(Messages::default(), next_exec_id, Cancellation::new())
+    .await?;
+while let Some(event) = futures_util::StreamExt::next(&mut events).await {
     println!("{:?}", event?);
 }
+println!("state = {:?}", runtime.state());
 ```
 
-The application owns the `i64` ID generator, for example a Snowflake generator. Heart does not initialize an ID service. Consume and drop the run
-stream before reading Runtime State.
+Workflow State contains graph, node status, executions, attempts, values, waiting items, and recovery data. The compiled graph is immutable; the Runtime owns one mutable State for one `chat_id`.
 
-### 5.3 Relations, Join and fan-out
+---
+
+## 09–10. Framework comparison and DSL
+
+Heart takes useful boundaries from LangGraph (`START/END`, conditional edges, subgraphs, checkpoint), Eino (component contracts and graph composition), and AgentScope (Toolkit, Workspace, Permission, Plan, and Harness composition). Their DSLs are not copied into Runtime State.
+
+An external Dify, Coze, or application DSL should be translated at the outer boundary:
+
+```text
+DSL JSON -> validate fields -> bind application capabilities
+         -> WorkflowBuilder or Agent Plan -> compile -> Runtime
+```
+
+Unknown functions, tools, Agents, or subgraphs must fail at binding/plan submission. Heart does not add a public Registry, Capabilities, or dynamic runtime registration table. A2A/AG-UI/JSON-RPC/SSE adapters live at the protocol/HTTP layer and convert existing Events.
+
+---
+
+## 11. Fixed usage rules
+
+- Use `halo::agent` as the public entry; do not use compatibility `halo::core::agent`.
+- Use `chat_id` for the top-level execution identity.
+- Use `agent::Input` for business input and `model::chat::Request` for provider calls.
+- Treat `Delta` as live observation and `Complete` as complete delivery.
+- Normalize model reasoning to `think` content parts.
+- Return tool errors directly to the next model context; do not add a second error envelope.
+- Keep Tool hooks together; Runtime/middleware owns retry and execution state.
+- Keep Checkpoint (recovery scene), Memory (history/long-term records), and Chat (external close) separate; OpenTelemetry Trace is observability only and does not add another short-memory record.
+- Unconfigured capabilities are absent; Heart does not silently create a model, database, Sandbox, MCP, or Memory.
+- Public async contracts use native Rust async functions.
+
+---
+
+## 12. Current limits
+
+The current Alpha does not promise a complete OCR/layout parser suite, every provider's TTS/multimodal extension, distributed task queues and locks, an application DSL editor, or dynamic Team member creation. These are extension/application concerns and do not prevent custom implementations of the public contracts.
+
+---
+
+## 13. Component catalogue
+
+Provider initialization and model binding are separate:
 
 ```rust
-builder.add_conditional_edges("router", route, ["search", "fallback"])?;
-builder.add_join(["search", "fallback"], "merge")?;
-builder.add_fan_out_edges("planner", "worker")?;
+let provider = halo::agent::provider::vllm::Vllm::new(config)?;
+let chat = provider.chat(halo::agent::model::chat::Config::new("model"))?;
 ```
 
-Ordinary edges activate on any successful source. Join waits for every declared source. Conditional relations can only select declared targets.
-Fan-out workers may run concurrently; recovery retries only the failed subset.
+Available provider implementations include DeepSeek, VLLM/OpenAI-compatible, OpenAI, Gemini, and Zhipu. Tool definitions must have an object-root parameter schema. `before` may validate or fill arguments; `after` may mutate the result Message; `eval` may return business feedback.
 
-### 5.4 Embedded Agent and child Workflow
+Workspace selects local or server data sources. Local uses local files; server uses the configured database/remote store. Skills can be discovered by the Workspace loader; MCP connections and discovery should complete before Agent construction.
 
-```rust
-builder.add_agent_node("researcher", researcher_agent)?;
-builder.add_graph_node("child", &compiled_child_workflow)?;
-builder.add_edge(START, "researcher")?;
-builder.add_edge("researcher", "child")?;
-builder.add_edge("child", END)?;
-```
+Prompt templates render messages and named history variables. Memory uses `memory::Config::new(short, long)`, optional scopes, compression, extraction, and an application ID function. Checkpoint, Sandbox, Document, Search, Embed, Permission, and Middleware are all independent contracts with optional concrete Core implementations. See [`component_contracts.rs`](../examples/component_contracts.rs).
 
-The Agent keeps its own Agent State and a child Workflow keeps its graph boundary. The parent Workflow only schedules them as nodes.
+---
 
-### 5.5 Feedback and recovery
+## 14. Short/long memory and persistence
 
-Workflow feedback uses `Runtime::reply(Messages, Cancellation)`. A live run continues on its original event stream. An ended process is rebuilt from
-the complete snapshot:
+Short memory consists of Session and Chat. Session aggregates a stable conversation thread; Chat stores one external input and final Assistant Message. Full runtime State belongs to Checkpoint. `runtime::trace` is optional OpenTelemetry observability, not another short-memory record.
 
-```rust
-let snapshot = checkpoint.load(1001, &Cancellation::new()).await?;
-let runtime = Runtime::from_snapshot(1001, workflow, snapshot)?;
-runtime.reply(feedback, Cancellation::new()).await?;
-```
+Long memory uses fixed types such as `summary`, `fact`, and `preference`, with `id`, owner IDs, `from/to`, `content`, version, timestamps, and optional metadata. The application calls `model::embed` first if it wants vectors; storage receives text and an optional vector and never owns an Embed instance.
 
-Recovery loads the complete Runtime State: completed nodes, failure marks, wait queues, graph version and business data. It does not replay models,
-tools or nodes from the beginning.
+Compression is enabled only by configuring a compressor. It is checked on a user-triggered request and runs in the background. The threshold uses Chat usage after the current summary coverage; the current summary is replaced, not accumulated as a second summary.
 
-## 6. Model providers
+---
 
-Provider initialization is separate from per-request options. OpenAI, DeepSeek and VLLM currently use the Chat Completions contract; Responses API
-is not implemented.
-
-```rust
-let provider = halo::agent::core::provider::vllm::Vllm::builder()
-    .base_url("http://127.0.0.1:8000/v1")
-    .api_key(std::env::var("HEART_VLLM_API_KEY")?)
-    .build()?;
-let chat = provider.chat(
-    halo::agent::model::chat::Config::new("Qwen3.5-122B-A10B").options(serde_json::Map::from_iter([(
-        "chat_template_kwargs".into(),
-        serde_json::json!({"enable_thinking": true}),
-    )])),
-)?;
-```
-
-VLLM `delta.reasoning` becomes the shared `think` Part and ordinary output becomes `text`. Provider-specific options stay in
-`model::chat::Config.options` or `chat::Request.options`. Compatible providers may set `Config.context_limit` (estimated input tokens); before each model call Runtime keeps system prompts, the Session summary, and the newest complete message groups, then trims older history. `max_tokens` is reserved from the context budget.
-
-DeepSeek uses its own Provider type, and its model name is configured in the DeepSeek Chat binding:
-
-```rust
-let provider = halo::agent::core::provider::deepseek::DeepSeek::builder()
-    .base_url("https://api.deepseek.com")
-    .api_key(std::env::var("DEEPSEEK_API_KEY")?)
-    .build()?;
-let chat = provider.chat(halo::agent::model::chat::Config::new("deepseek-flash"))?;
-```
-
-The Qwen model in the VLLM example belongs to the VLLM server and is not mixed with the DeepSeek Provider.
-
-Zhipu Embedding-3 is a separate Embed Provider; it does not depend on a Chat Provider. The default request URL is Zhipu's V4 API. Omit `dimensions` to use the service default (2048), or set a value from 256 through 2048:
-
-```rust
-use halo::agent::{
-    model::embed::{self, Embed as _},
-    provider::zhipu::Zhipu,
-};
-
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let provider = Zhipu::builder()
-        .api_key(std::env::var("HEART_EMBED_API_KEY")?)
-        .build()?;
-    let embed = provider.embed(embed::Config {
-        model_name: "embedding-3".into(),
-        options: Default::default(),
-    })?;
-    let message = embed
-        .embed(embed::Request {
-            input: "Text to embed for semantic search".into(),
-            dimensions: Some(1024),
-            options: Default::default(),
-        })
-        .await?;
-    let vector = message.values.get("vector").expect("embedding vector");
-    println!("dimension={}, usage={:?}", vector.as_array().unwrap().len(), message.usage);
-    Ok(())
-}
-```
-
-Set `HEART_EMBED_API_KEY` in the local `.env`. For a compatible gateway or a different model name, optionally set `HEART_EMBED_BASE_URL` and `HEART_EMBED_MODEL`. Never commit credentials.
-
-The OpenAI Embeddings API is also available through the existing `core::provider::openai::OpenAI`; no separate Provider type is needed. It defaults to `https://api.openai.com/v1` and can use `text-embedding-3-small`; pass a requested vector size via `embed::Request.dimensions`. Setting `OPENAI_API_KEY` enables the live OpenAI vector acceptance through the commands listed below; the local `scripts/test-real.sh` helper is not part of the published crate.
-
-## 7. Workspace, Skill and MCP
-
-Workspace selects local-file or server-database behavior. Local Workspace provides basic file operations; shell execution requires an explicit Sandbox.
-Skills are loaded with `.skills(loader)`. A database-backed Loader can override `version` with a revision or content fingerprint;
-one Workspace instance reuses its discovered Skill snapshot and refreshes it only when that version changes. MCP servers must be connected and discovered before they are mounted.
-
-```rust
-let workspace = halo::agent::core::workspace::Local::new("./workspace")?
-    .sandbox(halo::agent::core::sandbox::Local::default())
-    .tools(custom_tool)
-    .mcps(servers)
-    .skills(skills)?;
-```
-
-Keep provider keys and MCP endpoints in a local `.env`; never commit secrets.
-
-## 8. Cancellation, errors and tests
-
-`Cancellation` scopes one independent run. `Complete` is one observable model, tool or node result, not the entire Runtime status. Checkpoint is the
-recovery source; the final Chat.state is the audit snapshot. Run the normal checks with:
+## 15. Testing and publishing
 
 ```bash
-cargo fmt --all --check
+cargo fmt --check
 cargo check --all-targets
-cargo test --all-targets --all-features
-cargo clippy --all-targets --all-features -- -D warnings
+cargo test --lib --no-fail-fast
+cargo clippy --lib --all-features -- -D warnings
 ```
 
-## 9. Current scope
+Provider/MCP/ES/Sandbox acceptance tests read environment variables and should use real services. Deterministic local tests validate contracts and state transitions; they are not model acceptance tests. Before publishing, run `cargo package --allow-dirty` and `cargo publish --dry-run`.
 
-General PDF/Office/image parsing uses LiteParse by default. Domain-specific Parser methods and Python function integration remain future-version work. V2 now includes Gemini TTS and multimodal Provider adapters; live calls require `GEMINI_API_KEY`, and the unified live acceptance script also needs `GEMINI_TEST_IMAGE_DATA_URL` for the image case. See the [Document parsing guide](DOCUMENT.en.md) for formats and runtime requirements.
+---
 
-## 10. Complete runnable recipes
+## 16. Compression and A2A
 
-The snippets above explain the contracts. This section gives complete programs that can be copied to `src/main.rs` in a fresh project:
+Compression creates the current Session summary without rewriting original Chats. It reads Chats after the covered range, uses their recorded input/output usage, and records the compression call usage for display. The active request is not replaced in the middle of a run; later requests use the new summary plus uncovered Chats.
 
-```bash
-cargo new heart-guide-demo
-cd heart-guide-demo
-```
+A2A maps remote `context_id` to the application's `session_id`, converts Agent Events to JSON-RPC/SSE, and sends user replies back through `reply`. It is a protocol adapter, not another Runtime.
 
-The basic recipes may use deterministic local Chat doubles to test contracts. They are not model capabilities. VLLM and MCP recipes explicitly
-require external services and environment variables.
+---
 
-### 10.1 Real VLLM Chat Agent
+## 17. Server and HTTP
 
-This program calls a real OpenAI-compatible VLLM Chat Completions service; it does not fabricate a model response. Set the service address,
-credential and model first:
-
-```bash
-export HEART_VLLM_BASE_URL=http://127.0.0.1:8000/v1
-export HEART_VLLM_API_KEY=replace-me
-export HEART_VLLM_MODEL=Qwen3.5-122B-A10B
-```
-
-It shows Provider initialization, model binding, the shared `Input`, Agent-to-`Messages` organization, and the fixed `Delta`/`Complete` stream.
+The Axum binding exposes JSON-RPC methods such as `message/send`, `message/stream`, `tasks/get`, `tasks/cancel`, and `tasks/resubscribe`. SSE is a transport for the existing Event stream.
 
 ```rust
-use futures_util::StreamExt;
-use halo::agent::{self, Agent, Cancellation, Input, Payload};
-use halo::agent::{event::Event, model::chat, provider::vllm::{Config, Vllm}};
-use serde_json::json;
-
-#[tokio::main]
-async fn main() -> Result<(), halo::agent::Error> {
-    let provider = Vllm::new(Config {
-        base_url: std::env::var("HEART_VLLM_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000/v1".into()),
-        api_key: std::env::var("HEART_VLLM_API_KEY").expect("HEART_VLLM_API_KEY is required"),
-        ..Config::default()
-    })?;
-    let chat = provider.chat(chat::Config {
-        model_name: std::env::var("HEART_VLLM_MODEL").expect("HEART_VLLM_MODEL is required"),
-        context_limit: None,
-        options: serde_json::Map::from_iter([("chat_template_kwargs".into(), json!({"enable_thinking": true}))]),
-    })?;
-    let agent = agent::chat().model(chat).system_prompt("You are concise").build()?;
-    let input = Input { metadata: serde_json::Map::from_iter([("chat_id".into(), json!(1001)), ("session_id".into(), json!(2001)), ("agent_id".into(), json!(3001))]), payload: vec![Payload { r#type: "text".into(), data: json!({"value":"Can I go outside in Beijing today?"}), mime_type: None }] };
-    let mut events = agent.run(input, true, Cancellation::new()).await?;
-    while let Some(event) = events.next().await { println!("{:?}", event?); }
-    Ok(())
-}
+let service = std::sync::Arc::new(halo::agent::server::a2a::Service::with_store(agent, store));
+let router = halo::agent::server::axum::router(service);
+let listener = tokio::net::TcpListener::bind("127.0.0.1:3000").await?;
+axum::serve(listener, router).await?;
 ```
 
-### 10.2 ReAct with a Tool and Permission
+The external Task Store is a projection. Agent/Workflow Runtime remains the source of execution truth and the HTTP layer does not duplicate State or waiting logic.
 
-This offline recipe uses a deterministic model double to simulate one Tool call followed by an answer after the Tool message; it is not model
-reasoning. Replace the model double with the Provider Chat initialized in 10.1 for a real model. The public builder uses `.tools(...)`; the
-internal dispatch implementation is not an application API.
+---
+
+## 18. Team and multi-Agent
+
+Team members are selected during construction. A Leader routes work to fixed members; members execute with their own Agent state and results return through the Team event stream. Dynamic member creation is not part of the current boundary.
 
 ```rust
-use std::sync::{LazyLock, atomic::{AtomicUsize, Ordering}};
-use futures_util::{StreamExt, stream};
-use halo::agent::{Cancellation, Error};
-use halo::agent::{
-    event::Event,
-    message::{Message, Role},
-    model::{chat::{Chat, Request}, content::part::Part},
-    permission::{Behavior, Decision, Request as PermissionRequest},
-    tool::{Call, Tool, ToolDefinition},
-};
-use serde_json::json;
-struct Lookup;
-impl Tool for Lookup {
-    fn definition(&self) -> &ToolDefinition { static D: LazyLock<ToolDefinition> = LazyLock::new(|| ToolDefinition { name: "lookup".into(), description: "return weather".into(), parameters: serde_json::from_value(json!({"type":"object","properties":{},"additionalProperties":false})).unwrap() }); &D }
-    async fn call(&self, _: &Call, _: &Cancellation) -> Result<Message, Error> { Ok(Message::function(json!({"temperature":22,"condition":"sunny"}))) }
-}
-struct DemoModel(AtomicUsize);
-impl Chat for DemoModel {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-    async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
-        let mut message = Message::new(Role::Assistant);
-        if self.0.fetch_add(1, Ordering::SeqCst) == 0 { message.content.push(Part { r#type: "tool_call".into(), data: json!({"call_id":"call_1","name":"lookup","arguments":{}}).as_object().unwrap().clone() }); }
-        else { message.values.insert("answer".into(), json!(if request.messages.as_slice().iter().any(|m| m.role == Role::Tool) { "22 C and sunny" } else { "no tool result" })); }
-        Ok(stream::iter(vec![Ok(Event::Complete { message, usage: None, finish_reason: Some("stop".into()) })]))
-    }
-}
-#[tokio::main]
-async fn main() -> Result<(), Error> {
-    let permission = halo::agent::core::permission::Permission::new(|r: PermissionRequest, _: Cancellation| async move { Ok(if r.action == "call" && r.resource == "lookup" { Decision { behavior: Behavior::Allow, reason: None } } else { Decision { behavior: Behavior::Deny, reason: Some("not allowed".into()) } }) });
-    let agent = agent::react().model(DemoModel(AtomicUsize::new(0))).tools(Lookup).permission(permission).with_max_iters(20).build()?;
-    let mut events = agent.run(agent::Input::default(), true, Cancellation::new()).await?;
-    while let Some(event) = events.next().await { println!("{:?}", event?); }
-    Ok(())
-}
+let researcher = halo::agent::react()
+    .model(research_chat)
+    .tools(vec![search_tool])
+    .build()?;
+let writer = halo::agent::chat()
+    .model(writer_chat)
+    .build()?;
+let team = halo::agent::team()
+    .leader(halo::agent::react().model(leader_chat))
+    .member(halo::agent::SubAgent::new("researcher", researcher)?)
+    .member(halo::agent::SubAgent::new("writer", writer)?)
+    .build()?;
 ```
 
-Tool errors are returned as errors in the current model context. They are not successful business values and do not automatically turn the whole
-ReAct Agent into a failed run.
+See [`agent_live_team.rs`](../examples/agent_live_team.rs) and [`agent_live_three_subagents.rs`](../examples/agent_live_three_subagents.rs).
 
-### 10.3 Workflow ordinary node and state
+## Example index
 
-```rust
-use std::sync::{Arc, atomic::{AtomicI64, Ordering}};
-use futures_util::StreamExt;
-use halo::agent::{Cancellation, Error, Messages, event::Event, workflow::{GraphError, Runtime, WorkflowBuilder, graph::{START, END}}};
-use schemars::JsonSchema; use serde::Serialize;
-#[derive(Serialize, JsonSchema)] struct Output { value: i64 }
-fn ge(e: GraphError) -> Error { Error { code: e.code, message: e.message, details: e.details } }
-#[tokio::main(flavor = "current_thread")]
-async fn main() -> Result<(), Error> {
-    let mut b = WorkflowBuilder::new("answer");
-    b.add_node("answer", |_: Messages, _: Cancellation| async { Ok::<_, Error>(Output { value: 42 }) }).map_err(ge)?;
-    b.add_edge(START, "answer").map_err(ge)?; b.add_edge("answer", END).map_err(ge)?;
-    let runtime = Runtime::new(1001, b.compile().map_err(ge)?)?;
-    let ids = Arc::new(AtomicI64::new(1));
-    let mut events = runtime.run(Messages::default(), Arc::new(move || ids.fetch_add(1, Ordering::SeqCst)), Cancellation::new()).await?;
-    while let Some(event) = events.next().await { println!("{:?}", event?); }
-    drop(events); println!("state = {:?}", runtime.state()); Ok(())
-}
-```
-
-### 10.4 Workflow relations and child graphs
-
-This complete compile-time example declares conditional routing, Join and Fan-out. It prints the immutable definition version without requiring a
-model or a database:
-
-```rust
-use halo::agent::{Cancellation, Error, Messages, workflow::{GraphError, WorkflowBuilder, graph::{START, END}}};
-fn ge(e: GraphError) -> Error { Error { code: e.code, message: e.message, details: e.details } }
-#[tokio::main]
-async fn main() -> Result<(), Error> {
-    let mut b = WorkflowBuilder::new("relations");
-    for id in ["router", "left", "right", "merge", "worker"] { b.add_node(id, |input: Messages, _: Cancellation| async move { Ok::<_, Error>(input) }).map_err(ge)?; }
-    b.add_edge(START, "router").map_err(ge)?;
-    b.add_conditional_edges("router", |_| Ok(vec!["left".into(), "right".into()]), ["left", "right"]).map_err(ge)?;
-    b.add_join(["left", "right"], "merge").map_err(ge)?;
-    b.add_fan_out_edges("merge", "worker").map_err(ge)?;
-    b.add_edge("worker", END).map_err(ge)?;
-    let graph = b.compile().map_err(ge)?; println!("{}@{}", graph.definition().definition_id, graph.definition().version); Ok(())
-}
-```
-
-Ordinary edges activate on any successful source, Join waits for every declared source, conditional targets are statically declared, and Fan-out
-workers can run concurrently. Use `add_graph_node("child", &child)` for an already compiled child Workflow; a child graph is not erased into a
-plain function node.
-
-### 10.5 Checkpoint recovery
-
-```rust
-use std::sync::{Arc, atomic::{AtomicI64, Ordering}}; use futures_util::StreamExt;
-use halo::agent::{Cancellation, Error, Messages, core, workflow::{GraphError, Runtime, WorkflowBuilder, graph::{START, END}}};
-use schemars::JsonSchema; use serde::Serialize;
-#[derive(Serialize, JsonSchema)] struct Output { value: String }
-fn ge(e: GraphError) -> Error { Error { code:e.code, message:e.message, details:e.details } }
-#[tokio::main] async fn main() -> Result<(), Error> {
-    let mut b=WorkflowBuilder::new("checkpoint"); b.add_node("done", |_:Messages,_:Cancellation| async { Ok::<_,Error>(Output{value:"saved".into()}) }).map_err(ge)?; b.add_edge(START,"done").map_err(ge)?; b.add_edge("done",END).map_err(ge)?;
-    let workflow=b.compile().map_err(ge)?; let checkpoint=core::checkpoint::InMemory::new(); let runtime=Runtime::new(7001,workflow.clone())?.with_checkpoint(checkpoint);
-    let ids=Arc::new(AtomicI64::new(1)); let mut events=runtime.run(Messages::default(),Arc::new(move||ids.fetch_add(1,Ordering::SeqCst)),Cancellation::new()).await?; while let Some(_)=events.next().await {} drop(events);
-    let snapshot=runtime.snapshot()?; let mut restored=Runtime::from_snapshot(7001,workflow,snapshot)?; println!("restored={:?}",restored.state().status); Ok(())
-}
-```
-
-The snapshot is the full recovery scene: node State, errors, waits, graph version and business data. Chat.state is an audit snapshot, not recovery truth.
-
-### 10.6 VLLM Chat Completions
-
-Create an ignored `.env` file and load it before running:
-
-```dotenv
-HEART_VLLM_BASE_URL=http://127.0.0.1:8000/v1
-HEART_VLLM_API_KEY=replace-me
-HEART_VLLM_MODEL=Qwen3.5-122B-A10B
-```
-
-```bash
-set -a; source .env; set +a; cargo run
-```
-
-Save this complete provider program as `src/main.rs`:
-
-```rust
-use futures_util::StreamExt;
-use halo::agent::{event::Event, message::{Message, Messages, Role}, model::{chat, chat::Chat, content::part::Part}, core::provider::vllm::Vllm};
-use serde_json::json;
-#[tokio::main]
-async fn main() -> Result<(), halo::agent::model::Error> {
-    let provider = Vllm::builder().base_url(std::env::var("HEART_VLLM_BASE_URL").unwrap_or_else(|_| "http://127.0.0.1:8000/v1".into())).api_key(std::env::var("HEART_VLLM_API_KEY").map_err(|_| halo::agent::model::Error::new("AUTHENTICATION", "HEART_VLLM_API_KEY is required"))?).build()?;
-    let chat = provider.chat(chat::Config::new(std::env::var("HEART_VLLM_MODEL").map_err(|_| halo::agent::model::Error::new("INVALID_ARGUMENTS", "HEART_VLLM_MODEL is required"))?).options(serde_json::Map::from_iter([("chat_template_kwargs".into(), json!({"enable_thinking": true}))])))?;
-    let mut user = Message::new(Role::User); user.content.push(Part { r#type: "text".into(), data: json!({"value":"Introduce Pinglu Canal"}).as_object().unwrap().clone() });
-    let mut events = chat.stream(chat::Request { messages: Messages::new([user]), stream: true, max_tokens: Some(512), ..Default::default() }).await?;
-    while let Some(event) = events.next().await { match event? { Event::Delta { message } => for p in message.content { print!("{}", p.data["value"].as_str().unwrap_or_default()); }, Event::Complete { usage, finish_reason, .. } => println!("\nusage={usage:?}, finish_reason={finish_reason:?}") } }
-    Ok(())
-}
-```
-
-The current adapter targets `/v1/chat/completions`, not Responses API. VLLM reasoning deltas become `think` Parts and ordinary deltas become
-`text` Parts.
-
-### 10.7 Memory and explicit recall
-
-Use `core::memory::short::InMemory` for short history and `core::memory::InMemory` for long-term
-`summary/fact/preference`. Pass the resulting `memory::Config` through `.memory(config)`. Without that call, the Agent has no automatic history
-or long-memory capability. This complete offline program writes a Session and one long-term Preference before running:
-
-```rust
-use futures_util::{StreamExt, stream};
-use halo::agent::{Cancellation, Error, Message};
-use halo::agent::{
-    self, Agent, Input,
-    core,
-    event::Event,
-    memory::{self, Memory},
-    memory::short::{self, session},
-    message::Role,
-    model::{chat::{Chat, Request}, content::part::Part},
-};
-use serde_json::{Map, json};
-use memory::short::session::Store as _;
-struct Model;
-impl Chat for Model { type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>; async fn stream(&self, _: Request) -> Result<Self::Stream, Error> { let mut m=Message::new(Role::Assistant); m.content.push(Part{r#type:"text".into(),data:json!({"value":"Sunny; camping is fine."}).as_object().unwrap().clone()}); Ok(stream::iter(vec![Ok(Event::Complete{message:m,usage:None,finish_reason:Some("stop".into())})])) } }
-#[tokio::main] async fn main() -> Result<(), Error> {
-    let cancel=Cancellation::new();
-    let short=core::memory::short::InMemory::new();
-    let long=core::memory::InMemory::new();
-    let config=memory::Config::new(short,long).with_scopes(["user","agent"]);
-    config.session().create(session::Session{id:1,tenant_id:1,user_id:2,r#type:short::Type::Agent,title:Some("weather".into()),summary:None,usage:None,status:session::Status::Active,metadata:Map::new(),created_time:0,updated_time:0},&cancel).await?;
-    config.long().write(memory::Request{id:3,r#type:memory::Type::Preference,user_id:2,agent_id:None,session_id:None,from:1,to:2,content:"User likes camping".into(),metadata:None,vector:None},&cancel).await?;
-    let agent=agent::chat().model(Model).memory(config).build()?; let mut events=agent.run(Input::default(),false,Cancellation::new()).await?; while let Some(e)=events.next().await { println!("{:?}",e?); } Ok(())
-}
-```
-
-Compression is separate and opt-in. A configured compressor may replace the Chat range covered by the current Session summary when the application
-explicitly checks the threshold; the current request is never switched to a newly written summary midway through execution.
-
-The built-in Chat compressor can bound the summary input and retain a recent uncovered suffix:
-
-```rust
-let compressor = core::compression::Compressor::new(chat, request)?
-    .with_size(10_000)  // start background compression at this threshold
-    .with_limit(8_000)  // estimated historical input sent to the summary model
-    .with_retain(1_000); // newest uncovered history kept for a later request
-```
-
-The default Token estimate is approximate. Applications can provide their own estimator with `.with_count(...)`. `limit` and `retain` affect only the temporary summary input; original Chat records, Tool results and Runtime Steps remain intact.
-
-When long-memory vector search is enabled, the application creates the `model::embed::Embed` component and attaches it to the Memory composition:
-
-```rust
-let embed = provider.embed(model::embed::Config {
-    model_name: "embedding-3".into(),
-    options: Default::default(),
-})?;
-let memory = memory::Config::new(short, core::memory::InMemory::with_vector_dimension(2048)?)
-    .with_embed(embed);
-```
-
-`with_embed` only prepares vectors before automatic long-memory writeback. The Memory backend never owns or calls Embed; it receives the prepared
-`memory::Request.vector`. Without this configuration no vector is generated and vector search is not silently downgraded.
-
-### 10.8 Local Workspace and Skill
-
-```rust
-use halo::agent::{Cancellation, Error, core, skill::Skill as _, workspace::Workspace};
-#[tokio::main]
-async fn main() -> Result<(), Error> {
-    let root=std::env::temp_dir().join(format!("heart-guide-{}",std::process::id())); std::fs::create_dir_all(&root).map_err(|e|Error::new("IO_ERROR",e.to_string()))?;
-    let workspace=core::workspace::Local::new(&root)?; let cancel=Cancellation::new();
-    workspace.write("research/SKILL.md", b"---\nname: research\ndescription: List sources\n---\n# Instructions\nAlways cite sources.\n".to_vec(), &cancel).await?;
-    println!("files={:?}",workspace.list(".",true,&cancel).await?); let skill=core::skill::Skill::load(&workspace,"research/SKILL.md",&cancel).await?; println!("instructions={:?}",skill.read(&cancel).await?);
-    let _=std::fs::remove_dir_all(root); Ok(())
-}
-```
-
-Mount a concrete Skill with `.skills([skill])?`, or implement `skill::Loader` and use `.skills(loader)` for directory/database discovery. Skill
-text is instructions; it does not execute scripts or grant permissions. Referenced text resources are read only when the model explicitly calls the shared `skill` reader with a relative `resource` path; references are never followed automatically.
-
-### 10.9 MCP initialization
-
-MCP connection and tool discovery happen before Agent construction. A failed endpoint returns an error from `Server::http` and is not silently
-treated as an optional capability:
-
-```rust
-use halo::agent::{Cancellation, Error};
-use halo::agent::mcp::{Definition, Server as _};
-use serde_json::Map;
-#[tokio::main] async fn main() -> Result<(), Error> {
-    let endpoint=std::env::var("HEART_MCP_SSE_URL").map_err(|_|Error::new("INVALID_ARGUMENTS","HEART_MCP_SSE_URL is required"))?;
-    let server=halo::agent::core::mcp::Server::http(Definition{name:"weather".into(),description:Some("weather MCP".into()),metadata:Map::new()},&endpoint,Map::new(),&Cancellation::new()).await?;
-    println!("tools={:?}",server.tools().iter().map(|t|&t.name).collect::<Vec<_>>()); Ok(())
-}
-```
-
-The application then passes the connected `server` to `agent::chat().model(chat).mcps([server])`. Do not commit the endpoint or credentials.
-
-For local protocol validation, the project includes a separate stdio MCP service process. Its `current_time` tool reads the actual system clock; the acceptance test uses Heart's MCP client to discover and call it instead of substituting a canned business response:
-
-```bash
-cargo test --offline --test mcp_stdio_acceptance -- --nocapture
-cargo test --offline --test mcp_http_acceptance -- --nocapture
-```
-
-The HTTP acceptance test starts a local Streamable HTTP MCP service, exercises initialization, tool discovery and a real tool call through Heart's HTTP client, and checks the returned timestamp against the host clock.
-
-MCP acceptance uses the project's own standalone stdio service process and local Streamable HTTP service; it does not depend on a remote MCP endpoint. Keep provider credentials in the local `.env`, never in Git.
-
-### 10.10 Validation order
-
-Run offline checks before external services:
-
-```bash
-cargo fmt --all --check
-cargo check --offline --lib --all-targets
-cargo check --offline --examples
-cargo test --offline --lib
-```
-
-Live model acceptance must call the actual provider; fixed model responses are not a substitute. After configuring the local `.env`, run the live Agent tool-call and parent/child delegation tests:
-
-The local workspace may use `scripts/test-real.sh` to run the complete live suite. That helper is not shipped in the published crate;
-published-package users should run the individual `cargo test` commands listed below with credentials from the local `.env`.
-
-The script reads provider credentials from the untracked local `.env` without printing secrets. It runs real Provider, Planner, Evaluator, Compressor, long-memory extraction/merge, Chat/ReAct Agent tool calls, parent/child Agent, Agent human-feedback recovery, streaming/non-streaming Agent, Chat persistence closeout, Workflow with an embedded Agent, Skill, and local MCP stdio/HTTP acceptance tests. Configure `HEART_EMBED_API_KEY` to run real Semantic Chunker acceptance with Zhipu Embedding-3; `HEART_EMBED_BASE_URL` and `HEART_EMBED_MODEL` are optional and default to `https://open.bigmodel.cn/api/paas/v4` and `embedding-3`. Without the API key that case is explicitly skipped (no synthetic vectors are substituted). With `HEART_ES_URL` and an isolated test index configured, it also runs real Elasticsearch tests; with `HEART_WORKSPACE_TEST_IMAGE`, it runs real Docker Workspace tests. It does not connect to any remote MCP endpoint. Individual commands are listed below for selective runs.
-
-The live acceptance checks use real providers and runtime data for Provider calls, Planner, Evaluator, Compressor, long-memory extraction/merge, Chat/ReAct Agent tool calls, parent/child delegation, MCP, Skill, user-feedback recovery and Workflow-embedded Agents. A provider/service failure or a model that does not perform the requested call is a test failure; never substitute a canned model response. The DeepSeek acceptance tests require `DEEPSEEK_API_KEY` in `.env`; `DEEPSEEK_BASE_URL` and `DEEPSEEK_MODEL` are optional and default to the official API and `deepseek-flash`. Keep `.env`, test fixtures and design material out of the source commit.
-`component_real_acceptance` validates a real complete Planner DAG, Reasoner Provider Complete, final-result Evaluator judgment, a Chat Agent completion checked by a second real Evaluator call, typed long-memory extraction and merge, and a Compressor summary from the actual model Complete.
-`workspace_skill_real_acceptance` uses an actual local `SKILL.md` and checks Workspace discovery, on-demand Skill reading by the live model, and an answer grounded in that content. `workflow_real_acceptance` runs a real DeepSeek-backed Agent as a Workflow node and checks persisted execution status and Usage.
-`agent_feedback_real_acceptance` has a real DeepSeek model select a feedback-waiting Tool, then verifies that a user reply correlated by `reply_id` resumes the same Agent and produces a final answer.
-`agent_stream_real_acceptance` uses real DeepSeek calls to verify that `stream=true` emits Delta/Complete and `stream=false` emits Complete only.
-The live closeout test in `agent_chat_closeout_real_acceptance` also verifies that the actual Provider Message and Usage are persisted in Chat state.
-`semantic_chunking_real_acceptance` exercises Semantic Chunker with real Zhipu Embedding-3 vectors when `HEART_EMBED_API_KEY` is configured; `memory_vector_real_acceptance` also verifies vector preparation and retrieval during automatic long-memory writeback. Optionally override the API base URL or model with `HEART_EMBED_BASE_URL` and `HEART_EMBED_MODEL`.
-The default `cargo test` suite contains offline unit and state-machine tests for direct state transitions, validation, and event-protocol rules; it does not synthesize successful Chat or Embed responses. These checks are not live-model end-to-end acceptance and do not replace the real acceptance script.
-Docker Workspace container, bind-mount and cancellation tests do not pull images. Point them at an image already present locally, then run explicitly:
-
-```bash
-export HEART_WORKSPACE_TEST_IMAGE=docker.elastic.co/elasticsearch/elasticsearch:9.5.4
-cargo test --offline --test workspace_docker docker_workspace_real_container_smoke -- --ignored --nocapture
-cargo test --offline --test workspace_docker docker_workspace_real_bind_mount_smoke -- --ignored --nocapture
-cargo test --offline --test workspace_docker docker_workspace_real_cancellation_smoke -- --ignored --nocapture
-```
+- [`agent_live_deepseek.rs`](../examples/agent_live_deepseek.rs): real DeepSeek Chat Completions.
+- [`agent_live_tool.rs`](../examples/agent_live_tool.rs): real VLLM plus a real local tool.
+- [`agent_memory.rs`](../examples/agent_memory.rs): Agent and Memory.
+- [`agent_permission.rs`](../examples/agent_permission.rs): Permission.
+- [`workflow_events.rs`](../examples/workflow_events.rs): Workflow events and State.
+- [`checkpoint.rs`](../examples/checkpoint.rs): save and restore.
+- [`component_contracts.rs`](../examples/component_contracts.rs): low-level contracts.
+- [`provider_deepseek.rs`](../examples/provider_deepseek.rs): DeepSeek provider.
+- [`provider_vllm.rs`](../examples/provider_vllm.rs): VLLM provider.

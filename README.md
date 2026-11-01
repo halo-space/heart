@@ -46,10 +46,10 @@ cargo run --example provider_vllm
 
 ## 使用手册
 
-中文手册是项目的主入口，包含 Agent、Workflow、模型 Provider、Tool、MCP、Skill、Workspace、Memory、Checkpoint、事件流、等待恢复、测试和可运行配方：
+中文详细手册是项目的主入口，按设计章节组织，包含 Agent、Workflow、模型 Provider、Tool、MCP、Skill、Workspace、Memory、Checkpoint、事件流、等待恢复、Server、A2A、Team、测试和可运行配方：
 
-- [中文使用手册](docs/USAGE.zh-CN.md)
-- [English User Guide](docs/USAGE.en.md)
+- [中文详细使用手册](docs/USAGE.zh-CN.md)
+- [English User Manual](docs/USAGE.en.md)
 
 手册中的示例与仓库 `examples/` 一一对应；新增能力应同时补充中文说明、英文说明和可运行示例。
 
@@ -70,7 +70,7 @@ cargo run --example provider_vllm
 | DeepSeek Chat Completions | [`examples/provider_deepseek.rs`](examples/provider_deepseek.rs) |
 | VLLM Chat Completions | [`examples/provider_vllm.rs`](examples/provider_vllm.rs) |
 
-更多示例命令、依赖说明和故障排查见[中文使用手册](docs/USAGE.zh-CN.md)。
+更多示例命令、依赖说明和故障排查见[中文详细使用手册](docs/USAGE.zh-CN.md)。
 
 ## 许可证
 
