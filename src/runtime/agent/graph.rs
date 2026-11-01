@@ -6,7 +6,7 @@ use crate::Error;
 use crate::components::message::Messages;
 use crate::components::model::token::Usage;
 use crate::components::plan::Plan;
-use crate::runtime::agent::node::{State as NodeState, Status};
+use crate::runtime::agent::node::{self, Status};
 
 /// Mutable execution-graph state for one Agent plan version.
 ///
@@ -15,7 +15,7 @@ use crate::runtime::agent::node::{State as NodeState, Status};
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Graph {
     pub plan: Plan,
-    pub nodes: BTreeMap<String, NodeState>,
+    pub nodes: BTreeMap<String, node::State>,
     pub history: Vec<History>,
 }
 
@@ -32,7 +32,7 @@ pub struct State {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct History {
     pub plan: Plan,
-    pub nodes: BTreeMap<String, NodeState>,
+    pub nodes: BTreeMap<String, node::State>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -58,7 +58,7 @@ impl Graph {
         let nodes = plan
             .nodes
             .keys()
-            .map(|node_id| (node_id.clone(), NodeState::default()))
+            .map(|node_id| (node_id.clone(), node::State::default()))
             .collect();
         let mut graph = Self {
             plan,
@@ -143,13 +143,13 @@ impl Graph {
         &self.history
     }
 
-    pub fn state(&self, node_id: &str) -> Result<&NodeState, Error> {
+    pub fn state(&self, node_id: &str) -> Result<&node::State, Error> {
         self.nodes
             .get(node_id)
             .ok_or_else(|| Error::new("NOT_FOUND", "execution graph node was not found"))
     }
 
-    pub fn state_mut(&mut self, node_id: &str) -> Result<&mut NodeState, Error> {
+    pub fn state_mut(&mut self, node_id: &str) -> Result<&mut node::State, Error> {
         self.nodes
             .get_mut(node_id)
             .ok_or_else(|| Error::new("NOT_FOUND", "execution graph node was not found"))

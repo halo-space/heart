@@ -81,7 +81,7 @@ harness/      面向长任务 Agent 的高阶组合能力
 | `agent::protocol::ag_ui` | 将 Heart Event Stream 转换为 AG-UI 事件；由 HTTP 层调用，不改变 Runtime 契约。 | 本节 2.3 |
 | `agent::protocol::a2a` | 远程 Agent Agent Card/Task/Artifact 协议契约和 Heart Event 转换；`session_id` 对应 A2A `contextId`，`task_id` 保留为远端任务标识。 | 本节 2.4 |
 | `model::chat` | Chat Provider 的 `Request`、工具描述、`Event` 流和 `Usage` 约定；Provider 负责网络适配。 | [`provider_chat.rs`](../examples/provider_chat.rs)、[`provider_deepseek.rs`](../examples/provider_deepseek.rs)、[`provider_vllm.rs`](../examples/provider_vllm.rs) |
-| `model::embed`、`model::token`、`model::content` | 单条向量请求、共享 Token Usage 和规范化内容 Part；Embed 返回统一 `Message`。 | [`component_contracts.rs`](../examples/component_contracts.rs)；真实 Provider 配置见模型章节 |
+| `model::embed`、`model::tts`、`model::multimodal`、`model::token`、`model::content` | 单条向量请求、TTS/多模态独立 Request、共享 Token Usage 和规范化内容 Part；Embed 返回统一 `Message`，流式模型共用 `event::Event`。 | [`component_contracts.rs`](../examples/component_contracts.rs)；真实 Provider 配置见模型章节 |
 | `function::Function` | 不知道图、节点或执行 ID 的独立异步业务函数；输入输出类型由调用方决定。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`node_macro.rs`](../examples/node_macro.rs) |
 | `tool::Tool` | 具有定义和 `before/call/after/eval` 生命周期的工具契约；执行结果和错误由调用方收口。 | [`agent_live_tool.rs`](../examples/agent_live_tool.rs)、[`agent_permission.rs`](../examples/agent_permission.rs) |
 | `workspace::Workspace` | 文件、命令、Glob/Grep 等工作区能力的统一入口；Local 和 Server 由实现决定，默认能力按挂载启用。 | [10.8 Workspace 与 Skill](#108-workspace和skill本地发现内容读取和安全边界) |
@@ -129,6 +129,24 @@ let input = Input {
 
 `metadata` 保存应用身份、语言和其他上下文；`payload` 是用户提交的有序内容。音频、图片和文件仍使用
 `type/data/mime_type`，二进制数据应由应用保存后传稳定引用，不直接把 Base64 大对象放入输入。
+
+Agent 内部将 `Input` 转成用户 `Message`，再组织成模型 `Messages`。Chat 模型由 Agent 组织
+`model::chat::Request`；多模态模型由 Agent 组织 `model::multimodal::Request`。Agent 的输入契约不携带
+`model_config`、`voice` 或 `modalities` 等模型专属字段，模型默认参数在 Builder/模型 Config 中绑定。
+两种模型的流式输出都使用统一的 `event::Event`；TTS 是独立的后处理能力，不作为 Agent 的推理模型。
+
+Agent 内部适配器只负责把已有 `Messages`、工具定义和本次调用参数转换为 Chat 或多模态 Request，再把 Provider 结果转换为
+统一的 `event::Event`。它不执行工具、不管理 Memory/Permission/Checkpoint、不决定重试，也不修改 Agent Runtime State。
+
+多模态 Request 使用独立的 `model::multimodal::ToolChoice`，字段形状与 Chat 对齐但不复用 Chat 类型；其余公共字段为
+`messages/tools/stream/temperature/max_tokens/top_p/stop/options`，
+额外使用 `modalities` 表示期望的输出类型；多模态拥有自己的 `ResponseFormat`，但不定义第二套 Event。
+
+TTS 也直接使用统一的 `event::Event`：`stream=false` 只产生 `Complete`，`stream=true` 产生音频 `Delta` 和最终
+`Complete`。TTS 输入是 `Messages` 中的文本 Part，音频输出仍使用 `type = "audio"` 和现有 `data.source`，不增加第二套事件或分片字段。
+
+多模态 Tool 调用沿用同一循环：assistant 的 `tool_call` 由 Agent 执行，Tool 直接返回 `role: tool` Message；该 Message
+可以包含多个文本或媒体 Part，再进入下一轮模型 `Messages`，不使用 `tool_result` 包装。
 
 ### 2.2 Message 和 Event
 

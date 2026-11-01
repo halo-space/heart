@@ -1,0 +1,7 @@
+From: Ada Lovelace <ada@example.com>
+To: Charles Babbage <charles@example.com>
+Date: Tue, 01 Nov 2026 09:30:00 +0800
+Subject: Heart parser review
+X-Project: Heart
+
+This is a real RFC 5322 message body used to verify EML parsing.

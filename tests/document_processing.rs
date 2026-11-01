@@ -78,9 +78,15 @@ fn parser_construction_rejects_malformed_and_unsupported_configurations() {
         );
     }
     for (method, format, engine) in [
-        ("laws", "text", "text"),
         ("general", "pdf", "text"),
         ("general", "text", "ocr"),
+        ("presentation", "text", "text"),
+        ("presentation", "png", "liteparse"),
+        ("paper", "csv", "csv"),
+        ("tag", "pdf", "liteparse"),
+        ("resume", "csv", "csv"),
+        ("picture", "text", "text"),
+        ("audio", "wav", "audio"),
         ("qa", "text", "text"),
         ("table", "markdown", "markdown"),
     ] {
@@ -91,6 +97,118 @@ fn parser_construction_rejects_malformed_and_unsupported_configurations() {
             "UNSUPPORTED"
         );
     }
+    assert!(document::parser::new("picture", json!({"format":"png"})).is_ok());
+}
+
+#[test]
+fn section_parsers_preserve_heading_structure_without_length_chunking() {
+    let input = "Abstract\n摘要内容\n\n1 Introduction\n正文内容\n\n2.1 Results\n结果内容";
+    for method in ["paper", "book", "manual"] {
+        let parsed = block_on(
+            parser(method, "text", "text", json!({})).parse(input.as_bytes(), &Cancellation::new()),
+        )
+        .unwrap();
+        assert_eq!(parsed.len(), 3, "{method}");
+        assert_eq!(parsed[0].metadata["layout"]["role"], "section");
+        assert_eq!(parsed[1].metadata["layout"]["role"], "section");
+        assert_eq!(parsed[2].metadata["layout"]["role"], "section");
+        assert_eq!(parsed[0].content, "Abstract\n摘要内容\n\n");
+    }
+}
+
+#[test]
+fn email_parser_preserves_headers_body_and_extra_metadata() {
+    let data = include_bytes!("fixtures/sample.eml");
+    let parsed =
+        block_on(parser("email", "eml", "email", json!({})).parse(data, &Cancellation::new()))
+            .unwrap();
+    assert!(parsed[0].content.contains("subject: Heart parser review"));
+    assert!(
+        parsed[0]
+            .content
+            .contains("This is a real RFC 5322 message body")
+    );
+    assert_eq!(parsed[0].metadata["layout"]["role"], "email");
+    assert_eq!(
+        parsed[0].metadata["email"]["from"],
+        "Ada Lovelace <ada@example.com>"
+    );
+    assert_eq!(
+        parsed[0].metadata["email"]["subject"],
+        "Heart parser review"
+    );
+    assert_eq!(
+        parsed[0].metadata["email"]["metadata"]["x-project"],
+        "Heart"
+    );
+
+    let filtered = block_on(
+        parser(
+            "email",
+            "eml",
+            "email",
+            json!({"fields":["subject","body"]}),
+        )
+        .parse(data, &Cancellation::new()),
+    )
+    .unwrap();
+    assert!(filtered[0].metadata["email"].get("from").is_none());
+    assert!(filtered[0].metadata["email"].get("body").is_some());
+}
+
+#[test]
+fn tag_parser_preserves_examples_and_tag_sets() {
+    let data = include_bytes!("fixtures/tags.csv");
+    let parsed =
+        block_on(parser("tag", "csv", "csv", json!({})).parse(data, &Cancellation::new())).unwrap();
+    assert_eq!(parsed.len(), 2);
+    assert_eq!(parsed[0].content, "Legal contract review");
+    assert_eq!(parsed[0].metadata["layout"]["role"], "tag");
+    assert_eq!(
+        parsed[0].metadata["tag"]["tags"],
+        json!(["legal", "contract"])
+    );
+    assert_eq!(
+        parsed[1].metadata["tag"]["tags"],
+        json!(["weather", "travel"])
+    );
+}
+
+#[test]
+fn resume_parser_preserves_resume_sections_without_inference() {
+    let data = include_bytes!("fixtures/resume.txt");
+    let parsed =
+        block_on(parser("resume", "text", "text", json!({})).parse(data, &Cancellation::new()))
+            .unwrap();
+    assert_eq!(parsed.len(), 4);
+    assert_eq!(parsed[0].content, "Ada Lovelace\n\n");
+    assert_eq!(parsed[1].metadata["layout"]["role"], "resume_section");
+    assert_eq!(parsed[2].metadata["layout"]["role"], "resume_section");
+    assert_eq!(parsed[3].metadata["layout"]["role"], "resume_section");
+    assert!(
+        parsed
+            .iter()
+            .all(|document| document.metadata.get("resume").is_none())
+    );
+}
+
+#[test]
+fn laws_parser_preserves_articles_without_turning_them_into_chunks() {
+    let input = "总则\n\n第一条 这是第一条。\n第一款 内容。\n\n第二条 这是第二条。";
+    let parsed = block_on(
+        parser("laws", "text", "text", json!({})).parse(input.as_bytes(), &Cancellation::new()),
+    )
+    .unwrap();
+    assert_eq!(parsed.len(), 3);
+    assert_eq!(parsed[0].content, "总则\n\n");
+    assert!(parsed[0].metadata.get("layout").is_none());
+    assert_eq!(parsed[1].metadata["layout"]["role"], "clause");
+    assert_eq!(parsed[2].metadata["layout"]["role"], "clause");
+    assert!(
+        parsed
+            .iter()
+            .all(|document| document.metadata["method"] == "text")
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -101,6 +219,7 @@ async fn liteparse_reads_a_real_pdf_through_the_document_parser_contract() {
     assert_eq!(pages.len(), 1);
     assert!(pages[0].content.contains("Heart LiteParse integration"));
     assert_eq!(pages[0].metadata["parser"], "liteparse");
+    assert!(pages[0].metadata.get("method").is_none());
     assert_eq!(
         pages[0].metadata["location"]["page"],
         json!({"from":1,"to":1})
@@ -112,6 +231,24 @@ async fn liteparse_reads_a_real_pdf_through_the_document_parser_contract() {
     assert_eq!(documents.len(), 1);
     assert!(documents[0].content.contains("Heart LiteParse integration"));
     assert!(documents[0].metadata.get("location").is_none());
+    assert!(documents[0].metadata.get("method").is_none());
+
+    let laws = document::parser::new("laws", json!({"format":"pdf"})).unwrap();
+    let documents = laws.parse(data, &Cancellation::new()).await.unwrap();
+    assert_eq!(documents.len(), 1);
+    assert_eq!(documents[0].metadata["parser"], "liteparse");
+    assert!(documents[0].metadata["location"].get("page").is_some());
+    assert!(documents[0].metadata.get("method").is_none());
+
+    let presentation = document::parser::new("presentation", json!({"format":"pdf"})).unwrap();
+    let slides = presentation
+        .parse(data, &Cancellation::new())
+        .await
+        .unwrap();
+    assert_eq!(slides.len(), 1);
+    assert_eq!(slides[0].metadata["layout"]["role"], "slide");
+    assert!(slides[0].metadata["location"].get("page").is_some());
+    assert!(slides[0].metadata.get("method").is_none());
 }
 
 #[test]

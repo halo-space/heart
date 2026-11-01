@@ -81,7 +81,7 @@ example. Concrete implementations live under `halo::agent::core`; execution stat
 | `agent::protocol::ag_ui` | Converts Heart Event Stream to AG-UI events; called by the HTTP layer without changing Runtime contracts. | Section 2.3 |
 | `agent::protocol::a2a` | Remote-Agent Agent Card/Task/Artifact contracts and Heart Event conversion; `session_id` maps to A2A `contextId`, while `task_id` remains the remote task identifier. | Section 2.4 |
 | `model::chat` | Chat Provider request, tool description, event stream and usage contract; Providers own network adaptation. | [`provider_chat.rs`](../examples/provider_chat.rs), [`provider_deepseek.rs`](../examples/provider_deepseek.rs), [`provider_vllm.rs`](../examples/provider_vllm.rs) |
-| `model::embed`, `model::token`, `model::content` | Single-input embedding, shared token usage and canonical content Parts; Embed returns the shared `Message` shape. | [`component_contracts.rs`](../examples/component_contracts.rs); see the model section for real Providers |
+| `model::embed`, `model::tts`, `model::multimodal`, `model::token`, `model::content` | Single-input embedding, independent TTS/multimodal Requests, shared token usage and canonical content Parts; Embed returns `Message`, while stream-capable models share `event::Event`. | [`component_contracts.rs`](../examples/component_contracts.rs); see the model section for real Providers |
 | `function::Function` | Standalone async business function with caller-defined input and output; it knows nothing about graph or execution IDs. | [`component_contracts.rs`](../examples/component_contracts.rs), [`node_macro.rs`](../examples/node_macro.rs) |
 | `tool::Tool` | Tool definition and `before/call/after/eval` lifecycle; the caller closes the result and error. | [`agent_live_tool.rs`](../examples/agent_live_tool.rs), [`agent_permission.rs`](../examples/agent_permission.rs) |
 | `workspace::Workspace` | Unified file, command, Glob/Grep and mounted capability access; Local/Server is selected by the implementation. | [10.8 Workspace and Skill](#108-workspace-and-skill-local-discovery-content-loading-and-safety) |
@@ -128,6 +128,28 @@ let input = Input {
 
 `metadata` carries application identity and context. `payload` is ordered user content. Audio, images and files use the same
 `type/data/mime_type` shape; keep binary data outside the input and pass stable references when appropriate.
+
+The Agent converts `Input` into a user `Message` and then organizes model `Messages`. A Chat model receives an internally
+constructed `model::chat::Request`; a multimodal model receives a `model::multimodal::Request`. Agent input does not carry
+model-specific fields such as `model_config`, `voice`, or `modalities`; model defaults are bound by the Builder/model Config.
+Both model capabilities use the shared `event::Event` stream. TTS remains a separate post-processing capability rather than
+the Agent's reasoning model.
+
+The Agent's internal adapter only converts existing `Messages`, tool definitions, and invocation parameters into a Chat or
+multimodal Request, then normalizes Provider results into `event::Event`. It does not execute tools, manage Memory/Permission/
+Checkpoint, decide retries, or mutate Agent Runtime State.
+
+The multimodal Request owns an independent `model::multimodal::ToolChoice` with the same behavior as Chat but without reusing a Chat type; its other common fields are
+`messages/tools/stream/temperature/max_tokens/top_p/stop/options`
+and adds `modalities` for requested output types. Multimodal has its own `ResponseFormat`, but does not define a second Event type.
+
+TTS also uses the shared `event::Event`: `stream=false` emits only `Complete`, while `stream=true` emits audio `Delta` events
+and a final `Complete`. TTS reads text Parts from `Messages`, and audio output uses `type = "audio"` with the existing
+`data.source`; no second event protocol or chunk fields are added.
+
+Multimodal tool calls use the same loop: the Agent executes an assistant `tool_call`, and the Tool returns a direct
+`role: tool` Message. That Message may contain multiple text or media Parts and is appended to the next model `Messages`; no
+`tool_result` wrapper is used.
 
 Model context uses `Message`/`Messages`. Provider reasoning fields are normalized to a `think` content Part and ordinary output to `text`.
 The shared event contract is:

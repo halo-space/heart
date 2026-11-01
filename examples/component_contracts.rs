@@ -1,12 +1,12 @@
 //! Small, offline examples for the low-level component contracts.
 use halo::agent::core::sandbox::{Config as SandboxConfig, Local};
-use halo::agent::{Cancellation, Error, Message};
+use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::agent::{
     event::Event,
     function::Function,
     knowledge::keyword,
     message::Role,
-    model::{content::part::Part, embed},
+    model::{content::part::Part, embed, multimodal, tts},
     prompt::{Template, Variables},
     sandbox::{Request as SandboxRequest, Sandbox},
 };
@@ -45,6 +45,44 @@ async fn main() -> Result<(), Error> {
     // provider/model/dimension in metadata.
     let embedding = embed::message(vec![0.1, 0.2, 0.3], "local-example", "embed-v1", Some(3))?;
     println!("embedding = {embedding:?}");
+
+    // TTS and multimodal models keep their own request contracts while
+    // sharing the same Event type. Validation is local and does not invent a
+    // provider response or require a network call.
+    let mut spoken = Message::new(Role::User);
+    spoken.content.push(Part {
+        r#type: "text".into(),
+        data: Map::from_iter([(String::from("value"), json!("请朗读这段文字"))]),
+    });
+    tts::Request {
+        messages: Messages::new([spoken.clone()]),
+        voice: Some("default".into()),
+        format: Some("audio/wav".into()),
+        speed: Some(1.0),
+        stream: false,
+        options: Map::new(),
+    }
+    .validate()?;
+
+    let mut vision = Message::new(Role::User);
+    vision.content.push(Part {
+        r#type: "text".into(),
+        data: Map::from_iter([(String::from("value"), json!("描述这张图片"))]),
+    });
+    vision.content.push(Part {
+        r#type: "image".into(),
+        data: Map::from_iter([(
+            String::from("source"),
+            json!({"kind":"url", "value":"https://example.invalid/image.png", "mime_type":"image/png"}),
+        )]),
+    });
+    multimodal::Request {
+        messages: Messages::new([vision]),
+        modalities: vec!["text".into()],
+        stream: false,
+        ..multimodal::Request::default()
+    }
+    .validate()?;
 
     // Sandbox is an explicit capability. This executes a real local command;
     // it is not an isolation boundary and should only receive trusted input.

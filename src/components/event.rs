@@ -3,7 +3,7 @@ use serde::{Deserialize, Serialize};
 use crate::components::message::Message;
 use crate::components::model::token::Usage;
 
-/// Shared observation event used by Chat calls, Agent and Workflow runs.
+/// Shared message event used by every stream-capable model or runtime call.
 ///
 /// This component does not own execution state. Moving the event here does not
 /// make complete-returning components such as Embed or Function emit a stream.

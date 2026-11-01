@@ -1,7 +1,9 @@
 pub mod chat;
 pub mod content;
 pub mod embed;
+pub mod multimodal;
 pub mod token;
+pub mod tts;
 
 /// Model errors share one fact shape. Runtime control fields do
 /// not enter this error type.

@@ -7,7 +7,7 @@ use crate::Cancellation;
 #[cfg(test)]
 use crate::components::document::location;
 use crate::components::document::{Document, Error, Loader, Relation, Source, graph_types};
-use crate::components::event::Event as ChatEvent;
+use crate::components::event::Event;
 use crate::components::message::{Message, Messages};
 use crate::components::model;
 
@@ -115,7 +115,7 @@ async fn complete_request<C: model::chat::Chat>(
 
 async fn complete_stream<S>(stream: S, cancellation: &Cancellation) -> Result<Message, Error>
 where
-    S: Stream<Item = Result<ChatEvent, model::Error>>,
+    S: Stream<Item = Result<Event, model::Error>>,
 {
     let mut stream = Box::pin(stream);
     loop {
@@ -136,8 +136,8 @@ where
             Error::new("MODEL_ERROR", error.message)
                 .with_details(error.details.unwrap_or(error.code))
         })? {
-            ChatEvent::Delta { .. } => {}
-            ChatEvent::Complete {
+            Event::Delta { .. } => {}
+            Event::Complete {
                 mut message, usage, ..
             } => {
                 if let Some(usage) = usage {
