@@ -635,7 +635,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ## 9. Current scope
 
-General PDF/Office/image parsing uses LiteParse by default. Domain-specific Parser methods and Python function integration remain future-version work. V2 now includes Gemini TTS and multimodal Provider adapters; live calls require `GEMINI_API_KEY` in the local environment. See the [Document parsing guide](DOCUMENT.en.md) for formats and runtime requirements.
+General PDF/Office/image parsing uses LiteParse by default. Domain-specific Parser methods and Python function integration remain future-version work. V2 now includes Gemini TTS and multimodal Provider adapters; live calls require `GEMINI_API_KEY`, and the unified live acceptance script also needs `GEMINI_TEST_IMAGE_DATA_URL` for the image case. See the [Document parsing guide](DOCUMENT.en.md) for formats and runtime requirements.
 
 ## 10. Complete runnable recipes
 

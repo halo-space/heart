@@ -652,7 +652,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ## 9. 当前版本边界
 
-PDF/Office/图片的通用解析默认使用 LiteParse；领域专用 Parser 方法和 Python 函数接入属于后续版本。V2 已提供 Gemini TTS 与多模态 Provider 适配，真实调用需要本地配置 `GEMINI_API_KEY`。具体格式和运行依赖见 [Document 解析手册](DOCUMENT.zh-CN.md)。
+PDF/Office/图片的通用解析默认使用 LiteParse；领域专用 Parser 方法和 Python 函数接入属于后续版本。V2 已提供 Gemini TTS 与多模态 Provider 适配，真实调用需要本地配置 `GEMINI_API_KEY`；统一真实验收由 `scripts/test-real.sh` 执行，图片验收还需要 `GEMINI_TEST_IMAGE_DATA_URL`。具体格式和运行依赖见 [Document 解析手册](DOCUMENT.zh-CN.md)。
 
 ## 10. 完整可运行配方
 
