@@ -81,7 +81,7 @@ example. Concrete implementations live under `halo::agent::core`; execution stat
 | `agent::protocol::ag_ui` | Converts Heart Event Stream to AG-UI events; called by the HTTP layer without changing Runtime contracts. | Section 2.3 |
 | `agent::protocol::a2a` | Remote-Agent Agent Card/Task/Artifact contracts and Heart Event conversion; `session_id` maps to A2A `contextId`, while `task_id` remains the remote task identifier. | Section 2.4 |
 | `model::chat` | Chat Provider request, tool description, event stream and usage contract; Providers own network adaptation. | [`provider_chat.rs`](../examples/provider_chat.rs), [`provider_deepseek.rs`](../examples/provider_deepseek.rs), [`provider_vllm.rs`](../examples/provider_vllm.rs) |
-| `model::embed`, `model::tts`, `model::multimodal`, `model::token`, `model::content` | Single-input embedding, independent TTS/multimodal Requests, shared token usage and canonical content Parts; Embed returns `Message`, while stream-capable models share `event::Event`. | [`component_contracts.rs`](../examples/component_contracts.rs); see the model section for real Providers |
+| `model::embed`, `model::tts`, `model::multimodal`, `model::token`, `model::content` | Single-input embedding, independent TTS/multimodal Requests, shared token usage and canonical content Parts; Embed returns `Message`, while stream-capable models share `event::Event`. | [`component_contracts.rs`](../examples/component_contracts.rs), [`provider_gemini_v2.rs`](../examples/provider_gemini_v2.rs) |
 | `function::Function` | Standalone async business function with caller-defined input and output; it knows nothing about graph or execution IDs. | [`component_contracts.rs`](../examples/component_contracts.rs), [`node_macro.rs`](../examples/node_macro.rs) |
 | `tool::Tool` | Tool definition and `before/call/after/eval` lifecycle; the caller closes the result and error. | [`agent_live_tool.rs`](../examples/agent_live_tool.rs), [`agent_permission.rs`](../examples/agent_permission.rs) |
 | `workspace::Workspace` | Unified file, command, Glob/Grep and mounted capability access; Local/Server is selected by the implementation. | [10.8 Workspace and Skill](#108-workspace-and-skill-local-discovery-content-loading-and-safety) |
@@ -635,7 +635,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ## 9. Current scope
 
-General PDF/Office/image parsing uses LiteParse by default. Domain-specific Parser methods, Python function integration, TTS, and the complete multimodal contract remain future-version work. See the [Document parsing guide](DOCUMENT.en.md) for formats and runtime requirements.
+General PDF/Office/image parsing uses LiteParse by default. Domain-specific Parser methods and Python function integration remain future-version work. V2 now includes Gemini TTS and multimodal Provider adapters; live calls require `GEMINI_API_KEY` in the local environment. See the [Document parsing guide](DOCUMENT.en.md) for formats and runtime requirements.
 
 ## 10. Complete runnable recipes
 

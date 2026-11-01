@@ -81,7 +81,7 @@ harness/      面向长任务 Agent 的高阶组合能力
 | `agent::protocol::ag_ui` | 将 Heart Event Stream 转换为 AG-UI 事件；由 HTTP 层调用，不改变 Runtime 契约。 | 本节 2.3 |
 | `agent::protocol::a2a` | 远程 Agent Agent Card/Task/Artifact 协议契约和 Heart Event 转换；`session_id` 对应 A2A `contextId`，`task_id` 保留为远端任务标识。 | 本节 2.4 |
 | `model::chat` | Chat Provider 的 `Request`、工具描述、`Event` 流和 `Usage` 约定；Provider 负责网络适配。 | [`provider_chat.rs`](../examples/provider_chat.rs)、[`provider_deepseek.rs`](../examples/provider_deepseek.rs)、[`provider_vllm.rs`](../examples/provider_vllm.rs) |
-| `model::embed`、`model::tts`、`model::multimodal`、`model::token`、`model::content` | 单条向量请求、TTS/多模态独立 Request、共享 Token Usage 和规范化内容 Part；Embed 返回统一 `Message`，流式模型共用 `event::Event`。 | [`component_contracts.rs`](../examples/component_contracts.rs)；真实 Provider 配置见模型章节 |
+| `model::embed`、`model::tts`、`model::multimodal`、`model::token`、`model::content` | 单条向量请求、TTS/多模态独立 Request、共享 Token Usage 和规范化内容 Part；Embed 返回统一 `Message`，流式模型共用 `event::Event`。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`provider_gemini_v2.rs`](../examples/provider_gemini_v2.rs) |
 | `function::Function` | 不知道图、节点或执行 ID 的独立异步业务函数；输入输出类型由调用方决定。 | [`component_contracts.rs`](../examples/component_contracts.rs)、[`node_macro.rs`](../examples/node_macro.rs) |
 | `tool::Tool` | 具有定义和 `before/call/after/eval` 生命周期的工具契约；执行结果和错误由调用方收口。 | [`agent_live_tool.rs`](../examples/agent_live_tool.rs)、[`agent_permission.rs`](../examples/agent_permission.rs) |
 | `workspace::Workspace` | 文件、命令、Glob/Grep 等工作区能力的统一入口；Local 和 Server 由实现决定，默认能力按挂载启用。 | [10.8 Workspace 与 Skill](#108-workspace和skill本地发现内容读取和安全边界) |
@@ -652,7 +652,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ## 9. 当前版本边界
 
-PDF/Office/图片的通用解析默认使用 LiteParse；领域专用 Parser 方法、Python 函数接入、TTS 和完整多模态契约属于后续版本。具体格式和运行依赖见 [Document 解析手册](DOCUMENT.zh-CN.md)。
+PDF/Office/图片的通用解析默认使用 LiteParse；领域专用 Parser 方法和 Python 函数接入属于后续版本。V2 已提供 Gemini TTS 与多模态 Provider 适配，真实调用需要本地配置 `GEMINI_API_KEY`。具体格式和运行依赖见 [Document 解析手册](DOCUMENT.zh-CN.md)。
 
 ## 10. 完整可运行配方
 

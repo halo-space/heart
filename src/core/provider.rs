@@ -2,6 +2,7 @@
 
 mod compatible;
 pub mod deepseek;
+pub mod gemini;
 pub mod openai;
 pub mod vllm;
 pub mod zhipu;
