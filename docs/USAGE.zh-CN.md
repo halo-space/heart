@@ -2,7 +2,7 @@
 
 > 本手册是 Heart 的实际使用入口，按设计章节 `00–18` 编排。它解释“应用应该怎么调用”，不重新定义设计契约；设计原文位于 `design/chapters/`，发生冲突时以代码中当前公开 API 和设计决议为准。
 
-Heart 是一个 Rust Agent/Workflow 执行库。它提供模型、工具、MCP、Skill、Workspace、Memory、Checkpoint、压缩、权限、文档和协议适配能力，但不提供页面、账号系统或托管数据库。应用选择并组合这些能力，运行时负责现场、状态、事件和恢复。
+Heart 是一个 Rust Agent/Workflow 执行库。它提供模型、工具、MCP、Skill、Workspace、Memory、Checkpoint、压缩、权限、文档和协议适配能力；应用可以把这些能力嵌入自己的产品，运行时负责现场、状态、事件和恢复，Server 层负责按需提供 HTTP 接入。
 
 当前版本是 Alpha `0.1.x`，要求 Rust `1.99.1` 或更高版本。Cargo 包名是 `halo-agent`，Rust 导入名是 `halo`。
 
@@ -204,7 +204,7 @@ Chat 使用 [`agent_live_tool.rs`](../examples/agent_live_tool.rs) 可验证真�
 
 ### 3.2 ReAct Agent
 
-ReAct 自带模型调用、工具循环和内置 Planner。模型决定是否调用 Tool、调用哪些 Tool 以及传递哪些参数；内部能力组装层负责把已注册的 Tool、MCP、Skill 描述提供给模型并执行实际调用。工具调用成功后结果作为下一轮模型上下文，工具直接错误也直接进入下一轮上下文；不额外包装成 `tool_result(error)`。
+ReAct 自带模型调用、工具循环和内置 Planner。模型决定是否调用 Tool、调用哪些 Tool 以及传递哪些参数；内部能力组装层负责把已配置的 Tool、MCP、Skill 描述提供给模型并执行实际调用。工具调用成功后结果作为下一轮模型上下文，工具直接错误也直接进入下一轮上下文；不额外包装成 `tool_result(error)`。
 
 ```rust
 let agent = agent::react()
@@ -424,7 +424,7 @@ Workflow 可以通过 `add_agent_node` 调用一个已经构建好的 Agent；Ag
 
 ## 09–10-与其他框架的关系
 
-Heart 借鉴 LangGraph 的 `START/END`、条件边、子图和 Checkpoint 现场；借鉴 Eino 的组件契约、Provider 适配和编排边界；借鉴 AgentScope 的 Toolkit、Workspace、Permission、Plan 和 Harness 组合方式。
+Heart 借鉴 LangGraph 的 `START/END`、条件边、子图和 Checkpoint 现场；借鉴 Eino 的组件契约、Provider 适配和编排边界；借鉴 AgentScope 的工具组装、Workspace、Permission、Plan 和 Harness 组合方式。
 
 这些框架的 DSL 不直接成为 Heart Runtime 的内部状态。应用可在入口层把 Dify、Coze 或自定义 DSL 转成 Heart 的 Native Definition：
 
@@ -437,7 +437,7 @@ Heart 借鉴 LangGraph 的 `START/END`、条件边、子图和 Checkpoint 现场
     -> Runtime
 ```
 
-DSL 只描述图和参数，不能绕过已注册的函数、工具、Agent 或子图；未知能力在构建或计划提交阶段失败。Heart 不增加公共 Registry、Capabilities 或动态能力注册表。
+DSL 只描述图和参数，不能绕过应用已配置的函数、工具、Agent 或子图；未知能力在构建或计划提交阶段失败。Heart 不增加公共 Registry、Capabilities 或动态能力注册表。
 
 A2A、AG-UI、JSON-RPC、SSE 和 Webhook 是协议/传输层适配，不改变 Runtime 的 State 和 Event 契约。HTTP 层可以将已有 Event 转换成对外协议事件。
 

@@ -2,7 +2,7 @@
 
 This is the practical manual for Heart. It follows the design chapter order `00–18` and explains how an application uses the current Rust API. It does not change the design documents. The source code is the final authority for the current public signatures.
 
-Heart is an embeddable Rust library for Agent and Workflow execution. It provides contracts and implementations for models, tools, MCP, Skills, Workspace, Memory, Checkpoint, compression, permissions, documents, and protocol adapters. It does not provide a hosted UI, account system, or database service.
+Heart is a Rust library for Agent and Workflow execution. It provides contracts and implementations for models, tools, MCP, Skills, Workspace, Memory, Checkpoint, compression, permissions, documents, and protocol adapters. Applications can embed these capabilities in an existing product, while the optional Server layer provides HTTP access.
 
 The current release is Alpha `0.1.x` and requires Rust `1.99.1` or newer. The Cargo package is `halo-agent`; the Rust library is imported as `halo`.
 
@@ -122,7 +122,7 @@ let agent = halo::agent::react()
     .build()?;
 ```
 
-The model chooses registered tools and arguments. Heart's internal dispatch layer exposes registered Tool, MCP, and Skill descriptions and executes the selected capability. Tool `before`, `call`, `after`, and `eval` are one optional lifecycle. Tool errors are returned directly to the next model context; Heart does not invent an extra `tool_result(error)` envelope.
+The model chooses configured tools and arguments. Heart's internal dispatch layer exposes configured Tool, MCP, and Skill descriptions and executes the selected capability. Tool `before`, `call`, `after`, and `eval` are one optional lifecycle. Tool errors are returned directly to the next model context; Heart does not invent an extra `tool_result(error)` envelope.
 
 SubAgents are already-built Agents passed through `.subagents(...)`. Team members are fixed at build time; dynamic member creation is outside the current scope. See [`agent_live_subagent.rs`](../examples/agent_live_subagent.rs) and [`agent_live_team.rs`](../examples/agent_live_team.rs).
 
@@ -239,7 +239,7 @@ Workflow State contains graph, node status, executions, attempts, values, waitin
 
 ## 09–10. Framework comparison and DSL
 
-Heart takes useful boundaries from LangGraph (`START/END`, conditional edges, subgraphs, checkpoint), Eino (component contracts and graph composition), and AgentScope (Toolkit, Workspace, Permission, Plan, and Harness composition). Their DSLs are not copied into Runtime State.
+Heart takes useful boundaries from LangGraph (`START/END`, conditional edges, subgraphs, checkpoint), Eino (component contracts and graph composition), and AgentScope (tool composition, Workspace, Permission, Plan, and Harness composition). Their DSLs are not copied into Runtime State.
 
 An external Dify, Coze, or application DSL should be translated at the outer boundary:
 
