@@ -1,28 +1,14 @@
 # Heart User Manual
 
-This is the practical manual for Heart. It follows the design chapter order `00–18` and explains how an application uses the current Rust API. It does not change the design documents. The source code is the final authority for the current public signatures.
-
 Heart is a Rust library for Agent and Workflow execution. It provides contracts and implementations for models, tools, MCP, Skills, Workspace, Memory, Checkpoint, compression, permissions, documents, and protocol adapters. Applications can embed these capabilities in an existing product, while the optional Server layer provides HTTP access.
 
 The current release is Alpha `0.1.x` and requires Rust `1.99.1` or newer. The Cargo package is `halo-agent`; the Rust library is imported as `halo`.
-
-## Chapter map
-
-| Chapters | Design source | Practical topic |
-| --- | --- | --- |
-| 00–01 | [`00`](../design/chapters/00-architecture.zh-CN.md), [`01`](../design/chapters/01-overview.zh-CN.md) | Architecture, installation, first run |
-| 02–03 | [`02`](../design/chapters/02-runtime-execution.zh-CN.md), [`03`](../design/chapters/03-agent-execution.zh-CN.md) | Runtime, Chat, ReAct, reply, Team |
-| 04–05 | [`04`](../design/chapters/04-message-contract.zh-CN.md), [`05`](../design/chapters/05-checkpoint.zh-CN.md) | Input, Message, Event, Checkpoint |
-| 06–08 | [`06`](../design/chapters/06-workflow-execution-relations.zh-CN.md), [`07`](../design/chapters/07-workflow-runtime-core.zh-CN.md), [`08`](../design/chapters/08-workflow-graph-relations.zh-CN.md) | Workflow graph, relations, State, subgraphs |
-| 09–12 | [`09`](../design/chapters/09-framework-comparison.zh-CN.md), [`10`](../design/chapters/10-framework-comparison-relations.zh-CN.md), [`11`](../design/chapters/11-decision-checklist.zh-CN.md), [`12`](../design/chapters/12-open-questions.zh-CN.md) | Framework comparison, decisions, limits |
-| 13–15 | [`13`](../design/chapters/13-component-catalog.zh-CN.md), [`14`](../design/chapters/14-application-persistence.zh-CN.md), [`15`](../design/chapters/15-todo.zh-CN.md) | Component catalogue, persistence, validation |
-| 16–18 | [`16 A2A`](../design/chapters/16-a2a-protocol.zh-CN.md), [`16 compression`](../design/chapters/16-compression-plan.zh-CN.md), [`17`](../design/chapters/17-server.zh-CN.md), [`18`](../design/chapters/18-team.zh-CN.md) | Compression, A2A, HTTP Server, Team |
 
 Runnable examples are in [`examples/`](../examples/). The Chinese manual is [`USAGE.zh-CN.md`](USAGE.zh-CN.md).
 
 ---
 
-## 00–01. Architecture and first run
+## Architecture and first run
 
 Heart is one crate with this dependency direction:
 
@@ -78,9 +64,14 @@ Real provider examples: [`provider_deepseek.rs`](../examples/provider_deepseek.r
 
 ---
 
-## 02–03. Runtime and Agent
+## Runtime and Agent
 
 The application-owned top-level identity is `chat_id`. `Cancellation` belongs to one run; create a fresh value for every independent run and clone it only for work in that run.
+
+Agent and Workflow both have a Runtime, but their public control surfaces differ. Agent keeps its execution scene
+inside the Agent object and exposes `agent.run(...)` and `agent.reply(...)`. Workflow exposes
+`workflow::Runtime` because applications need to manage graph State, Checkpoint, and waiting recovery. In the
+examples below, `workflow` refers to a Runtime instance; `CompiledWorkflow` is only the immutable graph definition.
 
 ```text
 Event Stream -> external observation
@@ -128,7 +119,7 @@ SubAgents are already-built Agents passed through `.subagents(...)`. Team member
 
 ---
 
-## 04. Input, Message, and Event
+## Input, Message, and Event
 
 Business input is `agent::Input`, not model `Messages`:
 
@@ -167,7 +158,7 @@ pub enum Event {
 
 ---
 
-## 05. Checkpoint and recovery
+## Checkpoint and recovery
 
 Checkpoint stores the complete Runtime State as JSON. It is separate from Chat history and Memory; OpenTelemetry Trace is only an observability projection. The contract is asynchronous `save`, `load`, `delete`, and `validate_state`.
 
@@ -186,7 +177,7 @@ No configured Checkpoint means no cross-process recovery. [`checkpoint.rs`](../e
 
 ---
 
-## 06–08. Workflow graph and execution
+## Workflow graph and execution
 
 Ordinary async functions can be added directly as nodes:
 
@@ -237,22 +228,24 @@ Workflow State contains graph, node status, executions, attempts, values, waitin
 
 ---
 
-## 09–10. Framework comparison and DSL
+## Framework comparison and DSL
 
 Heart takes useful boundaries from LangGraph (`START/END`, conditional edges, subgraphs, checkpoint), Eino (component contracts and graph composition), and AgentScope (tool composition, Workspace, Permission, Plan, and Harness composition). Their DSLs are not copied into Runtime State.
 
 An external Dify, Coze, or application DSL should be translated at the outer boundary:
 
 ```text
-DSL JSON -> validate fields -> bind application capabilities
-         -> WorkflowBuilder or Agent Plan -> compile -> Runtime
+DSL JSON -> core::workflow::dsl parse, validate, and normalize
+         -> Core binds Core components
+         -> Runtime binds Agent, Workflow, and CompiledWorkflow executors
+         -> WorkflowBuilder::compile() -> Runtime
 ```
 
-Unknown functions, tools, Agents, or subgraphs must fail at binding/plan submission. Heart does not add a public Registry, Capabilities, or dynamic runtime registration table. A2A/AG-UI/JSON-RPC/SSE adapters live at the protocol/HTTP layer and convert existing Events.
+Applications provide static execution configuration during initialization; each request only supplies DSL and business input. Unknown functions, tools, Agents, or subgraphs must fail at binding/plan submission. Heart does not add a public Registry, Capabilities, or dynamic runtime registration table. A2A/AG-UI/JSON-RPC/SSE adapters live at the protocol/HTTP layer and convert existing Events.
 
 ---
 
-## 11. Fixed usage rules
+## Fixed usage rules
 
 - Use `halo::agent` as the public entry; do not use compatibility `halo::core::agent`.
 - Use `chat_id` for the top-level execution identity.
@@ -267,13 +260,13 @@ Unknown functions, tools, Agents, or subgraphs must fail at binding/plan submiss
 
 ---
 
-## 12. Current limits
+## Current limits
 
 The current Alpha does not promise a complete OCR/layout parser suite, every provider's TTS/multimodal extension, distributed task queues and locks, an application DSL editor, or dynamic Team member creation. These are extension/application concerns and do not prevent custom implementations of the public contracts.
 
 ---
 
-## 13. Component catalogue
+## Component catalogue
 
 Provider initialization and model binding are separate:
 
@@ -290,7 +283,7 @@ Prompt templates render messages and named history variables. Memory uses `memor
 
 ---
 
-## 14. Short/long memory and persistence
+## Short/long memory and persistence
 
 Short memory consists of Session and Chat. Session aggregates a stable conversation thread; Chat stores one external input and final Assistant Message. Full runtime State belongs to Checkpoint. `runtime::trace` is optional OpenTelemetry observability, not another short-memory record.
 
@@ -300,7 +293,7 @@ Compression is enabled only by configuring a compressor. It is checked on a user
 
 ---
 
-## 15. Testing and publishing
+## Testing and publishing
 
 ```bash
 cargo fmt --check
@@ -313,7 +306,7 @@ Provider/MCP/ES/Sandbox acceptance tests read environment variables and should u
 
 ---
 
-## 16. Compression and A2A
+## Compression and A2A
 
 Compression creates the current Session summary without rewriting original Chats. It reads Chats after the covered range, uses their recorded input/output usage, and records the compression call usage for display. The active request is not replaced in the middle of a run; later requests use the new summary plus uncovered Chats.
 
@@ -321,7 +314,7 @@ A2A maps remote `context_id` to the application's `session_id`, converts Agent E
 
 ---
 
-## 17. Server and HTTP
+## Server and HTTP
 
 The Axum binding exposes JSON-RPC methods such as `message/send`, `message/stream`, `tasks/get`, `tasks/cancel`, and `tasks/resubscribe`. SSE is a transport for the existing Event stream.
 
@@ -336,7 +329,7 @@ The external Task Store is a projection. Agent/Workflow Runtime remains the sour
 
 ---
 
-## 18. Team and multi-Agent
+## Team and multi-Agent
 
 Team members are selected during construction. A Leader routes work to fixed members; members execute with their own Agent state and results return through the Team event stream. Dynamic member creation is not part of the current boundary.
 

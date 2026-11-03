@@ -1,37 +1,14 @@
 # Heart 使用手册
 
-> 本手册是 Heart 的实际使用入口，按设计章节 `00–18` 编排。它解释“应用应该怎么调用”，不重新定义设计契约；设计原文位于 `design/chapters/`，发生冲突时以代码中当前公开 API 和设计决议为准。
-
 Heart 是一个 Rust Agent/Workflow 执行库。它提供模型、工具、MCP、Skill、Workspace、Memory、Checkpoint、压缩、权限、文档和协议适配能力；应用可以把这些能力嵌入自己的产品，运行时负责现场、状态、事件和恢复，Server 层负责按需提供 HTTP 接入。
 
 当前版本是 Alpha `0.1.x`，要求 Rust `1.99.1` 或更高版本。Cargo 包名是 `halo-agent`，Rust 导入名是 `halo`。
-
-## 目录
-
-| 设计章节 | 设计原文 | 手册中的使用主题 |
-| --- | --- | --- |
-| [00 架构](#00-架构和安装) | [`00-architecture`](../design/chapters/00-architecture.zh-CN.md) | 分层、安装、公开入口 |
-| [01 概览](#01-第一次运行) | [`01-overview`](../design/chapters/01-overview.zh-CN.md) | Agent、Workflow、组件的选择 |
-| [02 Runtime](#02-runtime运行现场) | [`02-runtime-execution`](../design/chapters/02-runtime-execution.zh-CN.md) | `chat_id`、State、取消、等待 |
-| [03 Agent](#03-agent) | [`03-agent-execution`](../design/chapters/03-agent-execution.zh-CN.md) | Chat、ReAct、Reply、工具调用 |
-| [04 Message](#04-输入消息和事件) | [`04-message-contract`](../design/chapters/04-message-contract.zh-CN.md) | `Input`、`Message`、`Event` |
-| [05 Checkpoint](#05-checkpoint和恢复) | [`05-checkpoint`](../design/chapters/05-checkpoint.zh-CN.md) | 保存完整现场、恢复执行 |
-| [06–08 Workflow](#06-08-workflow图和执行关系) | [`06`](../design/chapters/06-workflow-execution-relations.zh-CN.md) / [`07`](../design/chapters/07-workflow-runtime-core.zh-CN.md) / [`08`](../design/chapters/08-workflow-graph-relations.zh-CN.md) | 节点、边、Join、Fan-out、子图 |
-| [09–10 对比](#09-10-与其他框架的关系) | [`09`](../design/chapters/09-framework-comparison.zh-CN.md) / [`10`](../design/chapters/10-framework-comparison-relations.zh-CN.md) | LangGraph、Eino、DSL 适配边界 |
-| [11 决议](#11-已经固定的使用规则) | [`11-decision-checklist`](../design/chapters/11-decision-checklist.zh-CN.md) | 命名和行为约束 |
-| [12 问题](#12-当前限制和后续范围) | [`12-open-questions`](../design/chapters/12-open-questions.zh-CN.md) | 当前版本不覆盖的能力 |
-| [13 组件](#13-组件使用索引) | [`13-component-catalog`](../design/chapters/13-component-catalog.zh-CN.md) | 每个组件的入口和示例 |
-| [14 持久化](#14-短期长期记忆和持久化) | [`14-application-persistence`](../design/chapters/14-application-persistence.zh-CN.md) | Short/Long Memory、Usage |
-| [15 验证](#15-测试和发布) | [`15-todo`](../design/chapters/15-todo.zh-CN.md) | 编译、测试、真实服务验证 |
-| [16 压缩/A2A](#16-压缩与-a2a) | [`16-a2a`](../design/chapters/16-a2a-protocol.zh-CN.md) / [`16-compression`](../design/chapters/16-compression-plan.zh-CN.md) | 后台压缩和协议转换 |
-| [17 Server](#17-server和-http) | [`17-server`](../design/chapters/17-server.zh-CN.md) | Axum、JSON-RPC、SSE |
-| [18 Team](#18-team和多-agent) | [`18-team`](../design/chapters/18-team.zh-CN.md) | 静态成员、Leader、并发 |
 
 完整可运行示例在 [`examples/`](../examples/)；本手册只展示最小代码，遇到参数细节应直接运行对应示例。
 
 ---
 
-## 00-架构和安装
+## 架构和安装
 
 ### 0.1 分层
 
@@ -88,7 +65,7 @@ export HEART_VLLM_MODEL='Qwen3.5-122B-A10B'
 
 ---
 
-## 01-第一次运行
+## 第一次运行
 
 一次最小的真实 Chat Agent 由四步组成：创建 Provider、绑定 Chat、构建 Agent、消费事件流。
 
@@ -135,7 +112,7 @@ Workflow 的最小示例见 [第 06–08 章](#06-08-workflow图和执行关系)
 
 ---
 
-## 02-Runtime：运行现场
+## Runtime：运行现场
 
 ### 2.1 身份
 
@@ -149,6 +126,10 @@ let agent = agent::react()
 ```
 
 `Cancellation` 是一次调用的取消范围。每次独立 `run` 创建新的实例；把 clone 传给同一执行的并发工作，不要在多个独立运行之间复用。
+
+Agent 和 Workflow 都有 Runtime，但公开方式不同。Agent 把执行现场封装在 Agent 对象中，应用直接使用
+`agent.run(...)` 和 `agent.reply(...)`；Workflow 需要让应用管理图 State、Checkpoint 和等待恢复，因此应用
+显式持有 `workflow::Runtime`。`workflow` 变量指向 Runtime 实例，`CompiledWorkflow` 只是不可变图定义。
 
 ### 2.2 State、Event 和持久化的关系
 
@@ -167,18 +148,18 @@ OpenTelemetry Trace -> 可选的链路观察投影，不是短期记忆记录
 取消是执行控制信号，`waiting` 是业务状态。节点需要人工输入、审批或外部回调时，Runtime 保存等待事实并停止当前调用；用户随后用同一个对话身份调用 `reply`，Runtime 从等待队列中按先进先出匹配并继续。
 
 ```rust
-// Agent：提交一条用户回复；回复结果继续从原 run 的事件流交付。
+// Agent：提交一条用户回复；回复结果继续从原 Agent 运行的事件流交付。
 agent.reply(reply_input, Cancellation::new()).await?;
 
-// Workflow：同样使用 Messages 作为回复数据。
-runtime.reply(response_messages, Cancellation::new()).await?;
+// workflow 变量的类型是 workflow::Runtime：提交 Messages 回复。
+workflow.reply(response_messages, Cancellation::new()).await?;
 ```
 
 运行已正常收口后，Checkpoint 可以标记完成；进程仍在运行但等待用户输入时，继续使用当前 Runtime 的等待状态，不要另建一套状态。
 
 ---
 
-## 03-Agent
+## Agent
 
 ### 3.1 Chat Agent
 
@@ -251,7 +232,7 @@ Team 是静态成员组合：成员在 Builder 阶段确定，Leader 决定把�
 
 ---
 
-## 04-输入、消息和事件
+## 输入、消息和事件
 
 ### 4.1 Input
 
@@ -324,7 +305,7 @@ let request = model::chat::Request {
 
 ---
 
-## 05-Checkpoint 和恢复
+## Checkpoint 和恢复
 
 Checkpoint 保存一次 Runtime 的完整 JSON 现场，包含状态、图、节点执行事实、等待队列和恢复所需数据。它不是 Chat 历史，也不是 Trace；后端只实现 `save/load/delete/validate_state`。
 
@@ -344,7 +325,7 @@ Checkpoint 后端可以是内存、数据库或应用自己的服务。没有配
 
 ---
 
-## 06–08-Workflow 图和执行关系
+## Workflow 图和执行关系
 
 ### 6.1 构建节点
 
@@ -422,28 +403,29 @@ Workflow 可以通过 `add_agent_node` 调用一个已经构建好的 Agent；Ag
 
 ---
 
-## 09–10-与其他框架的关系
+## 与其他框架的关系
 
 Heart 借鉴 LangGraph 的 `START/END`、条件边、子图和 Checkpoint 现场；借鉴 Eino 的组件契约、Provider 适配和编排边界；借鉴 AgentScope 的工具组装、Workspace、Permission、Plan 和 Harness 组合方式。
 
-这些框架的 DSL 不直接成为 Heart Runtime 的内部状态。应用可在入口层把 Dify、Coze 或自定义 DSL 转成 Heart 的 Native Definition：
+这些框架的 DSL 不直接成为 Heart Runtime 的内部状态。应用可以把 Dify、Coze 或自定义 DSL 转成 Heart Native Definition，再交给 Core 解析和校验：
 
 ```text
 外部 DSL JSON
-    -> 解析和字段校验
-    -> 节点能力绑定（应用提供函数/Agent/组件）
-    -> WorkflowBuilder / Agent Plan
-    -> compile
+    -> 转换为 Heart Native DSL
+    -> core::workflow::dsl 解析、校验和规范化
+    -> Core 绑定 Core 组件
+    -> Runtime 绑定 Agent、Workflow 和 CompiledWorkflow 执行器
+    -> WorkflowBuilder::compile()
     -> Runtime
 ```
 
-DSL 只描述图和参数，不能绕过应用已配置的函数、工具、Agent 或子图；未知能力在构建或计划提交阶段失败。Heart 不增加公共 Registry、Capabilities 或动态能力注册表。
+应用在初始化阶段提供静态执行配置，请求阶段只传入 DSL 和业务输入。DSL 只描述图和参数，不能绕过应用已配置的函数、工具、Agent 或子图；未知能力在构建或计划提交阶段失败。Heart 不增加公共 Registry、Capabilities 或动态能力注册表。
 
 A2A、AG-UI、JSON-RPC、SSE 和 Webhook 是协议/传输层适配，不改变 Runtime 的 State 和 Event 契约。HTTP 层可以将已有 Event 转换成对外协议事件。
 
 ---
 
-## 11-已经固定的使用规则
+## 已经固定的使用规则
 
 1. 公共入口统一从 `halo::agent` 开始；不使用 `halo::core::agent` 兼容路径。
 2. 一次顶层执行用 `chat_id`；不要再引入第二套 `run_id` 业务身份。
@@ -460,7 +442,7 @@ A2A、AG-UI、JSON-RPC、SSE 和 Webhook 是协议/传输层适配，不改变 R
 
 ---
 
-## 12-当前限制和后续范围
+## 当前限制和后续范围
 
 以下内容属于后续版本或应用层职责，当前手册不把它们当作已完成能力：
 
@@ -474,7 +456,7 @@ A2A、AG-UI、JSON-RPC、SSE 和 Webhook 是协议/传输层适配，不改变 R
 
 ---
 
-## 13-组件使用索引
+## 组件使用索引
 
 ### 13.1 Model Provider
 
@@ -558,7 +540,7 @@ let memory = halo::agent::memory::Config::new(short_store, long_store)
 
 ---
 
-## 14-短期、长期记忆和持久化
+## 短期、长期记忆和持久化
 
 ### 14.1 短期记忆
 
@@ -578,7 +560,7 @@ Memory 的最小契约是异步 CRUD 和按 Filter 查询；删除按 ID 物理�
 
 ---
 
-## 15-测试和发布
+## 测试和发布
 
 ### 15.1 本地检查
 
@@ -617,7 +599,7 @@ cargo publish --dry-run
 
 ---
 
-## 16-压缩与 A2A
+## 压缩与 A2A
 
 ### 16.1 压缩
 
@@ -631,7 +613,7 @@ A2A 是协议层，不是新的 Runtime。Server 将 `chat_id` 映射为远端�
 
 ---
 
-## 17-Server 和 HTTP
+## Server 和 HTTP
 
 Server 由 Axum 提供外层绑定，Runtime 继续管理事件和运行状态。当前 JSON-RPC 方法包括 `message/send`、`message/stream`、`tasks/get`、`tasks/cancel` 和 `tasks/resubscribe`；SSE 只是事件传输形式。
 
@@ -646,7 +628,7 @@ Server 的 Task Store 保存外部任务投影；Agent/Workflow Runtime 仍是�
 
 ---
 
-## 18-Team 和多 Agent
+## Team 和多 Agent
 
 Team 是静态组合，不是运行中动态创建 Agent。构建阶段确定成员，Leader 负责把任务路由给成员，成员使用各自的 Agent Runtime 执行，结果回到 Team 的事件流。
 

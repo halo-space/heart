@@ -50,7 +50,7 @@ cargo run --example provider_vllm
 
 ## 使用手册
 
-中文详细手册是项目的主入口，按设计章节组织，包含 Agent、Workflow、模型 Provider、Tool、MCP、Skill、Workspace、Memory、Checkpoint、事件流、等待恢复、Server、A2A、Team、测试和可运行配方：
+中文详细手册是项目的主入口，包含 Agent、Workflow、模型 Provider、Tool、MCP、Skill、Workspace、Memory、Checkpoint、事件流、等待恢复、Server、A2A、Team、测试和可运行配方：
 
 - [中文详细使用手册](docs/USAGE.zh-CN.md)
 - [English User Manual](docs/USAGE.en.md)
