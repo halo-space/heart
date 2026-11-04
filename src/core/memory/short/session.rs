@@ -1,7 +1,8 @@
 use std::collections::BTreeMap;
-use std::sync::RwLock;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use tokio::sync::RwLock;
 
 use crate::Cancellation;
 use crate::components::memory::short::{Error, session};
@@ -68,7 +69,7 @@ impl session::Store for InMemory {
     ) -> Result<session::Session, Error> {
         Self::check(cancellation)?;
         validate(&value)?;
-        let mut records = self.records.write().expect("session lock poisoned");
+        let mut records = self.records.write().await;
         Self::check(cancellation)?;
         if records.contains_key(&value.id) {
             return Err(Error::new("CONFLICT", "session id already exists"));
@@ -83,7 +84,7 @@ impl session::Store for InMemory {
         Self::check(cancellation)?;
         self.records
             .read()
-            .expect("session lock poisoned")
+            .await
             .get(&id)
             .cloned()
             .ok_or_else(|| Error::new("NOT_FOUND", "session not found"))
@@ -96,7 +97,7 @@ impl session::Store for InMemory {
     ) -> Result<session::Session, Error> {
         Self::check(cancellation)?;
         validate(&value)?;
-        let mut records = self.records.write().expect("session lock poisoned");
+        let mut records = self.records.write().await;
         Self::check(cancellation)?;
         let old = records
             .get(&value.id)
@@ -126,7 +127,7 @@ impl session::Store for InMemory {
 
     async fn delete(&self, id: i64, cancellation: &Cancellation) -> Result<(), Error> {
         Self::check(cancellation)?;
-        let mut records = self.records.write().expect("session lock poisoned");
+        let mut records = self.records.write().await;
         Self::check(cancellation)?;
         if records.remove(&id).is_none() {
             return Err(Error::new("NOT_FOUND", "session not found"));

@@ -1,5 +1,5 @@
 use std::collections::BTreeMap;
-use std::sync::RwLock;
+use tokio::sync::RwLock;
 
 use serde_json::Value;
 
@@ -31,10 +31,7 @@ impl Checkpoint for InMemory {
     async fn save(&self, id: i64, state: Value, cancellation: &Cancellation) -> Result<(), Error> {
         Self::ensure_active(cancellation)?;
         self.validate_state(&state)?;
-        self.states
-            .write()
-            .expect("checkpoint lock poisoned")
-            .insert(id, state);
+        self.states.write().await.insert(id, state);
         Ok(())
     }
 
@@ -42,7 +39,7 @@ impl Checkpoint for InMemory {
         Self::ensure_active(cancellation)?;
         self.states
             .read()
-            .expect("checkpoint lock poisoned")
+            .await
             .get(&id)
             .cloned()
             .ok_or_else(|| Error::new("NOT_FOUND", "checkpoint not found"))
@@ -50,13 +47,7 @@ impl Checkpoint for InMemory {
 
     async fn delete(&self, id: i64, cancellation: &Cancellation) -> Result<(), Error> {
         Self::ensure_active(cancellation)?;
-        if self
-            .states
-            .write()
-            .expect("checkpoint lock poisoned")
-            .remove(&id)
-            .is_none()
-        {
+        if self.states.write().await.remove(&id).is_none() {
             return Err(Error::new("NOT_FOUND", "checkpoint not found"));
         }
         Ok(())

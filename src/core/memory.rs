@@ -1,7 +1,8 @@
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
-use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use tokio::sync::RwLock;
 
 use serde_json::Value;
 
@@ -261,7 +262,7 @@ impl Memory for InMemory {
             item: item.clone(),
             vector: request.vector,
         };
-        let mut records = self.records.write().expect("memory lock poisoned");
+        let mut records = self.records.write().await;
         Self::ensure_active(cancellation)?;
         if records.contains_key(&item.id) {
             return Err(Error::new("CONFLICT", "memory id already exists"));
@@ -287,7 +288,7 @@ impl Memory for InMemory {
     ) -> Result<Item, Error> {
         Self::ensure_active(cancellation)?;
         self.validate_request(&request)?;
-        let mut records = self.records.write().expect("memory lock poisoned");
+        let mut records = self.records.write().await;
         Self::ensure_active(cancellation)?;
         let stored = records
             .get_mut(&request.id)
@@ -333,7 +334,7 @@ impl Memory for InMemory {
 
     async fn delete(&self, id: i64, cancellation: &Cancellation) -> Result<(), Error> {
         Self::ensure_active(cancellation)?;
-        let mut records = self.records.write().expect("memory lock poisoned");
+        let mut records = self.records.write().await;
         Self::ensure_active(cancellation)?;
         if records.remove(&id).is_none() {
             return Err(Error::new("NOT_FOUND", "memory not found"));
@@ -351,7 +352,7 @@ impl Memory for InMemory {
     ) -> Result<Option<Item>, Error> {
         Self::ensure_active(cancellation)?;
         let filter = self.exact_scope(user_id, agent_id, session_id, r#type);
-        let records = self.records.read().expect("memory lock poisoned");
+        let records = self.records.read().await;
         Ok(records
             .values()
             .find(|record| Self::scope_matches(&record.item, &filter))
@@ -368,7 +369,7 @@ impl Memory for InMemory {
     ) -> Result<Vec<Item>, Error> {
         Self::ensure_active(cancellation)?;
         let filter = self.exact_scope(user_id, agent_id, session_id, r#type);
-        let records = self.records.read().expect("memory lock poisoned");
+        let records = self.records.read().await;
         let found = records
             .values()
             .filter(|record| Self::scope_matches(&record.item, &filter))
@@ -385,7 +386,7 @@ impl Memory for InMemory {
         Self::ensure_active(cancellation)?;
         let filter = Self::parse_filter(&request.options)?;
         let query = request.query.to_lowercase();
-        let records = self.records.read().expect("memory lock poisoned");
+        let records = self.records.read().await;
         let found = records
             .values()
             .filter(|record| {
@@ -441,7 +442,7 @@ impl InMemory {
         }
         let filter = Self::parse_filter(options)?;
         let query_text = keyword.map(|value| value.to_lowercase());
-        let records = self.records.read().expect("memory lock poisoned");
+        let records = self.records.read().await;
         let mut scored = records
             .values()
             .filter_map(|record| {
@@ -855,7 +856,7 @@ mod tests {
         original.vector = Some(vec![1.0, 0.0]);
         block_on(memory.write(original, &cancellation)).unwrap();
         let before = {
-            let mut records = memory.records.write().unwrap();
+            let mut records = memory.records.blocking_write();
             let stored = records.get_mut(&1).unwrap();
             stored.item.version = u64::MAX;
             stored.clone()
@@ -870,7 +871,7 @@ mod tests {
         )]));
         let error = block_on(memory.update(replacement, u64::MAX, &cancellation)).unwrap_err();
         assert_eq!(error.code, "BACKEND");
-        let records = memory.records.read().unwrap();
+        let records = memory.records.blocking_read();
         assert_eq!(records[&1].item, before.item);
         assert_eq!(records[&1].vector, before.vector);
     }

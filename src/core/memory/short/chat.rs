@@ -1,6 +1,7 @@
 use std::collections::BTreeMap;
-use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use tokio::sync::RwLock;
 
 use serde_json::{Map, Value};
 
@@ -35,7 +36,7 @@ impl chat::Store for InMemory {
         let now = now_ms();
         value.created_time = now;
         value.updated_time = now;
-        let mut records = self.records.write().expect("chat lock poisoned");
+        let mut records = self.records.write().await;
         check(cancellation)?;
         if records.contains_key(&value.id) {
             return Err(Error::new("CONFLICT", "chat id already exists"));
@@ -48,7 +49,7 @@ impl chat::Store for InMemory {
         check(cancellation)?;
         self.records
             .read()
-            .expect("chat lock poisoned")
+            .await
             .get(&id)
             .cloned()
             .ok_or_else(|| Error::new("NOT_FOUND", "chat not found"))
@@ -61,7 +62,7 @@ impl chat::Store for InMemory {
     ) -> Result<chat::Chat, Error> {
         check(cancellation)?;
         validate(&value)?;
-        let mut records = self.records.write().expect("chat lock poisoned");
+        let mut records = self.records.write().await;
         check(cancellation)?;
         let old = records
             .get(&value.id)
@@ -91,7 +92,7 @@ impl chat::Store for InMemory {
 
     async fn delete(&self, id: i64, cancellation: &Cancellation) -> Result<(), Error> {
         check(cancellation)?;
-        let mut records = self.records.write().expect("chat lock poisoned");
+        let mut records = self.records.write().await;
         check(cancellation)?;
         if records.remove(&id).is_none() {
             return Err(Error::new("NOT_FOUND", "chat not found"));
@@ -106,7 +107,7 @@ impl chat::Store for InMemory {
     ) -> Result<Vec<chat::Chat>, Error> {
         check(cancellation)?;
         let query = Query::parse(&options)?;
-        let records = self.records.read().expect("chat lock poisoned");
+        let records = self.records.read().await;
         let mut matches = Vec::new();
         for record in records.values() {
             check(cancellation)?;
