@@ -4,6 +4,7 @@ use crate::{
     Cancellation, Error, Message,
     agent::Input,
     components::agent::Agent,
+    components::node::View,
     event::Event,
     message::Role,
     model::token::{InputDetails, OutputDetails, Usage},
@@ -35,7 +36,7 @@ impl futures_core::Stream for SerializedStream {
 }
 
 trait ErasedAgent: Send + Sync {
-    fn run(&self, input: Input, cancellation: Cancellation) -> RunFuture;
+    fn run(&self, input: Input, cancellation: Cancellation, view: View) -> RunFuture;
 }
 
 struct TypedAgent<A>(Arc<A>);
@@ -44,11 +45,13 @@ impl<A> ErasedAgent for TypedAgent<A>
 where
     A: Agent + 'static,
 {
-    fn run(&self, input: Input, cancellation: Cancellation) -> RunFuture {
+    fn run(&self, input: Input, cancellation: Cancellation, view: View) -> RunFuture {
         let agent = Arc::clone(&self.0);
         Box::pin(async move {
             // Parent run owns outward mode filtering for delegated events.
-            let stream = agent.run(input, true, cancellation).await?;
+            let stream = agent
+                .run_with_view(input, true, cancellation, &view)
+                .await?;
             Ok(Box::pin(stream) as ErasedStream)
         })
     }
@@ -168,12 +171,17 @@ impl SubAgent {
         self.name == name
     }
 
-    pub(crate) fn run(&self, input: Input, cancellation: Cancellation) -> RunFuture {
+    pub(crate) fn run_with_view(
+        &self,
+        input: Input,
+        cancellation: Cancellation,
+        view: View,
+    ) -> RunFuture {
         let runner = Arc::clone(&self.runner);
         let serial = Arc::clone(&self.serial);
         Box::pin(async move {
             let guard = serial.lock_owned().await;
-            let stream = runner.run(input, cancellation).await?;
+            let stream = runner.run(input, cancellation, view).await?;
             Ok(Box::pin(SerializedStream {
                 inner: stream,
                 _guard: guard,
@@ -1232,10 +1240,21 @@ pub(crate) async fn run(
                 .as_ref()
                 .and_then(|observer| observer.interaction.clone()),
         );
-    let mut stream =
-        crate::runtime::agent::scope::run(scope.clone(), subagent.run(input, cancellation))
-            .await
-            .map_err(|error| failure(error, &scope, previous.as_ref(), None))?;
+    let view_input = serde_json::to_value(&input).map_err(|error| {
+        failure(
+            Error::new("SERIALIZATION_ERROR", error.to_string()),
+            &scope,
+            previous.as_ref(),
+            None,
+        )
+    })?;
+    let view = View::agent(subagent.name.clone(), view_input, previous.clone());
+    let mut stream = crate::runtime::agent::scope::run(
+        scope.clone(),
+        subagent.run_with_view(input, cancellation, view),
+    )
+    .await
+    .map_err(|error| failure(error, &scope, previous.as_ref(), None))?;
     let mut final_message = None;
     let mut observed = None;
     let mut cancelled = false;

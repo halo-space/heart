@@ -22,7 +22,7 @@ use futures_util::StreamExt;
 use crate::Error;
 use crate::agent::{Input as AgentInput, Payload as AgentPayload};
 use crate::components::message::{Messages, Role};
-use crate::components::node::Signal;
+use crate::components::node::{Signal, View};
 use crate::runtime::agent::history::{History, Run};
 use crate::runtime::workflow::node::ExecutionRef;
 
@@ -980,6 +980,7 @@ impl Engine {
                     .last()
                     .expect("validated Attempt")
                     .clone();
+                let view = self.view_for(&node_id, exec_id, input.clone(), Some(start_idx))?;
                 let invocation = events::with_source(
                     self.state.chat_id,
                     &node_id,
@@ -987,6 +988,7 @@ impl Engine {
                     invoke_with_retry(
                         target,
                         input,
+                        view,
                         cancellation.clone(),
                         retry,
                         next_exec_id.clone(),
@@ -1096,7 +1098,14 @@ impl Engine {
                     })
                     .collect(),
             )?;
-            for (node_id, exec_id, _, _, target, _) in &specs {
+            let specs = specs
+                .into_iter()
+                .map(|(node_id, exec_id, from, input, target, retry)| {
+                    let view = self.view_for(&node_id, exec_id, input.clone(), Some(0))?;
+                    Ok((node_id, exec_id, from, input, target, retry, view))
+                })
+                .collect::<Result<Vec<_>, Error>>()?;
+            for (node_id, exec_id, _, _, target, _, _) in &specs {
                 if !matches!(target, Target::Graph { .. }) {
                     self.state
                         .node_mut(node_id)?
@@ -1118,7 +1127,7 @@ impl Engine {
             let mut active = Vec::new();
             let mut results = specs
                 .into_iter()
-                .map(|(node_id, exec_id, from, input, target, retry)| {
+                .map(|(node_id, exec_id, from, input, target, retry, view)| {
                     let cancellation = task_cancellation.clone();
                     let next_exec_id = Arc::clone(&task_next_exec_id);
                     let relay = relay.clone();
@@ -1167,6 +1176,7 @@ impl Engine {
                                     invoke_with_retry(
                                         target,
                                         input,
+                                        view,
                                         cancellation,
                                         retry,
                                         next_exec_id,
@@ -1468,6 +1478,169 @@ impl Engine {
         self.bound_values(node_id, from).map(Value::Object)
     }
 
+    /// Snapshot only the current node's local execution facts for an
+    /// invocation. This deliberately does not expose the owning `State` or
+    /// graph mutators; the Node/Agent receives a clone through `View`.
+    fn view_for(
+        &self,
+        node_id: &str,
+        exec_id: i64,
+        input: Value,
+        attempt_idx: Option<u32>,
+    ) -> Result<View, Error> {
+        let execution = self
+            .state
+            .nodes
+            .get(node_id)
+            .and_then(|state| state.executions.get(&exec_id));
+        let mut view = View {
+            node_id: node_id.to_owned(),
+            exec_id: Some(exec_id),
+            attempt_idx,
+            status: execution
+                .map(|execution| {
+                    serde_json::to_value(&execution.status)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_owned))
+                        .unwrap_or_else(|| "pending".into())
+                })
+                .unwrap_or_else(|| "pending".into()),
+            input,
+            ..View::default()
+        };
+        if let Some(execution) = execution {
+            view.result = (!execution.messages.is_empty())
+                .then(|| serde_json::to_value(&execution.messages))
+                .transpose()
+                .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))?;
+            view.attempts = execution
+                .attempts
+                .iter()
+                .map(|attempt| {
+                    serde_json::to_value(attempt)
+                        .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))
+                })
+                .collect::<Result<_, _>>()?;
+            view.error = execution
+                .error
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))?;
+            view.waiting = execution
+                .waits
+                .values()
+                .map(|wait| {
+                    serde_json::to_value(wait)
+                        .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))
+                })
+                .collect::<Result<_, _>>()?;
+            view.usage = execution
+                .usage
+                .as_ref()
+                .map(serde_json::to_value)
+                .transpose()
+                .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))?;
+            if let Some(attempt) = execution.attempts.last() {
+                if let Some(scene) = &attempt.agent {
+                    view.children.extend(
+                        scene
+                            .get("nodes")
+                            .and_then(Value::as_object)
+                            .into_iter()
+                            .flat_map(|nodes| {
+                                nodes.iter().map(|(child_id, state)| {
+                                    serde_json::json!({
+                                        "node_id": child_id,
+                                        "status": state.get("status"),
+                                        "messages": state.get("messages"),
+                                        "waits": state.get("waits"),
+                                        "usage": state.get("usage"),
+                                        "error": state.get("error"),
+                                    })
+                                })
+                            }),
+                    );
+                }
+                if let Some(graph) = &attempt.graph {
+                    let nodes = graph
+                        .nodes
+                        .iter()
+                        .map(|(child_id, state)| {
+                            serde_json::json!({
+                                "node_id": child_id,
+                                "status": state.status,
+                                "executions": state.executions.len(),
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    view.children.push(serde_json::json!({
+                        "type": "workflow",
+                        "status": graph.status,
+                        "step": graph.step,
+                        "nodes": nodes,
+                    }));
+                }
+            }
+            for source in &execution.from {
+                if let Some(source_execution) = self
+                    .state
+                    .nodes
+                    .get(&source.node_id)
+                    .and_then(|state| state.executions.get(&source.exec_id))
+                {
+                    let key = format!("{}#{}", source.node_id, source.exec_id);
+                    view.sources.insert(
+                        key,
+                        serde_json::json!({
+                            "node_id": source.node_id,
+                            "exec_id": source.exec_id,
+                            "status": source_execution.status,
+                            "messages": source_execution.messages,
+                        }),
+                    );
+                }
+            }
+            let mut bindings = serde_json::Map::new();
+            for (target, binding) in &self.definition().nodes[node_id].attrs.input {
+                let source = execution
+                    .from
+                    .iter()
+                    .find(|source| source.node_id == binding.from.node_id);
+                let value = source
+                    .and_then(|source| {
+                        self.state
+                            .nodes
+                            .get(&source.node_id)
+                            .and_then(|state| state.executions.get(&source.exec_id))
+                    })
+                    .and_then(|source| {
+                        source
+                            .messages
+                            .as_slice()
+                            .iter()
+                            .rev()
+                            .find_map(|message| message.values.get(&binding.from.field))
+                    })
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                bindings.insert(
+                    target.clone(),
+                    serde_json::json!({
+                        "node_id": binding.from.node_id,
+                        "field": binding.from.field,
+                        "value": value,
+                    }),
+                );
+            }
+            if !bindings.is_empty() {
+                view.sources
+                    .insert("attrs.input".into(), Value::Object(bindings));
+            }
+        }
+        Ok(view)
+    }
+
     fn agent_input_for(&self, node_id: &str, from: &[ExecutionRef]) -> Result<AgentInput, Error> {
         let attrs = &self.definition().nodes[node_id].attrs.input;
         if !attrs.is_empty() {
@@ -1681,6 +1854,7 @@ impl Engine {
                 .last()
                 .expect("validated current Attempt")
                 .clone();
+            let view = self.view_for(&node_id, exec_id, input.clone(), Some(previous_idx))?;
             bases.insert((node_id.clone(), exec_id), base);
             specs.push((
                 node_id,
@@ -1691,6 +1865,7 @@ impl Engine {
                 previous_idx,
                 committed_tool_facts(&execution),
                 nested_reply,
+                view,
             ));
         }
         if recovery_reply.is_some() {
@@ -1711,7 +1886,7 @@ impl Engine {
         let mut results = specs
             .into_iter()
             .map(
-                |(node_id, exec_id, target, input, retry, idx, messages, reply)| {
+                |(node_id, exec_id, target, input, retry, idx, messages, reply, view)| {
                     let cancellation = cancellation.clone();
                     let next_exec_id = Arc::clone(next_exec_id);
                     let relay = relay.clone();
@@ -1745,6 +1920,7 @@ impl Engine {
                                             invoke_with_retry(
                                                 target,
                                                 input,
+                                                view,
                                                 cancellation,
                                                 retry,
                                                 next_exec_id,
@@ -2465,6 +2641,7 @@ fn cancelled_observations(state: &graph::State) -> Vec<crate::event::Event> {
 fn invoke_with_retry(
     target: Target,
     input: Value,
+    view: View,
     cancellation: crate::Cancellation,
     retry: graph::RetryPolicy,
     next_exec_id: Arc<dyn Fn() -> i64 + Send + Sync>,
@@ -2474,7 +2651,7 @@ fn invoke_with_retry(
     recovery_reply: Option<RecoveryReply>,
 ) -> Pin<Box<dyn Future<Output = Invocation> + Send + 'static>> {
     Box::pin(async move {
-        let mut attempts = Vec::new();
+        let mut attempts: Vec<node::Attempt> = Vec::new();
         if !matches!(&target, Target::Graph { .. })
             && let Err(error) = events::entered(attempt_start).await
         {
@@ -2507,6 +2684,24 @@ fn invoke_with_retry(
         // the original execution's retry budget; recovery never resets it.
         for offset in 0..=retry.max_retries.saturating_sub(attempt_start) {
             let idx = attempt_start.saturating_add(offset);
+            let mut current_view = view.clone();
+            current_view.attempt_idx = Some(idx);
+            current_view.status = "running".into();
+            if !attempts.is_empty() {
+                current_view.attempts = attempts
+                    .iter()
+                    .filter_map(|attempt| serde_json::to_value(attempt).ok())
+                    .collect();
+            }
+            if let Some(previous) = attempts.last() {
+                current_view.error = previous
+                    .error
+                    .as_ref()
+                    .and_then(|error| serde_json::to_value(error).ok());
+            }
+            if current_view.result.is_none() && !committed_tool_facts.messages.is_empty() {
+                current_view.result = serde_json::to_value(&committed_tool_facts.messages).ok();
+            }
             let mut attempt = node::Attempt {
                 idx,
                 status: node::AttemptStatus::Running,
@@ -2566,7 +2761,13 @@ fn invoke_with_retry(
                             }
                         }
                     } else {
-                        executor.call(input.clone(), cancellation.clone()).await
+                        executor
+                            .call_with_view(
+                                input.clone(),
+                                cancellation.clone(),
+                                current_view.clone(),
+                            )
+                            .await
                     }
                 }
                 Target::Agent(executor, restore) => {
@@ -2625,7 +2826,12 @@ fn invoke_with_retry(
                     }
                     let run = events::with_attempt(
                         idx,
-                        executor.call(agent_input, cancellation.clone(), restore.clone()),
+                        executor.call(
+                            agent_input,
+                            cancellation.clone(),
+                            restore.clone(),
+                            current_view.clone(),
+                        ),
                     )
                     .await;
                     attempt.steps = run.steps;
@@ -3084,7 +3290,7 @@ mod tests {
     use crate::Cancellation;
     use crate::agent::{Agent, Input as AgentInput};
     use crate::checkpoint::Checkpoint;
-    use crate::components::node::{Node, Signal, Wait as NodeWait};
+    use crate::components::node::{Node, Signal, View, Wait as NodeWait};
     use crate::runtime::workflow::graph::{END, START};
     use futures_executor::block_on;
     use futures_util::stream;
@@ -3121,6 +3327,90 @@ mod tests {
             } else {
                 Ok(Signal::Complete(input))
             }
+        }
+    }
+
+    struct InspectView;
+
+    impl Node<Messages, Messages, crate::Error> for InspectView {
+        async fn call(
+            &self,
+            input: Messages,
+            _cancellation: &Cancellation,
+        ) -> Result<Signal<Messages>, crate::Error> {
+            Ok(Signal::Complete(input))
+        }
+
+        fn call_with_view(
+            &self,
+            _input: Messages,
+            view: &View,
+            _cancellation: &Cancellation,
+        ) -> impl Future<Output = Result<Signal<Messages>, crate::Error>> + Send {
+            let observed = serde_json::json!({
+                "node_id": view.node_id,
+                "exec_id": view.exec_id,
+                "attempt_idx": view.attempt_idx,
+                "status": view.status,
+                "input": view.input,
+                "attempts": view.attempts,
+                "sources": view.sources,
+            });
+            async move {
+                Ok(Signal::Complete(Messages::new([crate::Message::function(
+                    observed,
+                )])))
+            }
+        }
+    }
+
+    struct InspectAgent;
+
+    impl Agent for InspectAgent {
+        type Stream = stream::Iter<std::vec::IntoIter<Result<crate::event::Event, Error>>>;
+
+        async fn run(
+            &self,
+            _input: AgentInput,
+            _stream: bool,
+            _cancellation: Cancellation,
+        ) -> Result<Self::Stream, Error> {
+            Ok(stream::iter(vec![Ok(crate::event::Event::Complete {
+                message: crate::Message::new(Role::Assistant),
+                usage: None,
+                finish_reason: Some("stop".into()),
+            })]))
+        }
+
+        fn run_with_view(
+            &self,
+            _input: AgentInput,
+            _stream: bool,
+            _cancellation: Cancellation,
+            view: &View,
+        ) -> impl Future<Output = Result<Self::Stream, Error>> + Send {
+            let mut message = crate::Message::new(Role::Assistant);
+            message.values = serde_json::Map::from_iter([
+                ("node_id".into(), view.node_id.clone().into()),
+                ("exec_id".into(), view.exec_id.into()),
+                ("attempt_idx".into(), view.attempt_idx.into()),
+                ("status".into(), view.status.clone().into()),
+            ]);
+            async move {
+                Ok(stream::iter(vec![Ok(crate::event::Event::Complete {
+                    message,
+                    usage: None,
+                    finish_reason: Some("stop".into()),
+                })]))
+            }
+        }
+
+        async fn reply(
+            &self,
+            _input: AgentInput,
+            _cancellation: Cancellation,
+        ) -> Result<(), Error> {
+            Ok(())
         }
     }
 
@@ -3446,6 +3736,43 @@ mod tests {
                 .total,
             Some(28)
         );
+    }
+
+    #[test]
+    fn node_receives_only_its_read_only_local_view() {
+        let mut builder = WorkflowBuilder::new("node-view");
+        builder.add_node("inspect", InspectView).unwrap();
+        builder.add_edge(START, "inspect").unwrap();
+        builder.add_edge("inspect", END).unwrap();
+        let mut runtime = Runtime::new(93, builder.compile().unwrap()).unwrap();
+        let result =
+            block_on(runtime.execute(user_input(), Arc::new(|| 9300), Cancellation::new()))
+                .unwrap();
+        let observed = &result.as_slice()[0].values;
+        assert_eq!(observed["node_id"], "inspect");
+        assert_eq!(observed["exec_id"], 9300);
+        assert_eq!(observed["attempt_idx"], 0);
+        assert_eq!(observed["status"], "running");
+        assert!(observed["input"].is_array());
+        assert_eq!(observed["attempts"].as_array().unwrap().len(), 1);
+        assert!(observed["sources"].as_object().unwrap().is_empty());
+    }
+
+    #[test]
+    fn agent_node_receives_the_same_local_view_contract() {
+        let mut builder = WorkflowBuilder::new("agent-view");
+        builder.add_agent_node("inspect", InspectAgent).unwrap();
+        builder.add_edge(START, "inspect").unwrap();
+        builder.add_edge("inspect", END).unwrap();
+        let mut runtime = Runtime::new(94, builder.compile().unwrap()).unwrap();
+        let result =
+            block_on(runtime.execute(user_input(), Arc::new(|| 9400), Cancellation::new()))
+                .unwrap();
+        let values = &result.as_slice()[0].values;
+        assert_eq!(values["node_id"], "inspect");
+        assert_eq!(values["exec_id"], 9400);
+        assert_eq!(values["attempt_idx"], 0);
+        assert_eq!(values["status"], "running");
     }
 
     #[test]
@@ -4814,6 +5141,7 @@ mod tests {
         let invocation = block_on(invoke_with_retry(
             Target::Node(workflow.executor("retry").unwrap()),
             serde_json::to_value(Messages::default()).unwrap(),
+            View::default(),
             Cancellation::new(),
             policy,
             Arc::new(|| 900),
@@ -4862,6 +5190,7 @@ mod tests {
         let invocation = block_on(invoke_with_retry(
             Target::Node(workflow.executor("tools").unwrap()),
             serde_json::to_value(workflow_tool_input()).unwrap(),
+            View::default(),
             Cancellation::new(),
             RetryPolicy::default(),
             Arc::new(|| 1_300),

@@ -22,7 +22,7 @@ use crate::components::message::Messages;
 use crate::components::message::Role;
 pub use crate::components::middleware::RetryPolicy;
 use crate::components::model::token::Usage;
-use crate::components::node::{Node, Signal};
+use crate::components::node::{Node, Signal, View};
 use crate::runtime::workflow::node::{AttemptStatus, Step, StepAttempt};
 
 pub const START: &str = "START";
@@ -58,6 +58,7 @@ pub(crate) trait ErasedAgent: Send + Sync + 'static {
         input: agent::Input,
         cancellation: Cancellation,
         restore: Option<Value>,
+        view: View,
     ) -> AgentFuture;
 }
 
@@ -71,6 +72,7 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
         input: agent::Input,
         cancellation: Cancellation,
         restore: Option<Value>,
+        view: View,
     ) -> AgentFuture {
         let agent = Arc::clone(&self.agent);
         Box::pin(async move {
@@ -109,7 +111,10 @@ impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
                 let mut messages = Messages::default();
                 let mut steps = Vec::new();
                 let mut usage = None;
-                let stream = match agent.run(input, true, cancellation.clone()).await {
+                let stream = match agent
+                    .run_with_view(input, true, cancellation.clone(), &view)
+                    .await
+                {
                     Ok(stream) => stream,
                     Err(error) => {
                         return AgentRun {
@@ -405,6 +410,8 @@ fn agent_attempt(
 pub(crate) trait ErasedNode: Send + Sync + 'static {
     fn call(&self, input: Value, cancellation: Cancellation) -> BoxFuture;
 
+    fn call_with_view(&self, input: Value, cancellation: Cancellation, view: View) -> BoxFuture;
+
     fn validate_recovery(&self, _input: Value, _facts: &super::node::Attempt) -> Result<(), Error> {
         Ok(())
     }
@@ -447,6 +454,10 @@ where
     }
 
     fn call(&self, input: Value, cancellation: Cancellation) -> BoxFuture {
+        self.call_with_view(input, cancellation, View::default())
+    }
+
+    fn call_with_view(&self, input: Value, cancellation: Cancellation, view: View) -> BoxFuture {
         // Validate before deserialization and before calling user code; Serde
         // alone does not enforce JSON Schema ranges, lengths or patterns.
         if let Err(error) = crate::components::node::schema::validate(
@@ -462,7 +473,11 @@ where
         Box::pin(async move {
             let input: I = serde_json::from_value(input)
                 .map_err(|error| Error::new("INVALID_ARGUMENTS", error.to_string()))?;
-            match node.call(input, &cancellation).await.map_err(Into::into)? {
+            match node
+                .call_with_view(input, &view, &cancellation)
+                .await
+                .map_err(Into::into)?
+            {
                 Signal::Complete(output) => {
                     let value = serde_json::to_value(output)
                         .map_err(|error| Error::new("INVALID_OUTPUT", error.to_string()))?;

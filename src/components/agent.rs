@@ -9,6 +9,7 @@ use serde_json::{Map, Value};
 
 use crate::Cancellation;
 use crate::components::event::Event;
+use crate::components::node::View;
 
 pub type Error = crate::Error;
 
@@ -51,6 +52,21 @@ pub trait Agent: Send + Sync {
         stream: bool,
         cancellation: Cancellation,
     ) -> impl Future<Output = Result<Self::Stream, Error>> + Send;
+
+    /// Run with the read-only local view of the Agent node or SubAgent call.
+    ///
+    /// This default preserves the ordinary Agent contract. Implementations
+    /// that need node-local diagnostics can override it; the owning runtime
+    /// still retains sole ownership of State, execution and checkpoint facts.
+    fn run_with_view(
+        &self,
+        input: Input,
+        stream: bool,
+        cancellation: Cancellation,
+        _view: &View,
+    ) -> impl Future<Output = Result<Self::Stream, Error>> + Send {
+        self.run(input, stream, cancellation)
+    }
 
     /// Submit feedback to a live question. Business events stay on run's stream.
     /// The cancellation value scopes this reply submission, not other runs.
