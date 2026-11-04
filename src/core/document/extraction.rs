@@ -20,7 +20,8 @@ impl Loader for LocalLoader {
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "document load cancelled"));
         }
-        let data = std::fs::read(&source.uri)
+        let data = tokio::fs::read(&source.uri)
+            .await
             .map_err(|error| Error::new("IO_ERROR", error.to_string()))?;
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "document load cancelled"));
@@ -970,16 +971,18 @@ mod tests {
         assert_eq!(value["metadata"]["layout"]["role"], "paragraph");
     }
 
-    #[test]
-    fn local_loader_reads_one_complete_file_and_honors_cancellation() {
+    #[tokio::test]
+    async fn local_loader_reads_one_complete_file_and_honors_cancellation() {
         let cancellation = Cancellation::new();
         cancellation.cancel();
-        let result = block_on(LocalLoader.load(
-            &Source {
-                uri: "/does/not/exist".into(),
-            },
-            &cancellation,
-        ));
+        let result = LocalLoader
+            .load(
+                &Source {
+                    uri: "/does/not/exist".into(),
+                },
+                &cancellation,
+            )
+            .await;
         assert_eq!(result.unwrap_err().code, "CANCELLED");
     }
 

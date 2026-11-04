@@ -351,24 +351,26 @@ fn mismatched_or_invalid_character_ranges_are_not_claimed_as_valid() {
     }
 }
 
-#[test]
-fn actual_local_file_pipeline_can_continue_through_chunking_without_runtime() {
+#[tokio::test]
+async fn actual_local_file_pipeline_can_continue_through_chunking_without_runtime() {
     let cancellation = Cancellation::new();
     let source = document::Source {
         uri: concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/qa.csv").into(),
     };
-    let bytes = block_on(document::LocalLoader.load(&source, &cancellation)).unwrap();
+    let bytes = document::LocalLoader
+        .load(&source, &cancellation)
+        .await
+        .unwrap();
     let parser = document::parser::new("qa", json!({"format":"csv","engine":"csv"})).unwrap();
-    let mut documents = block_on(parser.parse(&bytes, &cancellation)).unwrap();
+    let mut documents = parser.parse(&bytes, &cancellation).await.unwrap();
     for document in &mut documents {
         document.doc_id = Some(900);
     }
-    let documents = block_on(
-        document::transformer::new()
-            .remove_empty()
-            .transform(documents, &cancellation),
-    )
-    .unwrap();
+    let documents = document::transformer::new()
+        .remove_empty()
+        .transform(documents, &cancellation)
+        .await
+        .unwrap();
     let original: String = documents.iter().map(|d| d.content.as_str()).collect();
     let chunks = split(
         "delimiter",

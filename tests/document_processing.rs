@@ -27,15 +27,20 @@ fn document(content: &str) -> Document {
     }
 }
 
-#[test]
-fn local_file_to_parser_to_transformer_runs_without_runtime_or_storage() {
+#[tokio::test]
+async fn local_file_to_parser_to_transformer_runs_without_runtime_or_storage() {
     let cancellation = Cancellation::new();
     let source = document::Source {
         uri: concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/qa.csv").into(),
     };
-    let data = block_on(document::LocalLoader.load(&source, &cancellation)).unwrap();
-    let mut parsed =
-        block_on(parser("qa", "csv", "csv", json!({})).parse(&data, &cancellation)).unwrap();
+    let data = document::LocalLoader
+        .load(&source, &cancellation)
+        .await
+        .unwrap();
+    let mut parsed = parser("qa", "csv", "csv", json!({}))
+        .parse(&data, &cancellation)
+        .await
+        .unwrap();
     assert_eq!(parsed.len(), 2);
     for document in &mut parsed {
         assert!(document.id.is_none() && document.doc_id.is_none());
@@ -44,13 +49,12 @@ fn local_file_to_parser_to_transformer_runs_without_runtime_or_storage() {
             .metadata
             .insert("source".into(), json!({"uri": source.uri}));
     }
-    let result = block_on(
-        document::transformer::new()
-            .remove_empty()
-            .deduplicate()
-            .transform(parsed, &cancellation),
-    )
-    .unwrap();
+    let result = document::transformer::new()
+        .remove_empty()
+        .deduplicate()
+        .transform(parsed, &cancellation)
+        .await
+        .unwrap();
     assert_eq!(result.len(), 2);
     assert!(
         result[0].metadata["qa"]["answer"]

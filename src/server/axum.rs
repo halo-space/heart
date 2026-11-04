@@ -198,9 +198,7 @@ where
                 let _ = background.drive(context, input).await;
             });
             match service.task(&task_id).await {
-                Ok(task) => {
-                    Json(Response::result(id, serde_json::to_value(task).unwrap())).into_response()
-                }
+                Ok(task) => json_result(id, Ok(task)),
                 Err(error) => Json(Response::from_error(id, &error)).into_response(),
             }
         }
@@ -320,9 +318,14 @@ fn sse_event(response: &StreamResponse) -> Event {
 
 fn json_result<T: Serialize>(id: Value, result: Result<T, Error>) -> HttpResponse {
     match result {
-        Ok(value) => {
-            Json(Response::result(id, serde_json::to_value(value).unwrap())).into_response()
-        }
+        Ok(value) => match serde_json::to_value(value) {
+            Ok(value) => Json(Response::result(id, value)).into_response(),
+            Err(error) => Json(Response::from_error(
+                id,
+                &Error::new("SERIALIZATION", error.to_string()),
+            ))
+            .into_response(),
+        },
         Err(error) => Json(Response::from_error(id, &error)).into_response(),
     }
 }

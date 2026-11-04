@@ -318,13 +318,13 @@ impl Local {
         ));
         // Open and arm cleanup in the same poll. Dropping a pending async
         // open could otherwise leave a file created later by its worker.
-        let file = std::fs::OpenOptions::new()
+        let mut file = tokio::fs::OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&temp)
+            .await
             .map_err(io_error)?;
         let _cleanup = Temporary(temp.clone());
-        let mut file = tokio::fs::File::from_std(file);
         let written = cancellable(
             async {
                 file.write_all(&data).await.map_err(io_error)?;
