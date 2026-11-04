@@ -637,6 +637,23 @@ cargo run --example agent_live_tool
 
 没有外部服务的组件契约测试可以使用确定性的本地组件验证类型和状态转换；它们不应被描述成模型能力验收。
 
+`bash scripts/test-real.sh` 会读取被 Git 忽略的 `.env`，并区分三种结果：必需变量缺失时立即以非零状态退出，真实测试失败时保留失败状态，可选后端未配置时输出 `SKIP` 并在最后汇总。脚本不会打印密钥。
+
+真实验收环境矩阵：
+
+| 能力 | 必需环境或资源 | 覆盖测试 |
+| --- | --- | --- |
+| DeepSeek | `DEEPSEEK_API_KEY`；可选 `DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL` | Agent、Workflow、Memory、A2A |
+| VLLM/OpenAI-compatible | `HEART_VLLM_BASE_URL`、`HEART_VLLM_API_KEY`、`HEART_VLLM_MODEL` | Provider、Chat/ReAct、Team、Workflow |
+| Zhipu Embedding | `HEART_EMBED_API_KEY`；可选 `HEART_EMBED_BASE_URL`、`HEART_EMBED_MODEL` | 向量 Memory、Semantic Chunker |
+| OpenAI Embedding | `OPENAI_API_KEY`；可选 `OPENAI_BASE_URL`、`OPENAI_MODEL` | OpenAI Embedding |
+| Gemini TTS/多模态 | `GEMINI_API_KEY`；多模态另需真实 `GEMINI_TEST_IMAGE_DATA_URL` | TTS、多模态 |
+| Elasticsearch Workspace | `HEART_ES_URL`、隔离的 `HEART_ES_TEST_INDEX`；可选 `HEART_ES_API_KEY`、`HEART_ES_PIPELINE_TEST_INDEX` | Workspace/ES Harness |
+| Docker Workspace | 已存在的 `HEART_WORKSPACE_TEST_IMAGE` 和可用 Docker daemon | 容器、挂载、取消 |
+| MCP | 测试会启动仓库内真实协议服务进程 | HTTP MCP、stdio MCP |
+
+`cargo test --all-targets` 默认只运行确定性测试，标记为 `ignored` 的真实验收不会被伪装成通过；需要真实后端时使用上面的脚本。
+
 ### 15.3 版本和发布
 
 ```bash

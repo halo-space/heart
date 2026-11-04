@@ -354,6 +354,28 @@ cargo clippy --lib --all-features -- -D warnings
 
 Provider/MCP/ES/Sandbox acceptance tests read environment variables and should use real services. Deterministic local tests validate contracts and state transitions; they are not model acceptance tests. Before publishing, run `cargo package --allow-dirty` and `cargo publish --dry-run`.
 
+`bash scripts/test-real.sh` reads the Git-ignored `.env` and distinguishes three
+outcomes: missing required variables exits non-zero, a failing real test keeps a
+non-zero status, and an unconfigured optional backend is reported as `SKIP` and
+included in the final summary. The script never prints secrets.
+
+Real acceptance matrix:
+
+| Capability | Required environment or resource | Covered tests |
+| --- | --- | --- |
+| DeepSeek | `DEEPSEEK_API_KEY`; optional `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL` | Agent, Workflow, Memory, A2A |
+| VLLM/OpenAI-compatible | `HEART_VLLM_BASE_URL`, `HEART_VLLM_API_KEY`, `HEART_VLLM_MODEL` | Provider, Chat/ReAct, Team, Workflow |
+| Zhipu Embedding | `HEART_EMBED_API_KEY`; optional `HEART_EMBED_BASE_URL`, `HEART_EMBED_MODEL` | Vector Memory, Semantic Chunker |
+| OpenAI Embedding | `OPENAI_API_KEY`; optional `OPENAI_BASE_URL`, `OPENAI_MODEL` | OpenAI Embedding |
+| Gemini TTS/multimodal | `GEMINI_API_KEY`; multimodal also needs a real `GEMINI_TEST_IMAGE_DATA_URL` | TTS, multimodal |
+| Elasticsearch Workspace | `HEART_ES_URL`, an isolated `HEART_ES_TEST_INDEX`; optional `HEART_ES_API_KEY`, `HEART_ES_PIPELINE_TEST_INDEX` | Workspace/ES Harness |
+| Docker Workspace | Existing `HEART_WORKSPACE_TEST_IMAGE` and an available Docker daemon | Container, mount, cancellation |
+| MCP | The tests start real protocol-speaking service processes from the repository | HTTP MCP, stdio MCP |
+
+`cargo test --all-targets` runs deterministic tests by default. Tests marked
+`ignored` for real backends are not counted as passing; use the script above for
+live acceptance.
+
 ---
 
 ## Compression and A2A
