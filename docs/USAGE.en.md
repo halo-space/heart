@@ -323,6 +323,14 @@ Workspace selects local or server data sources. Local uses local files; server u
 
 Prompt templates render messages and named history variables. Memory uses `memory::Config::new(short, long)`, optional scopes, compression, extraction, and an application ID function. Checkpoint, Sandbox, Document, Search, Embed, Permission, and Middleware are all independent contracts with optional concrete Core implementations. See [`component_contracts.rs`](../examples/component_contracts.rs).
 
+`core::sandbox::Local` executes explicit argv commands on the host. It inherits the
+application environment, working directory, permissions, and external side effects;
+it is not a security boundary and is intended only for trusted work. Page-authored
+code or other untrusted input must not be run with `Local`. When process, resource,
+or network isolation is required, the application should configure
+`core::sandbox::docker::Docker` or a server-side Workspace/Worker. Docker images must be
+prepared by the application; Heart never pulls an image or falls back to host execution.
+
 ---
 
 ## Short/long memory and persistence

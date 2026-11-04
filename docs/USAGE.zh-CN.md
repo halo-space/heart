@@ -579,6 +579,12 @@ let memory = halo::agent::memory::Config::new(short_store, long_store)
 - `knowledge::Search` 的 keyword/vector/hybrid 请求各自有明确参数；具体索引后端由应用实现。
 - `model::embed::Embed` 是模型组件；调用返回统一 Message，向量放在 `values`，模型和维度放在 `metadata`。
 
+`Local` 只执行显式 argv 命令，继承宿主机的环境、工作目录、权限和外部副作用，
+不是安全隔离边界，只适合可信任务。页面函数或其他不可信输入不能把 `Local` 当作
+沙箱使用；需要进程、资源和网络隔离时，应由应用配置 `core::sandbox::docker::Docker` 或
+服务端 Workspace/Worker。Docker 镜像必须由应用预先准备，框架不会自动拉取或回退到
+宿主机执行。
+
 综合组件示例见 [`component_contracts.rs`](../examples/component_contracts.rs)。
 
 ---
