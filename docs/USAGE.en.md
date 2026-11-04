@@ -243,6 +243,48 @@ DSL JSON -> core::workflow::dsl parse, validate, and normalize
 
 Applications provide static execution configuration during initialization; each request only supplies DSL and business input. Unknown functions, tools, Agents, or subgraphs must fail at binding/plan submission. Heart does not add a public Registry, Capabilities, or dynamic runtime registration table. A2A/AG-UI/JSON-RPC/SSE adapters live at the protocol/HTTP layer and convert existing Events.
 
+Page-authored function nodes are created by Core from the DSL and then used like ordinary Nodes. Heart does not look up a local function by `name`, and the DSL does not contain a local path or closure:
+
+```rust
+use halo::agent::Cancellation;
+use halo::agent::core::sandbox::{Config, Local};
+use halo::agent::core::workflow::{code::{Code, Object}, dsl::parse};
+use halo::agent::node::Node;
+use serde_json::json;
+use std::collections::BTreeMap;
+
+let document = parse(json!({
+    "version": 1,
+    "definition_id": "reload-flow",
+    "nodes": {
+        "reload": {
+            "type": "function",
+            "name": "reload",
+            "config": {
+                "language": "python",
+                "entry": "reload",
+                "source": "def reload(input): return {'value': input['value'] + 1}"
+            },
+            "schema": {
+                "input": {"type": "object", "required": ["value"]},
+                "output": {"type": "object", "required": ["value"]}
+            }
+        }
+    },
+    "edges": [
+        {"from": "START", "to": "reload"},
+        {"from": "reload", "to": "END"}
+    ]
+}))?;
+let code = Code::from_dsl(Local::new(Config::default())?, &document.nodes["reload"])?;
+let output = code.call(
+    Object(BTreeMap::from([(String::from("value"), json!(1))])),
+    &Cancellation::new(),
+).await?;
+```
+
+To place it in a Workflow, use `builder.add_node_with_schema("reload", code, Schema { input: node.schema.input.clone(), output: node.schema.output.clone() })`. This preserves the DSL Schema in the Definition while the executor and Runtime keep the existing validation and error contract; page code receives and returns JSON objects.
+
 ---
 
 ## Fixed usage rules

@@ -23,4 +23,5 @@ pub mod sandbox;
 pub mod skill;
 mod structured;
 pub(crate) mod tool;
+pub mod workflow;
 pub mod workspace;

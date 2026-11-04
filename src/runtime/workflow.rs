@@ -28,8 +28,8 @@ use crate::runtime::workflow::node::ExecutionRef;
 
 pub use graph::{
     CompiledWorkflow, Conditional, Definition, Edge, Endpoint, FailureRelation, FanOut,
-    FieldSource, GraphDefinition, GraphError, GraphReference, InputBinding, IoSchema, Join, Loop,
-    NodeAttrs, NodeDefinition, RetryPolicy, State, Status, Wait, WorkflowBuilder,
+    FieldSource, GraphDefinition, GraphError, GraphReference, InputBinding, Join, Loop, NodeAttrs,
+    NodeDefinition, RetryPolicy, Schema, State, Status, Wait, WorkflowBuilder,
 };
 
 type CheckpointSave = Arc<

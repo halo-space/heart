@@ -421,6 +421,49 @@ Heart 借鉴 LangGraph 的 `START/END`、条件边、子图和 Checkpoint 现场
 
 应用在初始化阶段提供静态执行配置，请求阶段只传入 DSL 和业务输入。DSL 只描述图和参数，不能绕过应用已配置的函数、工具、Agent 或子图；未知能力在构建或计划提交阶段失败。Heart 不增加公共 Registry、Capabilities 或动态能力注册表。
 
+页面代码函数节点由 Core 根据 DSL 直接创建执行器，再像普通 Node 一样交给 Workflow Builder；不会按
+`name` 查找本地函数，也不会把闭包或本地路径写进 DSL：
+
+```rust
+use halo::agent::Cancellation;
+use halo::agent::core::sandbox::{Config, Local};
+use halo::agent::core::workflow::{code::{Code, Object}, dsl::parse};
+use halo::agent::node::Node;
+use serde_json::json;
+use std::collections::BTreeMap;
+
+let document = parse(json!({
+    "version": 1,
+    "definition_id": "reload-flow",
+    "nodes": {
+        "reload": {
+            "type": "function",
+            "name": "reload",
+            "config": {
+                "language": "python",
+                "entry": "reload",
+                "source": "def reload(input): return {'value': input['value'] + 1}"
+            },
+            "schema": {
+                "input": {"type": "object", "required": ["value"]},
+                "output": {"type": "object", "required": ["value"]}
+            }
+        }
+    },
+    "edges": [
+        {"from": "START", "to": "reload"},
+        {"from": "reload", "to": "END"}
+    ]
+}))?;
+let code = Code::from_dsl(Local::new(Config::default())?, &document.nodes["reload"])?;
+let output = code.call(
+    Object(BTreeMap::from([(String::from("value"), json!(1))])),
+    &Cancellation::new(),
+).await?;
+```
+
+如果要放入 Workflow，使用 `builder.add_node_with_schema("reload", code, Schema { input: node.schema.input.clone(), output: node.schema.output.clone() })`；这样 DSL 的精确 Schema 会进入 Definition，页面代码仍只接收 JSON 对象并返回 JSON 对象。
+
 A2A、AG-UI、JSON-RPC、SSE 和 Webhook 是协议/传输层适配，不改变 Runtime 的 State 和 Event 契约。HTTP 层可以将已有 Event 转换成对外协议事件。
 
 ---

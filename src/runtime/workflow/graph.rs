@@ -520,7 +520,7 @@ where
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct IoSchema {
+pub struct Schema {
     pub input: Value,
     pub output: Value,
 }
@@ -546,7 +546,7 @@ pub struct NodeAttrs {
 pub struct NodeDefinition {
     pub node_id: String,
     pub node_name: Option<String>,
-    pub io: IoSchema,
+    pub schema: Schema,
     pub attrs: NodeAttrs,
     pub retry: RetryPolicy,
     #[serde(default)]
@@ -1769,6 +1769,47 @@ impl WorkflowBuilder {
         O: Serialize + JsonSchema + Send + 'static,
         E: Into<Error> + Send + 'static,
     {
+        let input = serde_json::to_value(schema_for!(I))
+            .map_err(|error| GraphError::new("SCHEMA_ERROR", error.to_string()))?;
+        let output = serde_json::to_value(schema_for!(O))
+            .map_err(|error| GraphError::new("SCHEMA_ERROR", error.to_string()))?;
+        self.add_node_with_schemas(node_id, node, input, output)
+    }
+
+    /// Adds an ordinary Node while preserving an explicitly supplied
+    /// Definition input/output Schema. The Node implementation remains the
+    /// same typed executor; the supplied schemas are used for its JSON
+    /// boundary validation and are stored in the compiled Definition. This is
+    /// used when a serializable DSL carries a more precise schema than the
+    /// erased JSON-object wrapper.
+    pub fn add_node_with_schema<I, O, E, N>(
+        &mut self,
+        node_id: impl Into<String>,
+        node: N,
+        schema: Schema,
+    ) -> Result<&mut Self, GraphError>
+    where
+        N: Node<I, O, E> + Any,
+        I: DeserializeOwned + JsonSchema + Send + 'static,
+        O: Serialize + JsonSchema + Send + 'static,
+        E: Into<Error> + Send + 'static,
+    {
+        self.add_node_with_schemas(node_id, node, schema.input, schema.output)
+    }
+
+    fn add_node_with_schemas<I, O, E, N>(
+        &mut self,
+        node_id: impl Into<String>,
+        node: N,
+        input: Value,
+        output: Value,
+    ) -> Result<&mut Self, GraphError>
+    where
+        N: Node<I, O, E> + Any,
+        I: DeserializeOwned + JsonSchema + Send + 'static,
+        O: Serialize + JsonSchema + Send + 'static,
+        E: Into<Error> + Send + 'static,
+    {
         let node_id = node_id.into();
         validate_node_id(&node_id)?;
         if self.nodes.contains_key(&node_id) {
@@ -1780,11 +1821,6 @@ impl WorkflowBuilder {
         if self.nodes.len() >= self.max_nodes {
             return Err(GraphError::new("MAX_NODES", "workflow node limit exceeded"));
         }
-
-        let input = serde_json::to_value(schema_for!(I))
-            .map_err(|error| GraphError::new("SCHEMA_ERROR", error.to_string()))?;
-        let output = serde_json::to_value(schema_for!(O))
-            .map_err(|error| GraphError::new("SCHEMA_ERROR", error.to_string()))?;
         let input_messages = TypeId::of::<I>() == TypeId::of::<Messages>();
         let output_messages = TypeId::of::<O>() == TypeId::of::<Messages>();
         if (!input_messages && input["type"] != "object")
@@ -1815,7 +1851,7 @@ impl WorkflowBuilder {
             NodeDefinition {
                 node_id: node_id.clone(),
                 node_name: None,
-                io: IoSchema { input, output },
+                schema: Schema { input, output },
                 attrs: NodeAttrs::default(),
                 retry: RetryPolicy::default(),
                 workflow: None,
@@ -1862,7 +1898,7 @@ impl WorkflowBuilder {
             NodeDefinition {
                 node_id: node_id.clone(),
                 node_name: None,
-                io: IoSchema { input, output },
+                schema: Schema { input, output },
                 attrs: NodeAttrs::default(),
                 retry: RetryPolicy::default(),
                 workflow: None,
@@ -1917,7 +1953,7 @@ impl WorkflowBuilder {
             NodeDefinition {
                 node_id: node_id.clone(),
                 node_name: None,
-                io: IoSchema { input, output },
+                schema: Schema { input, output },
                 attrs: NodeAttrs::default(),
                 retry: RetryPolicy::default(),
                 workflow: Some(definition),
@@ -2341,7 +2377,7 @@ impl WorkflowBuilder {
                     "Messages input cannot use attrs.input field bindings",
                 ));
             }
-            let properties = target.io.input["properties"].as_object();
+            let properties = target.schema.input["properties"].as_object();
             let incoming: BTreeSet<&str> = self
                 .graph
                 .ordinary_edges
@@ -2396,7 +2432,7 @@ impl WorkflowBuilder {
                 }
                 let source = &self.nodes[source_id];
                 if !self.codecs[source_id].1
-                    && source.io.output["properties"]
+                    && source.schema.output["properties"]
                         .get(&binding.from.field)
                         .is_none()
                 {
@@ -2410,7 +2446,11 @@ impl WorkflowBuilder {
                 }
             }
             if !entry && !input_messages && !target.agent {
-                for field in target.io.input["required"].as_array().into_iter().flatten() {
+                for field in target.schema.input["required"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                {
                     if let Some(field) = field.as_str()
                         && !target.attrs.input.contains_key(field)
                     {
@@ -2514,7 +2554,7 @@ mod tests {
         let second = single().compile().unwrap();
         assert_eq!(first.definition().version, second.definition().version);
         assert_eq!(
-            first.definition().nodes["answer"].io.input["type"],
+            first.definition().nodes["answer"].schema.input["type"],
             "object"
         );
         assert_eq!(
