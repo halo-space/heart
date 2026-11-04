@@ -1,4 +1,5 @@
-//! Deterministic local model/tool example; no network, credentials or Runtime.
+//! Deterministic local model/tool example; no network, credentials or
+//! externally-created Runtime is required.
 use std::sync::{
     LazyLock,
     atomic::{AtomicUsize, Ordering},
@@ -87,7 +88,36 @@ async fn main() -> Result<(), Error> {
         .run(Input::default(), true, Cancellation::new())
         .await?;
     while let Some(event) = events.next().await {
-        println!("{:?}", event?);
+        match event? {
+            Event::Delta { message } => {
+                let parts = message
+                    .content
+                    .iter()
+                    .map(|part| part.r#type.as_str())
+                    .collect::<Vec<_>>();
+                println!("delta role={:?} parts={parts:?}", message.role);
+            }
+            Event::Complete {
+                message,
+                finish_reason,
+                ..
+            } => {
+                let parts = message
+                    .content
+                    .iter()
+                    .map(|part| part.r#type.as_str())
+                    .collect::<Vec<_>>();
+                let tools = message
+                    .content
+                    .iter()
+                    .filter_map(|part| part.data.get("name").and_then(|value| value.as_str()))
+                    .collect::<Vec<_>>();
+                println!(
+                    "complete role={:?} parts={parts:?} tools={tools:?} values={:?} finish={finish_reason:?}",
+                    message.role, message.values
+                );
+            }
+        }
     }
     Ok(())
 }
