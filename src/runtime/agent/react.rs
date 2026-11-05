@@ -66,6 +66,7 @@ pub struct Builder<M = ()> {
     system_prompt: Option<String>,
     dispatch: Dispatch,
     subagents: Vec<SubAgent>,
+    handoff_targets: Vec<String>,
     max_iters: usize,
     max_concurrency: usize,
     hooks: Hooks,
@@ -83,6 +84,7 @@ pub fn builder() -> Builder {
         system_prompt: None,
         dispatch: Dispatch::new(),
         subagents: Vec::new(),
+        handoff_targets: Vec::new(),
         max_iters: 20,
         max_concurrency: 100,
         hooks: Hooks::default(),
@@ -102,6 +104,7 @@ impl<M> Builder<M> {
             system_prompt: self.system_prompt,
             dispatch: self.dispatch,
             subagents: self.subagents,
+            handoff_targets: self.handoff_targets,
             max_iters: self.max_iters,
             max_concurrency: self.max_concurrency,
             hooks: self.hooks,
@@ -127,6 +130,11 @@ impl<M> Builder<M> {
     pub(crate) fn with_team_members(mut self, subagents: Vec<SubAgent>) -> Self {
         self.subagents = subagents;
         self.team_mode = true;
+        self
+    }
+
+    pub(crate) fn with_team_handoffs(mut self, targets: Vec<String>) -> Self {
+        self.handoff_targets = targets;
         self
     }
 
@@ -161,7 +169,8 @@ impl<M> Builder<M> {
     }
 
     /// Register the heterogeneous Agent set available to the built-in
-    /// `agent_spawn` delegation path. SubAgents are not tool dispatch entries.
+    /// `agent_spawn` delegation path. SubAgents are not tool dispatch entries;
+    /// Team adds its private `team_assign`/`agent_handoff` controls separately.
     pub fn subagents(mut self, subagents: impl IntoIterator<Item = SubAgent>) -> Self {
         self.subagents.extend(subagents);
         self
@@ -273,6 +282,7 @@ where
             system_prompt: self.system_prompt,
             dispatch: std::sync::Arc::new(self.dispatch),
             subagents: std::sync::Arc::new(self.subagents),
+            handoff_targets: std::sync::Arc::new(self.handoff_targets),
             max_iters: self.max_iters,
             max_concurrency: self.max_concurrency,
             hooks: self.hooks,
@@ -292,6 +302,7 @@ pub struct Agent<M> {
     system_prompt: Option<String>,
     dispatch: std::sync::Arc<Dispatch>,
     subagents: std::sync::Arc<Vec<SubAgent>>,
+    handoff_targets: std::sync::Arc<Vec<String>>,
     max_iters: usize,
     max_concurrency: usize,
     hooks: Hooks,
@@ -509,6 +520,7 @@ where
             model: std::sync::Arc::clone(&self.model),
             dispatch: std::sync::Arc::new(dispatch),
             subagents: self.subagents.clone(),
+            handoff_targets: self.handoff_targets.clone(),
             team_mode: self.team_mode,
             max_iters: self.max_iters,
             max_concurrency: self.max_concurrency,
@@ -667,6 +679,7 @@ struct ReActState<M: Chat> {
     model: std::sync::Arc<M>,
     dispatch: std::sync::Arc<Dispatch>,
     subagents: std::sync::Arc<Vec<SubAgent>>,
+    handoff_targets: std::sync::Arc<Vec<String>>,
     team_mode: bool,
     max_iters: usize,
     max_concurrency: usize,
@@ -871,8 +884,10 @@ fn decode_subagent_input(
     Ok((name, input))
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn execute_subagent(
     subagents: Arc<Vec<SubAgent>>,
+    handoff_targets: Arc<Vec<String>>,
     call: Call,
     parent: Map<String, Value>,
     restore: Option<Value>,
@@ -880,14 +895,23 @@ async fn execute_subagent(
     id_fn: Option<fn() -> i64>,
     observer: Option<crate::runtime::agent::subagent::Observer>,
 ) -> Result<SubAgentProgress, Box<SubAgentFailure>> {
+    let handoff = call.name == "agent_handoff";
     let team_mode = call.name == "team_assign";
-    let operation = if team_mode {
+    let operation = if handoff {
+        "agent_handoff"
+    } else if team_mode {
         "team_assign"
     } else {
         "agent_spawn"
     };
     let (name, input) =
         decode_subagent_input(&call, &parent, operation).map_err(SubAgentFailure::new)?;
+    if handoff && !handoff_targets.iter().any(|target| target == &name) {
+        return Err(SubAgentFailure::new(Error::new(
+            "NOT_FOUND",
+            format!("agent_handoff target is not allowed: {name}"),
+        )));
+    }
     let subagent = subagents
         .iter()
         .find(|subagent| subagent.has_name(&name))
@@ -904,7 +928,7 @@ async fn execute_subagent(
         restore,
         cancellation,
         id_fn,
-        observer,
+        observer.map(|observer| observer.suppress_terminal(handoff)),
     )
     .await
 }
@@ -1558,10 +1582,12 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 state.pending_plans.push_back((index, call));
                 continue;
             }
-            if ((state.team_mode && call.name == "team_assign")
-                || (!state.team_mode && call.name == "agent_spawn"))
-                && !state.subagents.is_empty()
-            {
+            let delegation_call = (state.team_mode && call.name == "team_assign")
+                || (!state.team_mode && call.name == "agent_spawn")
+                || (state.team_mode
+                    && call.name == "agent_handoff"
+                    && !state.handoff_targets.is_empty());
+            if delegation_call && !state.subagents.is_empty() {
                 let cached = if state.is_plan_task {
                     crate::runtime::agent::subagent::message(
                         &state.child_nodes,
@@ -1644,6 +1670,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 }
                 let observer = observer.with_interaction(interaction.clone());
                 let subagents = state.subagents.clone();
+                let handoff_targets = state.handoff_targets.clone();
                 let parent = state.metadata.clone();
                 let id_fn = state.id_fn;
                 let cancellation = state.cancellation.clone();
@@ -1662,6 +1689,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     }
                     let result = execute_subagent(
                         subagents,
+                        handoff_targets,
                         call.clone(),
                         parent,
                         restore,
@@ -2003,6 +2031,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 }
                 ToolProgress::SubAgent(index, call, result, permit) => {
                     drop(permit);
+                    let handoff = call.name == "agent_handoff";
                     let message = match &*result {
                         Ok(progress) => Some(progress.message.clone()),
                         Err(failure) if failure.error.code == "WAITING" => None,
@@ -2040,6 +2069,26 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         }
                         state.done = true;
                         return emitted((Err(failure.error.clone()), state));
+                    }
+                    if handoff {
+                        state.pending_subagents.remove(&call.call_id);
+                        match *result {
+                            Ok(progress) => {
+                                state.done = true;
+                                return emitted((
+                                    Ok(Event::Complete {
+                                        message: progress.final_message,
+                                        usage: progress.usage,
+                                        finish_reason: Some("handoff".into()),
+                                    }),
+                                    state,
+                                ));
+                            }
+                            Err(failure) => {
+                                state.done = true;
+                                return emitted((Err(failure.error), state));
+                            }
+                        }
                     }
                     state.pending_subagents.remove(&call.call_id);
                     let message = match *result {
@@ -2375,6 +2424,20 @@ async fn next_react_event_inner<M: Chat + 'static>(
                         }
                         state.completion.as_mut().expect("Agent result").stage = "committed".into();
                     } else {
+                        let handoffs = calls
+                            .iter()
+                            .filter(|call| call.name == "agent_handoff")
+                            .count();
+                        if handoffs > 0 && calls.len() != 1 {
+                            state.done = true;
+                            return emitted((
+                                Err(Error::new(
+                                    "INVALID_ARGUMENTS",
+                                    "agent_handoff must be the only call in a model response",
+                                )),
+                                state,
+                            ));
+                        }
                         if let Err(error) = tools::selected(&mut state.steps, &calls) {
                             state.done = true;
                             return emitted((Err(error), state));
@@ -2570,6 +2633,14 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     } else {
                         SubAgent::definition(&state.subagents)
                     });
+                    if state.team_mode && !state.handoff_targets.is_empty() {
+                        tools.push(SubAgent::definition_for_names(
+                            &state.subagents,
+                            "agent_handoff",
+                            "Transfer control",
+                            &state.handoff_targets,
+                        ));
+                    }
                 }
                 tools
             };

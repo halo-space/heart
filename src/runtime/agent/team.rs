@@ -1,8 +1,8 @@
 //! Static Team composition around the ReAct Agent runtime.
 //!
 //! Team is a Leader plus a fixed set of Agent members. The Leader remains a
-//! normal ReAct Agent; this module only supplies the member roster and makes
-//! the runtime use the private `team_assign` delegation operation.
+//! normal ReAct Agent; this module supplies the member roster and the static
+//! `team_assign` delegation / `agent_handoff` transfer relations.
 
 use std::pin::Pin;
 
@@ -20,6 +20,7 @@ pub fn builder() -> Builder {
     Builder {
         leader: None,
         members: Vec::new(),
+        handoffs: Vec::new(),
         max_concurrency: None,
         id_fn: None,
     }
@@ -31,6 +32,7 @@ pub fn builder() -> Builder {
 pub struct Builder<M = ()> {
     leader: Option<react::Builder<M>>,
     members: Vec<SubAgent>,
+    handoffs: Vec<(String, String)>,
     max_concurrency: Option<usize>,
     id_fn: Option<fn() -> i64>,
 }
@@ -41,6 +43,7 @@ impl<M> Builder<M> {
         Builder {
             leader: Some(leader),
             members: self.members,
+            handoffs: self.handoffs,
             max_concurrency: self.max_concurrency,
             id_fn: self.id_fn,
         }
@@ -50,6 +53,16 @@ impl<M> Builder<M> {
     /// when the Team is built.
     pub fn member(mut self, member: SubAgent) -> Self {
         self.members.push(member);
+        self
+    }
+
+    /// Declare a static control transfer from the Team Leader to one member.
+    ///
+    /// Handoff is deliberately separate from `team_assign`: after the target
+    /// completes, the Leader does not resume and the target's final result
+    /// closes the current Team run. The relation is validated during `build`.
+    pub fn handoff(mut self, from: impl Into<String>, to: impl Into<String>) -> Self {
+        self.handoffs.push((from.into(), to.into()));
         self
     }
 
@@ -79,9 +92,53 @@ where
         if let Some(id_fn) = self.id_fn {
             leader = leader.with_id_fn(id_fn);
         }
-        let leader = leader.with_team_members(self.members).build()?;
+        let targets = validate_handoffs(&self.members, &self.handoffs)?;
+        let leader = leader
+            .with_team_members(self.members)
+            .with_team_handoffs(targets)
+            .build()?;
         Ok(Agent { inner: leader })
     }
+}
+
+fn validate_handoffs(
+    members: &[SubAgent],
+    handoffs: &[(String, String)],
+) -> Result<Vec<String>, Error> {
+    let names = members
+        .iter()
+        .map(|member| member.name().to_owned())
+        .collect::<std::collections::BTreeSet<_>>();
+    if names.contains("leader") {
+        return Err(Error::new(
+            "INVALID_ARGUMENTS",
+            "Team member name leader is reserved",
+        ));
+    }
+    let mut targets = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for (from, to) in handoffs {
+        if from != "leader" {
+            return Err(Error::new(
+                "INVALID_ARGUMENTS",
+                "Team Handoff source must be leader",
+            ));
+        }
+        if to.trim().is_empty() || !names.contains(to) {
+            return Err(Error::new(
+                "NOT_FOUND",
+                format!("Team Handoff target is not registered: {to}"),
+            ));
+        }
+        if !seen.insert(to) {
+            return Err(Error::new(
+                "INVALID_ARGUMENTS",
+                "Team Handoff target must be unique",
+            ));
+        }
+        targets.push(to.clone());
+    }
+    Ok(targets)
 }
 
 /// A static Team exposed through the same Agent contract as Chat and ReAct.

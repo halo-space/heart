@@ -112,8 +112,22 @@ impl SubAgent {
         tool_name: &str,
         operation: &str,
     ) -> crate::components::tool::ToolDefinition {
+        let member_names = subagents
+            .iter()
+            .map(|subagent| subagent.name.clone())
+            .collect::<Vec<_>>();
+        Self::definition_for_names(subagents, tool_name, operation, &member_names)
+    }
+
+    pub(crate) fn definition_for_names(
+        subagents: &[SubAgent],
+        tool_name: &str,
+        operation: &str,
+        names: &[String],
+    ) -> crate::components::tool::ToolDefinition {
         let members = subagents
             .iter()
+            .filter(|subagent| names.iter().any(|name| name == subagent.name()))
             .map(|subagent| {
                 if subagent.description.is_empty() {
                     format!("- {}", subagent.name)
@@ -157,7 +171,7 @@ impl SubAgent {
             parameters: serde_json::from_value(serde_json::json!({
                 "type": "object",
                 "properties": {
-                    "name": {"type": "string"},
+                    "name": {"type": "string", "enum": names},
                     "input": input_schema
                 },
                 "required": ["name", "input"],
@@ -239,6 +253,7 @@ impl Relay {
             chat_id,
             source: (source.node_id, source.exec_id),
             interaction: None,
+            suppress_terminal: false,
         }
     }
 }
@@ -311,6 +326,7 @@ pub(crate) struct Observer {
     chat_id: Option<i64>,
     source: (String, i64),
     interaction: Option<crate::runtime::agent::reply::Run>,
+    suppress_terminal: bool,
 }
 
 pub(crate) struct Observation {
@@ -364,6 +380,11 @@ impl Observer {
         self.interaction = interaction;
         self
     }
+
+    pub(crate) fn suppress_terminal(mut self, suppress: bool) -> Self {
+        self.suppress_terminal = suppress;
+        self
+    }
     async fn emit(
         &self,
         mut event: Option<Event>,
@@ -378,6 +399,17 @@ impl Observer {
                 self.chat_id,
                 Some((&self.source.0, self.source.1)),
             );
+        }
+        if self.suppress_terminal
+            && event.as_ref().is_some_and(|event| {
+                matches!(
+                    event,
+                    Event::Complete { message, .. }
+                        if !message.metadata.contains_key("reply_id")
+                )
+            })
+        {
+            event = None;
         }
         let (acknowledgement, consumed) = tokio::sync::oneshot::channel();
         self.relay
@@ -973,6 +1005,9 @@ pub(crate) fn message(
 pub(crate) struct Progress {
     pub cancelled: bool,
     pub message: Message,
+    /// The child Assistant message before Delegate converts it to a Function
+    /// result. Handoff exposes this message as the outer final response.
+    pub final_message: Message,
     pub usage: Option<Usage>,
     pub scene: Option<Value>,
 }
@@ -1387,10 +1422,12 @@ pub(crate) async fn run(
         published,
     )
     .map_err(Failure::new)?;
+    let final_message = message.clone();
     message = result_message(message, call);
     Ok(Progress {
         cancelled,
         message,
+        final_message,
         usage,
         scene: scene.or(previous),
     })
@@ -1655,5 +1692,52 @@ mod relay_tests {
             .await
             .expect("consumption acknowledges the event")
             .expect("child emitter task succeeds");
+    }
+}
+
+#[cfg(test)]
+mod definition_tests {
+    use super::*;
+    use futures_util::stream::{self, Empty};
+
+    struct EmptyAgent;
+
+    impl Agent for EmptyAgent {
+        type Stream = Empty<Result<Event, Error>>;
+
+        async fn run(
+            &self,
+            _input: Input,
+            _stream: bool,
+            _cancellation: Cancellation,
+        ) -> Result<Self::Stream, Error> {
+            Ok(stream::empty())
+        }
+
+        async fn reply(&self, _input: Input, _cancellation: Cancellation) -> Result<(), Error> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn delegation_definition_limits_model_targets_to_registered_members() {
+        let subagents = vec![
+            SubAgent::new("researcher", EmptyAgent)
+                .unwrap()
+                .description("researches facts"),
+            SubAgent::new("reviewer", EmptyAgent)
+                .unwrap()
+                .description("reviews results"),
+            SubAgent::new("coder", EmptyAgent)
+                .unwrap()
+                .description("writes code"),
+        ];
+        let definition = SubAgent::definition_named(&subagents, "agent_spawn", "Delegate");
+        let names = &definition.parameters["properties"]["name"]["enum"];
+        assert_eq!(
+            names,
+            &serde_json::json!(["researcher", "reviewer", "coder"])
+        );
+        definition.validate().unwrap();
     }
 }

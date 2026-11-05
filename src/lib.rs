@@ -77,6 +77,17 @@ pub(crate) use components::workspace;
 /// fn synchronous(_: i64, _: Cancellation) -> Result<i64, Error> { Ok(1) }
 /// ```
 pub use heart_node_macros::node;
+pub use heart_node_macros::tool;
+
+/// Dependencies used by the generated `#[tool]` adapter. This module is
+/// hidden from normal documentation so the macro can keep using the crate's
+/// own dependency versions when it is expanded in another crate.
+#[doc(hidden)]
+pub mod __tool {
+    pub use schemars;
+    pub use serde;
+    pub use serde_json;
+}
 
 // Compile the attribute in the defining library too, not only downstream
 // examples. This is a test-only assertion, with no node or runtime created.

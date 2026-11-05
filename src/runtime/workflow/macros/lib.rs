@@ -1,11 +1,11 @@
-//! Compile-time validation for Workflow Node registration.
+//! Compile-time validation and adapters for Workflow Nodes and Tools.
 
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as Tokens;
-use quote::{quote, quote_spanned};
+use quote::{format_ident, quote, quote_spanned};
 use syn::{
-    FnArg, GenericArgument, Ident, ImplItem, Item, ItemFn, ItemImpl, PathArguments, ReturnType,
-    Signature, Type,
+    FnArg, GenericArgument, Ident, ImplItem, Item, ItemFn, ItemImpl, LitStr, PathArguments,
+    ReturnType, Signature, Type,
     parse::{Parse, ParseStream},
     spanned::Spanned,
     visit::{self, Visit},
@@ -52,6 +52,70 @@ pub fn node(attributes: TokenStream, item: TokenStream) -> TokenStream {
         .into()
 }
 
+struct ToolAttributes {
+    name: Option<LitStr>,
+    description: Option<LitStr>,
+}
+
+impl Parse for ToolAttributes {
+    fn parse(input: ParseStream<'_>) -> syn::Result<Self> {
+        let mut name = None;
+        let mut description = None;
+        while !input.is_empty() {
+            let key: Ident = input.parse()?;
+            input.parse::<syn::Token![=]>()?;
+            let value: LitStr = input.parse()?;
+            match key.to_string().as_str() {
+                "name" if name.is_none() => name = Some(value),
+                "description" if description.is_none() => description = Some(value),
+                "name" => {
+                    return Err(syn::Error::new(key.span(), "duplicate tool name"));
+                }
+                "description" => {
+                    return Err(syn::Error::new(key.span(), "duplicate tool description"));
+                }
+                _ => {
+                    return Err(syn::Error::new(
+                        key.span(),
+                        "expected name = \"...\" or description = \"...\"",
+                    ));
+                }
+            }
+            if input.peek(syn::Token![,]) {
+                input.parse::<syn::Token![,]>()?;
+            } else if !input.is_empty() {
+                return Err(input.error("separate tool attributes with commas"));
+            }
+        }
+        let Some(description) = description else {
+            return Err(input.error("#[tool] requires description = \"...\""));
+        };
+        if description.value().trim().is_empty() {
+            return Err(syn::Error::new(
+                description.span(),
+                "tool description must not be empty",
+            ));
+        }
+        Ok(Self {
+            name,
+            description: Some(description),
+        })
+    }
+}
+
+#[proc_macro_attribute]
+pub fn tool(attributes: TokenStream, item: TokenStream) -> TokenStream {
+    let result = syn::parse::<ToolAttributes>(attributes).and_then(|attributes| {
+        syn::parse::<ItemFn>(item).and_then(|function| {
+            let root = root()?;
+            expand_tool(attributes, function, &root)
+        })
+    });
+    result
+        .unwrap_or_else(|error| error.into_compile_error())
+        .into()
+}
+
 fn root() -> syn::Result<Tokens> {
     use proc_macro_crate::{FoundCrate, crate_name};
     match crate_name("halo-agent") {
@@ -68,6 +132,230 @@ fn root() -> syn::Result<Tokens> {
             proc_macro2::Span::call_site(),
             error.to_string(),
         )),
+    }
+}
+
+struct ToolIo {
+    output: Type,
+    error: Type,
+}
+
+fn expand_tool(
+    attributes: ToolAttributes,
+    mut function: ItemFn,
+    root: &Tokens,
+) -> syn::Result<Tokens> {
+    if function.sig.asyncness.is_none() {
+        return Err(syn::Error::new(
+            function.sig.span(),
+            "#[tool] requires an async function",
+        ));
+    }
+    if function.sig.constness.is_some()
+        || function.sig.unsafety.is_some()
+        || function.sig.abi.is_some()
+        || function.sig.variadic.is_some()
+    {
+        return Err(syn::Error::new(
+            function.sig.span(),
+            "use a regular safe Rust async function for #[tool]",
+        ));
+    }
+    if !function.sig.generics.params.is_empty() || function.sig.generics.where_clause.is_some() {
+        return Err(syn::Error::new(
+            function.sig.generics.span(),
+            "generic tool functions require an explicit Tool implementation",
+        ));
+    }
+
+    let Some(FnArg::Typed(cancellation)) = function.sig.inputs.last() else {
+        return Err(syn::Error::new(
+            function.sig.inputs.span(),
+            "#[tool] requires a final &Cancellation parameter",
+        ));
+    };
+    if !matches!(&*cancellation.ty, Type::Reference(reference)
+        if reference.mutability.is_none() && named(&reference.elem, "Cancellation"))
+    {
+        return Err(syn::Error::new(
+            cancellation.ty.span(),
+            "the final #[tool] parameter must be &Cancellation",
+        ));
+    }
+    if function.sig.inputs.len() == 1 {
+        return Err(syn::Error::new(
+            function.sig.inputs.span(),
+            "#[tool] requires at least one typed business argument before &Cancellation",
+        ));
+    }
+
+    let mut arguments = Vec::new();
+    for argument in function
+        .sig
+        .inputs
+        .iter()
+        .take(function.sig.inputs.len() - 1)
+    {
+        let FnArg::Typed(argument) = argument else {
+            return Err(syn::Error::new(
+                argument.span(),
+                "#[tool] only supports typed function arguments",
+            ));
+        };
+        let syn::Pat::Ident(pattern) = &*argument.pat else {
+            return Err(syn::Error::new(
+                argument.pat.span(),
+                "#[tool] arguments must use simple identifiers",
+            ));
+        };
+        owned(&argument.ty).map_err(|error| {
+            syn::Error::new(
+                error.span(),
+                "#[tool] arguments must be owned types without lifetimes",
+            )
+        })?;
+        arguments.push((pattern.ident.clone(), (*argument.ty).clone()));
+    }
+
+    let ToolIo { output, error } = tool_result_types(&function.sig.output)?;
+    owned(&output).map_err(|error| {
+        syn::Error::new(
+            error.span(),
+            "#[tool] output must be an owned type without lifetimes",
+        )
+    })?;
+    owned(&error).map_err(|error| {
+        syn::Error::new(
+            error.span(),
+            "#[tool] error must be an owned type without lifetimes",
+        )
+    })?;
+
+    let original_name = function.sig.ident.clone();
+    let implementation_name = format_ident!("__heart_tool_{}_implementation", original_name);
+    function.sig.ident = implementation_name.clone();
+    let tool_type = format_ident!("__HeartTool{}", pascal_case(&original_name.to_string()));
+    let constructor = original_name;
+    let visibility = function.vis.clone();
+    function.vis = syn::Visibility::Inherited;
+    let tool_name = attributes
+        .name
+        .unwrap_or_else(|| LitStr::new(&constructor.to_string(), constructor.span()));
+    let description = attributes.description.expect("description is required");
+    let field_definitions = arguments.iter().map(|(name, ty)| quote!(#name: #ty));
+    let argument_names = arguments.iter().map(|(name, _)| quote!(parsed.#name));
+    let args_type = format_ident!(
+        "__HeartTool{}Arguments",
+        pascal_case(&constructor.to_string())
+    );
+    let output_message = if named(&output, "Message") {
+        quote!(output)
+    } else {
+        quote! {
+            let output = #root::__tool::serde_json::to_value(output).map_err(|error| {
+                #root::Error::new("SERIALIZATION", "tool output could not be serialized")
+                    .with_details(error.to_string())
+            })?;
+            #root::agent::Message::function(output)
+        }
+    };
+    let call = quote! {
+        let output = #implementation_name(#(#argument_names,)* cancellation)
+            .await
+            .map_err(::core::convert::Into::into)?;
+        let message = { #output_message };
+        Ok(message)
+    };
+    let schema = quote! {
+        let schema = #root::__tool::serde_json::to_value(
+            #root::__tool::schemars::schema_for!(#args_type),
+        )
+        .expect("tool arguments schema must serialize");
+        let parameters = schema
+            .as_object()
+            .cloned()
+            .expect("tool arguments schema must be an object");
+    };
+    Ok(quote! {
+        #function
+
+        #[derive(#root::__tool::serde::Deserialize, #root::__tool::schemars::JsonSchema)]
+        #[allow(non_camel_case_types)]
+        #visibility struct #args_type {
+            #(#field_definitions,)*
+        }
+
+        #[allow(non_camel_case_types)]
+        #visibility struct #tool_type;
+
+        #visibility fn #constructor() -> #tool_type {
+            #tool_type
+        }
+
+        impl #root::agent::tool::Tool for #tool_type {
+            fn definition(&self) -> &#root::agent::tool::ToolDefinition {
+                static DEFINITION: ::std::sync::OnceLock<#root::agent::tool::ToolDefinition> =
+                    ::std::sync::OnceLock::new();
+                DEFINITION.get_or_init(|| {
+                    #schema
+                    #root::agent::tool::ToolDefinition {
+                        name: #tool_name.to_owned(),
+                        description: #description.to_owned(),
+                        parameters,
+                    }
+                })
+            }
+
+            async fn call(
+                &self,
+                call: &#root::agent::tool::Call,
+                cancellation: &#root::Cancellation,
+            ) -> ::std::result::Result<#root::agent::Message, #root::Error> {
+                let parsed: #args_type = #root::__tool::serde_json::from_value(
+                    #root::__tool::serde_json::Value::Object(call.arguments.clone()),
+                )
+                .map_err(|error| {
+                    #root::Error::new("INVALID_ARGUMENTS", "tool arguments could not be decoded")
+                        .with_details(error.to_string())
+                })?;
+                #call
+            }
+        }
+    })
+}
+
+fn tool_result_types(output: &ReturnType) -> syn::Result<ToolIo> {
+    let ReturnType::Type(_, result) = output else {
+        return Err(syn::Error::new(
+            output.span(),
+            "#[tool] must return Result<T, E>",
+        ));
+    };
+    let types = arguments_of(result, "Result", 2).map_err(|error| {
+        syn::Error::new(error.span(), "#[tool] must explicitly return Result<T, E>")
+    })?;
+    Ok(ToolIo {
+        output: types[0].clone(),
+        error: types[1].clone(),
+    })
+}
+
+fn pascal_case(value: &str) -> String {
+    let mut result = String::new();
+    for part in value.split(|character: char| !character.is_ascii_alphanumeric()) {
+        if part.is_empty() {
+            continue;
+        }
+        let mut characters = part.chars();
+        if let Some(first) = characters.next() {
+            result.extend(first.to_uppercase());
+            result.extend(characters);
+        }
+    }
+    if result.is_empty() {
+        "Function".into()
+    } else {
+        result
     }
 }
 

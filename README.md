@@ -63,11 +63,15 @@ cargo run --example provider_vllm
 | --- | --- |
 | Chat Agent、Memory | [`examples/agent_memory.rs`](examples/agent_memory.rs) |
 | ReAct、Tool、Permission | [`examples/agent_permission.rs`](examples/agent_permission.rs) |
+| Team Handoff | [`examples/agent_live_handoff.rs`](examples/agent_live_handoff.rs) |
+| SubAgent 委派与子工具 | [`examples/agent_live_subagent.rs`](examples/agent_live_subagent.rs) |
+| 多个静态 SubAgent | [`examples/agent_live_three_subagents.rs`](examples/agent_live_three_subagents.rs) |
 | Middleware | [`examples/agent_middleware.rs`](examples/agent_middleware.rs) |
 | Workflow 事件流 | [`examples/workflow_events.rs`](examples/workflow_events.rs) |
 | Checkpoint 保存与恢复 | [`examples/checkpoint.rs`](examples/checkpoint.rs) |
 | 基础组件契约（Function、Prompt、Search、Embed、Sandbox、Event） | [`examples/component_contracts.rs`](examples/component_contracts.rs) |
 | Planner、Evaluator | [`examples/planning_evaluation.rs`](examples/planning_evaluation.rs) |
+| Rust 函数式 Tool 宏 | [`examples/tool_macro.rs`](examples/tool_macro.rs) |
 | Prompt 与压缩 | [`examples/compress.rs`](examples/compress.rs) |
 | Session/Memory CRUD | [`examples/short_memory.rs`](examples/short_memory.rs) |
 | OpenAI-compatible Chat | [`examples/provider_chat.rs`](examples/provider_chat.rs) |

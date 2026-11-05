@@ -50,7 +50,10 @@ pub(crate) fn selected(steps: &mut Vec<Step>, calls: &[Call]) -> Result<(), Erro
         ));
     }
     for call in calls.iter().filter(|call| {
-        call.name != "plan" && call.name != "agent_spawn" && call.name != "team_assign"
+        call.name != "plan"
+            && call.name != "agent_spawn"
+            && call.name != "team_assign"
+            && call.name != "agent_handoff"
     }) {
         new_step(steps, call);
     }

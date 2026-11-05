@@ -319,6 +319,31 @@ let chat = provider.chat(halo::agent::model::chat::Config::new("model"))?;
 
 Available provider implementations include DeepSeek, VLLM/OpenAI-compatible, OpenAI, Gemini, and Zhipu. Tool definitions must have an object-root parameter schema. `before` may validate or fill arguments; `after` may mutate the result Message; `eval` may return business feedback.
 
+For a plain async Rust function, `#[halo::tool]` generates an adapter for the existing Tool contract:
+
+```rust
+use halo::Cancellation;
+use halo::agent::Error;
+
+#[halo::tool(description = "Look up the weather for a city")]
+async fn get_weather(
+    location: String,
+    cancellation: &Cancellation,
+) -> Result<String, Error> {
+    if cancellation.is_cancelled() {
+        return Err(Error::new("CANCELLED", "weather request cancelled"));
+    }
+    Ok(format!("{location} is sunny at 26°C."))
+}
+
+let agent = halo::agent::chat()
+    .model(chat)
+    .tools(get_weather())
+    .build()?;
+```
+
+The macro derives `ToolDefinition.parameters` from the function arguments, uses the function name as the default tool name, and requires an explicit `description`. A serializable return value is converted to the existing `Message::function(...)`; the function may also return `Message` directly. This does not expose ordinary `Function` values to the model and does not add `ToolContext`, `tool::Output`, or a `tool_result` envelope. Use an explicit `halo::agent::tool::Tool` implementation for stateful methods, closures, or custom `before/after/eval` hooks.
+
 Workspace selects local or server data sources. Local uses local files; server uses the configured database/remote store. Skills can be discovered by the Workspace loader; MCP connections and discovery should complete before Agent construction.
 
 Prompt templates render messages and named history variables. Memory uses `memory::Config::new(short, long)`, optional scopes, compression, extraction, and an application ID function. Checkpoint, Sandbox, Document, Search, Embed, Permission, and Middleware are all independent contracts with optional concrete Core implementations. See [`component_contracts.rs`](../examples/component_contracts.rs).
@@ -417,10 +442,15 @@ let team = halo::agent::team()
     .leader(halo::agent::react().model(leader_chat))
     .member(halo::agent::SubAgent::new("researcher", researcher)?)
     .member(halo::agent::SubAgent::new("writer", writer)?)
+    .handoff("leader", "writer")
     .build()?;
 ```
 
 See [`agent_live_team.rs`](../examples/agent_live_team.rs) and [`agent_live_three_subagents.rs`](../examples/agent_live_three_subagents.rs).
+
+`team_assign` is delegation: the member result returns to the Leader, which continues reasoning. `handoff` transfers control: the Leader does not resume after handing the task to a declared member, and the member's final Assistant Message becomes the run's final `Complete` with `finish_reason = "handoff"`. Targets are fixed at build time and the model can choose only from the declared targets; a model response cannot mix Handoff with other calls. If the member enters `waiting`, the run waits and resumes through the existing `reply` and Checkpoint rules.
+
+See [`agent_live_handoff.rs`](../examples/agent_live_handoff.rs) for a complete live VLLM example covering the Leader, fixed member, Handoff declaration, real model call, and terminal event.
 
 ## Example index
 
@@ -428,8 +458,10 @@ See [`agent_live_team.rs`](../examples/agent_live_team.rs) and [`agent_live_thre
 - [`agent_live_tool.rs`](../examples/agent_live_tool.rs): real VLLM plus a real local tool.
 - [`agent_memory.rs`](../examples/agent_memory.rs): Agent and Memory.
 - [`agent_permission.rs`](../examples/agent_permission.rs): Permission.
+- [`agent_live_handoff.rs`](../examples/agent_live_handoff.rs): live Team Handoff.
 - [`workflow_events.rs`](../examples/workflow_events.rs): Workflow events and State.
 - [`checkpoint.rs`](../examples/checkpoint.rs): save and restore.
 - [`component_contracts.rs`](../examples/component_contracts.rs): low-level contracts.
+- [`tool_macro.rs`](../examples/tool_macro.rs): `#[halo::tool]` functional Tool adapter.
 - [`provider_deepseek.rs`](../examples/provider_deepseek.rs): DeepSeek provider.
 - [`provider_vllm.rs`](../examples/provider_vllm.rs): VLLM provider.

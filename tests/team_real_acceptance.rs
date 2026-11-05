@@ -67,6 +67,19 @@ fn chat(provider: &Vllm) -> Result<VllmChat, Error> {
     )
 }
 
+fn handoff_chat(provider: &Vllm) -> Result<VllmChat, Error> {
+    provider.chat(
+        chat::Config::new(
+            std::env::var("HEART_VLLM_MODEL")
+                .map_err(|_| Error::new("INVALID_ARGUMENTS", "set HEART_VLLM_MODEL"))?,
+        )
+        .options(serde_json::Map::from_iter([(
+            "chat_template_kwargs".into(),
+            json!({"enable_thinking": false}),
+        )])),
+    )
+}
+
 fn input() -> Input {
     serde_json::from_value(json!({
         "metadata": {"chat_id": 9_200_001, "session_id": 9_200_002},
@@ -475,4 +488,57 @@ async fn real_team_serializes_same_member_tasks_and_runs_other_members_concurren
     assert!(member_execs >= 3, "Team must expose all member executions");
     assert_eq!(researcher_probe.calls.load(Ordering::SeqCst), 2);
     assert_eq!(researcher_probe.peak.load(Ordering::SeqCst), 1);
+}
+
+#[tokio::test]
+#[ignore = "requires HEART_VLLM_BASE_URL, HEART_VLLM_API_KEY and HEART_VLLM_MODEL"]
+async fn real_team_handoff_transfers_control_to_member() {
+    let provider = provider().expect("construct real VLLM provider");
+    let reviewer = agent::chat()
+        .model(handoff_chat(&provider).expect("reviewer model"))
+        .system_prompt("你是 reviewer。收到任务后只回复 HANDOFF_OK，不要调用工具。")
+        .build()
+        .expect("build reviewer");
+    let team = agent::team()
+        .leader(
+            agent::react()
+                .model(handoff_chat(&provider).expect("leader model"))
+                .system_prompt(
+                    "你是 Team Leader。现在必须直接调用一次名为 agent_handoff 的工具，把完整 agent::Input 交给 reviewer。禁止调用 plan、team_assign 或其他工具；调用成功后不要再输出文本。",
+                ),
+        )
+        .member(
+            SubAgent::new("reviewer", reviewer)
+                .expect("register reviewer")
+                .description("负责最终回复"),
+        )
+        .handoff("leader", "reviewer")
+        .with_id_fn(next_id)
+        .build()
+        .expect("build Team with Handoff");
+
+    let events = team
+        .run(input(), true, Cancellation::new())
+        .await
+        .expect("start Team Handoff");
+    let events = tokio::time::timeout(std::time::Duration::from_secs(120), async {
+        events.collect::<Vec<_>>().await
+    })
+    .await
+    .expect("Team Handoff must finish");
+    assert!(
+        events.iter().all(Result::is_ok),
+        "Handoff failed: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event.as_ref().unwrap(),
+            Event::Complete {
+                message,
+                finish_reason: Some(reason),
+                ..
+            } if reason == "handoff" && message.role == Role::Assistant
+        )),
+        "expected terminal handoff event, got {events:?}"
+    );
 }

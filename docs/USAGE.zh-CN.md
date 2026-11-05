@@ -516,6 +516,31 @@ let chat = provider.chat(halo::agent::model::chat::Config::new("model-name"))?;
 
 Tool 必须提供稳定 `ToolDefinition` 和异步 `call`；参数 Schema 根必须是 object。`before` 可以校验/补齐参数，`after` 可以修改返回 Message，`eval` 可以反馈业务结果。
 
+如果工具只是一个普通的异步 Rust 函数，可以使用 `#[halo::tool]` 生成现有 Tool 契约的包装器：
+
+```rust
+use halo::Cancellation;
+use halo::agent::Error;
+
+#[halo::tool(description = "查询指定城市天气")]
+async fn get_weather(
+    location: String,
+    cancellation: &Cancellation,
+) -> Result<String, Error> {
+    if cancellation.is_cancelled() {
+        return Err(Error::new("CANCELLED", "weather request cancelled"));
+    }
+    Ok(format!("{location} 今天晴，26°C。"))
+}
+
+let agent = halo::agent::chat()
+    .model(chat)
+    .tools(get_weather())
+    .build()?;
+```
+
+宏会根据函数参数生成 `ToolDefinition.parameters`，函数名默认作为工具名，`description` 必须显式提供；返回的可序列化值会转换为既有的 `Message::function(...)`，也可以直接返回 `Message`。该方式不会把普通 `Function` 自动暴露给模型，也不新增 `ToolContext`、`tool::Output` 或 `tool_result` 包装。复杂方法、闭包或需要自定义 `before/after/eval` 的工具继续直接实现 `halo::agent::tool::Tool`。
+
 ```rust
 impl halo::agent::tool::Tool for Weather {
     fn definition(&self) -> &ToolDefinition { &DEFINITION }
@@ -711,10 +736,15 @@ let team = agent::team()
     .leader(agent::react().model(leader_chat))
     .member(agent::SubAgent::new("researcher", researcher)?)
     .member(agent::SubAgent::new("writer", writer)?)
+    .handoff("leader", "writer")
     .build()?;
 ```
 
 团队成员共享外部 `chat_id/session_id` 关联，但保留各自执行状态。成员失败时由 Team/Agent Runtime 根据错误和计划决定重试、反馈或重规划；不要在成员内部偷偷创建第二个 Team 调度器。
+
+`team_assign` 是委派：成员完成后结果回到 Leader，Leader 继续推理。`handoff` 是控制权转交：Leader 把任务交给声明的成员后不再恢复，成员的最终 Assistant Message 就是本次运行的最终 `Complete`，其 `finish_reason` 为 `handoff`。目标只能是构建阶段已经注册的成员，模型只能从声明目标中选择；一次模型响应不能同时发起 Handoff 和其他调用。成员如果进入 `waiting`，运行仍按现有 `reply`/Checkpoint 规则等待和恢复。
+
+完整的真实 VLLM 示例见 [`agent_live_handoff.rs`](../examples/agent_live_handoff.rs)。它展示了 Leader、固定成员、`handoff` 声明、真实模型调用和最终事件收口。
 
 ---
 
@@ -726,6 +756,7 @@ let team = agent::team()
 | [`agent_live_tool.rs`](../examples/agent_live_tool.rs) | 真实 VLLM + 真实本地工具调用 |
 | [`agent_live_subagent.rs`](../examples/agent_live_subagent.rs) | SubAgent 委派 |
 | [`agent_live_team.rs`](../examples/agent_live_team.rs) | Team Leader 和成员 |
+| [`agent_live_handoff.rs`](../examples/agent_live_handoff.rs) | Team Leader Handoff，真实 VLLM |
 | [`agent_live_three_subagents.rs`](../examples/agent_live_three_subagents.rs) | 多个静态 SubAgent |
 | [`agent_memory.rs`](../examples/agent_memory.rs) | Agent 与短/长期 Memory |
 | [`agent_middleware.rs`](../examples/agent_middleware.rs) | Middleware 生命周期 |
@@ -734,6 +765,7 @@ let team = agent::team()
 | [`checkpoint.rs`](../examples/checkpoint.rs) | Checkpoint 保存与恢复 |
 | [`component_contracts.rs`](../examples/component_contracts.rs) | 基础组件契约 |
 | [`planning_evaluation.rs`](../examples/planning_evaluation.rs) | Planner、Evaluator |
+| [`tool_macro.rs`](../examples/tool_macro.rs) | `#[halo::tool]` 函数式 Tool |
 | [`compress.rs`](../examples/compress.rs) | Prompt 与压缩 |
 | [`short_memory.rs`](../examples/short_memory.rs) | Session/Chat/Long Memory CRUD |
 | [`provider_deepseek.rs`](../examples/provider_deepseek.rs) | DeepSeek Provider |

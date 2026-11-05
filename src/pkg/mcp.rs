@@ -1,4 +1,4 @@
-//! Adapter for the official Model Context Protocol Rust SDK.
+//! Adapter for the official Model Context Protocol Rust SDK (`rmcp`).
 //!
 //! Only this module knows the SDK types. The rest of Heart consumes the small
 //! transport-neutral values below and maps them to the public MCP contract.

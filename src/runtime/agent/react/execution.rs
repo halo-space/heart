@@ -296,6 +296,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 model: state.model.clone(),
                 dispatch: state.dispatch.clone(),
                 subagents: state.subagents.clone(),
+                handoff_targets: state.handoff_targets.clone(),
                 team_mode: state.team_mode,
                 max_iters: state.max_iters,
                 max_concurrency: state.max_concurrency,
@@ -715,4 +716,39 @@ pub(super) fn finalize<M: Chat>(state: &mut ReActState<M>) -> Result<(), Error> 
 }
 
 #[cfg(test)]
-mod tests;
+mod tests {
+    use super::*;
+
+    #[test]
+    fn planned_task_instruction_is_merged_into_the_existing_system_message() {
+        let mut system = Message::new(Role::System);
+        system.content.push(Part {
+            r#type: "text".into(),
+            data: part_data(json!({"value": "parent instructions"})),
+        });
+        let user = Message::new(Role::User);
+        let input = Message::new(Role::User);
+
+        let messages = task_messages(Messages::new([system, user]), input);
+
+        assert_eq!(
+            messages
+                .0
+                .iter()
+                .map(|message| message.role.clone())
+                .collect::<Vec<_>>(),
+            [Role::System, Role::User, Role::User]
+        );
+        assert_eq!(messages.0[0].content.len(), 2);
+        assert_eq!(
+            messages.0[0].content[0].data["value"],
+            "parent instructions"
+        );
+        assert!(
+            messages.0[0].content[1].data["value"]
+                .as_str()
+                .unwrap()
+                .contains("current planned task objective")
+        );
+    }
+}
