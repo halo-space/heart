@@ -450,6 +450,8 @@ See [`agent_live_team.rs`](../examples/agent_live_team.rs) and [`agent_live_thre
 
 `team_assign` is delegation: the member result returns to the Leader, which continues reasoning. `handoff` transfers control: the Leader does not resume after handing the task to a declared member, and the member's final Assistant Message becomes the run's final `Complete` with `finish_reason = "handoff"`. Targets are fixed at build time and the model can choose only from the declared targets; a model response cannot mix Handoff with other calls. If the member enters `waiting`, the run waits and resumes through the existing `reply` and Checkpoint rules.
 
+Checkpoint stores runtime facts rather than an arbitrary Rust Tool Future. A Tool with no committed business result may re-enter its method during recovery, while reusing the saved question and feedback; completed business results are not submitted twice, and external side effects should remain idempotent at the Tool boundary.
+
 See [`agent_live_handoff.rs`](../examples/agent_live_handoff.rs) for a complete live VLLM example covering the Leader, fixed member, Handoff declaration, real model call, and terminal event.
 
 ## Example index

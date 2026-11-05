@@ -744,6 +744,8 @@ let team = agent::team()
 
 `team_assign` 是委派：成员完成后结果回到 Leader，Leader 继续推理。`handoff` 是控制权转交：Leader 把任务交给声明的成员后不再恢复，成员的最终 Assistant Message 就是本次运行的最终 `Complete`，其 `finish_reason` 为 `handoff`。目标只能是构建阶段已经注册的成员，模型只能从声明目标中选择；一次模型响应不能同时发起 Handoff 和其他调用。成员如果进入 `waiting`，运行仍按现有 `reply`/Checkpoint 规则等待和恢复。
 
+Checkpoint 保存的是运行现场，不是任意 Rust Tool Future。尚未提交业务结果的 Tool 恢复时会重新进入方法，但会复用已保存的问题和反馈；已完成的业务结果不会重复提交，外部副作用仍应由工具实现保持幂等。
+
 完整的真实 VLLM 示例见 [`agent_live_handoff.rs`](../examples/agent_live_handoff.rs)。它展示了 Leader、固定成员、`handoff` 声明、真实模型调用和最终事件收口。
 
 ---

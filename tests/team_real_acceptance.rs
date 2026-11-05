@@ -123,6 +123,42 @@ impl Tool for AskForApproval {
     }
 }
 
+struct CountedApproval(Arc<AtomicUsize>);
+
+impl Tool for CountedApproval {
+    fn definition(&self) -> &ToolDefinition {
+        static DEFINITION: std::sync::LazyLock<ToolDefinition> =
+            std::sync::LazyLock::new(|| ToolDefinition {
+                name: "ask_for_approval".into(),
+                description: "Ask the user for approval and wait for one reply".into(),
+                parameters: serde_json::from_value(json!({
+                    "type":"object",
+                    "properties":{"question":{"type":"string"}},
+                    "required":["question"],
+                    "additionalProperties":false
+                }))
+                .expect("approval schema"),
+            });
+        &DEFINITION
+    }
+
+    async fn call(&self, call: &Call, cancellation: &Cancellation) -> Result<Message, Error> {
+        let question = call.arguments["question"]
+            .as_str()
+            .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "question is required"))?;
+        let mut prompt = Message::new(Role::Assistant);
+        prompt
+            .content
+            .push(halo::agent::model::content::part::Part {
+                r#type: "text".into(),
+                data: json!({"value": question}).as_object().unwrap().clone(),
+            });
+        let feedback = halo::agent::runtime::agent::wait::ask(prompt, 1, cancellation).await?;
+        self.0.fetch_add(1, Ordering::SeqCst);
+        Ok(Message::function(json!({"user_feedback": feedback.0})))
+    }
+}
+
 struct FailAfter;
 
 impl Middleware for FailAfter {
@@ -540,5 +576,166 @@ async fn real_team_handoff_transfers_control_to_member() {
             } if reason == "handoff" && message.role == Role::Assistant
         )),
         "expected terminal handoff event, got {events:?}"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires HEART_VLLM_BASE_URL, HEART_VLLM_API_KEY and HEART_VLLM_MODEL"]
+async fn real_team_handoff_waits_for_reply_then_finishes() {
+    let provider = provider().expect("construct real VLLM provider");
+    let reviewer = agent::react()
+        .model(chat(&provider).expect("reviewer model"))
+        .system_prompt(
+            "你是 reviewer。必须调用 ask_for_approval 询问用户是否批准；收到反馈后只回复 HANDOFF_APPROVED。",
+        )
+        .tools([AskForApproval])
+        .build()
+        .expect("build reviewer");
+    let team = agent::team()
+        .leader(
+            agent::react()
+                .model(chat(&provider).expect("leader model"))
+                .system_prompt(
+                    "你是 Team Leader。必须直接调用 agent_handoff，把完整 agent::Input 交给 reviewer；禁止调用 plan、team_assign 或其他工具，调用后不要继续输出。",
+                ),
+        )
+        .member(SubAgent::new("reviewer", reviewer).unwrap())
+        .handoff("leader", "reviewer")
+        .with_id_fn(next_id)
+        .build()
+        .expect("build Team with Handoff");
+
+    let cancellation = Cancellation::new();
+    let mut first_input = input();
+    first_input
+        .metadata
+        .insert("chat_id".into(), json!(9_300_101));
+    let mut events = team
+        .run(first_input.clone(), true, cancellation.clone())
+        .await
+        .expect("start Handoff");
+    let reply_id = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(90), events.next())
+            .await
+            .expect("Handoff must reach waiting")
+            .unwrap_or_else(|| panic!("Handoff ended before waiting"))
+            .expect("Handoff event before waiting");
+        if let Event::Complete { message, .. } = event
+            && let Some(reply_id) = message.metadata.get("reply_id").and_then(Value::as_i64)
+        {
+            break reply_id;
+        }
+    };
+    let mut reply = first_input;
+    reply.metadata.insert("reply_id".into(), json!(reply_id));
+    reply.payload[0].data = json!({"value":"批准。"});
+    team.reply(reply, cancellation)
+        .await
+        .expect("reply to reviewer");
+    let tail = tokio::time::timeout(std::time::Duration::from_secs(90), async {
+        events.collect::<Vec<_>>().await
+    })
+    .await
+    .expect("Handoff must finish after reply");
+    assert!(tail.iter().all(Result::is_ok), "Handoff failed: {tail:?}");
+    assert!(tail.iter().any(|event| matches!(
+        event.as_ref().unwrap(),
+        Event::Complete {
+            finish_reason: Some(reason),
+            ..
+        } if reason == "handoff"
+    )));
+}
+
+#[tokio::test]
+#[ignore = "requires HEART_VLLM_BASE_URL, HEART_VLLM_API_KEY and HEART_VLLM_MODEL"]
+async fn real_team_handoff_checkpoint_restores_waiting_member_without_repeating_completed_tool_effect()
+ {
+    let provider = provider().expect("construct real VLLM provider");
+    let checkpoint = std::sync::Arc::new(halo::agent::core::checkpoint::InMemory::new());
+    let calls = Arc::new(AtomicUsize::new(0));
+    let build_team = || {
+        let reviewer = agent::react()
+            .model(chat(&provider).expect("reviewer model"))
+            .system_prompt(
+                "你是 reviewer。必须调用 ask_for_approval 询问用户是否批准；收到反馈后只回复 HANDOFF_APPROVED。",
+            )
+            .tools([CountedApproval(Arc::clone(&calls))])
+            .with_id_fn(next_id)
+            .build()
+            .expect("build reviewer");
+        agent::team()
+            .leader(
+                agent::react()
+                    .model(chat(&provider).expect("leader model"))
+                    .system_prompt(
+                        "你是 Team Leader。必须直接调用 agent_handoff，把完整 agent::Input 交给 reviewer；禁止调用 plan、team_assign 或其他工具，调用后不要继续输出。",
+                    )
+                    .checkpoint(checkpoint.clone())
+                    .with_id_fn(next_id),
+            )
+            .member(SubAgent::new("reviewer", reviewer).unwrap())
+            .handoff("leader", "reviewer")
+            .with_id_fn(next_id)
+            .build()
+            .expect("build Team with Handoff")
+    };
+
+    let mut first_input = input();
+    first_input
+        .metadata
+        .insert("chat_id".into(), json!(9_300_102));
+    let first = build_team();
+    let cancellation = Cancellation::new();
+    let mut events = first
+        .run(first_input.clone(), true, cancellation)
+        .await
+        .expect("start Handoff with Checkpoint");
+    let reply_id = loop {
+        let event = tokio::time::timeout(std::time::Duration::from_secs(90), events.next())
+            .await
+            .expect("Handoff must reach waiting")
+            .unwrap_or_else(|| panic!("Handoff ended before waiting"))
+            .expect("Handoff event before waiting");
+        if let Event::Complete { message, .. } = event
+            && let Some(reply_id) = message.metadata.get("reply_id").and_then(Value::as_i64)
+        {
+            break reply_id;
+        }
+    };
+    let saved = checkpoint
+        .load(9_300_102, &Cancellation::new())
+        .await
+        .expect("waiting Handoff checkpoint");
+    assert_eq!(saved["status"], "waiting");
+    drop(events);
+
+    let mut reply = first_input;
+    reply.metadata.insert("reply_id".into(), json!(reply_id));
+    reply.payload[0].data = json!({"value":"批准。"});
+    let restored = build_team()
+        .run(reply, true, Cancellation::new())
+        .await
+        .expect("restore Handoff");
+    let tail = tokio::time::timeout(std::time::Duration::from_secs(90), async {
+        restored.collect::<Vec<_>>().await
+    })
+    .await
+    .expect("restored Handoff must finish");
+    assert!(
+        tail.iter().all(Result::is_ok),
+        "restored Handoff failed: {tail:?}"
+    );
+    assert!(tail.iter().any(|event| matches!(
+        event.as_ref().unwrap(),
+        Event::Complete {
+            finish_reason: Some(reason),
+            ..
+        } if reason == "handoff"
+    )));
+    assert_eq!(
+        calls.load(Ordering::SeqCst),
+        1,
+        "completed Tool effect must not repeat"
     );
 }
