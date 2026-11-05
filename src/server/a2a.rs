@@ -285,14 +285,29 @@ where
         let live = self.live.clone();
         let projection = self.projection.clone();
         let task_id = context.task_id.clone();
+        let error_service = self.clone();
+        let error_context = context.clone();
         let output = crate::core::protocol::a2a::adapt(stream, context);
         Ok(Box::pin(output.then(move |response| {
             let store = store.clone();
             let live = live.clone();
             let projection = projection.clone();
             let task_id = task_id.clone();
+            let error_service = error_service.clone();
+            let error_context = error_context.clone();
             async move {
-                let response = response?;
+                let response = match response {
+                    Ok(response) => response,
+                    Err(error) => {
+                        // A Runtime/Event stream error is still a terminal
+                        // externally visible task fact. Persist it before
+                        // returning so detached HTTP drivers and later
+                        // resubscriptions observe canceled/failed instead of
+                        // a task stranded in working.
+                        error_service.record_error(&error_context, &error).await?;
+                        return Err(error);
+                    }
+                };
                 let _guard = projection.lock().await;
                 store.record(&task_id, response.clone()).await?;
                 live.publish(&task_id, response.clone());

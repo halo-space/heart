@@ -162,15 +162,39 @@ where
             match state.source.next().await {
                 Some(Ok(event)) => {
                     state.sequence += 1;
+                    let cancelled = matches!(
+                        &event,
+                        HeartEvent::Complete {
+                            finish_reason: Some(reason),
+                            ..
+                        } if reason == "cancelled"
+                    );
+                    let waiting = matches!(
+                        &event,
+                        HeartEvent::Complete { message, .. }
+                            if message.metadata.contains_key("reply_id")
+                    );
                     match state.convert(event) {
                         Ok(Some(response)) => state.queue.push_back(response),
                         Ok(None) => {}
+                        Err(_error) if cancelled => {}
                         Err(error) => {
                             state.terminal = true;
                             state.queue.push_back(StreamResponse::TaskStatusUpdateEvent(
                                 state.error_status(&error),
                             ));
                         }
+                    }
+                    if waiting && !cancelled && !state.terminal {
+                        state.queue.push_back(StreamResponse::TaskStatusUpdateEvent(
+                            state.error_status(&Error::new("WAITING", "Agent requires a reply")),
+                        ));
+                    }
+                    if cancelled {
+                        state.terminal = true;
+                        state.queue.push_back(StreamResponse::TaskStatusUpdateEvent(
+                            state.error_status(&Error::new("CANCELLED", "Agent run cancelled")),
+                        ));
                     }
                 }
                 Some(Err(error)) => {
@@ -342,6 +366,12 @@ fn content_part(part: &HeartPart) -> Result<Part, Error> {
                 Error::new("A2A_INVALID_PART", "text content is missing a string value")
             }),
         "function" => Ok(Part::data(Value::Object(part.data.clone()))),
+        "tool_call" => {
+            let mut data = Map::new();
+            data.insert("type".into(), Value::String("tool_call".into()));
+            data.insert("data".into(), Value::Object(part.data.clone()));
+            Ok(Part::data(Value::Object(data)))
+        }
         other => Err(Error::new(
             "A2A_INVALID_PART",
             format!("unsupported Heart content type: {other}"),
@@ -461,6 +491,106 @@ mod tests {
                 if update.status.state == TaskState::Canceled
                     && update.status.message.as_ref().is_some_and(|message|
                         message.metadata.get("code") == Some(&json!("CANCELLED")))
+        ));
+    }
+
+    #[tokio::test]
+    async fn maps_cancelled_complete_to_canceled_instead_of_completed() {
+        let mut message = Message::new(Role::Assistant);
+        message.content.push(Part {
+            r#type: "text".into(),
+            data: json!({"value": "已收到的部分输出"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        });
+        let source = futures_util::stream::iter(vec![Ok(HeartEvent::Complete {
+            message,
+            usage: None,
+            finish_reason: Some("cancelled".into()),
+        })]);
+        let output = adapt(source, Context::new(2001, 3001, "task-3001"))
+            .collect::<Vec<_>>()
+            .await;
+        assert!(output.iter().any(|item| matches!(
+            item,
+            Ok(StreamResponse::TaskArtifactUpdateEvent(update))
+                if update.artifact.parts[0].text.as_deref() == Some("已收到的部分输出")
+        )));
+        assert!(matches!(
+            output.last(),
+            Some(Ok(StreamResponse::TaskStatusUpdateEvent(update)))
+                if update.status.state == TaskState::Canceled
+        ));
+        assert!(!output.iter().any(|item| matches!(
+            item,
+            Ok(StreamResponse::TaskStatusUpdateEvent(update))
+                if update.status.state == TaskState::Completed
+        )));
+    }
+
+    #[tokio::test]
+    async fn preserves_tool_call_as_structured_a2a_data() {
+        let mut message = Message::new(Role::Assistant);
+        message.content.push(Part {
+            r#type: "tool_call".into(),
+            data: json!({
+                "call_id": "call-1",
+                "name": "ask_for_approval",
+                "arguments": {"count": 1}
+            })
+            .as_object()
+            .unwrap()
+            .clone(),
+        });
+        let source = futures_util::stream::iter(vec![Ok(HeartEvent::Complete {
+            message,
+            usage: None,
+            finish_reason: Some("stop".into()),
+        })]);
+        let output = adapt(source, Context::new(2001, 3001, "task-3001"))
+            .collect::<Vec<_>>()
+            .await;
+        assert!(output.iter().any(|item| matches!(
+            item,
+            Ok(StreamResponse::TaskArtifactUpdateEvent(update))
+                if update.artifact.parts[0].data.as_ref().is_some_and(|data|
+                    data["type"] == json!("tool_call")
+                        && data["data"]["name"] == json!("ask_for_approval")
+                )
+        )));
+    }
+
+    #[tokio::test]
+    async fn maps_reply_id_complete_to_input_required() {
+        let mut message = Message::new(Role::Assistant);
+        message.metadata.insert("reply_id".into(), json!(42));
+        message.content.push(Part {
+            r#type: "text".into(),
+            data: json!({"value": "请批准"}).as_object().unwrap().clone(),
+        });
+        let source = futures_util::stream::once(async move {
+            Ok(HeartEvent::Complete {
+                message,
+                usage: None,
+                finish_reason: None,
+            })
+        })
+        .chain(futures_util::stream::pending());
+        let mut output = Box::pin(adapt(source, Context::new(2001, 3001, "task-3001")));
+        assert!(matches!(
+            output.next().await,
+            Some(Ok(StreamResponse::Task(_)))
+        ));
+        assert!(matches!(
+            output.next().await,
+            Some(Ok(StreamResponse::TaskArtifactUpdateEvent(_)))
+        ));
+        assert!(matches!(
+            output.next().await,
+            Some(Ok(StreamResponse::TaskStatusUpdateEvent(update)))
+                if update.status.state == TaskState::InputRequired
+                    && update.status.message.is_none()
         ));
     }
 
