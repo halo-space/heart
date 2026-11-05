@@ -739,3 +739,158 @@ async fn real_team_handoff_checkpoint_restores_waiting_member_without_repeating_
         "completed Tool effect must not repeat"
     );
 }
+
+#[tokio::test]
+#[ignore = "requires HEART_VLLM_BASE_URL, HEART_VLLM_API_KEY and HEART_VLLM_MODEL"]
+async fn real_team_handoff_failure_returns_direct_error_and_saves_member_state() {
+    let provider = provider().expect("construct real VLLM provider");
+    let checkpoint = std::sync::Arc::new(halo::agent::core::checkpoint::InMemory::new());
+    let reviewer = agent::react()
+        .model(chat(&provider).expect("reviewer model"))
+        .system_prompt("你是 reviewer。收到任务后只回复 REVIEW_OK，不调用工具。")
+        .middleware(FailAfter)
+        .build()
+        .expect("build failing reviewer");
+    let team = agent::team()
+        .leader(
+            agent::react()
+                .model(chat(&provider).expect("leader model"))
+                .system_prompt(
+                    "你是 Team Leader。必须直接调用 agent_handoff，把完整 agent::Input 交给 reviewer；禁止调用 plan、team_assign 或其他工具，调用后不要继续输出。",
+                )
+                .checkpoint(checkpoint.clone())
+                .with_id_fn(next_id),
+        )
+        .member(SubAgent::new("reviewer", reviewer).unwrap())
+        .handoff("leader", "reviewer")
+        .with_id_fn(next_id)
+        .build()
+        .expect("build Team with Handoff");
+
+    let mut run_input = input();
+    run_input
+        .metadata
+        .insert("chat_id".into(), json!(9_300_103));
+    let events = team
+        .run(run_input, true, Cancellation::new())
+        .await
+        .expect("start Handoff failure");
+    let events = tokio::time::timeout(std::time::Duration::from_secs(120), async {
+        events.collect::<Vec<_>>().await
+    })
+    .await
+    .expect("Handoff failure must finish");
+    assert!(
+        events
+            .iter()
+            .any(|event| matches!(event, Err(error) if error.code == "FAILED")),
+        "expected direct member failure: {events:?}"
+    );
+    assert!(!events.iter().any(|event| matches!(
+        event,
+        Ok(Event::Complete { message, .. })
+            if message.role == Role::Tool
+                && message.values.get("name").and_then(Value::as_str) == Some("agent_handoff")
+    )));
+
+    let saved = checkpoint
+        .load(9_300_103, &Cancellation::new())
+        .await
+        .expect("failed Handoff checkpoint");
+    assert_eq!(saved["status"], "failed");
+    let child = saved["execution"]["attempts"][0]["nodes"]
+        .as_object()
+        .and_then(|nodes| nodes.values().next())
+        .expect("failed member node");
+    assert_eq!(child["status"], "failed");
+    assert_eq!(child["execution"]["attempts"][0]["error"]["code"], "FAILED");
+}
+
+#[tokio::test]
+#[ignore = "requires HEART_VLLM_BASE_URL, HEART_VLLM_API_KEY and HEART_VLLM_MODEL"]
+async fn real_team_handoff_cancellation_closes_run_and_preserves_member_state() {
+    let provider = provider().expect("construct real VLLM provider");
+    let checkpoint = std::sync::Arc::new(halo::agent::core::checkpoint::InMemory::new());
+    let reviewer = agent::react()
+        .model(chat(&provider).expect("reviewer model"))
+        .system_prompt("你是 reviewer。收到任务后只回复 REVIEW_OK，不调用工具。")
+        .build()
+        .expect("build reviewer");
+    let team = agent::team()
+        .leader(
+            agent::react()
+                .model(chat(&provider).expect("leader model"))
+                .system_prompt(
+                    "你是 Team Leader。必须直接调用 agent_handoff，把完整 agent::Input 交给 reviewer；禁止调用 plan、team_assign 或其他工具，调用后不要继续输出。",
+                )
+                .checkpoint(checkpoint.clone())
+                .with_id_fn(next_id),
+        )
+        .member(SubAgent::new("reviewer", reviewer).unwrap())
+        .handoff("leader", "reviewer")
+        .with_id_fn(next_id)
+        .build()
+        .expect("build Team with Handoff");
+
+    let cancellation = Cancellation::new();
+    let mut run_input = input();
+    run_input
+        .metadata
+        .insert("chat_id".into(), json!(9_300_104));
+    let mut events = team
+        .run(run_input, true, cancellation.clone())
+        .await
+        .expect("start cancellable Handoff");
+    let mut saw_member = false;
+    while let Some(event) = tokio::time::timeout(std::time::Duration::from_secs(90), events.next())
+        .await
+        .expect("Handoff must emit before cancellation")
+    {
+        let event = event.expect("event before cancellation");
+        let message = match event {
+            Event::Delta { message } | Event::Complete { message, .. } => message,
+        };
+        if message.metadata.contains_key("node_id") {
+            saw_member = true;
+            cancellation.cancel();
+            break;
+        }
+    }
+    assert!(
+        saw_member,
+        "Handoff must start the member before cancellation"
+    );
+    let tail = tokio::time::timeout(std::time::Duration::from_secs(90), async {
+        events.collect::<Vec<_>>().await
+    })
+    .await
+    .expect("cancelled Handoff must finish");
+    assert!(
+        tail.iter()
+            .any(|event| matches!(event, Err(error) if error.code == "CANCELLED"))
+            || tail.iter().any(|event| matches!(
+                event,
+                Ok(Event::Complete {
+                    finish_reason: Some(reason),
+                    ..
+                }) if reason == "cancelled"
+            )),
+        "cancelled Handoff did not close with cancellation: {tail:?}"
+    );
+    let saved = checkpoint
+        .load(9_300_104, &Cancellation::new())
+        .await
+        .expect("cancelled Handoff checkpoint");
+    assert!(matches!(
+        saved["status"].as_str(),
+        Some("stopped" | "failed")
+    ));
+    let child = saved["execution"]["attempts"][0]["nodes"]
+        .as_object()
+        .and_then(|nodes| nodes.values().next())
+        .expect("cancelled member node");
+    assert!(matches!(
+        child["status"].as_str(),
+        Some("stopped" | "cancelled")
+    ));
+}
