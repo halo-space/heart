@@ -1,6 +1,6 @@
 [package]
 name = "halo-agent"
-version = "0.1.3"
+version = "0.1.5"
 edition = "2024"
 rust-version = "1.99.1"
 license = "MIT"
@@ -24,7 +24,7 @@ bench = false
 
 [dependencies]
 axum = { version = "0.8.9", default-features = false, features = ["json", "http1", "tokio"] }
-heart-node-macros = { path = "src/runtime/workflow/macros", version = "0.1.1" }
+heart-node-macros = { path = "src/runtime/workflow/macros", version = "0.1.2" }
 futures-core = "0.3"
 futures-util = { version = "0.3", features = ["alloc"] }
 jsonschema = { version = "0.58.5", default-features = false }

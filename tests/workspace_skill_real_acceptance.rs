@@ -2,6 +2,10 @@
 
 use std::{
     path::PathBuf,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::{SystemTime, UNIX_EPOCH},
 };
 
@@ -9,8 +13,8 @@ use futures_util::StreamExt;
 use halo::{
     agent::core::workspace::Local,
     agent::{
-        Agent, Cancellation, Input, Payload, event::Event, model::chat,
-        provider::deepseek::DeepSeek,
+        Agent, Cancellation, Error, Input, Payload, event::Event, middleware::Middleware,
+        model::chat, provider::deepseek::DeepSeek,
     },
     harness,
 };
@@ -50,6 +54,27 @@ impl Drop for TemporaryWorkspace {
     }
 }
 
+#[derive(Clone)]
+struct RequireSkillCalls {
+    count: Arc<AtomicUsize>,
+}
+
+impl Middleware for RequireSkillCalls {
+    async fn before_model(
+        &self,
+        input: &mut serde_json::Value,
+        _cancellation: &Cancellation,
+    ) -> Result<(), Error> {
+        let has_skill_tool = input["tools"]
+            .as_array()
+            .is_some_and(|tools| tools.iter().any(|tool| tool["name"] == "skill"));
+        if has_skill_tool && self.count.fetch_add(1, Ordering::SeqCst) < 2 {
+            input["tool_choice"] = json!({"Named": {"name": "skill"}});
+        }
+        Ok(())
+    }
+}
+
 #[tokio::test]
 #[ignore = "requires DEEPSEEK_API_KEY and accesses the live DeepSeek API"]
 async fn real_model_discovers_and_reads_a_local_workspace_skill() {
@@ -64,23 +89,32 @@ async fn real_model_discovers_and_reads_a_local_workspace_skill() {
         .build()
         .expect("construct the live DeepSeek provider");
     let model = provider
-        .chat(chat::Config::new(
-            std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-flash".into()),
-        ))
+        .chat(
+            chat::Config::new(
+                std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-flash".into()),
+            )
+            .options(serde_json::Map::from_iter([(
+                "thinking".into(),
+                json!({"type": "disabled"}),
+            )])),
+        )
         .expect("construct live Chat model");
     let agent = harness::builder()
         .model(model)
         .system_prompt(
-            "Follow the user request exactly. You must discover the named Workspace Skill, read its instructions, then read any referenced resource before answering. Never guess the requested verification code.",
+            "Follow the user request exactly. The only valid way to answer is to call the `skill` tool. First call it with {\"skill\":\"field-guide\"} to read the Skill instructions. Then call the same `skill` tool with {\"skill\":\"field-guide\",\"resource\":\"references/verification.md\"}. Do not answer before both tool calls and never guess the verification code.",
         )
         .workspace(workspace)
+        .middleware(RequireSkillCalls {
+            count: Arc::new(AtomicUsize::new(0)),
+        })
         .with_max_iters(5)
         .build()
         .expect("build Harness Agent with local Workspace");
     let input = Input {
         payload: vec![Payload {
             r#type: "text".into(),
-            data: json!({"value":"Read the field-guide Skill and its referenced verification.md resource, then tell me its verification code. Reply with only the code."}),
+            data: json!({"value":"Use the skill tool now. Read field-guide, then read references/verification.md through the skill tool, and reply with only the exact verification code from that resource."}),
             mime_type: None,
         }],
         ..Default::default()

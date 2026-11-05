@@ -536,16 +536,17 @@ impl Dispatch {
         &self,
         cancellation: &Cancellation,
     ) -> Result<Self, Error> {
-        let mut skills = self.skills.clone();
-        for loader in &self.skill_loaders {
+        let base = self.with_workspace_skills(cancellation).await?;
+        let mut skills = base.skills.clone();
+        for loader in &base.skill_loaders {
             skills.extend(await_stage(loader.discover(cancellation.clone()), cancellation).await?);
         }
         let view = Self {
-            entries: self.entries.clone(),
-            mcp_catalog: self.mcp_catalog.clone(),
+            entries: base.entries.clone(),
+            mcp_catalog: base.mcp_catalog.clone(),
             skills,
             skill_loaders: Vec::new(),
-            skill_reader: self.skill_reader,
+            skill_reader: base.skill_reader,
             workspace: None,
         };
         view.validate_skill_names()?;
