@@ -454,6 +454,8 @@ See [`channel_dingtalk.rs`](../examples/channel_dingtalk.rs) for a live DeepSeek
 
 The Feishu adapter uses the application WebSocket connection and the `im.message.receive_v1` event. The current version accepts ordinary text messages only; images, rich text, audio, and files are ignored instead of being silently flattened into text. The channel handles event conversion, process-local deduplication, and replies, while the application handler binds the input to an Agent, Workflow, or Harness.
 
+The first build of the Feishu SDK requires the Protocol Buffers compiler `protoc` on the host. On macOS, run `brew install protobuf`; CI should put `protoc` on `PATH` or set `PROTOC`.
+
 ```rust,no_run
 use halo::agent::channels::feishu;
 use halo::agent::Error;

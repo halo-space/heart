@@ -748,6 +748,8 @@ async fn main() -> Result<(), Error> {
 
 飞书渠道使用应用长连接接收 `im.message.receive_v1` 事件。当前版本只接收普通文本消息；图片、富文本、语音和文件会被明确忽略，不会静默转换成文本。渠道负责事件解析、进程内去重和消息回复，应用回调负责把 `Input` 交给 Agent、Workflow 或 Harness。
 
+首次编译飞书渠道依赖的 SDK 时需要系统安装 Protocol Buffers 编译器 `protoc`；macOS 可执行 `brew install protobuf`，CI 环境应把 `protoc` 放入 `PATH` 或设置 `PROTOC`。
+
 ```rust,no_run
 use halo::agent::channels::feishu;
 use halo::agent::Error;
