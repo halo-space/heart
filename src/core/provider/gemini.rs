@@ -98,11 +98,6 @@ pub struct Builder {
 }
 
 impl Builder {
-    pub fn provider_id(mut self, provider_id: i64) -> Self {
-        self.config.provider_id = provider_id;
-        self
-    }
-
     pub fn base_url(mut self, base_url: impl Into<String>) -> Self {
         self.config.base_url = base_url.into();
         self
