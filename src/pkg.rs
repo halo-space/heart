@@ -2,4 +2,5 @@
 //!
 //! Public component and core contracts must not expose SDK-specific types.
 pub(crate) mod dingtalk;
+pub(crate) mod feishu;
 pub(crate) mod mcp;

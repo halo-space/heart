@@ -25,6 +25,7 @@ pub mod protocol {
 /// External messaging channel adapters.
 pub mod channels {
     pub use crate::channels::dingtalk;
+    pub use crate::channels::feishu;
 }
 
 /// External service dispatch built on top of Agent and Workflow runtimes.

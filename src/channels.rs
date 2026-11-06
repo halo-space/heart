@@ -5,3 +5,4 @@
 //! or Harness entry point.
 
 pub mod dingtalk;
+pub mod feishu;

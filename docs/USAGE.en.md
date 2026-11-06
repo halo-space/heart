@@ -450,6 +450,32 @@ async fn main() -> Result<(), Error> {
 
 See [`channel_dingtalk.rs`](../examples/channel_dingtalk.rs) for a live DeepSeek Agent example. `Inbound::input` uses Heart's shared `agent::Input`, while `Reply::events` consumes the shared `Event` stream and sends visible Assistant text on `Complete`. The application supplies `chat_id`, `session_id`, and `reply_id` routing metadata. The channel does not duplicate Runtime State or Checkpoint data.
 
+## Feishu channel
+
+The Feishu adapter uses the application WebSocket connection and the `im.message.receive_v1` event. The current version accepts ordinary text messages only; images, rich text, audio, and files are ignored instead of being silently flattened into text. The channel handles event conversion, process-local deduplication, and replies, while the application handler binds the input to an Agent, Workflow, or Harness.
+
+```rust,no_run
+use halo::agent::channels::feishu;
+use halo::agent::Error;
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let channel = feishu::Channel::new(
+        feishu::Config::new(
+            std::env::var("FEISHU_APP_ID").unwrap(),
+            std::env::var("FEISHU_APP_SECRET").unwrap(),
+        ),
+        |inbound: feishu::Inbound, reply: feishu::Reply| async move {
+            let _ = inbound.input;
+            reply.text("Message received").await
+        },
+    )?;
+    channel.start().await
+}
+```
+
+See [`channel_feishu.rs`](../examples/channel_feishu.rs) for a live DeepSeek Agent example. `Inbound::input` uses Heart's shared `agent::Input`, while `Reply::events` consumes the shared `Event` stream and sends visible Assistant text on `Complete`. The application supplies `chat_id`, `session_id`, and `reply_id` routing metadata. The channel does not duplicate Runtime State or Checkpoint data.
+
 ---
 
 ## Team and multi-Agent
@@ -494,3 +520,4 @@ See [`agent_live_handoff.rs`](../examples/agent_live_handoff.rs) for a complete 
 - [`provider_deepseek.rs`](../examples/provider_deepseek.rs): DeepSeek provider.
 - [`provider_vllm.rs`](../examples/provider_vllm.rs): VLLM provider.
 - [`channel_dingtalk.rs`](../examples/channel_dingtalk.rs): DingTalk Stream channel with a live DeepSeek Agent.
+- [`channel_feishu.rs`](../examples/channel_feishu.rs): Feishu WebSocket channel with a live DeepSeek Agent.

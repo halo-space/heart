@@ -744,6 +744,32 @@ async fn main() -> Result<(), Error> {
 
 完整的真实 DeepSeek Agent 示例见 [`channel_dingtalk.rs`](../examples/channel_dingtalk.rs)。`Inbound::input` 使用 Heart 的 `agent::Input`，`Reply::events` 消费统一 `Event` 流并在 `Complete` 时发送可见文本。`chat_id`、`session_id` 和 `reply_id` 由应用回调结合自己的会话路由补充，渠道不复制 Runtime State 或 Checkpoint。
 
+## 飞书渠道
+
+飞书渠道使用应用长连接接收 `im.message.receive_v1` 事件。当前版本只接收普通文本消息；图片、富文本、语音和文件会被明确忽略，不会静默转换成文本。渠道负责事件解析、进程内去重和消息回复，应用回调负责把 `Input` 交给 Agent、Workflow 或 Harness。
+
+```rust,no_run
+use halo::agent::channels::feishu;
+use halo::agent::Error;
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let channel = feishu::Channel::new(
+        feishu::Config::new(
+            std::env::var("FEISHU_APP_ID").unwrap(),
+            std::env::var("FEISHU_APP_SECRET").unwrap(),
+        ),
+        |inbound: feishu::Inbound, reply: feishu::Reply| async move {
+            let _ = inbound.input;
+            reply.text("已收到消息").await
+        },
+    )?;
+    channel.start().await
+}
+```
+
+完整的真实 DeepSeek Agent 示例见 [`channel_feishu.rs`](../examples/channel_feishu.rs)。`Inbound::input` 使用 Heart 的 `agent::Input`，`Reply::events` 消费统一 `Event` 流并在 `Complete` 时发送可见文本。`chat_id`、`session_id` 和 `reply_id` 由应用回调结合自己的会话路由补充，渠道不复制 Runtime State 或 Checkpoint。
+
 ---
 
 ## Team 和多 Agent
@@ -800,6 +826,7 @@ Checkpoint 保存的是运行现场，不是任意 Rust Tool Future。尚未提�
 | [`provider_deepseek.rs`](../examples/provider_deepseek.rs) | DeepSeek Provider |
 | [`provider_vllm.rs`](../examples/provider_vllm.rs) | VLLM Provider |
 | [`channel_dingtalk.rs`](../examples/channel_dingtalk.rs) | 钉钉 Stream 渠道和真实 DeepSeek Agent |
+| [`channel_feishu.rs`](../examples/channel_feishu.rs) | 飞书 WebSocket 渠道和真实 DeepSeek Agent |
 
 ## 附录 B：排错顺序
 
