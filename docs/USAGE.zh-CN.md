@@ -717,6 +717,33 @@ axum::serve(listener, router).await?;
 
 Server 的 Task Store 保存外部任务投影；Agent/Workflow Runtime 仍是实际执行真相。Server 不复制 State、事件排序或等待恢复逻辑。Webhook、客户端和 SSE 适配可从 `halo::agent::server` 访问。
 
+## 钉钉渠道
+
+钉钉渠道使用 Stream 长连接接收机器人消息。渠道只负责平台消息解析、消息去重和发送，应用回调负责把 `Input` 交给 Agent、Workflow 或 Harness。
+
+```rust,no_run
+use halo::agent::Error;
+use halo::agent::channels::dingtalk;
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let channel = dingtalk::Channel::new(
+        dingtalk::Config::new(
+            std::env::var("DINGTALK_CLIENT_ID").unwrap(),
+            std::env::var("DINGTALK_CLIENT_SECRET").unwrap(),
+        ),
+        |inbound: dingtalk::Inbound, reply: dingtalk::Reply| async move {
+            // 在这里绑定 agent、workflow 或 harness。
+            let _ = inbound.input;
+            reply.text("已收到消息").await
+        },
+    )?;
+    channel.start().await
+}
+```
+
+完整的真实 DeepSeek Agent 示例见 [`channel_dingtalk.rs`](../examples/channel_dingtalk.rs)。`Inbound::input` 使用 Heart 的 `agent::Input`，`Reply::events` 消费统一 `Event` 流并在 `Complete` 时发送可见文本。`chat_id`、`session_id` 和 `reply_id` 由应用回调结合自己的会话路由补充，渠道不复制 Runtime State 或 Checkpoint。
+
 ---
 
 ## Team 和多 Agent
@@ -772,6 +799,7 @@ Checkpoint 保存的是运行现场，不是任意 Rust Tool Future。尚未提�
 | [`short_memory.rs`](../examples/short_memory.rs) | Session/Chat/Long Memory CRUD |
 | [`provider_deepseek.rs`](../examples/provider_deepseek.rs) | DeepSeek Provider |
 | [`provider_vllm.rs`](../examples/provider_vllm.rs) | VLLM Provider |
+| [`channel_dingtalk.rs`](../examples/channel_dingtalk.rs) | 钉钉 Stream 渠道和真实 DeepSeek Agent |
 
 ## 附录 B：排错顺序
 

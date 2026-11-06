@@ -424,6 +424,32 @@ axum::serve(listener, router).await?;
 
 The external Task Store is a projection. Agent/Workflow Runtime remains the source of execution truth and the HTTP layer does not duplicate State or waiting logic.
 
+## DingTalk channel
+
+The DingTalk adapter uses Stream mode for inbound bot messages. The adapter parses and deduplicates platform messages, then delegates the Heart `Input` to an application handler. The handler can bind an Agent, Workflow, or Harness.
+
+```rust,no_run
+use halo::agent::{Cancellation, Error};
+use halo::agent::channels::dingtalk;
+
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    let channel = dingtalk::Channel::new(
+        dingtalk::Config::new(
+            std::env::var("DINGTALK_CLIENT_ID").unwrap(),
+            std::env::var("DINGTALK_CLIENT_SECRET").unwrap(),
+        ),
+        |inbound: dingtalk::Inbound, reply: dingtalk::Reply| async move {
+            let _ = inbound.input;
+            reply.text("Message received").await
+        },
+    )?;
+    channel.start().await
+}
+```
+
+See [`channel_dingtalk.rs`](../examples/channel_dingtalk.rs) for a live DeepSeek Agent example. `Inbound::input` uses Heart's shared `agent::Input`, while `Reply::events` consumes the shared `Event` stream and sends visible Assistant text on `Complete`. The application supplies `chat_id`, `session_id`, and `reply_id` routing metadata. The channel does not duplicate Runtime State or Checkpoint data.
+
 ---
 
 ## Team and multi-Agent
@@ -467,3 +493,4 @@ See [`agent_live_handoff.rs`](../examples/agent_live_handoff.rs) for a complete 
 - [`tool_macro.rs`](../examples/tool_macro.rs): `#[halo::tool]` functional Tool adapter.
 - [`provider_deepseek.rs`](../examples/provider_deepseek.rs): DeepSeek provider.
 - [`provider_vllm.rs`](../examples/provider_vllm.rs): VLLM provider.
+- [`channel_dingtalk.rs`](../examples/channel_dingtalk.rs): DingTalk Stream channel with a live DeepSeek Agent.

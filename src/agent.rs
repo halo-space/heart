@@ -22,6 +22,11 @@ pub mod protocol {
     pub use crate::core::protocol::ag_ui;
 }
 
+/// External messaging channel adapters.
+pub mod channels {
+    pub use crate::channels::dingtalk;
+}
+
 /// External service dispatch built on top of Agent and Workflow runtimes.
 /// Transport bindings are intentionally kept outside the Runtime itself.
 pub mod server {
