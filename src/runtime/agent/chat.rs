@@ -2667,7 +2667,7 @@ mod tests {
     impl AgentContract for WaitingSubAgent {
         async fn reply(
             &self,
-            _: crate::agent::Input,
+            _: crate::components::agent::Input,
             _: crate::Cancellation,
         ) -> Result<(), crate::Error> {
             Err(crate::Error::new(
@@ -2705,7 +2705,7 @@ mod tests {
     impl AgentContract for CountingSubAgent {
         async fn reply(
             &self,
-            _: crate::agent::Input,
+            _: crate::components::agent::Input,
             _: crate::Cancellation,
         ) -> Result<(), crate::Error> {
             Err(crate::Error::new(

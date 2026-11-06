@@ -649,7 +649,7 @@ pub(crate) async fn consume(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Message, agent::Payload, message::Role, runtime::agent::node};
+    use crate::{Message, components::agent::Payload, message::Role, runtime::agent::node};
     use serde_json::json;
     use std::collections::BTreeMap;
 

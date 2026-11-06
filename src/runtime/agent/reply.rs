@@ -859,7 +859,7 @@ pub(crate) fn apply(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::agent::Payload;
+    use crate::components::agent::Payload;
     use serde_json::json;
     fn metadata() -> Map<String, Value> {
         Map::from_iter([

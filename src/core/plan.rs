@@ -97,7 +97,7 @@ impl<C: Chat> plan::Planner for Planner<C> {
 #[cfg(test)]
 mod tests {
     use super::{decode_plan, stream_request};
-    use crate::agent::{Input, Payload};
+    use crate::components::agent::{Input, Payload};
     use crate::components::{
         message::{Message, Messages, Role},
         model::content::part::{Part, object},

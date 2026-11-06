@@ -3288,8 +3288,8 @@ mod progress_tests;
 mod tests {
     use super::*;
     use crate::Cancellation;
-    use crate::agent::{Agent, Input as AgentInput};
     use crate::checkpoint::Checkpoint;
+    use crate::components::agent::{Agent, Input as AgentInput};
     use crate::components::node::{Node, Signal, View, Wait as NodeWait};
     use crate::runtime::workflow::graph::{END, START};
     use futures_executor::block_on;
@@ -3488,7 +3488,7 @@ mod tests {
     impl Agent for WaitingAgent {
         async fn reply(
             &self,
-            _: crate::agent::Input,
+            _: crate::components::agent::Input,
             _: crate::Cancellation,
         ) -> Result<(), crate::Error> {
             Err(crate::Error::new(
@@ -3530,7 +3530,7 @@ mod tests {
     impl Agent for RestoringAgent {
         async fn reply(
             &self,
-            _: crate::agent::Input,
+            _: crate::components::agent::Input,
             _: crate::Cancellation,
         ) -> Result<(), crate::Error> {
             Err(crate::Error::new(
@@ -3574,7 +3574,7 @@ mod tests {
     impl Agent for MeteredAgent {
         async fn reply(
             &self,
-            _: crate::agent::Input,
+            _: crate::components::agent::Input,
             _: crate::Cancellation,
         ) -> Result<(), crate::Error> {
             Err(crate::Error::new(
@@ -3821,7 +3821,7 @@ mod tests {
     impl Agent for FakeAgent {
         async fn reply(
             &self,
-            _: crate::agent::Input,
+            _: crate::components::agent::Input,
             _: crate::Cancellation,
         ) -> Result<(), crate::Error> {
             Err(crate::Error::new(
