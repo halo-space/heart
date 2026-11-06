@@ -1,9 +1,11 @@
 //! Pure model-backed Agent planning. Callers or Harness can invoke it;
 //! Runtime owns execution state and uses the returned complete logical DAG.
 
-use crate::model::chat::{Chat, Request};
-use crate::plan::{self, Error, Plan};
-use crate::{Cancellation, Messages, agent::Input, message::Role};
+use crate::Cancellation;
+use crate::components::agent::Input;
+use crate::components::message::{Message, Messages, Role};
+use crate::components::model::chat::{Chat, Request};
+use crate::components::plan::{self, Error, Plan};
 
 const INSTRUCTION: &str = "Return only a complete JSON Agent plan with version, nodes and edges. \
 version must be a positive JSON integer number (for example 1), never a string or decimal. \
@@ -57,7 +59,7 @@ fn input(
     ]))
 }
 
-pub(crate) fn decode_plan(message: &crate::Message) -> Result<Plan, Error> {
+pub(crate) fn decode_plan(message: &Message) -> Result<Plan, Error> {
     let plan: Plan = super::structured::decode(message)?;
     plan.validate()?;
     Ok(plan)

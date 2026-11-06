@@ -16,7 +16,7 @@ use sha2::{Digest, Sha256};
 
 use crate::Cancellation;
 use crate::Error;
-use crate::agent::{self, Agent};
+use crate::components::agent::{self, Agent};
 use crate::components::event::Event;
 use crate::components::message::Messages;
 use crate::components::message::Role;

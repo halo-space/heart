@@ -611,7 +611,7 @@ pub(crate) async fn consume(
                 payload: feedback
                     .content
                     .iter()
-                    .map(|part| crate::agent::Payload {
+                    .map(|part| crate::components::agent::Payload {
                         r#type: part.r#type.clone(),
                         data: Value::Object(part.data.clone()),
                         mime_type: None,

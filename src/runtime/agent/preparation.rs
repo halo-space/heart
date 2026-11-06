@@ -1,9 +1,12 @@
 //! Native preparation facts of this Agent execution, never component-global.
 use serde::{Deserialize, Serialize};
 
+use crate::Cancellation;
+use crate::Error;
+use crate::components::agent::Input;
+use crate::components::message::Messages;
 use crate::runtime::agent::history::{History, Run};
 use crate::runtime::agent::hooks::{Hooks, Stage as Hook};
-use crate::{Cancellation, Error, Messages, agent::Input};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]

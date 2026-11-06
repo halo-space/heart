@@ -2,8 +2,7 @@
 use crate::runtime::agent::node::{State, Status, Step};
 use crate::{
     Cancellation, Error, Message,
-    agent::Input,
-    components::agent::Agent,
+    components::agent::{Agent, Input},
     components::node::View,
     event::Event,
     message::Role,

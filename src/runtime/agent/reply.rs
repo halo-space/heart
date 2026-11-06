@@ -1,7 +1,7 @@
 //! Transient handoff for a live run. Only the actual Steps/waits are saved.
 use crate::{
     Cancellation, Error, Message,
-    agent::Input,
+    components::agent::Input,
     event::Event,
     message::Role,
     model::content::part::Part,

@@ -3,9 +3,11 @@
 
 use std::future::Future;
 
-use crate::evaluation::{self, Error, Evaluation};
-use crate::model::chat::{Chat, Request};
-use crate::{Cancellation, Messages, agent::Input, message::Role};
+use crate::Cancellation;
+use crate::components::agent::Input;
+use crate::components::evaluation::{self, Error, Evaluation};
+use crate::components::message::{Messages, Role};
+use crate::components::model::chat::{Chat, Request};
 
 const INSTRUCTION: &str = "Evaluate only whether the supplied final Agent result satisfies the original user input. \
 Return a JSON object with passed (boolean) and feedback (null or the existing Messages array). \

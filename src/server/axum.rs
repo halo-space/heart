@@ -15,7 +15,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::Error;
-use crate::agent::Agent;
+use crate::components::agent::Agent;
 use crate::components::protocol::a2a::{SendMessageRequest, StreamResponse};
 use crate::server::a2a::Service;
 use crate::server::tasks::Store;

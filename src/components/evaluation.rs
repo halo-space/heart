@@ -1,6 +1,8 @@
 //! Agent-level final-result evaluation, separate from Tool::eval.
 
-use crate::{Cancellation, Messages, agent::Input};
+use crate::Cancellation;
+use crate::components::agent::Input;
+use crate::components::message::Messages;
 use serde::{Deserialize, Serialize};
 
 pub type Error = crate::Error;

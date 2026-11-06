@@ -20,7 +20,7 @@ use std::sync::{Arc, Mutex};
 use futures_util::StreamExt;
 
 use crate::Error;
-use crate::agent::{Input as AgentInput, Payload as AgentPayload};
+use crate::components::agent::{Input as AgentInput, Payload as AgentPayload};
 use crate::components::message::{Messages, Role};
 use crate::components::node::{Signal, View};
 use crate::runtime::agent::history::{History, Run};

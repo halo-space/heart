@@ -20,7 +20,6 @@ pub(crate) mod document {
     pub use crate::components::document::*;
 }
 pub use components::error::Error;
-pub(crate) use components::evaluation;
 pub(crate) use components::event;
 pub mod harness;
 pub(crate) use components::mcp;
@@ -37,7 +36,6 @@ pub(crate) mod node {
 }
 pub use cancellation::Cancellation;
 pub(crate) use components::permission;
-pub(crate) use components::plan;
 pub(crate) use components::reason;
 pub(crate) use components::sandbox;
 pub(crate) use components::skill;

@@ -500,7 +500,7 @@ impl Graph {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::plan::{Edge, PlanNode};
+    use crate::components::plan::{Edge, PlanNode};
 
     fn plan(edges: &[(&str, &str)]) -> Plan {
         let mut nodes = BTreeMap::new();

@@ -13,7 +13,9 @@ use std::{
 
 use futures_core::Stream;
 
-use crate::{Error, agent::event::Event, agent::model::token::Usage};
+use crate::Error;
+use crate::components::event::Event;
+use crate::components::model::token::Usage;
 
 /// Counters and settled model usage observed from one event stream.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -100,7 +102,7 @@ where
             }) => {
                 observation.complete = observation.complete.saturating_add(1);
                 observation.usage =
-                    crate::agent::model::token::merge(observation.usage.take(), usage.clone());
+                    crate::components::model::token::merge(observation.usage.take(), usage.clone());
                 observation.last_finish_reason = finish_reason.clone();
             }
             Err(error) => {

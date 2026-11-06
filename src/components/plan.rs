@@ -1,7 +1,9 @@
 //! Pure Agent planning contracts and logical DAG operations.
 //! Runtime execution state and persistence do not belong to Plan or Planner.
 
-use crate::{Cancellation, Messages, agent::Input};
+use crate::Cancellation;
+use crate::components::agent::Input;
+use crate::components::message::Messages;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, ser::SerializeMap};
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 

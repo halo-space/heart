@@ -2912,8 +2912,8 @@ mod progress_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::evaluation::{Evaluation, Evaluator};
-    use crate::plan::{Edge, Plan, PlanNode};
+    use crate::components::evaluation::{Evaluation, Evaluator};
+    use crate::components::plan::{Edge, Plan, PlanNode};
     use futures_executor::block_on;
 
     struct Accept;

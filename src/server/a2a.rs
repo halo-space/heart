@@ -13,8 +13,7 @@ use serde_json::{Map, Value};
 use tokio::sync::broadcast;
 
 use crate::Error;
-use crate::agent::Input;
-use crate::components::agent::Agent;
+use crate::components::agent::{Agent, Input};
 use crate::components::protocol::a2a::{
     Context, Message, Part, Role, SendMessageRequest, StreamResponse, Task, TaskState, TaskStatus,
     TaskStatusUpdateEvent,
