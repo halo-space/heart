@@ -426,7 +426,7 @@ The external Task Store is a projection. Agent/Workflow Runtime remains the sour
 
 ## DingTalk channel
 
-The DingTalk adapter uses Stream mode for inbound bot messages. The adapter parses and deduplicates platform messages, then delegates the Heart `Input` to an application handler. The handler can bind an Agent, Workflow, or Harness.
+The DingTalk adapter uses Stream mode for inbound bot messages. The current version accepts ordinary DingTalk text messages only; images, rich text, audio, and files are rejected instead of being silently flattened into text. The adapter parses and deduplicates platform messages, then delegates the Heart `Input` to an application handler. The handler can bind an Agent, Workflow, or Harness.
 
 ```rust,no_run
 use halo::agent::{Cancellation, Error};

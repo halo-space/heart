@@ -34,11 +34,17 @@ pub struct Inbound {
 
 impl Inbound {
     /// Parse one DingTalk Stream callback body into the shared Agent input.
-    pub fn parse(body: &MessageBody) -> Result<Self, Error> {
+    pub(crate) fn parse(body: &MessageBody) -> Result<Self, Error> {
         let value: Value = serde_json::from_str(&body.data)
             .map_err(|error| Error::new("INVALID_ARGUMENTS", error.to_string()))?;
         let message = ChatbotMessage::from_value(&value)
             .map_err(|error| Error::new("INVALID_ARGUMENTS", error.to_string()))?;
+        if message.message_type.as_deref() != Some("text") {
+            return Err(Error::new(
+                "INVALID_ARGUMENTS",
+                "DingTalk channel currently accepts text messages only",
+            ));
+        }
         let message_id = message
             .message_id
             .clone()
@@ -81,10 +87,6 @@ impl Inbound {
             message,
         })
     }
-
-    pub fn message(&self) -> &ChatbotMessage {
-        &self.message
-    }
 }
 
 fn insert_optional(metadata: &mut Map<String, Value>, key: &str, value: Option<String>) {
@@ -101,7 +103,7 @@ pub struct Reply {
 }
 
 impl Reply {
-    pub fn new(replier: ChatbotReplier, message: ChatbotMessage) -> Self {
+    pub(crate) fn new(replier: ChatbotReplier, message: ChatbotMessage) -> Self {
         Self { replier, message }
     }
 
@@ -113,12 +115,13 @@ impl Reply {
             .map_err(|error| Error::new("TRANSPORT", error.to_string()))
     }
 
-    /// Consume a Heart Event stream and send the final visible Assistant text.
-    /// Delta events remain available to callers that need platform-specific
-    /// draft updates, while ordinary DingTalk text replies close on Complete.
+    /// Consume a Heart Event stream and send each visible Assistant text from
+    /// a Complete event.
+    /// Delta events are ignored by this adapter; callers that need
+    /// platform-specific draft updates should consume the stream themselves.
     pub async fn events<S>(&self, events: S) -> Result<(), Error>
     where
-        S: Stream<Item = Result<Event, Error>> + Send + 'static,
+        S: Stream<Item = Result<Event, Error>> + Send,
     {
         futures_util::pin_mut!(events);
         while let Some(event) = events.next().await {
@@ -148,7 +151,7 @@ impl Reply {
     }
 }
 
-type HandlerFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
+pub type HandlerFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
 
 /// Application-owned binding from a DingTalk message to an Agent, Workflow,
 /// or Harness entry point.
@@ -320,6 +323,16 @@ mod tests {
         assert!(
             Inbound::parse(&body(
                 r#"{"msgId":"message-1","msgtype":"picture","content":{}}"#,
+            ))
+            .is_err()
+        );
+        assert!(
+            Inbound::parse(&body(
+                r#"{
+                    "msgId":"message-2",
+                    "msgtype":"richText",
+                    "content":{"richText":[{"text":"这不是纯文本输入"}]}
+                }"#,
             ))
             .is_err()
         );

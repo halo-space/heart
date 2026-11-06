@@ -719,7 +719,7 @@ Server 的 Task Store 保存外部任务投影；Agent/Workflow Runtime 仍是�
 
 ## 钉钉渠道
 
-钉钉渠道使用 Stream 长连接接收机器人消息。渠道只负责平台消息解析、消息去重和发送，应用回调负责把 `Input` 交给 Agent、Workflow 或 Harness。
+钉钉渠道使用 Stream 长连接接收机器人消息。当前版本只接收钉钉普通文本消息；图片、富文本、语音和文件不会被静默转换成文本。渠道只负责平台消息解析、消息去重和发送，应用回调负责把 `Input` 交给 Agent、Workflow 或 Harness。
 
 ```rust,no_run
 use halo::agent::Error;
