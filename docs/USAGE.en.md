@@ -356,6 +356,26 @@ or network isolation is required, the application should configure
 `core::sandbox::docker::Docker` or a server-side Workspace/Worker. Docker images must be
 prepared by the application; Heart never pulls an image or falls back to host execution.
 
+### AgentScope-style Harness console
+
+This example follows the real structure of AgentScope's `examples/console/main.py`
+using Heart's contracts: DeepSeek provides the model, `core::workspace::Local`
+provides filesystem tools, and Harness composes Permission, short/long Memory,
+concurrency, and iteration limits. Read/search operations are allowed while write,
+delete, and execute operations produce a
+real Permission `Ask`; the terminal answers `y` or `n`, then `agent.reply(...)`
+continues the same run.
+
+```bash
+DEEPSEEK_API_KEY=... \\
+DEEPSEEK_MODEL=deepseek-flash \\
+HEART_WORKDIR=./heart-workspace \\
+cargo run --example console_harness
+```
+
+Enter `exit` or `quit` to leave. The example does not fake tool results or create a
+second Harness execution loop. See [`console_harness.rs`](../examples/console_harness.rs).
+
 ---
 
 ## Short/long memory and persistence
@@ -522,5 +542,6 @@ See [`agent_live_handoff.rs`](../examples/agent_live_handoff.rs) for a complete 
 - [`provider_deepseek.rs`](../examples/provider_deepseek.rs): DeepSeek provider.
 - [`provider_vllm.rs`](../examples/provider_vllm.rs): VLLM provider.
 - [`real_weather_agent.rs`](../examples/real_weather_agent.rs): a real DeepSeek + Open-Meteo weather agent.
+- [`console_harness.rs`](../examples/console_harness.rs): an AgentScope-console-style live Harness session.
 - [`channel_dingtalk.rs`](../examples/channel_dingtalk.rs): DingTalk Stream channel with a live DeepSeek Agent.
 - [`channel_feishu.rs`](../examples/channel_feishu.rs): Feishu WebSocket channel with a live DeepSeek Agent.

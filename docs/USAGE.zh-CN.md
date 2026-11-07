@@ -612,6 +612,24 @@ let memory = halo::agent::memory::Config::new(short_store, long_store)
 
 综合组件示例见 [`component_contracts.rs`](../examples/component_contracts.rs)。
 
+### 13.7 AgentScope Console 风格的 Harness 案例
+
+这个案例参考 AgentScope 的 `examples/console/main.py`，但使用 Heart 的真实契约：
+DeepSeek 负责模型推理，`core::workspace::Local` 提供本地文件工具，Harness 组合
+Permission、短期/长期 Memory、并发和迭代限制。读取/搜索工具自动允许，写入、删除或执行操作会触发真实的
+Permission `Ask`，终端输入 `y` 或 `n` 后通过 `agent.reply(...)` 继续同一运行。
+
+```bash
+DEEPSEEK_API_KEY=... \\
+DEEPSEEK_MODEL=deepseek-flash \\
+HEART_WORKDIR=./heart-workspace \\
+cargo run --example console_harness
+```
+
+输入 `exit` 或 `quit` 退出。这个示例不伪造工具结果，也不把 Workspace、Memory 或
+Permission 复制成另一套 Harness 执行循环；完整代码见
+[`console_harness.rs`](../examples/console_harness.rs)。
+
 ---
 
 ## 短期、长期记忆和持久化
@@ -828,6 +846,7 @@ Checkpoint 保存的是运行现场，不是任意 Rust Tool Future。尚未提�
 | [`provider_deepseek.rs`](../examples/provider_deepseek.rs) | DeepSeek Provider |
 | [`provider_vllm.rs`](../examples/provider_vllm.rs) | VLLM Provider |
 | [`real_weather_agent.rs`](../examples/real_weather_agent.rs) | DeepSeek + Open-Meteo 真实天气问答 |
+| [`console_harness.rs`](../examples/console_harness.rs) | AgentScope Console 风格的真实 Harness 终端交互 |
 | [`channel_dingtalk.rs`](../examples/channel_dingtalk.rs) | 钉钉 Stream 渠道和真实 DeepSeek Agent |
 | [`channel_feishu.rs`](../examples/channel_feishu.rs) | 飞书 WebSocket 渠道和真实 DeepSeek Agent |
 
