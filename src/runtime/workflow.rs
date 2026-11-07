@@ -681,7 +681,7 @@ impl Engine {
             .get("reply_id")
             .and_then(Value::as_i64)
             .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "reply requires reply_id"))?;
-        if saved_feedback_duplicate(&self.state, &input)? {
+        if reply_duplicate(&self.state, &input)? {
             return Ok(());
         }
         let mut paths = self.state.reply_paths(reply_id)?;
@@ -701,7 +701,7 @@ impl Engine {
         }
         let path = paths.pop().expect("one validated reply path");
         let scene = agent_scene_for_reply_path(&self.state, &path)?;
-        if !crate::runtime::agent::reply::saved_duplicate(scene, &input)?
+        if !crate::runtime::agent::reply::reply_duplicate(scene, &input)?
             && wait::ids(&self.state)?.first() != Some(&reply_id)
         {
             return Err(Error::new(
@@ -2444,16 +2444,19 @@ fn prepend_agent_observations(attempt: &mut node::Attempt, base: &node::Attempt)
 
 // A resolved contribution remains a fact even after its locator leaves the
 // pending queue or its containing graph finishes. It is not a new submission.
-fn saved_feedback_duplicate(state: &graph::State, input: &AgentInput) -> Result<bool, Error> {
+/// Search the complete Workflow snapshot for a reply already accepted by any
+/// embedded Agent scene. A duplicate is harmless and must not wake a second
+/// waiting owner.
+fn reply_duplicate(state: &graph::State, input: &AgentInput) -> Result<bool, Error> {
     let mut duplicate = false;
     for node in state.nodes.values() {
         for execution in node.executions.values() {
             if let Some(attempt) = execution.attempts.last() {
                 if let Some(scene) = &attempt.agent {
-                    duplicate |= crate::runtime::agent::reply::saved_duplicate(scene, input)?;
+                    duplicate |= crate::runtime::agent::reply::reply_duplicate(scene, input)?;
                 }
                 if let Some(child) = &attempt.graph {
-                    duplicate |= saved_feedback_duplicate(child, input)?;
+                    duplicate |= reply_duplicate(child, input)?;
                 }
             }
         }

@@ -126,6 +126,10 @@ impl<M> Builder<M>
 where
     M: Chat + 'static,
 {
+    /// Finish the long-task preset. This only assembles the configured Core
+    /// components and the existing ReAct runtime; it does not start a run.
+    /// The returned Agent keeps `run` and `reply` semantics identical to the
+    /// direct `agent::react()` builder.
     pub fn build(self) -> Result<Agent<M>, Error> {
         self.policy.validate()?;
         let dispatch = Dispatch::new().merge(self.workspace.unwrap_or_default())?;

@@ -81,8 +81,9 @@ where
     type Item = Result<Event, Error>;
 
     fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        // `source` is pinned together with this wrapper and is never moved
-        // after polling starts, so projecting the pin is sound.
+        // SAFETY: `source` is a structurally pinned field of `Observed`. The
+        // wrapper never moves it after polling starts, and this method creates
+        // only a shorter-lived pin to that field before delegating the poll.
         let this = unsafe { self.get_unchecked_mut() };
         let item = unsafe { Pin::new_unchecked(&mut this.source) }.poll_next(cx);
         let Poll::Ready(Some(ref result)) = item else {

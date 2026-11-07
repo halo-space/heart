@@ -1449,7 +1449,7 @@ where
                 && snapshot
                     .get("query")
                     .is_some_and(|query| serde_json::to_value(&input).ok().as_ref() != Some(query))
-                && !crate::runtime::agent::reply::saved_duplicate(&snapshot, &input)?
+                && !crate::runtime::agent::reply::reply_duplicate(&snapshot, &input)?
             {
                 return Err(Error::new(
                     "CONFLICT",

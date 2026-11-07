@@ -269,7 +269,7 @@ impl Memory for InMemory {
         }
         if records
             .values()
-            .any(|record| same_scope_and_type(&record.item, &item))
+            .any(|record| identity_matches(&record.item, &item))
         {
             return Err(Error::new(
                 "CONFLICT",
@@ -296,7 +296,7 @@ impl Memory for InMemory {
         if stored.item.version != version {
             return Err(Error::new("CONFLICT", "memory version does not match"));
         }
-        if !same_scope_and_type(
+        if !identity_matches(
             &stored.item,
             &request_as_item(
                 &request,
@@ -496,7 +496,9 @@ fn pagination(options: &serde_json::Map<String, Value>) -> Result<(usize, usize)
     Ok((offset, limit))
 }
 
-fn same_scope_and_type(left: &Item, right: &Item) -> bool {
+/// Find the existing record that an update replaces. Content and vectors are
+/// deliberately excluded from this identity comparison.
+fn identity_matches(left: &Item, right: &Item) -> bool {
     left.user_id == right.user_id
         && left.agent_id == right.agent_id
         && left.session_id == right.session_id

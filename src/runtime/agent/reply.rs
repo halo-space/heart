@@ -26,7 +26,7 @@ use tokio::sync::oneshot;
 pub(crate) mod feedback;
 mod restore;
 pub(crate) use restore::consume as consume_restore;
-pub(crate) use restore::duplicate as saved_duplicate;
+pub(crate) use restore::duplicate as reply_duplicate;
 pub(crate) use restore::pending as prepare_pending;
 pub(crate) use restore::prepare as prepare_restore;
 
@@ -1008,7 +1008,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_run_rejects_reusing_a_reply_id_for_a_second_question() {
-        fn same_id() -> i64 {
+        fn fixed_id() -> i64 {
             501
         }
 
@@ -1016,14 +1016,14 @@ mod tests {
         let run = hub.start(metadata()).unwrap();
         let call = call();
         let cancellation = Cancellation::new();
-        let mut first = Box::pin(run.ask(&call, "approve", same_id, &cancellation));
+        let mut first = Box::pin(run.ask(&call, "approve", fixed_id, &cancellation));
         assert!(futures_util::poll!(first.as_mut()).is_pending());
 
         assert_eq!(
             run.ask(
                 &call,
                 "approve another operation",
-                same_id,
+                fixed_id,
                 &Cancellation::new()
             )
             .await

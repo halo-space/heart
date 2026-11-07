@@ -13,6 +13,8 @@ pub(crate) struct Restore {
 }
 
 #[derive(Default)]
+/// Transient consumer rebuilt from one native Agent/Task coordinate during
+/// Checkpoint recovery; it is not a second persisted state tree.
 pub(super) struct Consumer {
     waits: Vec<wait::Wait>,
     questions: BTreeMap<String, Question>,
@@ -76,7 +78,10 @@ pub(super) struct Question {
     input: Option<Input>,
 }
 
-fn same_feedback(steps: &[Step], input: &Input) -> Result<bool, Error> {
+/// Match an external reply against the saved waiting Step identified by its
+/// `reply_id`. A false result means that this reply is not a duplicate; an
+/// error means the saved identity or feedback state is inconsistent.
+fn reply_match(steps: &[Step], input: &Input) -> Result<bool, Error> {
     let Some(id) = input.metadata.get("reply_id").and_then(Value::as_i64) else {
         return Ok(false);
     };
@@ -156,7 +161,7 @@ pub(crate) fn duplicate(scene: &Value, input: &Input) -> Result<bool, Error> {
     if !input.metadata.contains_key("reply_id") {
         return Ok(false);
     }
-    same_feedback(&steps(scene)?, input)
+    reply_match(&steps(scene)?, input)
 }
 
 pub(crate) fn prepare(scene: &Value, input: &Input) -> Result<Option<Restore>, Error> {
@@ -251,7 +256,7 @@ fn prepare_input(scene: &Value, input: Option<&Input>) -> Result<Option<Restore>
     let mut questions = BTreeMap::new();
     let mut tasks = BTreeMap::<wait::Node, Consumer>::new();
     let duplicate = input
-        .map(|input| same_feedback(&all_steps, input))
+        .map(|input| reply_match(&all_steps, input))
         .transpose()?
         .unwrap_or(false);
     let mut targeted = duplicate;

@@ -99,7 +99,7 @@ impl Wait {
             .feedback
             .as_slice()
             .iter()
-            .any(|saved| Self::same_feedback(saved, &feedback))
+            .any(|saved| Self::feedback_match(saved, &feedback))
         {
             return Ok(self.status == "resolved");
         }
@@ -131,7 +131,7 @@ impl Wait {
             || feedback.iter().enumerate().any(|(idx, message)| {
                 feedback[..idx]
                     .iter()
-                    .any(|previous| Self::same_feedback(previous, message))
+                    .any(|previous| Self::feedback_match(previous, message))
             })
         {
             return Err(Error::new(
@@ -142,7 +142,9 @@ impl Wait {
         Ok(())
     }
 
-    fn same_feedback(left: &Message, right: &Message) -> bool {
+    /// Compare only the submitted feedback payload. Transport metadata such
+    /// as `reply_id` does not make a repeated message a new contribution.
+    fn feedback_match(left: &Message, right: &Message) -> bool {
         left.role == right.role && left.content == right.content && left.values == right.values
     }
 }

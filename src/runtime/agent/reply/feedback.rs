@@ -4,12 +4,15 @@ use crate::Messages;
 use std::future::Future;
 use tokio::sync::mpsc;
 
+/// Live delivery state for one feedback question. Durable question facts stay
+/// in the owning `Wait`/`Step`; this value only bridges submissions to it.
 pub(super) struct Delivery {
     pub count: usize,
     pub submitted: Vec<Value>,
     pub sender: Option<mpsc::UnboundedSender<Input>>,
 }
 
+/// A saved feedback continuation waiting to be reattached to its Tool call.
 pub(super) struct Saved {
     pub call: Call,
     pub id: i64,
@@ -17,6 +20,7 @@ pub(super) struct Saved {
     pub input: Option<Input>,
 }
 
+/// Poll-local owner information used by `ask`; it is never serialized.
 #[derive(Clone)]
 struct Current {
     run: Option<Run>,
@@ -71,6 +75,9 @@ pub(crate) async fn ask(
     count: usize,
     cancellation: &Cancellation,
 ) -> Result<Messages, Error> {
+    // A Tool calls this function while it owns the current Step. On recovery,
+    // the saved Step is matched before allocating a new reply ID, so a waiting
+    // Tool resumes its collection instead of executing the operation again.
     let record = Wait::new("input", question, count)?;
     if cancellation.is_cancelled() {
         return Err(Error::new("CANCELLED", "feedback wait cancelled"));
@@ -111,7 +118,7 @@ pub(crate) async fn ask(
         .expect("saved feedback lock poisoned")
         .remove(&current.call.call_id);
     if let Some(saved) = saved {
-        if saved.call != current.call || !same_question(&saved.record, &record) {
+        if saved.call != current.call || !question_match(&saved.record, &record) {
             return Err(Error::new(
                 "CONFLICT",
                 "saved feedback belongs to a different operation or question",
@@ -143,7 +150,7 @@ pub(crate) async fn ask(
         }
         let matching = previous
             .iter()
-            .filter(|(_, wait)| same_question(wait, &record))
+            .filter(|(_, wait)| question_match(wait, &record))
             .collect::<Vec<_>>();
         if matching.len() != 1 {
             return Err(Error::new(
@@ -168,7 +175,12 @@ pub(crate) async fn ask(
     collect(run, &current.call, id, record, None, false, cancellation).await
 }
 
-fn same_question(left: &Wait, right: &Wait) -> bool {
+/// Match the stable facts of a waiting question during recovery.
+///
+/// `chat_id` and `reply_id` are transport/locator fields. They are validated
+/// separately and must not decide whether the restored question is the same
+/// operation, otherwise a new locator would cause the Tool to run again.
+fn question_match(left: &Wait, right: &Wait) -> bool {
     let mut left_meta = left.question.metadata.clone();
     let mut right_meta = right.question.metadata.clone();
     for key in ["chat_id", "reply_id"] {
@@ -192,6 +204,9 @@ async fn collect(
     restoring: bool,
     cancellation: &Cancellation,
 ) -> Result<Messages, Error> {
+    // The transient channel only carries live submissions. The durable facts
+    // are written to the owning Wait/Step; this keeps reply delivery separate
+    // from the Runtime checkpoint and preserves FIFO restoration.
     let chat_id = run
         .0
         .metadata
