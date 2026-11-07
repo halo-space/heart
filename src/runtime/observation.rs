@@ -1,5 +1,6 @@
 //! Private projection helpers, not a second event or execution model.
 
+use crate::components::message::Role;
 use crate::model::token::Usage;
 use crate::runtime::trace::fastrace::Root as TraceRoot;
 use crate::{Error, Message, event::Event};
@@ -29,11 +30,12 @@ fn usage_properties(usage: Option<&Usage>) -> Vec<(String, String)> {
 
 /// Project one public Event result into the configured fastrace span.
 ///
-/// Only lifecycle facts and error codes are recorded. Message content remains
-/// in the Event stream and Runtime State, not in the tracing backend.
+/// Keep Trace as a compact projection instead of copying the Event Stream.
+/// AgentScope records content on Agent/Model/Tool spans; streaming deltas stay
+/// in the public Event Stream and are not duplicated into the trace backend.
 pub(crate) fn observe_trace(trace: &TraceRoot, result: &Result<Event, Error>) {
     match result {
-        Ok(Event::Delta { .. }) => trace.event("event.delta"),
+        Ok(Event::Delta { .. }) => {}
         Ok(Event::Complete {
             message,
             usage,
@@ -47,6 +49,16 @@ pub(crate) fn observe_trace(trace: &TraceRoot, result: &Result<Event, Error>) {
             if let Some(reply_id) = message.metadata.get("reply_id").and_then(|v| v.as_i64()) {
                 properties.push(("reply_id".into(), reply_id.to_string()));
             }
+            // A non-tool assistant completion is the public Agent result. The
+            // model span still retains every individual model response.
+            if matches!(message.role, Role::Assistant)
+                && !message
+                    .content
+                    .iter()
+                    .any(|part| part.r#type == "tool_call")
+            {
+                trace.property_json("agent.output", message);
+            }
             trace.event_properties("event.complete", properties);
         }
         Err(error) => {
@@ -55,6 +67,7 @@ pub(crate) fn observe_trace(trace: &TraceRoot, result: &Result<Event, Error>) {
                 vec![
                     ("status".into(), "failed".into()),
                     ("error_code".into(), error.code.clone()),
+                    ("error_message".into(), error.message.clone()),
                 ],
             );
         }

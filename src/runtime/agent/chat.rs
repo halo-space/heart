@@ -894,6 +894,15 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                     this.input_tokens = this.pending_input_tokens.load(Ordering::Relaxed);
                     this.provider = Some(Box::pin(provider));
                     this.model_span = Some(this.trace.child("agent.model"));
+                    if let Some(request) = this
+                        .request
+                        .lock()
+                        .expect("Model request lock poisoned")
+                        .as_ref()
+                        && let Some(model_span) = this.model_span.as_ref()
+                    {
+                        model_span.property_json("model.input", request.as_ref());
+                    }
                     this.pending_provider = None;
                     return Pin::new(this).poll_next(cx);
                 }
@@ -1291,6 +1300,10 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                 usage,
                 finish_reason,
             }))) => {
+                if let Some(model_span) = this.model_span.as_ref() {
+                    model_span.property_json("model.output", &message);
+                    model_span.property_json("model.usage", &usage);
+                }
                 this.model_span = None;
                 crate::runtime::observation::clear_source(&mut message);
                 let usage = usage.or_else(|| message.usage.clone());
@@ -1361,6 +1374,9 @@ where
             return Err(Error::new("CANCELLED", "agent run cancelled"));
         }
         let trace = TraceRoot::start("agent.chat");
+        // Record the public input at the Agent span boundary. Runtime State
+        // remains the recovery truth; this is only the trace projection.
+        trace.property_json("agent.input", &input);
         if let Some(chat_id) = input.metadata.get("chat_id").and_then(Value::as_i64) {
             trace.property("chat_id", chat_id.to_string());
         }
@@ -1711,6 +1727,15 @@ where
             });
             events.stream = stream;
             events.request = request_scene.clone();
+            if let Some(request) = events
+                .request
+                .lock()
+                .expect("Model request lock poisoned")
+                .as_ref()
+                && let Some(model_span) = events.model_span.as_ref()
+            {
+                model_span.property_json("model.input", request.as_ref());
+            }
             events.preparation = preparation.clone();
             events.waits = restored_waits.clone();
             if processing_output {
@@ -2304,6 +2329,7 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
     } = execution;
     let tool_span = trace.child("agent.tool");
     tool_span.property("tool", call.name.clone());
+    tool_span.property_json("tool.call", &call);
     if cancellation.is_cancelled() {
         return Err(Error::new("CANCELLED", "tool call cancelled"));
     }
@@ -2406,6 +2432,7 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
     let (effective_call, business) = match result {
         Ok(result) => result,
         Err(error) => {
+            tool_span.property_json("tool.error", &error);
             let mut steps = steps.lock().expect("Tool steps lock poisoned");
             step::stopped(&mut steps, &call.call_id, &error);
             if control_failed || matches!(error.code.as_str(), "CANCELLED" | "WAITING") {
@@ -2416,6 +2443,7 @@ async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Messag
             return Ok(vec![message]);
         }
     };
+    tool_span.property_json("tool.result", &business);
     step::called(
         &mut steps.lock().expect("Tool steps lock poisoned"),
         &effective_call,

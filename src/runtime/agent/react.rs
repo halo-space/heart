@@ -584,6 +584,9 @@ where
             trace: TraceRoot::start("agent.react"),
             model_span: None,
         };
+        // Record the original public input once. The Agent graph and
+        // checkpoint continue to own mutable execution state.
+        state.trace.property_json("agent.input", &state.query);
         if let Some(chat_id) = state.metadata.get("chat_id").and_then(Value::as_i64) {
             state.trace.property("chat_id", chat_id.to_string());
         }
@@ -1772,6 +1775,7 @@ async fn next_react_event_inner<M: Chat + 'static>(
                 );
                 let tool_span = execution.trace.child("agent.tool");
                 tool_span.property("tool", effective.name.clone());
+                tool_span.property_json("tool.call", &effective);
                 let tool_execution = execution.clone();
                 let result = crate::runtime::agent::reply::feedback::with_slot(
                     permit.clone(),
@@ -2195,6 +2199,10 @@ async fn next_react_event_inner<M: Chat + 'static>(
                     usage,
                     finish_reason,
                 }) => {
+                    if let Some(model_span) = state.model_span.as_ref() {
+                        model_span.property_json("model.output", &message);
+                        model_span.property_json("model.usage", &usage);
+                    }
                     state.provider = None;
                     state.model_span = None;
                     crate::runtime::observation::clear_source(&mut message);
@@ -2718,10 +2726,14 @@ async fn next_react_event_inner<M: Chat + 'static>(
         state.model_pending = true;
         state.model_settled = false;
         state.partial = Message::new(Role::Assistant);
+        let request_for_trace = request.clone();
         match cancellable(state.model.stream(request), &state.cancellation).await {
             Ok(provider) => {
                 state.provider = Some(Box::pin(provider));
                 state.model_span = Some(state.trace.child("agent.model"));
+                if let Some(model_span) = state.model_span.as_ref() {
+                    model_span.property_json("model.input", &request_for_trace);
+                }
                 state.partial = Message::new(Role::Assistant);
             }
             Err(error) => {

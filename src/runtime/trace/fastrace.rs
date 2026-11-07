@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use ::fastrace::collector::{Reporter, SpanContext};
 use ::fastrace::{Event, Span};
+use serde::Serialize;
 
 pub use ::fastrace::collector::{Config, ConsoleReporter};
 
@@ -74,6 +75,19 @@ impl Root {
         self.span.add_property(|| (key, value));
     }
 
+    /// Add a structured value as JSON while keeping fastrace's string
+    /// property contract. Trace is an observability projection, so JSON is
+    /// used instead of Rust `Debug` output (`Some(...)`, `Number(...)`, etc.).
+    pub fn property_json<K, V>(&self, key: K, value: &V)
+    where
+        K: Into<Cow<'static, str>>,
+        V: Serialize,
+    {
+        let value =
+            serde_json::to_string(value).unwrap_or_else(|error| format!("{{\"error\":{error:?}}}"));
+        self.property(key, value);
+    }
+
     /// Run a future inside a child span. This keeps the span alive across
     /// `.await` and is safe for concurrent task execution.
     pub fn in_span<F>(
@@ -116,6 +130,17 @@ impl SpanScope {
         V: Into<Cow<'static, str>>,
     {
         self.span.add_property(|| (key, value));
+    }
+
+    /// Add a structured value as JSON to this child span.
+    pub fn property_json<K, V>(&self, key: K, value: &V)
+    where
+        K: Into<Cow<'static, str>>,
+        V: Serialize,
+    {
+        let value =
+            serde_json::to_string(value).unwrap_or_else(|error| format!("{{\"error\":{error:?}}}"));
+        self.property(key, value);
     }
 
     /// Run a future inside a child span below this scope.
