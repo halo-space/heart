@@ -827,6 +827,7 @@ Checkpoint 保存的是运行现场，不是任意 Rust Tool Future。尚未提�
 | [`short_memory.rs`](../examples/short_memory.rs) | Session/Chat/Long Memory CRUD |
 | [`provider_deepseek.rs`](../examples/provider_deepseek.rs) | DeepSeek Provider |
 | [`provider_vllm.rs`](../examples/provider_vllm.rs) | VLLM Provider |
+| [`real_weather_agent.rs`](../examples/real_weather_agent.rs) | DeepSeek + Open-Meteo 真实天气问答 |
 | [`channel_dingtalk.rs`](../examples/channel_dingtalk.rs) | 钉钉 Stream 渠道和真实 DeepSeek Agent |
 | [`channel_feishu.rs`](../examples/channel_feishu.rs) | 飞书 WebSocket 渠道和真实 DeepSeek Agent |
 

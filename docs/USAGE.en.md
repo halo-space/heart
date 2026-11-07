@@ -521,5 +521,6 @@ See [`agent_live_handoff.rs`](../examples/agent_live_handoff.rs) for a complete 
 - [`tool_macro.rs`](../examples/tool_macro.rs): `#[halo::tool]` functional Tool adapter.
 - [`provider_deepseek.rs`](../examples/provider_deepseek.rs): DeepSeek provider.
 - [`provider_vllm.rs`](../examples/provider_vllm.rs): VLLM provider.
+- [`real_weather_agent.rs`](../examples/real_weather_agent.rs): a real DeepSeek + Open-Meteo weather agent.
 - [`channel_dingtalk.rs`](../examples/channel_dingtalk.rs): DingTalk Stream channel with a live DeepSeek Agent.
 - [`channel_feishu.rs`](../examples/channel_feishu.rs): Feishu WebSocket channel with a live DeepSeek Agent.

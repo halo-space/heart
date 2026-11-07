@@ -77,6 +77,7 @@ cargo run --example provider_vllm
 | OpenAI-compatible Chat | [`examples/provider_chat.rs`](examples/provider_chat.rs) |
 | DeepSeek Chat Completions | [`examples/provider_deepseek.rs`](examples/provider_deepseek.rs) |
 | VLLM Chat Completions | [`examples/provider_vllm.rs`](examples/provider_vllm.rs) |
+| 真实天气问答（DeepSeek + Open-Meteo） | [`examples/real_weather_agent.rs`](examples/real_weather_agent.rs) |
 
 更多示例命令、依赖说明和故障排查见[中文详细使用手册](docs/USAGE.zh-CN.md)。
 
