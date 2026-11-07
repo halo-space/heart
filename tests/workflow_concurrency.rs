@@ -6,7 +6,7 @@ use std::sync::{
 
 use futures_util::{StreamExt, poll};
 use halo::agent::workflow::{
-    CompiledWorkflow, Runtime, WorkflowBuilder,
+    Builder, CompiledWorkflow, Runtime,
     graph::{END, START},
 };
 use halo::agent::{Cancellation, Error, Message, Messages};
@@ -42,7 +42,7 @@ fn gated(
     depth: usize,
     gate: Option<Arc<AtomicBool>>,
 ) -> CompiledWorkflow {
-    let mut builder = WorkflowBuilder::new("concurrency-leaves");
+    let mut builder = Builder::new("concurrency-leaves");
     for index in 0..branches {
         let probe = probe.clone();
         let gate = gate.clone();
@@ -82,7 +82,7 @@ fn gated(
     builder.add_edge("merge", END).unwrap();
     let mut graph = builder.compile().unwrap();
     for index in 0..depth {
-        let mut parent = WorkflowBuilder::new(format!("concurrency-wrapper-{index}"));
+        let mut parent = Builder::new(format!("concurrency-wrapper-{index}"));
         parent.add_graph_node("child", &graph).unwrap();
         parent.add_edge(START, "child").unwrap();
         parent.add_edge("child", END).unwrap();
@@ -127,7 +127,7 @@ async fn sibling_graphs_and_direct_leaves_share_one_budget() {
     for capacity in [1, 2, 4] {
         let probe = Arc::new(Probe::default());
         let child = compiled(probe.clone(), 8, 2);
-        let mut builder = WorkflowBuilder::new("shared-sibling-budget");
+        let mut builder = Builder::new("shared-sibling-budget");
         for name in ["left", "right"] {
             builder.add_graph_node(name, &child).unwrap();
             builder.add_edge(START, name).unwrap();

@@ -1739,9 +1739,10 @@ impl CompiledWorkflow {
 /// without introducing a second error representation.
 pub type GraphError = Error;
 
-pub struct WorkflowBuilder {
+pub struct Builder {
     definition_id: String,
     max_nodes: usize,
+    dsl_nodes: BTreeMap<String, crate::core::workflow::dsl::Node>,
     nodes: BTreeMap<String, NodeDefinition>,
     codecs: BTreeMap<String, (bool, bool)>,
     executors: BTreeMap<String, Arc<dyn ErasedNode>>,
@@ -1752,11 +1753,12 @@ pub struct WorkflowBuilder {
     loops: BTreeMap<String, LoopFn>,
 }
 
-impl WorkflowBuilder {
+impl Builder {
     pub fn new(definition_id: impl Into<String>) -> Self {
         Self {
             definition_id: definition_id.into(),
             max_nodes: 100,
+            dsl_nodes: BTreeMap::new(),
             nodes: BTreeMap::new(),
             codecs: BTreeMap::new(),
             executors: BTreeMap::new(),
@@ -1771,6 +1773,246 @@ impl WorkflowBuilder {
     pub fn with_max_nodes(mut self, max_nodes: usize) -> Self {
         self.max_nodes = max_nodes;
         self
+    }
+
+    /// Start a builder from a validated serializable Native DSL document.
+    ///
+    /// The document supplies only static graph facts. Executable functions,
+    /// Agents, Tools and child Workflows are bound explicitly through the
+    /// `bind_*` methods below; no name lookup table or dynamic registry is
+    /// created.
+    pub fn from_dsl(document: crate::core::workflow::dsl::Document) -> Result<Self, GraphError> {
+        document
+            .validate()
+            .map_err(|error| GraphError::new(&error.code, error.message))?;
+        let mut builder = Self::new(document.definition_id.clone());
+        if document.nodes.len() > builder.max_nodes {
+            return Err(GraphError::new("MAX_NODES", "workflow node limit exceeded"));
+        }
+        for (node_id, node) in document.nodes {
+            builder.dsl_nodes.insert(node_id.clone(), node.clone());
+            let attrs = NodeAttrs {
+                input: node
+                    .attrs
+                    .input
+                    .into_iter()
+                    .map(|(field, binding)| {
+                        (
+                            field,
+                            InputBinding {
+                                from: FieldSource {
+                                    node_id: binding.from.node_id,
+                                    field: binding.from.field,
+                                },
+                            },
+                        )
+                    })
+                    .collect(),
+            };
+            let retry = RetryPolicy {
+                max_retries: node.retry.max_retries,
+                min_delay_ms: node.retry.min_delay_ms,
+                max_delay_ms: node.retry.max_delay_ms,
+            };
+            builder.nodes.insert(
+                node_id.clone(),
+                NodeDefinition {
+                    node_id,
+                    node_name: Some(node.name),
+                    schema: Schema {
+                        input: node.schema.input,
+                        output: node.schema.output,
+                    },
+                    attrs,
+                    retry,
+                    workflow: None,
+                    agent: node.node_type == "agent",
+                },
+            );
+        }
+        builder.graph.ordinary_edges = document
+            .edges
+            .into_iter()
+            .map(|edge| Edge {
+                from: edge.from.into(),
+                to: edge.to.into(),
+            })
+            .collect();
+        builder.graph.join_definitions = document
+            .joins
+            .into_iter()
+            .map(|join| Join {
+                from: join.from,
+                to: join.to,
+            })
+            .collect();
+        builder.graph.conditional_edges = document
+            .conditions
+            .into_iter()
+            .map(|condition| Conditional {
+                from: condition.from,
+                to: condition.to,
+            })
+            .collect();
+        builder.graph.fan_out_definitions = document
+            .fan_outs
+            .into_iter()
+            .map(|fan_out| FanOut {
+                from: fan_out.from,
+                to: fan_out.to,
+                mode: fan_out.mode,
+            })
+            .collect();
+        builder.graph.loop_definitions = document
+            .loops
+            .into_iter()
+            .map(|loop_edge| Loop {
+                from: loop_edge.from,
+                to: loop_edge.to,
+            })
+            .collect();
+        builder.graph.failure_relations = document
+            .failures
+            .into_iter()
+            .map(|failure| FailureRelation {
+                from: failure.from,
+                to: failure.to,
+                on: failure.on,
+                codes: failure.codes,
+            })
+            .collect();
+        Ok(builder)
+    }
+
+    /// Bind an ordinary typed Node to a function node declared by the DSL.
+    pub fn bind_node<I, O, E, N>(
+        &mut self,
+        node_id: impl Into<String>,
+        node: N,
+    ) -> Result<&mut Self, GraphError>
+    where
+        N: Node<I, O, E> + Any,
+        I: DeserializeOwned + JsonSchema + Send + 'static,
+        O: Serialize + JsonSchema + Send + 'static,
+        E: Into<Error> + Send + 'static,
+    {
+        let node_id = node_id.into();
+        self.require_dsl_type(&node_id, "function")?;
+        let schema = self.dsl_schema(&node_id)?;
+        self.add_node_with_schemas(node_id, node, schema.input, schema.output)
+    }
+
+    /// Bind a page-authored Python function node to the DSL declaration.
+    pub fn bind_code<S: crate::sandbox::Sandbox + 'static>(
+        &mut self,
+        node_id: impl Into<String>,
+        sandbox: S,
+    ) -> Result<&mut Self, GraphError> {
+        let node_id = node_id.into();
+        self.require_dsl_type(&node_id, "function")?;
+        let declaration = self.dsl_node(&node_id)?;
+        let code = crate::core::workflow::code::Code::from_dsl(sandbox, declaration)
+            .map_err(|error| GraphError::new(&error.code, error.message))?;
+        self.add_node_with_schema(
+            node_id,
+            code,
+            Schema {
+                input: declaration.schema.input.clone(),
+                output: declaration.schema.output.clone(),
+            },
+        )
+    }
+
+    /// Bind an Agent node declared by the DSL.
+    pub fn bind_agent<A: Agent + 'static>(
+        &mut self,
+        node_id: impl Into<String>,
+        agent: A,
+    ) -> Result<&mut Self, GraphError> {
+        let node_id = node_id.into();
+        self.require_dsl_type(&node_id, "agent")?;
+        self.add_agent_node_with_schema(node_id, agent)
+    }
+
+    /// Bind a ToolNode (or another Messages -> Messages node) declared as a
+    /// `tool` node in the DSL.
+    pub fn bind_tool<N>(
+        &mut self,
+        node_id: impl Into<String>,
+        node: N,
+    ) -> Result<&mut Self, GraphError>
+    where
+        N: Node<Messages, Messages, Error> + Any,
+    {
+        let node_id = node_id.into();
+        self.require_dsl_type(&node_id, "tool")?;
+        let schema = self.dsl_schema(&node_id)?;
+        self.add_node_with_schemas(node_id, node, schema.input, schema.output)
+    }
+
+    /// Bind a compiled child Workflow declared as a `graph` node.
+    pub fn bind_graph(
+        &mut self,
+        node_id: impl Into<String>,
+        workflow: &CompiledWorkflow,
+    ) -> Result<&mut Self, GraphError> {
+        let node_id = node_id.into();
+        self.require_dsl_type(&node_id, "graph")?;
+        self.add_graph_node(node_id, workflow)
+    }
+
+    /// Bind the application-owned route function for one DSL condition.
+    pub fn bind_condition<F>(
+        &mut self,
+        from: impl Into<String>,
+        route: F,
+    ) -> Result<&mut Self, GraphError>
+    where
+        F: Fn(&Messages) -> Result<Vec<String>, Error> + Send + Sync + 'static,
+    {
+        let from = from.into();
+        if !self
+            .graph
+            .conditional_edges
+            .iter()
+            .any(|condition| condition.from == from)
+        {
+            return Err(GraphError::new(
+                "UNKNOWN_CONDITION",
+                "condition is not declared",
+            ));
+        }
+        if self.routes.insert(from, Arc::new(route)).is_some() {
+            return Err(GraphError::new(
+                "DUPLICATE_CONDITION",
+                "condition is already bound",
+            ));
+        }
+        Ok(self)
+    }
+
+    /// Bind the application-owned loop predicate for one DSL loop.
+    pub fn bind_loop<F>(
+        &mut self,
+        from: impl Into<String>,
+        condition: F,
+    ) -> Result<&mut Self, GraphError>
+    where
+        F: Fn(&Messages) -> bool + Send + Sync + 'static,
+    {
+        let from = from.into();
+        if !self
+            .graph
+            .loop_definitions
+            .iter()
+            .any(|loop_edge| loop_edge.from == from)
+        {
+            return Err(GraphError::new("UNKNOWN_LOOP", "loop is not declared"));
+        }
+        if self.loops.insert(from, Arc::new(condition)).is_some() {
+            return Err(GraphError::new("DUPLICATE_LOOP", "loop is already bound"));
+        }
+        Ok(self)
     }
 
     pub fn add_node<I, O, E, N>(
@@ -1827,13 +2069,17 @@ impl WorkflowBuilder {
     {
         let node_id = node_id.into();
         validate_node_id(&node_id)?;
-        if self.nodes.contains_key(&node_id) {
+        let already_declared = self.nodes.contains_key(&node_id);
+        let already_bound = self.executors.contains_key(&node_id)
+            || self.agents.contains_key(&node_id)
+            || self.graph_nodes.contains_key(&node_id);
+        if already_bound {
             return Err(GraphError::new(
                 "DUPLICATE_NODE",
                 format!("duplicate node: {node_id}"),
             ));
         }
-        if self.nodes.len() >= self.max_nodes {
+        if !already_declared && self.nodes.len() >= self.max_nodes {
             return Err(GraphError::new("MAX_NODES", "workflow node limit exceeded"));
         }
         let input_messages = TypeId::of::<I>() == TypeId::of::<Messages>();
@@ -1861,18 +2107,28 @@ impl WorkflowBuilder {
             graph_error
         })?;
 
-        self.nodes.insert(
-            node_id.clone(),
-            NodeDefinition {
-                node_id: node_id.clone(),
-                node_name: None,
-                schema: Schema { input, output },
-                attrs: NodeAttrs::default(),
-                retry: RetryPolicy::default(),
-                workflow: None,
-                agent: false,
-            },
-        );
+        if let Some(declaration) = self.nodes.get(&node_id)
+            && (declaration.schema.input != input || declaration.schema.output != output)
+        {
+            return Err(GraphError::new(
+                "INVALID_SCHEMA",
+                format!("bound Node schema does not match DSL node: {node_id}"),
+            ));
+        }
+        if !already_declared {
+            self.nodes.insert(
+                node_id.clone(),
+                NodeDefinition {
+                    node_id: node_id.clone(),
+                    node_name: None,
+                    schema: Schema { input, output },
+                    attrs: NodeAttrs::default(),
+                    retry: RetryPolicy::default(),
+                    workflow: None,
+                    agent: false,
+                },
+            );
+        }
         self.codecs
             .insert(node_id.clone(), (input_messages, output_messages));
         self.executors.insert(
@@ -1894,32 +2150,68 @@ impl WorkflowBuilder {
         agent: A,
     ) -> Result<&mut Self, GraphError> {
         let node_id = node_id.into();
+        let input = serde_json::to_value(schema_for!(agent::Input))
+            .map_err(|error| GraphError::new("SCHEMA_ERROR", error.to_string()))?;
+        let output = serde_json::to_value(schema_for!(Messages))
+            .map_err(|error| GraphError::new("SCHEMA_ERROR", error.to_string()))?;
+        self.add_agent_node_with_schema_and_values(node_id, agent, input, output)
+    }
+
+    fn add_agent_node_with_schema<A: Agent + 'static>(
+        &mut self,
+        node_id: String,
+        agent: A,
+    ) -> Result<&mut Self, GraphError> {
+        let input = serde_json::to_value(schema_for!(agent::Input))
+            .map_err(|error| GraphError::new("SCHEMA_ERROR", error.to_string()))?;
+        let output = serde_json::to_value(schema_for!(Messages))
+            .map_err(|error| GraphError::new("SCHEMA_ERROR", error.to_string()))?;
+        self.add_agent_node_with_schema_and_values(node_id, agent, input, output)
+    }
+
+    fn add_agent_node_with_schema_and_values<A: Agent + 'static>(
+        &mut self,
+        node_id: String,
+        agent: A,
+        input: Value,
+        output: Value,
+    ) -> Result<&mut Self, GraphError> {
         validate_node_id(&node_id)?;
-        if self.nodes.contains_key(&node_id) {
+        let already_declared = self.nodes.contains_key(&node_id);
+        if self.agents.contains_key(&node_id)
+            || self.executors.contains_key(&node_id)
+            || self.graph_nodes.contains_key(&node_id)
+        {
             return Err(GraphError::new(
                 "DUPLICATE_NODE",
                 format!("duplicate node: {node_id}"),
             ));
         }
-        if self.nodes.len() >= self.max_nodes {
+        if !already_declared && self.nodes.len() >= self.max_nodes {
             return Err(GraphError::new("MAX_NODES", "workflow node limit exceeded"));
         }
-        let input = serde_json::to_value(schema_for!(agent::Input))
-            .map_err(|error| GraphError::new("SCHEMA_ERROR", error.to_string()))?;
-        let output = serde_json::to_value(schema_for!(Messages))
-            .map_err(|error| GraphError::new("SCHEMA_ERROR", error.to_string()))?;
-        self.nodes.insert(
-            node_id.clone(),
-            NodeDefinition {
-                node_id: node_id.clone(),
-                node_name: None,
-                schema: Schema { input, output },
-                attrs: NodeAttrs::default(),
-                retry: RetryPolicy::default(),
-                workflow: None,
-                agent: true,
-            },
-        );
+        if let Some(declaration) = self.nodes.get(&node_id)
+            && (declaration.schema.input != input || declaration.schema.output != output)
+        {
+            return Err(GraphError::new(
+                "INVALID_SCHEMA",
+                format!("bound Agent schema does not match DSL node: {node_id}"),
+            ));
+        }
+        if !already_declared {
+            self.nodes.insert(
+                node_id.clone(),
+                NodeDefinition {
+                    node_id: node_id.clone(),
+                    node_name: None,
+                    schema: Schema { input, output },
+                    attrs: NodeAttrs::default(),
+                    retry: RetryPolicy::default(),
+                    workflow: None,
+                    agent: true,
+                },
+            );
+        }
         self.codecs.insert(node_id.clone(), (false, true));
         self.agents.insert(
             node_id,
@@ -1940,13 +2232,17 @@ impl WorkflowBuilder {
     ) -> Result<&mut Self, GraphError> {
         let node_id = node_id.into();
         validate_node_id(&node_id)?;
-        if self.nodes.contains_key(&node_id) {
+        let already_declared = self.nodes.contains_key(&node_id);
+        if self.graph_nodes.contains_key(&node_id)
+            || self.executors.contains_key(&node_id)
+            || self.agents.contains_key(&node_id)
+        {
             return Err(GraphError::new(
                 "DUPLICATE_NODE",
                 format!("duplicate node: {node_id}"),
             ));
         }
-        if self.nodes.len() >= self.max_nodes {
+        if !already_declared && self.nodes.len() >= self.max_nodes {
             return Err(GraphError::new("MAX_NODES", "workflow node limit exceeded"));
         }
         if workflow.contains_definition(&self.definition_id) {
@@ -1956,25 +2252,37 @@ impl WorkflowBuilder {
             ));
         }
 
-        let input = serde_json::to_value(schema_for!(Messages))
-            .map_err(|error| GraphError::new("SCHEMA_ERROR", error.to_string()))?;
-        let output = input.clone();
+        let (input, output) = if let Some(declaration) = self.nodes.get(&node_id) {
+            (
+                declaration.schema.input.clone(),
+                declaration.schema.output.clone(),
+            )
+        } else {
+            let input = serde_json::to_value(schema_for!(Messages))
+                .map_err(|error| GraphError::new("SCHEMA_ERROR", error.to_string()))?;
+            (input.clone(), input)
+        };
         let definition = GraphReference {
             definition_id: workflow.definition().definition_id.clone(),
             version: workflow.definition().version.clone(),
         };
-        self.nodes.insert(
-            node_id.clone(),
-            NodeDefinition {
-                node_id: node_id.clone(),
-                node_name: None,
-                schema: Schema { input, output },
-                attrs: NodeAttrs::default(),
-                retry: RetryPolicy::default(),
-                workflow: Some(definition),
-                agent: false,
-            },
-        );
+        if let Some(node) = self.nodes.get_mut(&node_id) {
+            node.workflow = Some(definition);
+            node.agent = false;
+        } else {
+            self.nodes.insert(
+                node_id.clone(),
+                NodeDefinition {
+                    node_id: node_id.clone(),
+                    node_name: None,
+                    schema: Schema { input, output },
+                    attrs: NodeAttrs::default(),
+                    retry: RetryPolicy::default(),
+                    workflow: Some(definition),
+                    agent: false,
+                },
+            );
+        }
         self.codecs.insert(node_id.clone(), (true, true));
         self.graph_nodes.insert(node_id, Arc::new(workflow.clone()));
         Ok(self)
@@ -2243,6 +2551,7 @@ impl WorkflowBuilder {
                 "workflow must contain a node",
             ));
         }
+        self.validate_bindings_present()?;
         self.validate_graph()?;
         let version = self.version()?;
         let definition = Definition {
@@ -2268,6 +2577,65 @@ impl WorkflowBuilder {
         self.nodes
             .get_mut(node_id)
             .ok_or_else(|| GraphError::new("UNKNOWN_NODE", format!("unknown node: {node_id}")))
+    }
+
+    fn dsl_node(&self, node_id: &str) -> Result<&crate::core::workflow::dsl::Node, GraphError> {
+        self.dsl_nodes.get(node_id).ok_or_else(|| {
+            GraphError::new(
+                "UNKNOWN_NODE",
+                format!("node is not declared by the DSL: {node_id}"),
+            )
+        })
+    }
+
+    fn dsl_schema(&self, node_id: &str) -> Result<Schema, GraphError> {
+        let node = self.dsl_node(node_id)?;
+        Ok(Schema {
+            input: node.schema.input.clone(),
+            output: node.schema.output.clone(),
+        })
+    }
+
+    fn require_dsl_type(&self, node_id: &str, expected: &str) -> Result<(), GraphError> {
+        let node = self.dsl_node(node_id)?;
+        if node.node_type != expected {
+            return Err(GraphError::new(
+                "INVALID_NODE_TYPE",
+                format!("node {node_id} is not a {expected} node"),
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_bindings_present(&self) -> Result<(), GraphError> {
+        for node_id in self.nodes.keys() {
+            let bound = self.executors.contains_key(node_id)
+                || self.agents.contains_key(node_id)
+                || self.graph_nodes.contains_key(node_id);
+            if !bound {
+                return Err(GraphError::new(
+                    "UNBOUND_NODE",
+                    format!("workflow node has no executable binding: {node_id}"),
+                ));
+            }
+        }
+        for condition in &self.graph.conditional_edges {
+            if !self.routes.contains_key(&condition.from) {
+                return Err(GraphError::new(
+                    "UNBOUND_CONDITION",
+                    format!("condition has no route binding: {}", condition.from),
+                ));
+            }
+        }
+        for loop_edge in &self.graph.loop_definitions {
+            if !self.loops.contains_key(&loop_edge.from) {
+                return Err(GraphError::new(
+                    "UNBOUND_LOOP",
+                    format!("loop has no predicate binding: {}", loop_edge.from),
+                ));
+            }
+        }
+        Ok(())
     }
 
     fn require_node(&self, node_id: &str) -> Result<(), GraphError> {
@@ -2439,6 +2807,17 @@ impl WorkflowBuilder {
                     ));
                 }
                 let source_id = binding.from.node_id.as_str();
+                if source_id == START {
+                    if !entry {
+                        return Err(GraphError::new(
+                            "INVALID_BINDING",
+                            format!("START is not an incoming source of {target_id}"),
+                        ));
+                    }
+                    // START values come from the Workflow's initial Messages,
+                    // so they have no compiled predecessor output schema.
+                    continue;
+                }
                 if !incoming.contains(source_id) {
                     return Err(GraphError::new(
                         "INVALID_BINDING",
@@ -2483,6 +2862,7 @@ impl WorkflowBuilder {
     fn version(&self) -> Result<String, GraphError> {
         let value = serde_json::json!({
             "definition_id": self.definition_id,
+            "dsl_nodes": &self.dsl_nodes,
             "nodes": self.nodes,
             "graph": self.graph,
             "codecs": self.codecs,
@@ -2555,8 +2935,8 @@ mod tests {
         })
     }
 
-    fn single() -> WorkflowBuilder {
-        let mut builder = WorkflowBuilder::new("example");
+    fn single() -> Builder {
+        let mut builder = Builder::new("example");
         builder.add_node("answer", answer).unwrap();
         builder.add_edge(START, "answer").unwrap();
         builder.add_edge("answer", END).unwrap();
@@ -2591,7 +2971,7 @@ mod tests {
 
     #[test]
     fn executor_enforces_json_schema_before_calling_node() {
-        let mut builder = WorkflowBuilder::new("schema");
+        let mut builder = Builder::new("schema");
         builder.add_node("limited", limited).unwrap();
         builder.add_edge(START, "limited").unwrap();
         builder.add_edge("limited", END).unwrap();
@@ -2621,14 +3001,14 @@ mod tests {
 
     #[test]
     fn rejects_scalar_node_and_invalid_graph() {
-        let mut builder = WorkflowBuilder::new("scalar");
+        let mut builder = Builder::new("scalar");
         let scalar =
             async |_: String, _: Cancellation| -> Result<String, Error> { Ok(String::new()) };
         assert_eq!(
             builder.add_node("bad", scalar).err().unwrap().code,
             "INVALID_SCHEMA"
         );
-        let mut builder = WorkflowBuilder::new("missing");
+        let mut builder = Builder::new("missing");
         builder.add_node("answer", answer).unwrap();
         assert_eq!(builder.compile().unwrap_err().code, "MISSING_BOUNDARY");
     }
@@ -2736,7 +3116,7 @@ mod tests {
 
     #[test]
     fn join_conflicts_with_ordinary_activation() {
-        let mut builder = WorkflowBuilder::new("join");
+        let mut builder = Builder::new("join");
         for id in ["a", "b", "merge"] {
             builder.add_node(id, crate::node::Echo).unwrap();
         }
@@ -2949,7 +3329,7 @@ mod tests {
     #[test]
     fn add_graph_node_preserves_child_definition_boundary() {
         let child = single().compile().unwrap();
-        let mut parent = WorkflowBuilder::new("parent");
+        let mut parent = Builder::new("parent");
         parent.add_graph_node("child", &child).unwrap();
         parent.add_edge(START, "child").unwrap();
         parent.add_edge("child", END).unwrap();
@@ -2966,7 +3346,7 @@ mod tests {
     #[test]
     fn add_graph_node_rejects_recursive_definition() {
         let child = single().compile().unwrap();
-        let mut builder = WorkflowBuilder::new("example");
+        let mut builder = Builder::new("example");
         assert_eq!(
             builder.add_graph_node("nested", &child).err().unwrap().code,
             "RECURSIVE_GRAPH"
@@ -2975,7 +3355,7 @@ mod tests {
 
     #[test]
     fn state_runs_one_barrier_and_activates_ordinary_successor() {
-        let mut builder = WorkflowBuilder::new("barrier");
+        let mut builder = Builder::new("barrier");
         builder.add_node("a", crate::node::Echo).unwrap();
         builder.add_node("b", crate::node::Echo).unwrap();
         builder.add_edge(START, "a").unwrap();
@@ -2999,7 +3379,7 @@ mod tests {
 
     #[test]
     fn join_waits_until_all_sources_succeed() {
-        let mut builder = WorkflowBuilder::new("join-state");
+        let mut builder = Builder::new("join-state");
         for id in ["a", "b", "merge"] {
             builder.add_node(id, crate::node::Echo).unwrap();
         }
@@ -3056,7 +3436,7 @@ mod tests {
 
     #[test]
     fn start_batch_is_atomic_when_one_entry_is_invalid() {
-        let mut builder = WorkflowBuilder::new("batch-atomic");
+        let mut builder = Builder::new("batch-atomic");
         builder.add_node("a", crate::node::Echo).unwrap();
         builder.add_node("b", crate::node::Echo).unwrap();
         builder.add_edge(START, "a").unwrap();

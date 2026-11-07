@@ -10,7 +10,7 @@ use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
     agent::node::{Node, Signal, Wait},
     agent::workflow::{
-        Runtime, WorkflowBuilder,
+        Builder, Runtime,
         graph::{END, START},
     },
     node,
@@ -210,8 +210,8 @@ fn signal_glue_preserves_wait_complete_and_error() {
 
 #[test]
 fn marked_and_unmarked_functions_use_the_same_graph_io_contract() {
-    let mut marked = WorkflowBuilder::new("macro-parity");
-    let mut plain = WorkflowBuilder::new("macro-parity");
+    let mut marked = Builder::new("macro-parity");
+    let mut plain = Builder::new("macro-parity");
     marked.add_node("compute", increment).unwrap();
     plain.add_node("compute", plain_increment).unwrap();
     for builder in [&mut marked, &mut plain] {
@@ -248,7 +248,7 @@ fn marked_and_unmarked_functions_use_the_same_graph_io_contract() {
 #[test]
 fn registration_is_pure_and_schema_roots_are_not_rewrapped() {
     let calls = Arc::new(AtomicUsize::new(0));
-    let mut builder = WorkflowBuilder::new("pure-registration");
+    let mut builder = Builder::new("pure-registration");
     builder
         .add_node(
             "component",
@@ -268,7 +268,7 @@ fn registration_is_pure_and_schema_roots_are_not_rewrapped() {
 #[test]
 fn a_signal_component_waits_in_the_existing_workflow_scene() {
     block_on(async {
-        let mut builder = WorkflowBuilder::new("macro-signal-wait");
+        let mut builder = Builder::new("macro-signal-wait");
         builder.add_node("review", Approval).unwrap();
         builder.add_edge(START, "review").unwrap();
         builder.add_edge("review", END).unwrap();

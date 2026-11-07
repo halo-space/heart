@@ -318,6 +318,67 @@ impl Document {
         {
             return Err(invalid("every workflow node must be reachable from START"));
         }
+
+        // A graph that is reachable from START but has a branch with no path
+        // to END would only fail later inside Runtime with an empty ready set.
+        // Validate the reverse relation closure here so a page-authored DSL
+        // cannot encode a permanently stuck execution.
+        let mut reverse: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        let mut exits = VecDeque::new();
+        for edge in &self.edges {
+            match (edge.from.as_str(), edge.to.as_str()) {
+                (source, END) if source != START => exits.push_back(source),
+                (source, target) if source != START && target != END => {
+                    reverse.entry(target).or_default().push(source);
+                }
+                _ => {}
+            }
+        }
+        for join in &self.joins {
+            for source in &join.from {
+                reverse.entry(join.to.as_str()).or_default().push(source);
+            }
+        }
+        for condition in &self.conditions {
+            for target in &condition.to {
+                reverse
+                    .entry(target.as_str())
+                    .or_default()
+                    .push(condition.from.as_str());
+            }
+        }
+        for fan_out in &self.fan_outs {
+            reverse
+                .entry(fan_out.to.as_str())
+                .or_default()
+                .push(fan_out.from.as_str());
+        }
+        for loop_edge in &self.loops {
+            reverse
+                .entry(loop_edge.to.as_str())
+                .or_default()
+                .push(loop_edge.from.as_str());
+        }
+        for failure in &self.failures {
+            for target in &failure.to {
+                for source in &failure.from {
+                    reverse.entry(target.as_str()).or_default().push(source);
+                }
+            }
+        }
+        let mut can_reach_end = BTreeSet::new();
+        while let Some(node_id) = exits.pop_front() {
+            if can_reach_end.insert(node_id) {
+                exits.extend(reverse.get(node_id).into_iter().flatten().copied());
+            }
+        }
+        if self
+            .nodes
+            .keys()
+            .any(|node_id| !can_reach_end.contains(node_id.as_str()))
+        {
+            return Err(invalid("every workflow node must be able to reach END"));
+        }
         Ok(())
     }
 }
@@ -374,7 +435,7 @@ impl Node {
             )));
         }
         reject_sensitive_config(&Value::Object(self.config.clone()))?;
-        self.schema.validate(node_id)?;
+        self.schema.validate(node_id, &self.node_type)?;
         self.attrs.validate(node_id)?;
         self.retry.validate()?;
         validate_code_config(self)?;
@@ -390,11 +451,26 @@ pub struct Schema {
 }
 
 impl Schema {
-    fn validate(&self, node_id: &str) -> Result<(), Error> {
-        if !self.input.is_object() || !self.output.is_object() {
+    fn validate(&self, node_id: &str, node_type: &str) -> Result<(), Error> {
+        let messages_node = matches!(node_type, "tool" | "graph");
+        let valid_root = |value: &Value| value.is_object() || (messages_node && value.is_array());
+        if !valid_root(&self.input) || !valid_root(&self.output) {
             return Err(invalid(format!(
-                "node {node_id} schema input/output must be JSON objects"
+                "node {node_id} schema input/output must be JSON objects; tool/graph nodes may use Messages arrays"
             )));
+        }
+        if messages_node && (!self.input.is_array() || !self.output.is_array()) {
+            return Err(invalid(format!(
+                "node {node_id} tool/graph schema must use Messages array roots"
+            )));
+        }
+        for (direction, schema) in [("input", &self.input), ("output", &self.output)] {
+            crate::components::node::schema::compile(schema).map_err(|error| {
+                invalid(format!(
+                    "node {node_id} schema {direction} is invalid: {}",
+                    error.message
+                ))
+            })?;
         }
         Ok(())
     }

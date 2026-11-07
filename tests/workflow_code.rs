@@ -1,14 +1,17 @@
 use std::collections::BTreeMap;
 
+use futures_util::StreamExt;
 use halo::{
     Cancellation,
     agent::core::sandbox::{Config, Local},
-    agent::core::workflow::{
-        code::{Code, Object},
-        dsl::parse,
-    },
+    agent::core::workflow::code::{Code, Object},
     agent::node::{Node, Signal},
-    agent::workflow::{WorkflowBuilder, graph::Schema},
+    agent::workflow::dsl::parse,
+    agent::workflow::{
+        Builder, Runtime,
+        graph::{END, FieldSource, InputBinding, NodeAttrs, START, Schema},
+    },
+    agent::{Message, Messages},
 };
 use serde_json::{Value, json};
 
@@ -112,7 +115,7 @@ fn code_executor_can_be_bound_as_a_normal_workflow_node() {
         input: node.schema.input.clone(),
         output: node.schema.output.clone(),
     };
-    let mut builder = WorkflowBuilder::new("code-test");
+    let mut builder = Builder::new("code-test");
     builder
         .add_node_with_schema("add", code, schema)
         .expect("code executor should satisfy Node");
@@ -128,4 +131,101 @@ fn code_executor_can_be_bound_as_a_normal_workflow_node() {
         definition.definition().nodes["add"].schema.input["required"],
         json!(["left", "right"])
     );
+}
+
+#[tokio::test]
+async fn page_code_node_reads_a_start_field_through_workflow_runtime() {
+    let document = parse(document()).expect("DSL should parse");
+    let node = &document.nodes["add"];
+    let code = Code::from_dsl(Local::new(Config::default()).expect("local config"), node)
+        .expect("code executor should compile");
+    let schema = Schema {
+        input: node.schema.input.clone(),
+        output: node.schema.output.clone(),
+    };
+    let mut builder = Builder::new("code-start-binding");
+    builder
+        .add_node_with_schema("add", code, schema)
+        .expect("code node should bind");
+    builder
+        .set_attrs(
+            "add",
+            NodeAttrs {
+                input: BTreeMap::from([
+                    (
+                        "left".into(),
+                        InputBinding {
+                            from: FieldSource {
+                                node_id: START.into(),
+                                field: "left".into(),
+                            },
+                        },
+                    ),
+                    (
+                        "right".into(),
+                        InputBinding {
+                            from: FieldSource {
+                                node_id: START.into(),
+                                field: "right".into(),
+                            },
+                        },
+                    ),
+                ]),
+            },
+        )
+        .expect("START bindings should be accepted");
+    builder.add_edge(START, "add").expect("connect START");
+    builder.add_edge("add", END).expect("connect END");
+    let workflow = builder.compile().expect("compile workflow");
+    let mut runtime = Runtime::new(41, workflow).expect("create runtime");
+    let input = Messages::new([Message::function(json!({"left": 2, "right": 3}))]);
+    let mut events = runtime
+        .run(input, std::sync::Arc::new(|| 42), Cancellation::new())
+        .await
+        .expect("start workflow");
+    while let Some(event) = events.next().await {
+        event.expect("workflow event");
+    }
+    drop(events);
+
+    let execution = runtime.state().nodes["add"]
+        .executions
+        .values()
+        .next()
+        .expect("code node execution");
+    assert_eq!(execution.messages.as_slice()[0].values["sum"], json!(5));
+}
+
+#[tokio::test]
+async fn native_dsl_binds_page_code_and_runs_without_manual_graph_rebuild() {
+    let document = parse(document()).expect("DSL should parse");
+    let mut builder = Builder::from_dsl(document).expect("create DSL builder");
+    builder
+        .bind_code("add", Local::new(Config::default()).expect("local sandbox"))
+        .expect("bind page code");
+    let workflow = builder.compile().expect("compile bound DSL");
+    let mut runtime = Runtime::new(43, workflow).expect("create runtime");
+    let input = Messages::new([Message::function(json!({"left": 4, "right": 6}))]);
+    let mut events = runtime
+        .run(input, std::sync::Arc::new(|| 44), Cancellation::new())
+        .await
+        .expect("start DSL workflow");
+    while let Some(event) = events.next().await {
+        event.expect("workflow event");
+    }
+    drop(events);
+
+    let execution = runtime.state().nodes["add"]
+        .executions
+        .values()
+        .next()
+        .expect("bound code execution");
+    assert_eq!(execution.messages.as_slice()[0].values["sum"], json!(10));
+}
+
+#[test]
+fn native_dsl_compile_rejects_unbound_nodes() {
+    let document = parse(document()).expect("DSL should parse");
+    let builder = Builder::from_dsl(document).expect("create DSL builder");
+    assert_eq!(builder.compile().unwrap_err().code, "UNBOUND_NODE");
 }

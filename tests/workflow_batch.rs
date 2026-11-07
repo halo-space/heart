@@ -6,8 +6,7 @@ mod workflow_support;
 use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
 use halo::agent::workflow::{
-    CompiledWorkflow, FieldSource, InputBinding, NodeAttrs, RetryPolicy, Runtime, WorkflowBuilder,
-    graph,
+    Builder, CompiledWorkflow, FieldSource, InputBinding, NodeAttrs, RetryPolicy, Runtime, graph,
     node::{self, ExecutionRef},
 };
 use halo::agent::{Cancellation, Error, Message, Messages};
@@ -50,7 +49,7 @@ fn ordinary_batch_node_retries_only_failed_items_and_submits_once() {
         let cached = Arc::new(Mutex::new(BTreeMap::<i64, i64>::new()));
         let calls = Arc::new(Mutex::new(BTreeMap::<i64, usize>::new()));
         let downstream = Arc::new(AtomicUsize::new(0));
-        let mut builder = WorkflowBuilder::new("generic-batch-subset");
+        let mut builder = Builder::new("generic-batch-subset");
         builder
             .add_node("source", |_: Messages, _: Cancellation| async {
                 Ok::<_, Error>(Tasks {
@@ -225,7 +224,7 @@ fn stateless_batch_workflow(
     source_calls: Arc<AtomicUsize>,
     item_calls: Arc<Mutex<Vec<i64>>>,
 ) -> CompiledWorkflow {
-    let mut builder = WorkflowBuilder::new("batch-snapshot-fallback");
+    let mut builder = Builder::new("batch-snapshot-fallback");
     builder
         .add_node("source", move |_: Messages, _: Cancellation| {
             let source_calls = source_calls.clone();
@@ -340,7 +339,7 @@ fn failing_batch_workflow(
     item_calls: Arc<Mutex<Vec<i64>>>,
     downstream: Arc<AtomicUsize>,
 ) -> CompiledWorkflow {
-    let mut builder = WorkflowBuilder::new("batch-recovery-retry-budget");
+    let mut builder = Builder::new("batch-recovery-retry-budget");
     builder
         .add_node("source", move |_: Messages, _: Cancellation| {
             let source_calls = source_calls.clone();

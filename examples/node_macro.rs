@@ -4,7 +4,7 @@ use futures_util::StreamExt;
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
     agent::workflow::{
-        GraphError, Runtime, WorkflowBuilder,
+        Builder, GraphError, Runtime,
         graph::{END, START},
     },
     node,
@@ -41,7 +41,7 @@ fn graph_error(error: GraphError) -> Error {
 }
 fn main() -> Result<(), Error> {
     block_on(async {
-        let mut builder = WorkflowBuilder::new("node-macro");
+        let mut builder = Builder::new("node-macro");
         builder
             .add_node("calculate", Compute)
             .map_err(graph_error)?;

@@ -51,7 +51,7 @@ pub(crate) use components::workspace;
 /// inherent impl, without a wrapping Node object.
 ///
 /// ```
-/// use halo::{node, agent::{Cancellation, Error, workflow::WorkflowBuilder}};
+/// use halo::{node, agent::{Cancellation, Error, workflow::builder}};
 /// use schemars::JsonSchema;
 /// use serde::{Deserialize, Serialize};
 ///
@@ -65,7 +65,7 @@ pub(crate) use components::workspace;
 ///     Ok(Output { value: input.value + 1 })
 /// }
 ///
-/// let mut builder = WorkflowBuilder::new("example");
+/// let mut builder = builder::new("example");
 /// builder.add_node("calculate", calculate)?;
 /// # Ok::<(), halo::agent::workflow::GraphError>(())
 /// ```

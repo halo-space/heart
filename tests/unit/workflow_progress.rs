@@ -2,7 +2,7 @@ use super::*;
 
 #[test]
 fn workflow_run_does_not_inline_the_restore_machine() {
-    let mut builder = WorkflowBuilder::new("future-boundary");
+    let mut builder = Builder::new("future-boundary");
     builder.add_node("echo", crate::node::Echo).unwrap();
     builder.add_edge(graph::START, "echo").unwrap();
     builder.add_edge("echo", graph::END).unwrap();

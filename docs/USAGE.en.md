@@ -182,7 +182,7 @@ No configured Checkpoint means no cross-process recovery. [`checkpoint.rs`](../e
 Ordinary async functions can be added directly as nodes:
 
 ```rust
-use halo::agent::workflow::{WorkflowBuilder, graph::{START, END}};
+use halo::agent::workflow::graph::{START, END};
 use halo::agent::{Cancellation, Error, Messages};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -190,7 +190,7 @@ use serde::Serialize;
 #[derive(Serialize, JsonSchema)]
 struct Answer { value: String }
 
-let mut builder = WorkflowBuilder::new("example");
+let mut builder = halo::agent::workflow::builder::new("example");
 builder.add_node("answer", |_: Messages, _: Cancellation| async {
     Ok::<_, Error>(Answer { value: "done".into() })
 })?;
@@ -235,10 +235,10 @@ Heart takes useful boundaries from LangGraph (`START/END`, conditional edges, su
 An external Dify, Coze, or application DSL should be translated at the outer boundary:
 
 ```text
-DSL JSON -> core::workflow::dsl parse, validate, and normalize
+DSL JSON -> agent::workflow::dsl parse, validate, and normalize
          -> Core binds Core components
          -> Runtime binds Agent, Workflow, and CompiledWorkflow executors
-         -> WorkflowBuilder::compile() -> Runtime
+         -> Builder::compile() -> Runtime
 ```
 
 Applications provide static execution configuration during initialization; each request only supplies DSL and business input. Unknown functions, tools, Agents, or subgraphs must fail at binding/plan submission. Heart does not add a public Registry, Capabilities, or dynamic runtime registration table. A2A/AG-UI/JSON-RPC/SSE adapters live at the protocol/HTTP layer and convert existing Events.
@@ -284,6 +284,20 @@ let output = code.call(
 ```
 
 To place it in a Workflow, use `builder.add_node_with_schema("reload", code, Schema { input: node.schema.input.clone(), output: node.schema.output.clone() })`. This preserves the DSL Schema in the Definition while the executor and Runtime keep the existing validation and error contract; page code receives and returns JSON objects.
+
+To use a complete Native DSL document, load its static graph and bind executable capabilities explicitly:
+
+```rust
+let document = halo::agent::workflow::dsl::parse(dsl_json)?;
+let mut builder = halo::agent::workflow::builder::from_dsl(document)?;
+builder.bind_code("reload", halo::agent::core::sandbox::Local::new(
+    halo::agent::core::sandbox::Config::default(),
+)?)?;
+let workflow = builder.compile()?;
+let runtime = halo::agent::workflow::Runtime::new(1001, workflow)?;
+```
+
+Use `bind_node`, `bind_agent`, `bind_tool`, `bind_graph`, `bind_condition`, and `bind_loop` for Rust Nodes, Agents, ToolNodes, child Workflows, and application-owned route functions. The DSL describes the static graph; an unbound node, condition, or loop fails during `compile` instead of failing halfway through a run.
 
 ---
 

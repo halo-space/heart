@@ -27,10 +27,31 @@ use crate::runtime::agent::history::{History, Run};
 use crate::runtime::workflow::node::ExecutionRef;
 
 pub use graph::{
-    CompiledWorkflow, Conditional, Definition, Edge, Endpoint, FailureRelation, FanOut,
+    Builder, CompiledWorkflow, Conditional, Definition, Edge, Endpoint, FailureRelation, FanOut,
     FieldSource, GraphDefinition, GraphError, GraphReference, InputBinding, Join, Loop, NodeAttrs,
-    NodeDefinition, RetryPolicy, Schema, State, Status, Wait, WorkflowBuilder,
+    NodeDefinition, RetryPolicy, Schema, State, Status, Wait,
 };
+
+/// Unified public construction entry for Workflow definitions.
+pub mod builder {
+    pub use super::graph::Builder;
+
+    pub fn new(definition_id: impl Into<String>) -> Builder {
+        Builder::new(definition_id)
+    }
+
+    pub fn from_dsl(
+        document: crate::core::workflow::dsl::Document,
+    ) -> Result<Builder, super::GraphError> {
+        Builder::from_dsl(document)
+    }
+}
+
+/// Static Native DSL parsing exposed beside the Workflow builder. The parser
+/// implementation remains in Core and does not acquire Runtime dependencies.
+pub mod dsl {
+    pub use crate::core::workflow::dsl::*;
+}
 
 type CheckpointSave = Arc<
     dyn Fn(
@@ -1443,6 +1464,9 @@ impl Engine {
             return serde_json::to_value(self.agent_input_for(node_id, from)?)
                 .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()));
         }
+        if !self.definition().nodes[node_id].attrs.input.is_empty() {
+            return self.bound_values(node_id, from).map(Value::Object);
+        }
         if from.is_empty() {
             if self.workflow.input_is_messages(node_id) {
                 return serde_json::to_value(self.state.initial.as_ref().ok_or_else(|| {
@@ -1622,6 +1646,19 @@ impl Engine {
                             .rev()
                             .find_map(|message| message.values.get(&binding.from.field))
                     })
+                    .or_else(|| {
+                        (binding.from.node_id == graph::START)
+                            .then(|| {
+                                self.state
+                                    .initial
+                                    .as_ref()?
+                                    .as_slice()
+                                    .iter()
+                                    .rev()
+                                    .find_map(|message| message.values.get(&binding.from.field))
+                            })
+                            .flatten()
+                    })
                     .cloned()
                     .unwrap_or(Value::Null);
                 bindings.insert(
@@ -1685,6 +1722,11 @@ impl Engine {
                     )
                 });
         crate::components::node::input::fields(bindings, |source_id| {
+            if source_id == graph::START {
+                return self.state.initial.as_ref().ok_or_else(|| {
+                    Error::new("INVALID_STATE", "workflow initial Messages are missing")
+                });
+            }
             let source = from
                 .iter()
                 .find(|source| source.node_id == source_id)
@@ -3684,7 +3726,7 @@ mod tests {
 
     #[test]
     fn workflow_usage_counts_failed_and_successful_agent_attempts_once() {
-        let mut builder = WorkflowBuilder::new("metered");
+        let mut builder = Builder::new("metered");
         builder
             .add_agent_node(
                 "agent",
@@ -3743,7 +3785,7 @@ mod tests {
 
     #[test]
     fn node_receives_only_its_read_only_local_view() {
-        let mut builder = WorkflowBuilder::new("node-view");
+        let mut builder = Builder::new("node-view");
         builder.add_node("inspect", InspectView).unwrap();
         builder.add_edge(START, "inspect").unwrap();
         builder.add_edge("inspect", END).unwrap();
@@ -3763,7 +3805,7 @@ mod tests {
 
     #[test]
     fn agent_node_receives_the_same_local_view_contract() {
-        let mut builder = WorkflowBuilder::new("agent-view");
+        let mut builder = Builder::new("agent-view");
         builder.add_agent_node("inspect", InspectAgent).unwrap();
         builder.add_edge(START, "inspect").unwrap();
         builder.add_edge("inspect", END).unwrap();
@@ -3780,7 +3822,7 @@ mod tests {
 
     #[test]
     fn nested_workflow_usage_is_included_without_billing_the_parent_twice() {
-        let mut child = WorkflowBuilder::new("metered-child");
+        let mut child = Builder::new("metered-child");
         child
             .add_agent_node(
                 "agent",
@@ -3793,7 +3835,7 @@ mod tests {
         child.add_edge(START, "agent").unwrap();
         child.add_edge("agent", END).unwrap();
         let child = child.compile().unwrap();
-        let mut parent = WorkflowBuilder::new("metered-parent");
+        let mut parent = Builder::new("metered-parent");
         parent.add_graph_node("child", &child).unwrap();
         parent.add_edge(START, "child").unwrap();
         parent.add_edge("child", END).unwrap();
@@ -3878,7 +3920,7 @@ mod tests {
 
     #[test]
     fn runtime_owns_one_state_and_exposes_checkpoint_json() {
-        let mut builder = WorkflowBuilder::new("runtime");
+        let mut builder = Builder::new("runtime");
         builder.add_node("answer", crate::node::Echo).unwrap();
         builder.add_edge(START, "answer").unwrap();
         builder.add_edge("answer", END).unwrap();
@@ -3906,7 +3948,7 @@ mod tests {
 
     #[test]
     fn run_executes_agent_node_and_preserves_agent_steps() {
-        let mut builder = WorkflowBuilder::new("agent-node");
+        let mut builder = Builder::new("agent-node");
         builder
             .add_agent_node("agent", FakeAgent { mode: "single" })
             .unwrap();
@@ -3933,7 +3975,7 @@ mod tests {
 
     #[test]
     fn agent_node_keeps_each_complete_as_a_step_and_commits_last_assistant() {
-        let mut builder = WorkflowBuilder::new("agent-many");
+        let mut builder = Builder::new("agent-many");
         builder
             .add_agent_node("agent", FakeAgent { mode: "many" })
             .unwrap();
@@ -3962,7 +4004,7 @@ mod tests {
 
     #[test]
     fn cancelled_agent_does_not_activate_end() {
-        let mut builder = WorkflowBuilder::new("agent-cancel");
+        let mut builder = Builder::new("agent-cancel");
         builder
             .add_agent_node("agent", FakeAgent { mode: "cancel" })
             .unwrap();
@@ -3991,7 +4033,7 @@ mod tests {
 
     #[test]
     fn failed_agent_is_recorded_without_successful_outgoing_relations() {
-        let mut builder = WorkflowBuilder::new("agent-failure");
+        let mut builder = Builder::new("agent-failure");
         builder
             .add_agent_node("agent", FakeAgent { mode: "error" })
             .unwrap();
@@ -4022,7 +4064,7 @@ mod tests {
 
     #[test]
     fn run_executes_a_dag_and_commits_each_barrier() {
-        let mut builder = WorkflowBuilder::new("run");
+        let mut builder = Builder::new("run");
         builder.add_node("a", crate::node::Echo).unwrap();
         builder.add_node("b", crate::node::Echo).unwrap();
         builder.add_edge(START, "a").unwrap();
@@ -4054,7 +4096,7 @@ mod tests {
 
     #[test]
     fn run_persists_a_conditional_route_in_execution_to() {
-        let mut builder = WorkflowBuilder::new("conditional-run");
+        let mut builder = Builder::new("conditional-run");
         for id in ["router", "left", "right"] {
             builder.add_node(id, crate::node::Echo).unwrap();
         }
@@ -4097,7 +4139,7 @@ mod tests {
 
     #[test]
     fn runtime_can_save_and_restore_its_single_checkpoint() {
-        let mut builder = WorkflowBuilder::new("checkpoint-run");
+        let mut builder = Builder::new("checkpoint-run");
         builder.add_node("answer", crate::node::Echo).unwrap();
         builder.add_edge(START, "answer").unwrap();
         builder.add_edge("answer", END).unwrap();
@@ -4114,7 +4156,7 @@ mod tests {
 
     #[test]
     fn configured_checkpoint_saves_one_closeout_snapshot_after_success() {
-        let mut builder = WorkflowBuilder::new("checkpoint-closeout");
+        let mut builder = Builder::new("checkpoint-closeout");
         builder.add_node("answer", crate::node::Echo).unwrap();
         builder.add_edge(START, "answer").unwrap();
         builder.add_edge("answer", END).unwrap();
@@ -4134,7 +4176,7 @@ mod tests {
 
     #[test]
     fn configured_checkpoint_preserves_cancelled_state_even_when_run_is_cancelled() {
-        let mut builder = WorkflowBuilder::new("checkpoint-cancel");
+        let mut builder = Builder::new("checkpoint-cancel");
         builder.add_node("answer", crate::node::Echo).unwrap();
         builder.add_edge(START, "answer").unwrap();
         builder.add_edge("answer", END).unwrap();
@@ -4158,7 +4200,7 @@ mod tests {
     fn workflow_memory_writes_chat_graph_and_state_only_at_closeout() {
         use crate::memory::short::chat::Store as _;
 
-        let mut builder = WorkflowBuilder::new("workflow-memory-closeout");
+        let mut builder = Builder::new("workflow-memory-closeout");
         builder
             .add_agent_node("agent", FakeAgent { mode: "single" })
             .unwrap();
@@ -4196,7 +4238,7 @@ mod tests {
     fn terminal_workflow_snapshot_is_idempotent_with_memory() {
         use crate::memory::short::chat::Store as _;
 
-        let mut builder = WorkflowBuilder::new("workflow-terminal-restore");
+        let mut builder = Builder::new("workflow-terminal-restore");
         builder
             .add_agent_node("agent", FakeAgent { mode: "single" })
             .unwrap();
@@ -4236,7 +4278,7 @@ mod tests {
 
     #[test]
     fn workflow_snapshot_rejects_a_different_chat_id() {
-        let mut builder = WorkflowBuilder::new("workflow-checkpoint-identity");
+        let mut builder = Builder::new("workflow-checkpoint-identity");
         builder.add_node("answer", crate::node::Echo).unwrap();
         builder.add_edge(START, "answer").unwrap();
         builder.add_edge("answer", END).unwrap();
@@ -4253,7 +4295,7 @@ mod tests {
     fn workflow_memory_keeps_waiting_chat_open_until_resume_closeout() {
         use crate::memory::short::chat::Store as _;
 
-        let mut builder = WorkflowBuilder::new("workflow-memory-wait");
+        let mut builder = Builder::new("workflow-memory-wait");
         builder
             .add_node("approval", WaitOnce(AtomicBool::new(false)))
             .unwrap();
@@ -4323,7 +4365,7 @@ mod tests {
                 "cancelled",
             ),
         ] {
-            let mut builder = WorkflowBuilder::new(format!("workflow-memory-{mode}"));
+            let mut builder = Builder::new(format!("workflow-memory-{mode}"));
             builder.add_agent_node("agent", FakeAgent { mode }).unwrap();
             builder.add_edge(START, "agent").unwrap();
             builder.add_edge("agent", END).unwrap();
@@ -4363,7 +4405,7 @@ mod tests {
 
     #[test]
     fn failed_node_can_activate_an_explicit_failure_relation() {
-        let mut builder = WorkflowBuilder::new("failure-run");
+        let mut builder = Builder::new("failure-run");
         let fail = async |_: Messages, _: Cancellation| -> Result<Messages, Error> {
             Err(Error::new("BUSINESS", "failed"))
         };
@@ -4392,13 +4434,13 @@ mod tests {
 
     #[test]
     fn run_executes_a_graph_node_and_keeps_child_state_on_attempt() {
-        let mut child_builder = WorkflowBuilder::new("child-run");
+        let mut child_builder = Builder::new("child-run");
         child_builder.add_node("inner", crate::node::Echo).unwrap();
         child_builder.add_edge(START, "inner").unwrap();
         child_builder.add_edge("inner", END).unwrap();
         let child = child_builder.compile().unwrap();
 
-        let mut parent_builder = WorkflowBuilder::new("parent-run");
+        let mut parent_builder = Builder::new("parent-run");
         parent_builder.add_graph_node("child", &child).unwrap();
         parent_builder.add_edge(START, "child").unwrap();
         parent_builder.add_edge("child", END).unwrap();
@@ -4424,7 +4466,7 @@ mod tests {
 
     #[test]
     fn nested_graph_wait_resumes_through_the_parent_execution() {
-        let mut child_builder = WorkflowBuilder::new("child-wait");
+        let mut child_builder = Builder::new("child-wait");
         child_builder
             .add_node("approval", WaitOnce(AtomicBool::new(false)))
             .unwrap();
@@ -4432,7 +4474,7 @@ mod tests {
         child_builder.add_edge("approval", END).unwrap();
         let child = child_builder.compile().unwrap();
 
-        let mut parent_builder = WorkflowBuilder::new("parent-wait");
+        let mut parent_builder = Builder::new("parent-wait");
         parent_builder.add_graph_node("child", &child).unwrap();
         parent_builder.add_edge(START, "child").unwrap();
         parent_builder.add_edge("child", END).unwrap();
@@ -4468,7 +4510,7 @@ mod tests {
 
     #[test]
     fn nested_graph_checkpoint_restores_child_wait_before_parent_resume() {
-        let mut child_builder = WorkflowBuilder::new("child-checkpoint-wait");
+        let mut child_builder = Builder::new("child-checkpoint-wait");
         child_builder
             .add_node("approval", WaitOnce(AtomicBool::new(false)))
             .unwrap();
@@ -4476,7 +4518,7 @@ mod tests {
         child_builder.add_edge("approval", END).unwrap();
         let child = child_builder.compile().unwrap();
 
-        let mut parent_builder = WorkflowBuilder::new("parent-checkpoint-wait");
+        let mut parent_builder = Builder::new("parent-checkpoint-wait");
         parent_builder.add_graph_node("child", &child).unwrap();
         parent_builder.add_edge(START, "child").unwrap();
         parent_builder.add_edge("child", END).unwrap();
@@ -4535,7 +4577,7 @@ mod tests {
 
     #[test]
     fn checkpoint_recovery_retries_waiting_node_without_allocating_a_new_execution() {
-        let mut builder = WorkflowBuilder::new("checkpoint-waiting-node");
+        let mut builder = Builder::new("checkpoint-waiting-node");
         builder.add_node("answer", crate::node::Echo).unwrap();
         builder
             .set_retry(
@@ -4581,7 +4623,7 @@ mod tests {
 
     #[test]
     fn checkpoint_recovery_resumes_agent_attempt_without_allocating_new_identity() {
-        let mut builder = WorkflowBuilder::new("checkpoint-waiting-agent");
+        let mut builder = Builder::new("checkpoint-waiting-agent");
         builder
             .add_agent_node("agent", FakeAgent { mode: "single" })
             .unwrap();
@@ -4626,7 +4668,7 @@ mod tests {
 
     #[test]
     fn embedded_agent_wait_uses_workflow_wait_and_resumes_same_execution() {
-        let mut builder = WorkflowBuilder::new("embedded-agent-wait");
+        let mut builder = Builder::new("embedded-agent-wait");
         builder.add_agent_node("agent", WaitingAgent).unwrap();
         builder.add_edge(START, "agent").unwrap();
         builder.add_edge("agent", END).unwrap();
@@ -4666,7 +4708,7 @@ mod tests {
 
     #[test]
     fn checkpoint_recovery_passes_embedded_agent_scene_to_the_same_attempt() {
-        let mut builder = WorkflowBuilder::new("checkpoint-embedded-agent-scene");
+        let mut builder = Builder::new("checkpoint-embedded-agent-scene");
         builder.add_agent_node("agent", RestoringAgent).unwrap();
         builder.add_edge(START, "agent").unwrap();
         builder.add_edge("agent", END).unwrap();
@@ -4716,7 +4758,7 @@ mod tests {
 
     #[test]
     fn checkpoint_recovery_resumes_running_node_without_retry_budget() {
-        let mut builder = WorkflowBuilder::new("checkpoint-waiting-no-retry");
+        let mut builder = Builder::new("checkpoint-waiting-no-retry");
         builder.add_node("answer", crate::node::Echo).unwrap();
         builder.add_edge(START, "answer").unwrap();
         builder.add_edge("answer", END).unwrap();
@@ -4749,7 +4791,7 @@ mod tests {
 
     #[test]
     fn run_waits_at_a_barrier_instead_of_activating_downstream() {
-        let mut builder = WorkflowBuilder::new("wait");
+        let mut builder = Builder::new("wait");
         builder.add_node("a", crate::node::Echo).unwrap();
         builder.add_node("b", crate::node::Echo).unwrap();
         builder.add_edge(START, "a").unwrap();
@@ -4771,7 +4813,7 @@ mod tests {
 
     #[test]
     fn resolved_wait_reuses_the_same_execution_id_and_attempt() {
-        let mut builder = WorkflowBuilder::new("resume-wait");
+        let mut builder = Builder::new("resume-wait");
         builder
             .add_node("approval", WaitOnce(AtomicBool::new(false)))
             .unwrap();
@@ -4851,7 +4893,7 @@ mod tests {
 
     #[test]
     fn fan_out_relation_activates_one_target_execution() {
-        let mut builder = WorkflowBuilder::new("fan-out");
+        let mut builder = Builder::new("fan-out");
         builder.add_node("source", crate::node::Echo).unwrap();
         builder.add_node("target", crate::node::Echo).unwrap();
         builder.add_edge(START, "source").unwrap();
@@ -4878,7 +4920,7 @@ mod tests {
 
     #[test]
     fn loop_relation_uses_the_declared_condition_and_new_execution_ids() {
-        let mut builder = WorkflowBuilder::new("loop");
+        let mut builder = Builder::new("loop");
         builder.add_node("first", crate::node::Echo).unwrap();
         builder.add_node("second", crate::node::Echo).unwrap();
         builder.add_edge(START, "first").unwrap();
@@ -4913,7 +4955,7 @@ mod tests {
 
     #[test]
     fn join_failure_waits_for_all_sources_and_activates_handler() {
-        let mut builder = WorkflowBuilder::new("join-failure");
+        let mut builder = Builder::new("join-failure");
         builder
             .add_node("failed", |_input: Messages, _| async {
                 Err::<Messages, crate::Error>(crate::Error::new("FAILED", "boom"))
@@ -4951,7 +4993,7 @@ mod tests {
 
     #[test]
     fn runtime_retries_only_transient_node_errors() {
-        let mut builder = WorkflowBuilder::new("retry");
+        let mut builder = Builder::new("retry");
         builder
             .add_node("retry", Flaky(AtomicBool::new(false)))
             .unwrap();
@@ -4981,7 +5023,7 @@ mod tests {
     fn runtime_tool_retry_skips_successful_call_ids() {
         let first_calls = Arc::new(AtomicI64::new(0));
         let second_calls = Arc::new(AtomicI64::new(0));
-        let mut builder = WorkflowBuilder::new("tool-retry-dedup");
+        let mut builder = Builder::new("tool-retry-dedup");
         builder
             .add_node(
                 "tools",
@@ -5027,7 +5069,7 @@ mod tests {
     }
 
     fn retry_workflow(calls: Arc<AtomicI64>, policy: RetryPolicy) -> CompiledWorkflow {
-        let mut builder = WorkflowBuilder::new("async-retry");
+        let mut builder = Builder::new("async-retry");
         builder
             .add_node("retry", move |input: Messages, _: Cancellation| {
                 let calls = calls.clone();
@@ -5163,7 +5205,7 @@ mod tests {
     fn checkpoint_recovery_toolnode_reuses_committed_call_ids() {
         let first_calls = Arc::new(AtomicI64::new(0));
         let second_calls = Arc::new(AtomicI64::new(0));
-        let mut builder = WorkflowBuilder::new("tool-checkpoint-recovery");
+        let mut builder = Builder::new("tool-checkpoint-recovery");
         builder
             .add_node(
                 "tools",
@@ -5236,7 +5278,7 @@ mod tests {
     }
 
     fn recovery_workflow(node: tool::ToolNode) -> CompiledWorkflow {
-        let mut builder = WorkflowBuilder::new("tool-process-recovery");
+        let mut builder = Builder::new("tool-process-recovery");
         builder.add_node("tools", node).unwrap();
         builder.add_edge(START, "tools").unwrap();
         builder.add_edge("tools", END).unwrap();

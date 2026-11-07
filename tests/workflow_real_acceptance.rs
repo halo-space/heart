@@ -8,7 +8,7 @@ use std::sync::{
 use futures_util::StreamExt;
 use halo::{
     agent::workflow::{
-        Runtime, WorkflowBuilder,
+        Builder, Runtime,
         graph::{END, START},
     },
     agent::{
@@ -105,7 +105,7 @@ async fn workflow_runs_embedded_agent_with_real_model() {
         .build()
         .expect("build the real Agent");
 
-    let mut builder = WorkflowBuilder::new("live-deepseek-agent-workflow");
+    let mut builder = Builder::new("live-deepseek-agent-workflow");
     builder
         .add_agent_node("agent", worker)
         .expect("add the Agent as a Workflow node");
@@ -208,7 +208,7 @@ async fn workflow_runs_embedded_static_team_with_real_model() {
         .with_id_fn(next_team_id)
         .build()
         .expect("build Team");
-    let mut builder = WorkflowBuilder::new("live-team-workflow");
+    let mut builder = Builder::new("live-team-workflow");
     builder
         .add_agent_node("team", team)
         .expect("add Team as Workflow Agent node");
@@ -277,7 +277,7 @@ async fn workflow_forwards_a_real_partial_complete_after_cancellation() {
         .build()
         .expect("build the real Agent");
 
-    let mut builder = WorkflowBuilder::new("live-workflow-agent-cancellation");
+    let mut builder = Builder::new("live-workflow-agent-cancellation");
     builder
         .add_agent_node("agent", worker)
         .expect("add the Agent as a Workflow node");
@@ -381,7 +381,7 @@ async fn real_workflow_agent_waits_for_approval_then_resumes_the_live_tool_step(
         .build()
         .expect("build embedded ReAct Agent");
 
-    let mut builder = WorkflowBuilder::new("live-workflow-agent-approval");
+    let mut builder = Builder::new("live-workflow-agent-approval");
     builder
         .add_agent_node("agent", worker)
         .expect("add Agent node");

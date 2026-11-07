@@ -20,7 +20,7 @@ use halo::{
     agent::model::{content::part::Part, token::Usage},
     agent::node::{Node, Signal, Wait},
     agent::workflow::{
-        CompiledWorkflow, FieldSource, InputBinding, NodeAttrs, Runtime, WorkflowBuilder,
+        Builder, CompiledWorkflow, FieldSource, InputBinding, NodeAttrs, Runtime,
         graph::{self, END, START},
         node,
     },
@@ -96,7 +96,7 @@ fn graph_with_agent<A: Agent + 'static>(
     depth: usize,
     downstream: Arc<AtomicUsize>,
 ) -> CompiledWorkflow {
-    let mut builder = WorkflowBuilder::new("observed-agent-and-function");
+    let mut builder = Builder::new("observed-agent-and-function");
     builder.add_agent_node("agent", agent).unwrap();
     builder
         .add_node("double", move |input: Answer, _: Cancellation| {
@@ -130,7 +130,7 @@ fn graph_with_agent<A: Agent + 'static>(
     builder.add_edge("double", END).unwrap();
     let mut compiled = builder.compile().unwrap();
     for level in 0..depth {
-        let mut wrapper = WorkflowBuilder::new(format!("observation-wrapper-{level}"));
+        let mut wrapper = Builder::new(format!("observation-wrapper-{level}"));
         wrapper.add_graph_node("child", &compiled).unwrap();
         wrapper.add_edge(START, "child").unwrap();
         wrapper.add_edge("child", END).unwrap();
@@ -498,7 +498,7 @@ fn concurrent_root_runs_do_not_cross_observation_scopes() {
 fn final_error_is_direct_and_checkpoint_is_saved_before_it_is_delivered() {
     block_on(async {
         let error = Error::new("TIMEOUT", "raw provider error").with_details("provider diagnosis");
-        let mut builder = WorkflowBuilder::new("observed-failure");
+        let mut builder = Builder::new("observed-failure");
         builder
             .add_agent_node(
                 "agent",
@@ -559,7 +559,7 @@ impl Node<Messages, Messages, Error> for Review {
 #[test]
 fn waiting_stream_ends_after_saving_the_same_waiting_scene() {
     block_on(async {
-        let mut builder = WorkflowBuilder::new("observed-wait");
+        let mut builder = Builder::new("observed-wait");
         builder.add_node("review", Review).unwrap();
         builder.add_edge(START, "review").unwrap();
         builder.add_edge("review", END).unwrap();
@@ -782,7 +782,7 @@ fn native_tool_batch_observes_saved_successes_once_without_error_messages() {
             let tools =
                 halo::agent::workflow::tool::ToolNode::new(batch_tool("good", good.clone(), false))
                     .tool(batch_tool("bad", bad.clone(), true));
-            let mut builder = WorkflowBuilder::new("observed-tool-batch");
+            let mut builder = Builder::new("observed-tool-batch");
             builder.add_node("tools", tools).unwrap();
             builder
                 .set_retry(

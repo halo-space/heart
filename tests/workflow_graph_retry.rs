@@ -17,7 +17,7 @@ use halo::{
     agent::model::token::Usage,
     agent::node::{Node, Signal, Wait},
     agent::workflow::{
-        CompiledWorkflow, RetryPolicy, Runtime, WorkflowBuilder,
+        Builder, CompiledWorkflow, RetryPolicy, Runtime,
         graph::{self, END, START},
         node,
     },
@@ -45,7 +45,7 @@ impl Node<Messages, Messages, Error> for Approval {
 }
 
 fn approval_workflow(approved: bool) -> CompiledWorkflow {
-    let mut builder = WorkflowBuilder::new("restored-approval-downstream");
+    let mut builder = Builder::new("restored-approval-downstream");
     builder.add_node("source", halo::agent::node::Echo).unwrap();
     builder
         .add_node("approval", Approval(AtomicBool::new(approved)))
@@ -161,7 +161,7 @@ fn workflow_at(
     fail_at_merge: bool,
     nested: bool,
 ) -> CompiledWorkflow {
-    let mut child = WorkflowBuilder::new("retry-child");
+    let mut child = Builder::new("retry-child");
     child
         .add_agent_node(
             "a",
@@ -202,7 +202,7 @@ fn workflow_at(
     child.add_edge("merge", END).unwrap();
     let child = child.compile().unwrap();
     let child = if nested {
-        let mut wrapper = WorkflowBuilder::new("retry-nested-child");
+        let mut wrapper = Builder::new("retry-nested-child");
         wrapper.add_graph_node("inner", &child).unwrap();
         wrapper.add_edge(START, "inner").unwrap();
         wrapper.add_edge("inner", END).unwrap();
@@ -211,7 +211,7 @@ fn workflow_at(
         child
     };
 
-    let mut parent = WorkflowBuilder::new("retry-parent");
+    let mut parent = Builder::new("retry-parent");
     parent.add_node("source", halo::agent::node::Echo).unwrap();
     parent.add_graph_node("batch", &child).unwrap();
     parent

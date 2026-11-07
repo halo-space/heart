@@ -20,7 +20,7 @@ use halo::{
     agent::model::chat::{self as model_chat, Chat, Request},
     agent::provider::vllm::{self, Vllm},
     agent::workflow::{
-        CompiledWorkflow, Runtime, WorkflowBuilder,
+        Builder, CompiledWorkflow, Runtime,
         graph::{END, START},
     },
     agent::{self, Agent, Input, Payload},
@@ -639,7 +639,7 @@ impl Middleware for Isolated {
     }
 }
 fn graph(react: bool, hooks: Isolated, model: Model) -> CompiledWorkflow {
-    let mut builder = WorkflowBuilder::new("preparation-owner-isolation");
+    let mut builder = Builder::new("preparation-owner-isolation");
     for (node, prompt) in [("a", "A"), ("b", "B")] {
         if react {
             builder
@@ -672,7 +672,7 @@ fn graph(react: bool, hooks: Isolated, model: Model) -> CompiledWorkflow {
     builder.add_join(["a", "b"], "merge").unwrap();
     builder.add_edge("merge", END).unwrap();
     let child = builder.compile().unwrap();
-    let mut parent = WorkflowBuilder::new("preparation-wrapper");
+    let mut parent = Builder::new("preparation-wrapper");
     parent.add_graph_node("child", &child).unwrap();
     parent.add_edge(START, "child").unwrap();
     parent.add_edge("child", END).unwrap();

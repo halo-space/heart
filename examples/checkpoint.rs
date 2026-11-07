@@ -10,7 +10,7 @@ use halo::agent::{
     checkpoint::Checkpoint as _,
     core,
     workflow::{
-        GraphError, Runtime, WorkflowBuilder,
+        Builder, GraphError, Runtime,
         graph::{END, START},
     },
 };
@@ -24,7 +24,7 @@ struct Answer {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
-    let mut builder = WorkflowBuilder::new("checkpoint-example");
+    let mut builder = Builder::new("checkpoint-example");
     builder
         .add_node("answer", |_: Messages, _: Cancellation| async {
             Ok::<_, Error>(Answer {

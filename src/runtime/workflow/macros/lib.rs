@@ -604,12 +604,12 @@ fn check(io: &Io, value: Option<&Ident>, ty: Option<&Type>, root: &Tokens) -> To
                 #value_argument
             ) {
                 let _: fn(
-                    &mut #root::agent::workflow::WorkflowBuilder,
+                    &mut #root::agent::workflow::builder::Builder,
                     ::std::string::String, #parameter,
                 ) -> ::std::result::Result<
-                    &mut #root::agent::workflow::WorkflowBuilder,
+                    &mut #root::agent::workflow::builder::Builder,
                     #root::agent::workflow::GraphError,
-                > = #root::agent::workflow::WorkflowBuilder::add_node::<#input, #output, #error, #parameter>;
+                > = #root::agent::workflow::builder::Builder::add_node::<#input, #output, #error, #parameter>;
             }
             #assertion
             }

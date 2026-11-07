@@ -8,7 +8,7 @@ use halo::{
     agent::model::content::part::Part,
     agent::tool::{Call, Evaluation, Tool, ToolDefinition},
     agent::workflow::{
-        CompiledWorkflow, RetryPolicy, Runtime, WorkflowBuilder,
+        Builder, CompiledWorkflow, RetryPolicy, Runtime,
         graph::{END, START},
         tool::ToolNode,
     },
@@ -138,7 +138,7 @@ fn input(owners: &[&str]) -> Messages {
     Messages::new([message])
 }
 fn workflow(log: Arc<Log>, parallel: bool, depth: usize, retries: u32) -> CompiledWorkflow {
-    let mut builder = WorkflowBuilder::new("native-tool-phases");
+    let mut builder = Builder::new("native-tool-phases");
     let node = ToolNode::new(Lookup::new(log));
     builder
         .add_node("tools", if parallel { node.parallel() } else { node })
@@ -157,7 +157,7 @@ fn workflow(log: Arc<Log>, parallel: bool, depth: usize, retries: u32) -> Compil
     builder.add_edge("tools", END).unwrap();
     let mut graph = builder.compile().unwrap();
     for idx in 0..depth {
-        let mut builder = WorkflowBuilder::new(format!("parent-{idx}"));
+        let mut builder = Builder::new(format!("parent-{idx}"));
         builder.add_graph_node("child", &graph).unwrap();
         builder.add_edge(START, "child").unwrap();
         builder.add_edge("child", END).unwrap();
@@ -487,7 +487,7 @@ async fn phase_acknowledgements_do_not_add_checkpoint_writes() {
 }
 
 fn shared_nodes(log: Arc<Log>) -> CompiledWorkflow {
-    let mut builder = WorkflowBuilder::new("shared-tool-node-owners");
+    let mut builder = Builder::new("shared-tool-node-owners");
     let tool = Lookup::new(log);
     for (source, target, owner) in [("source_a", "a", "A"), ("source_b", "b", "B")] {
         builder

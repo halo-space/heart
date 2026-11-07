@@ -332,7 +332,7 @@ Checkpoint 后端可以是内存、数据库或应用自己的服务。没有配
 普通异步函数可以直接作为 Node。输入和输出由函数的类型决定，`Messages` 是唯一允许的非 object 根类型。
 
 ```rust
-use halo::agent::workflow::{WorkflowBuilder, graph::{START, END}};
+use halo::agent::workflow::graph::{START, END};
 use halo::agent::{Cancellation, Error, Messages};
 use schemars::JsonSchema;
 use serde::Serialize;
@@ -340,7 +340,7 @@ use serde::Serialize;
 #[derive(Serialize, JsonSchema)]
 struct Answer { value: String }
 
-let mut builder = WorkflowBuilder::new("weather");
+let mut builder = halo::agent::workflow::builder::new("weather");
 builder.add_node("answer", |_: Messages, _: Cancellation| async {
     Ok::<_, Error>(Answer { value: "晴朗".into() })
 })?;
@@ -412,10 +412,10 @@ Heart 借鉴 LangGraph 的 `START/END`、条件边、子图和 Checkpoint 现场
 ```text
 外部 DSL JSON
     -> 转换为 Heart Native DSL
-    -> core::workflow::dsl 解析、校验和规范化
+    -> agent::workflow::dsl 解析、校验和规范化
     -> Core 绑定 Core 组件
     -> Runtime 绑定 Agent、Workflow 和 CompiledWorkflow 执行器
-    -> WorkflowBuilder::compile()
+    -> Builder::compile()
     -> Runtime
 ```
 
@@ -463,6 +463,20 @@ let output = code.call(
 ```
 
 如果要放入 Workflow，使用 `builder.add_node_with_schema("reload", code, Schema { input: node.schema.input.clone(), output: node.schema.output.clone() })`；这样 DSL 的精确 Schema 会进入 Definition，页面代码仍只接收 JSON 对象并返回 JSON 对象。
+
+如果希望直接使用整份 Native DSL，可以让 Runtime Builder 载入静态图，再显式绑定实际能力：
+
+```rust
+let document = halo::agent::workflow::dsl::parse(dsl_json)?;
+let mut builder = halo::agent::workflow::builder::from_dsl(document)?;
+builder.bind_code("reload", halo::agent::core::sandbox::Local::new(
+    halo::agent::core::sandbox::Config::default(),
+)?)?;
+let workflow = builder.compile()?;
+let runtime = halo::agent::workflow::Runtime::new(1001, workflow)?;
+```
+
+`bind_node`、`bind_agent`、`bind_tool`、`bind_graph`、`bind_condition` 和 `bind_loop` 分别绑定 Rust Node、Agent、ToolNode、子 Workflow 以及应用自己的路由函数。DSL 只描述静态图；未绑定的节点、条件或循环会在 `compile` 时失败，不会运行到中途才报错。
 
 A2A、AG-UI、JSON-RPC、SSE 和 Webhook 是协议/传输层适配，不改变 Runtime 的 State 和 Event 契约。HTTP 层可以将已有 Event 转换成对外协议事件。
 

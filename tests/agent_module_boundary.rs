@@ -56,11 +56,11 @@ fn runtime_graph_keeps_execution_state_and_its_existing_json_shape() {
 fn workflow_public_entry_uses_agent_namespace() {
     use halo::agent::core::node::Echo;
     use halo::agent::workflow::{
-        WorkflowBuilder,
+        Builder,
         graph::{END, START},
     };
 
-    let mut builder = WorkflowBuilder::new("public-workflow-entry");
+    let mut builder = Builder::new("public-workflow-entry");
     builder.add_node("echo", Echo).unwrap();
     builder.add_edge(START, "echo").unwrap();
     builder.add_edge("echo", END).unwrap();

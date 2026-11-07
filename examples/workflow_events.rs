@@ -9,7 +9,7 @@ use halo::agent::{Cancellation, Error, Messages};
 use halo::agent::{
     event::Event,
     workflow::{
-        GraphError, Runtime, WorkflowBuilder,
+        Builder, GraphError, Runtime,
         graph::{END, START},
     },
 };
@@ -23,7 +23,7 @@ struct Answer {
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> Result<(), Error> {
-    let mut builder = WorkflowBuilder::new("example");
+    let mut builder = Builder::new("example");
     builder
         .add_node("answer", |_: Messages, _: Cancellation| async {
             Ok::<_, Error>(Answer { answer: 42 })

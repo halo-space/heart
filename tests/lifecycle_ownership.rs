@@ -9,7 +9,7 @@ use halo::{
     agent::provider::vllm::{Config, Vllm, chat::Chat as VllmChat},
     agent::tool::{Call, Evaluation, Tool, ToolDefinition},
     agent::workflow::{
-        CompiledWorkflow, Runtime, WorkflowBuilder,
+        Builder, CompiledWorkflow, Runtime,
         graph::{END, START},
         tool::ToolNode,
     },
@@ -80,7 +80,7 @@ fn shared() -> SharedTool {
     SharedTool(Arc::new(Operation {definition:ToolDefinition {name:"shared".into(),description:"shared actual instance".into(),parameters:json!({"type":"object","properties":{"owner":{"type":"string"},"n":{"type":"integer"}},"required":["owner","n"],"additionalProperties":false}).as_object().unwrap().clone()},counts:Default::default(),pause:AtomicBool::new(true)}))
 }
 fn graph(react: bool, tool: SharedTool, model: VllmChat) -> CompiledWorkflow {
-    let mut builder = WorkflowBuilder::new("shared-lifecycle-owners");
+    let mut builder = Builder::new("shared-lifecycle-owners");
     for (id, owner) in [("a", "A"), ("b", "B")] {
         let capabilities = tool.clone();
         if react {
