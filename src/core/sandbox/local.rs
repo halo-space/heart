@@ -63,7 +63,8 @@ struct Input {
 impl Local {
     // Workspace reuses this executor with a fixed per-command cwd. This is
     // deliberately not another public Sandbox operation or model argument.
-    pub(crate) async fn execute_at(
+    // The Sandbox trait implementation below delegates to this overload.
+    pub(crate) async fn execute(
         &self,
         request: Request,
         directory: Option<&Path>,
@@ -115,7 +116,7 @@ impl Sandbox for Local {
         request: Request,
         cancellation: &Cancellation,
     ) -> Result<Response, Error> {
-        self.execute_at(request, None, cancellation).await
+        Local::execute(self, request, None, cancellation).await
     }
 }
 

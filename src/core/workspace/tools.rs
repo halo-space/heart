@@ -94,7 +94,7 @@ impl Files {
                     )
                 })?;
                 let response = sandbox
-                    .execute_at(
+                    .execute(
                         crate::sandbox::Request {
                             operation: "command".into(),
                             input,
