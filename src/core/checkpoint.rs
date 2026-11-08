@@ -3,8 +3,8 @@ use tokio::sync::RwLock;
 
 use serde_json::Value;
 
-use crate::Cancellation;
 use crate::components::checkpoint::{Checkpoint, Error};
+use crate::{Cancellation, cancellation::check};
 
 /// Zero-configuration checkpoint implementation. Each `id` has one
 /// current state and a later save atomically replaces that state.
@@ -17,26 +17,18 @@ impl InMemory {
     pub fn new() -> Self {
         Self::default()
     }
-
-    fn ensure_active(cancellation: &Cancellation) -> Result<(), Error> {
-        if cancellation.is_cancelled() {
-            Err(Error::new("CANCELLED", "checkpoint operation cancelled"))
-        } else {
-            Ok(())
-        }
-    }
 }
 
 impl Checkpoint for InMemory {
     async fn save(&self, id: i64, state: Value, cancellation: &Cancellation) -> Result<(), Error> {
-        Self::ensure_active(cancellation)?;
+        check(cancellation)?;
         self.validate_state(&state)?;
         self.states.write().await.insert(id, state);
         Ok(())
     }
 
     async fn load(&self, id: i64, cancellation: &Cancellation) -> Result<Value, Error> {
-        Self::ensure_active(cancellation)?;
+        check(cancellation)?;
         self.states
             .read()
             .await
@@ -46,7 +38,7 @@ impl Checkpoint for InMemory {
     }
 
     async fn delete(&self, id: i64, cancellation: &Cancellation) -> Result<(), Error> {
-        Self::ensure_active(cancellation)?;
+        check(cancellation)?;
         if self.states.write().await.remove(&id).is_none() {
             return Err(Error::new("NOT_FOUND", "checkpoint not found"));
         }

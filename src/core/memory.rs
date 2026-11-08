@@ -6,10 +6,10 @@ use tokio::sync::RwLock;
 
 use serde_json::Value;
 
-use crate::Cancellation;
 use crate::components::memory::{
     Error, Filter, HybridRequest, Item, KeywordRequest, Memory, Request, Type, VectorRequest,
 };
+use crate::{Cancellation, cancellation::check};
 
 // The Elasticsearch adapter is kept private at the implementation root. It is
 // re-exported below through the semantic `long` and `short` memory paths so
@@ -82,14 +82,6 @@ impl InMemory {
             records: RwLock::new(BTreeMap::new()),
             vector_dimension: Some(dimension),
         })
-    }
-
-    fn ensure_active(cancellation: &Cancellation) -> Result<(), Error> {
-        if cancellation.is_cancelled() {
-            Err(Error::new("CANCELLED", "memory operation cancelled"))
-        } else {
-            Ok(())
-        }
     }
 
     fn validate_request(&self, request: &Request) -> Result<(), Error> {
@@ -241,7 +233,7 @@ impl InMemory {
 
 impl Memory for InMemory {
     async fn write(&self, request: Request, cancellation: &Cancellation) -> Result<Item, Error> {
-        Self::ensure_active(cancellation)?;
+        check(cancellation)?;
         self.validate_request(&request)?;
         let now = now_ms();
         let item = Item {
@@ -263,7 +255,7 @@ impl Memory for InMemory {
             vector: request.vector,
         };
         let mut records = self.records.write().await;
-        Self::ensure_active(cancellation)?;
+        check(cancellation)?;
         if records.contains_key(&item.id) {
             return Err(Error::new("CONFLICT", "memory id already exists"));
         }
@@ -286,10 +278,10 @@ impl Memory for InMemory {
         version: u64,
         cancellation: &Cancellation,
     ) -> Result<Item, Error> {
-        Self::ensure_active(cancellation)?;
+        check(cancellation)?;
         self.validate_request(&request)?;
         let mut records = self.records.write().await;
-        Self::ensure_active(cancellation)?;
+        check(cancellation)?;
         let stored = records
             .get_mut(&request.id)
             .ok_or_else(|| Error::new("NOT_FOUND", "memory not found"))?;
@@ -333,9 +325,9 @@ impl Memory for InMemory {
     }
 
     async fn delete(&self, id: i64, cancellation: &Cancellation) -> Result<(), Error> {
-        Self::ensure_active(cancellation)?;
+        check(cancellation)?;
         let mut records = self.records.write().await;
-        Self::ensure_active(cancellation)?;
+        check(cancellation)?;
         if records.remove(&id).is_none() {
             return Err(Error::new("NOT_FOUND", "memory not found"));
         }
@@ -350,7 +342,7 @@ impl Memory for InMemory {
         r#type: Type,
         cancellation: &Cancellation,
     ) -> Result<Option<Item>, Error> {
-        Self::ensure_active(cancellation)?;
+        check(cancellation)?;
         let filter = self.exact_scope(user_id, agent_id, session_id, r#type);
         let records = self.records.read().await;
         Ok(records
@@ -367,7 +359,7 @@ impl Memory for InMemory {
         r#type: Type,
         cancellation: &Cancellation,
     ) -> Result<Vec<Item>, Error> {
-        Self::ensure_active(cancellation)?;
+        check(cancellation)?;
         let filter = self.exact_scope(user_id, agent_id, session_id, r#type);
         let records = self.records.read().await;
         let found = records
@@ -383,7 +375,7 @@ impl Memory for InMemory {
         request: KeywordRequest,
         cancellation: &Cancellation,
     ) -> Result<Vec<Item>, Error> {
-        Self::ensure_active(cancellation)?;
+        check(cancellation)?;
         let filter = Self::parse_filter(&request.options)?;
         let query = request.query.to_lowercase();
         let records = self.records.read().await;
@@ -430,7 +422,7 @@ impl InMemory {
         cancellation: &Cancellation,
         keyword: Option<String>,
     ) -> Result<Vec<Item>, Error> {
-        Self::ensure_active(cancellation)?;
+        check(cancellation)?;
         let dimension = self
             .vector_dimension
             .ok_or_else(|| Error::new("UNSUPPORTED", "vector capability is disabled"))?;

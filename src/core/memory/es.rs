@@ -14,11 +14,11 @@ use elasticsearch::{
 use serde::de::DeserializeOwned;
 use serde_json::{Map, Value, json};
 
-use crate::Cancellation;
 use crate::components::memory::short as short_contracts;
 use crate::components::memory::{
     self, Error, Filter, Item, Memory as MemoryContract, Request, Type,
 };
+use crate::{Cancellation, cancellation::check};
 
 /// Long-term Memory stored in one application-prepared Elasticsearch index.
 pub struct Memory {
@@ -981,14 +981,6 @@ fn validate_index(index: &str) -> Result<(), Error> {
         ));
     }
     Ok(())
-}
-
-fn check(cancellation: &Cancellation) -> Result<(), Error> {
-    if cancellation.is_cancelled() {
-        Err(Error::new("CANCELLED", "memory operation cancelled"))
-    } else {
-        Ok(())
-    }
 }
 
 fn now_ms() -> i64 {

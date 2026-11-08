@@ -4,8 +4,8 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use tokio::sync::RwLock;
 
-use crate::Cancellation;
 use crate::components::memory::short::{Error, session};
+use crate::{Cancellation, cancellation::check};
 
 /// Independent in-memory Session CRUD. `update` uses the submitted snapshot's
 /// `updated_time` for optimistic concurrency; read latest after `CONFLICT` and
@@ -23,14 +23,6 @@ impl InMemory {
         Self {
             records: RwLock::new(BTreeMap::new()),
             last_time: AtomicI64::new(0),
-        }
-    }
-
-    fn check(cancellation: &Cancellation) -> Result<(), Error> {
-        if cancellation.is_cancelled() {
-            Err(Error::new("CANCELLED", "session operation cancelled"))
-        } else {
-            Ok(())
         }
     }
 
@@ -67,10 +59,10 @@ impl session::Store for InMemory {
         mut value: session::Session,
         cancellation: &Cancellation,
     ) -> Result<session::Session, Error> {
-        Self::check(cancellation)?;
+        check(cancellation)?;
         validate(&value)?;
         let mut records = self.records.write().await;
-        Self::check(cancellation)?;
+        check(cancellation)?;
         if records.contains_key(&value.id) {
             return Err(Error::new("CONFLICT", "session id already exists"));
         }
@@ -81,7 +73,7 @@ impl session::Store for InMemory {
     }
 
     async fn read(&self, id: i64, cancellation: &Cancellation) -> Result<session::Session, Error> {
-        Self::check(cancellation)?;
+        check(cancellation)?;
         self.records
             .read()
             .await
@@ -95,10 +87,10 @@ impl session::Store for InMemory {
         mut value: session::Session,
         cancellation: &Cancellation,
     ) -> Result<session::Session, Error> {
-        Self::check(cancellation)?;
+        check(cancellation)?;
         validate(&value)?;
         let mut records = self.records.write().await;
-        Self::check(cancellation)?;
+        check(cancellation)?;
         let old = records
             .get(&value.id)
             .ok_or_else(|| Error::new("NOT_FOUND", "session not found"))?;
@@ -126,9 +118,9 @@ impl session::Store for InMemory {
     }
 
     async fn delete(&self, id: i64, cancellation: &Cancellation) -> Result<(), Error> {
-        Self::check(cancellation)?;
+        check(cancellation)?;
         let mut records = self.records.write().await;
-        Self::check(cancellation)?;
+        check(cancellation)?;
         if records.remove(&id).is_none() {
             return Err(Error::new("NOT_FOUND", "session not found"));
         }

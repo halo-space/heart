@@ -5,8 +5,8 @@ use tokio::sync::RwLock;
 
 use serde_json::{Map, Value};
 
-use crate::Cancellation;
 use crate::components::memory::short::{Error, chat};
+use crate::{Cancellation, cancellation::check};
 
 pub struct InMemory {
     records: RwLock<BTreeMap<i64, chat::Chat>>,
@@ -256,13 +256,6 @@ impl Query {
     }
 }
 
-fn check(cancellation: &Cancellation) -> Result<(), Error> {
-    if cancellation.is_cancelled() {
-        Err(Error::new("CANCELLED", "chat operation cancelled"))
-    } else {
-        Ok(())
-    }
-}
 fn validate(value: &chat::Chat) -> Result<(), Error> {
     if value.id <= 0 || value.tenant_id <= 0 || value.user_id <= 0 {
         return Err(Error::new(
