@@ -1743,7 +1743,7 @@ dependencies = [
 
 [[package]]
 name = "halo-agent"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "axum",
  "csv",

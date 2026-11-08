@@ -1,3 +1,6 @@
+pub(crate) mod entry;
+pub(crate) mod reader;
+
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
