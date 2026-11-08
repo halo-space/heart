@@ -34,11 +34,11 @@ trait Entry: Send + Sync {
     fn execute(&self, step: Step, facts: Facts, cancellation: Cancellation) -> ToolFuture;
 }
 
-struct TypedEntry<T> {
+struct Adapter<T> {
     tool: Arc<T>,
 }
 
-impl<T> Entry for TypedEntry<T>
+impl<T> Entry for Adapter<T>
 where
     T: Tool + 'static,
 {
@@ -149,7 +149,7 @@ impl ToolNode {
         T: Tool + 'static,
     {
         Self {
-            tools: vec![Box::new(TypedEntry {
+            tools: vec![Box::new(Adapter {
                 tool: Arc::new(tool),
             })],
             execution_mode: ExecutionMode::default(),
@@ -162,7 +162,7 @@ impl ToolNode {
     where
         T: Tool + 'static,
     {
-        self.tools.push(Box::new(TypedEntry {
+        self.tools.push(Box::new(Adapter {
             tool: Arc::new(tool),
         }));
         self

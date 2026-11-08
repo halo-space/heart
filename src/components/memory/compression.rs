@@ -13,8 +13,8 @@ trait Entry: Send + Sync {
     fn compress(&self, input: Messages, cancellation: Cancellation) -> FutureResult;
 }
 
-struct Typed<P>(Arc<P>);
-impl<P: Compressor + 'static> Entry for Typed<P> {
+struct Adapter<P>(Arc<P>);
+impl<P: Compressor + 'static> Entry for Adapter<P> {
     fn size(&self) -> Option<u64> {
         self.0.size()
     }
@@ -43,7 +43,7 @@ pub(crate) struct Configured(Arc<dyn Entry>);
 
 impl Configured {
     pub(crate) fn new<P: Compressor + 'static>(component: P) -> Self {
-        Self(Arc::new(Typed(Arc::new(component))))
+        Self(Arc::new(Adapter(Arc::new(component))))
     }
 
     pub(crate) fn validate(&self) -> Result<(), Error> {

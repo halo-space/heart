@@ -45,9 +45,9 @@ trait Entry: Send + Sync {
     fn save(&self, value: chat::Chat, state: Option<Value>) -> SaveFuture;
 }
 
-struct Typed<S, L>(Arc<memory::Config<S, L>>);
+struct Adapter<S, L>(Arc<memory::Config<S, L>>);
 
-impl<S, L> Entry for Typed<S, L>
+impl<S, L> Entry for Adapter<S, L>
 where
     S: short::Store + 'static,
     L: Memory + 'static,
@@ -192,7 +192,7 @@ impl History {
         S: short::Store + 'static,
         L: Memory + 'static,
     {
-        self.0 = Some(Arc::new(Typed(Arc::new(config))));
+        self.0 = Some(Arc::new(Adapter(Arc::new(config))));
     }
 
     pub(crate) fn validate(&self) -> Result<(), Error> {

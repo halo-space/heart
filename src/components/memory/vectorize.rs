@@ -18,9 +18,9 @@ trait Entry: Send + Sync {
     fn embed(&self, request: Request) -> FutureResult;
 }
 
-struct Typed<E>(Arc<E>);
+struct Adapter<E>(Arc<E>);
 
-impl<E: Embed + 'static> Entry for Typed<E> {
+impl<E: Embed + 'static> Entry for Adapter<E> {
     fn embed(&self, request: Request) -> FutureResult {
         let component = self.0.clone();
         Box::pin(async move { component.embed(request).await })
@@ -32,7 +32,7 @@ pub(crate) struct Configured(Arc<dyn Entry>);
 
 impl Configured {
     pub(crate) fn new<E: Embed + 'static>(component: E) -> Self {
-        Self(Arc::new(Typed(Arc::new(component))))
+        Self(Arc::new(Adapter(Arc::new(component))))
     }
 
     pub(crate) async fn embed(

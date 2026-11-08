@@ -28,8 +28,8 @@ trait Entry: Send + Sync {
     fn extract(&self, input: Messages, cancellation: Cancellation) -> ExtractFuture;
     fn merge(&self, current: Item, content: String, cancellation: Cancellation) -> MergeFuture;
 }
-struct Typed<E>(Arc<E>);
-impl<E: Extractor + 'static> Entry for Typed<E> {
+struct Adapter<E>(Arc<E>);
+impl<E: Extractor + 'static> Entry for Adapter<E> {
     fn extract(&self, input: Messages, cancellation: Cancellation) -> ExtractFuture {
         let component = self.0.clone();
         Box::pin(async move { component.extract(&input, &cancellation).await })
@@ -49,7 +49,7 @@ impl Configured {
         E: Extractor + 'static,
     {
         Self {
-            component: Arc::new(Typed(Arc::new(component))),
+            component: Arc::new(Adapter(Arc::new(component))),
         }
     }
     pub(crate) async fn extract(

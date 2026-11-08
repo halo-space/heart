@@ -38,9 +38,9 @@ trait ErasedAgent: Send + Sync {
     fn run(&self, input: Input, cancellation: Cancellation, view: View) -> RunFuture;
 }
 
-struct TypedAgent<A>(Arc<A>);
+struct AgentAdapter<A>(Arc<A>);
 
-impl<A> ErasedAgent for TypedAgent<A>
+impl<A> ErasedAgent for AgentAdapter<A>
 where
     A: Agent + 'static,
 {
@@ -84,7 +84,7 @@ impl SubAgent {
         Ok(Self {
             name,
             description: String::new(),
-            runner: Arc::new(TypedAgent(Arc::new(agent))),
+            runner: Arc::new(AgentAdapter(Arc::new(agent))),
             serial: Arc::new(tokio::sync::Mutex::new(())),
         })
     }

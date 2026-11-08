@@ -62,11 +62,11 @@ pub(crate) trait ErasedAgent: Send + Sync + 'static {
     ) -> AgentFuture;
 }
 
-struct TypedAgent<A> {
+struct AgentAdapter<A> {
     agent: Arc<A>,
 }
 
-impl<A: Agent + 'static> ErasedAgent for TypedAgent<A> {
+impl<A: Agent + 'static> ErasedAgent for AgentAdapter<A> {
     fn call(
         &self,
         input: agent::Input,
@@ -429,14 +429,14 @@ pub(crate) trait ErasedNode: Send + Sync + 'static {
 }
 
 #[allow(dead_code)]
-struct TypedNode<N, I, O, E> {
+struct NodeAdapter<N, I, O, E> {
     node: Arc<N>,
     input_schema: jsonschema::Validator,
     output_schema: jsonschema::Validator,
     marker: std::marker::PhantomData<fn(I, O, E)>,
 }
 
-impl<N, I, O, E> ErasedNode for TypedNode<N, I, O, E>
+impl<N, I, O, E> ErasedNode for NodeAdapter<N, I, O, E>
 where
     N: Node<I, O, E> + Any,
     I: DeserializeOwned + Send + 'static,
@@ -2133,7 +2133,7 @@ impl Builder {
             .insert(node_id.clone(), (input_messages, output_messages));
         self.executors.insert(
             node_id,
-            Arc::new(TypedNode::<N, I, O, E> {
+            Arc::new(NodeAdapter::<N, I, O, E> {
                 node: Arc::new(node),
                 input_schema,
                 output_schema,
@@ -2215,7 +2215,7 @@ impl Builder {
         self.codecs.insert(node_id.clone(), (false, true));
         self.agents.insert(
             node_id,
-            Arc::new(TypedAgent {
+            Arc::new(AgentAdapter {
                 agent: Arc::new(agent),
             }),
         );
