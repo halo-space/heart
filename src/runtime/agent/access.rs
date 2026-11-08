@@ -38,7 +38,7 @@ impl Access {
         cancellation: &Cancellation,
     ) -> Result<Decision, Error> {
         if let Some(policy) = &self.0 {
-            crate::runtime::agent::hooks::cancellable(
+            crate::cancellation::cancellable(
                 policy.check(request, cancellation.clone()),
                 cancellation,
             )

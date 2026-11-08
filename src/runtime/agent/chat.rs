@@ -13,6 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::Cancellation;
+use crate::cancellation::cancellable;
 use crate::components::agent::{Agent as AgentContract, Error, Input};
 use crate::components::agent_input::user_message;
 use crate::components::evaluation::{Evaluation, Evaluator};
@@ -26,7 +27,7 @@ use crate::core::dispatch::{Dispatch, ToolInputs};
 use crate::runtime::agent::access::Access;
 use crate::runtime::agent::checkpoint::Backend;
 use crate::runtime::agent::history::{History, Run};
-use crate::runtime::agent::hooks::{Hooks, cancellable};
+use crate::runtime::agent::hooks::Hooks;
 use crate::runtime::agent::node::Step;
 use crate::runtime::agent::step;
 use crate::runtime::agent::subagent::SubAgent;

@@ -1,11 +1,9 @@
-use std::future::Future;
-use std::task::Poll;
-
 use futures_core::Stream;
-use futures_util::{StreamExt, future::poll_fn};
+use futures_util::StreamExt;
 
 use crate::{
     Cancellation, Error, Messages,
+    cancellation::{cancellable, check},
     event::Event,
     model::chat::{Chat, Request},
 };
@@ -53,34 +51,6 @@ where
                 ));
             }
         }
-    }
-}
-
-async fn cancellable<T>(
-    future: impl Future<Output = Result<T, Error>>,
-    cancellation: &Cancellation,
-) -> Result<T, Error> {
-    let mut future = std::pin::pin!(future);
-    poll_fn(|cx| {
-        cancellation.register(cx.waker());
-        if let Err(error) = check(cancellation) {
-            return Poll::Ready(Err(error));
-        }
-        let result = future.as_mut().poll(cx);
-        // A user implementation may cancel synchronously during its poll.
-        if let Err(error) = check(cancellation) {
-            return Poll::Ready(Err(error));
-        }
-        result
-    })
-    .await
-}
-
-fn check(cancellation: &Cancellation) -> Result<(), Error> {
-    if cancellation.is_cancelled() {
-        Err(Error::new("CANCELLED", "message transformation cancelled"))
-    } else {
-        Ok(())
     }
 }
 

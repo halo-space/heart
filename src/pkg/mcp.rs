@@ -19,6 +19,7 @@ use rmcp::{
 };
 use serde_json::{Map, Value};
 
+use crate::cancellation::{cancellable, check};
 use crate::{Cancellation, Error};
 
 const TIMEOUT: Duration = Duration::from_secs(30);
@@ -288,33 +289,6 @@ impl Client {
         }
         result
     }
-}
-
-fn check(cancellation: &Cancellation) -> Result<(), Error> {
-    if cancellation.is_cancelled() {
-        Err(Error::new("CANCELLED", "operation cancelled"))
-    } else {
-        Ok(())
-    }
-}
-
-async fn cancellable<T>(
-    future: impl std::future::Future<Output = Result<T, Error>>,
-    cancellation: &Cancellation,
-) -> Result<T, Error> {
-    let mut future = std::pin::pin!(future);
-    futures_util::future::poll_fn(|cx| {
-        cancellation.register(cx.waker());
-        if let Err(error) = check(cancellation) {
-            return std::task::Poll::Ready(Err(error));
-        }
-        let result = future.as_mut().poll(cx);
-        if let Err(error) = check(cancellation) {
-            return std::task::Poll::Ready(Err(error));
-        }
-        result
-    })
-    .await
 }
 
 fn check_runtime() -> Result<(), Error> {

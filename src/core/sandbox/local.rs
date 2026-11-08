@@ -2,9 +2,8 @@
 //! Standalone execution inherits the application's environment, directory and
 //! permissions. Workspace binding may set a per-command cwd, not isolation.
 
-use std::{future::Future, path::Path, process::Stdio, task::Poll, time::Duration};
+use std::{path::Path, process::Stdio, time::Duration};
 
-use futures_util::future::poll_fn;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::{
@@ -13,6 +12,7 @@ use tokio::{
 };
 
 use crate::Cancellation;
+use crate::cancellation::{cancellable, check};
 use crate::sandbox::{Error, Request, Response, Sandbox};
 
 /// Host-process waiting/output limits, not CPU, memory or network isolation.
@@ -180,31 +180,4 @@ async fn read(reader: impl AsyncRead + Unpin, limit: usize) -> Result<String, Er
     }
     String::from_utf8(bytes)
         .map_err(|_| Error::new("INVALID_RESPONSE", "local output is not UTF-8"))
-}
-
-fn check(cancellation: &Cancellation) -> Result<(), Error> {
-    if cancellation.is_cancelled() {
-        Err(Error::new("CANCELLED", "operation cancelled"))
-    } else {
-        Ok(())
-    }
-}
-
-async fn cancellable<T>(
-    future: impl Future<Output = Result<T, Error>>,
-    cancellation: &Cancellation,
-) -> Result<T, Error> {
-    let mut future = std::pin::pin!(future);
-    poll_fn(|cx| {
-        cancellation.register(cx.waker());
-        if let Err(error) = check(cancellation) {
-            return Poll::Ready(Err(error));
-        }
-        let result = future.as_mut().poll(cx);
-        if let Err(error) = check(cancellation) {
-            return Poll::Ready(Err(error));
-        }
-        result
-    })
-    .await
 }

@@ -1,6 +1,6 @@
 //! Stage-preserving long Memory processing. Production progress is saved in
 //! Session metadata before external writes and after acknowledged completion.
-use crate::runtime::cancellation::cancellable;
+use crate::cancellation::cancellable;
 use crate::runtime::observation::observe_usage;
 use crate::runtime::trace::fastrace::Root as TraceRoot;
 use crate::{

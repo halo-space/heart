@@ -2,7 +2,14 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
 };
-use std::task::Waker;
+use std::{
+    future::Future,
+    task::{Poll, Waker},
+};
+
+use futures_util::future::poll_fn;
+
+use crate::Error;
 
 #[derive(Debug, Default)]
 struct State {
@@ -51,6 +58,36 @@ impl Cancellation {
             waiters.push(waker.clone());
         }
     }
+}
+
+/// Check the shared cancellation signal using the common runtime error shape.
+pub(crate) fn check(cancellation: &Cancellation) -> Result<(), Error> {
+    if cancellation.is_cancelled() {
+        Err(Error::new("CANCELLED", "operation cancelled"))
+    } else {
+        Ok(())
+    }
+}
+
+/// Poll an async operation while making cancellation observable even when
+/// the operation itself does not produce another wake-up.
+pub(crate) async fn cancellable<T, E: From<Error>>(
+    future: impl Future<Output = Result<T, E>>,
+    cancellation: &Cancellation,
+) -> Result<T, E> {
+    let mut future = std::pin::pin!(future);
+    poll_fn(|cx| {
+        cancellation.register(cx.waker());
+        if let Err(error) = check(cancellation) {
+            return Poll::Ready(Err(error.into()));
+        }
+        let result = future.as_mut().poll(cx);
+        if let Err(error) = check(cancellation) {
+            return Poll::Ready(Err(error.into()));
+        }
+        result
+    })
+    .await
 }
 
 #[cfg(test)]

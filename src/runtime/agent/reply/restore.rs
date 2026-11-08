@@ -539,7 +539,7 @@ impl Run {
                 question: Box::new(question.message),
                 ack,
             });
-            crate::runtime::cancellation::cancellable(
+            crate::cancellation::cancellable(
                 async {
                     presented
                         .await
@@ -549,7 +549,7 @@ impl Run {
             )
             .await?;
             super::feedback::release_slot();
-            crate::runtime::cancellation::cancellable(
+            crate::cancellation::cancellable(
                 async {
                     receiver
                         .await
@@ -567,7 +567,7 @@ impl Run {
             input,
             ack,
         });
-        crate::runtime::cancellation::cancellable(
+        crate::cancellation::cancellable(
             async {
                 consumed
                     .await

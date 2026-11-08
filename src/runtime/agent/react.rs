@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::Cancellation;
+use crate::cancellation::cancellable;
 use crate::components::agent::{Error, Input};
 use crate::components::evaluation::{Evaluation, Evaluator};
 use crate::components::event::Event;
@@ -30,7 +31,7 @@ use crate::runtime::agent::access::Access;
 use crate::runtime::agent::checkpoint::{Backend, invalid as invalid_checkpoint};
 use crate::runtime::agent::graph::Graph;
 use crate::runtime::agent::history::{History, Run};
-use crate::runtime::agent::hooks::{Hooks, cancellable};
+use crate::runtime::agent::hooks::Hooks;
 use crate::runtime::agent::node::Step;
 use crate::runtime::agent::subagent::SubAgent;
 use crate::runtime::agent::subagent::{Failure as SubAgentFailure, Progress as SubAgentProgress};

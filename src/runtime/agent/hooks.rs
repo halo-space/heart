@@ -234,13 +234,6 @@ impl Hooks {
     }
 }
 
-pub(crate) async fn cancellable<T>(
-    future: impl Future<Output = Result<T, Error>>,
-    cancellation: &Cancellation,
-) -> Result<T, Error> {
-    crate::runtime::cancellation::cancellable(future, cancellation).await
-}
-
 #[cfg(test)]
 mod tests {
     use super::{Hooks, Stage};

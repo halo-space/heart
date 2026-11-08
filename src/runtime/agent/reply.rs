@@ -132,7 +132,7 @@ impl Slot {
         }
     }
     pub(crate) async fn acquire(&self, cancellation: &Cancellation) -> Result<(), Error> {
-        crate::runtime::cancellation::cancellable(
+        crate::cancellation::cancellable(
             async {
                 let _entering = self.0.entering.lock().await;
                 if !self.held() {
@@ -542,7 +542,7 @@ impl Run {
             message: message.map(Box::new),
             ack,
         });
-        crate::runtime::cancellation::cancellable(
+        crate::cancellation::cancellable(
             async {
                 applied
                     .await
@@ -567,7 +567,7 @@ impl Run {
             state: Box::new(state),
             ack,
         });
-        crate::runtime::cancellation::cancellable(
+        crate::cancellation::cancellable(
             async {
                 applied
                     .await
@@ -644,7 +644,7 @@ impl Run {
             question: Box::new(question),
             ack,
         });
-        crate::runtime::cancellation::cancellable(
+        crate::cancellation::cancellable(
             async {
                 presented
                     .await
@@ -654,7 +654,7 @@ impl Run {
         )
         .await?;
         feedback::release_slot();
-        let input = crate::runtime::cancellation::cancellable(
+        let input = crate::cancellation::cancellable(
             async {
                 receiver
                     .await
@@ -671,7 +671,7 @@ impl Run {
             input,
             ack,
         });
-        crate::runtime::cancellation::cancellable(
+        crate::cancellation::cancellable(
             async {
                 consumed
                     .await

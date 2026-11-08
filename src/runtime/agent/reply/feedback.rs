@@ -268,7 +268,7 @@ async fn collect(
         present: first.is_none(),
         ack,
     });
-    crate::runtime::cancellation::cancellable(
+    crate::cancellation::cancellable(
         async {
             presented
                 .await
@@ -285,7 +285,7 @@ async fn collect(
             // reply cannot claim this restored submission's capacity.
             input
         } else {
-            crate::runtime::cancellation::cancellable(
+            crate::cancellation::cancellable(
                 async {
                     receiver
                         .recv()
@@ -304,7 +304,7 @@ async fn collect(
             input,
             ack,
         });
-        let complete = crate::runtime::cancellation::cancellable(
+        let complete = crate::cancellation::cancellable(
             async {
                 consumed
                     .await
