@@ -2,7 +2,7 @@
 
 use serde_json::{Map, Value};
 
-use super::common::{self, Connection, Kind};
+use super::transport::{self, Connection, Kind};
 use crate::message::Message;
 use crate::model;
 
@@ -24,7 +24,7 @@ impl model::embed::Embed for Embed {
             .await?
             .json()
             .await
-            .map_err(common::transport_error)?;
+            .map_err(transport::transport_error)?;
         let data = value
             .get("data")
             .and_then(Value::as_array)
@@ -50,7 +50,7 @@ impl model::embed::Embed for Embed {
         message
             .metadata
             .insert("provider_id".into(), self.connection.provider_id.into());
-        message.usage = common::parse_usage(value.get("usage"))?;
+        message.usage = transport::parse_usage(value.get("usage"))?;
         Ok(message)
     }
 }
@@ -66,7 +66,7 @@ pub(super) fn encode_embed_request(
     }
     let mut options = config.options.clone();
     options.extend(request.options.clone());
-    common::validate_options(
+    transport::validate_options(
         &options,
         &["model", "input", "encoding_format", "dimensions"],
     )?;

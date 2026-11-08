@@ -419,7 +419,7 @@ Heart 借鉴 LangGraph 的 `START/END`、条件边、子图和 Checkpoint 现场
     -> Runtime
 ```
 
-应用在初始化阶段提供静态执行配置，请求阶段只传入 DSL 和业务输入。DSL 只描述图和参数，不能绕过应用已配置的函数、工具、Agent 或子图；未知能力在构建或计划提交阶段失败。Heart 不增加公共 Registry、Capabilities 或动态能力注册表。
+应用在初始化阶段提供静态执行配置，请求阶段只传入 DSL 和业务输入。DSL 只描述图和参数，不能绕过应用已配置的函数、工具、Agent 或子图；未知能力在构建或计划提交阶段失败。Heart 不增加公共注册表或动态能力目录。
 
 页面代码函数节点由 Core 根据 DSL 直接创建执行器，再像普通 Node 一样交给 Workflow Builder；不会按
 `name` 查找本地函数，也不会把闭包或本地路径写进 DSL：

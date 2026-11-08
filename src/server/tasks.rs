@@ -15,13 +15,13 @@ use crate::Error;
 use crate::components::protocol::a2a::{Context, Message, StreamResponse, Task, TaskState};
 
 #[derive(Clone, Default)]
-pub struct Memory {
+pub struct InMemory {
     next: Arc<AtomicU64>,
-    entries: Arc<Mutex<BTreeMap<String, Entry>>>,
+    entries: Arc<Mutex<BTreeMap<String, TaskEntry>>>,
 }
 
 #[derive(Clone)]
-struct Entry {
+struct TaskEntry {
     context: Context,
     task: Task,
     messages: BTreeMap<String, Vec<u8>>,
@@ -36,7 +36,7 @@ pub enum MessageState {
 /// Storage contract for the externally visible A2A Task projection.
 ///
 /// Runtime State and Checkpoint data stay outside this contract. The default
-/// `Memory` implementation is enough for local use; applications can provide
+/// `InMemory` implementation is enough for local use; applications can provide
 /// a database-backed implementation with the same operations.
 pub trait Store: Clone + Send + Sync + 'static {
     fn create(
@@ -58,7 +58,7 @@ pub trait Store: Clone + Send + Sync + 'static {
     ) -> impl Future<Output = Result<(), Error>> + Send;
 }
 
-impl Memory {
+impl InMemory {
     pub fn new() -> Self {
         Self::default()
     }
@@ -86,7 +86,7 @@ impl Memory {
         };
         self.entries.lock().map_err(lock_error)?.insert(
             task_id,
-            Entry {
+            TaskEntry {
                 context: context.clone(),
                 task,
                 messages: BTreeMap::new(),
@@ -149,7 +149,7 @@ impl Memory {
 }
 
 #[allow(clippy::manual_async_fn)]
-impl Store for Memory {
+impl Store for InMemory {
     fn create(
         &self,
         session_id: i64,
@@ -217,7 +217,7 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{Memory, MessageState};
+    use super::{InMemory, MessageState};
     use crate::components::protocol::a2a::{
         Message, Part, Role, StreamResponse, TaskState, TaskStatus, TaskStatusUpdateEvent,
     };
@@ -236,7 +236,7 @@ mod tests {
 
     #[test]
     fn creates_deduplicates_and_records_projection_events() {
-        let tasks = Memory::new();
+        let tasks = InMemory::new();
         let context = tasks.create(1, 2).unwrap();
         assert_eq!(
             tasks

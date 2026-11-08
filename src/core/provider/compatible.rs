@@ -4,18 +4,18 @@
 //! translation separate while preserving the existing provider entry points.
 
 mod chat;
-mod common;
 mod embed;
+mod transport;
 
 pub use chat::{Chat, Events};
-pub use common::{Connection, Kind};
 pub use embed::Embed;
+pub(crate) use transport::{Connection, Kind};
 
 #[cfg(test)]
 mod tests {
     use super::chat::{Accumulator, complete_response, encode_message, encode_request};
-    use super::common::{Kind, parse_usage};
     use super::embed::encode_embed_request;
+    use super::transport::{Kind, parse_usage};
     use crate::event::Event;
     use crate::message::{Message, Messages, Role};
     use crate::model::{

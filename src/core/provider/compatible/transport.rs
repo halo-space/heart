@@ -10,7 +10,7 @@ use crate::model::token::{InputDetails, OutputDetails, Usage};
 type Error = model::Error;
 
 #[derive(Clone, Copy, PartialEq)]
-pub enum Kind {
+pub(crate) enum Kind {
     OpenAI,
     DeepSeek,
     Vllm,
@@ -29,7 +29,7 @@ impl Kind {
 }
 
 #[derive(Clone)]
-pub struct Connection {
+pub(crate) struct Connection {
     pub(crate) client: reqwest::Client,
     pub(crate) base_url: String,
     pub(crate) provider_id: i64,

@@ -241,7 +241,7 @@ DSL JSON -> agent::workflow::dsl parse, validate, and normalize
          -> Builder::compile() -> Runtime
 ```
 
-Applications provide static execution configuration during initialization; each request only supplies DSL and business input. Unknown functions, tools, Agents, or subgraphs must fail at binding/plan submission. Heart does not add a public Registry, Capabilities, or dynamic runtime registration table. A2A/AG-UI/JSON-RPC/SSE adapters live at the protocol/HTTP layer and convert existing Events.
+Applications provide static execution configuration during initialization; each request only supplies DSL and business input. Unknown functions, tools, Agents, or subgraphs must fail at binding/plan submission. Heart does not add a public registration table or dynamic runtime capability catalog. A2A/AG-UI/JSON-RPC/SSE adapters live at the protocol/HTTP layer and convert existing Events.
 
 Page-authored function nodes are created by Core from the DSL and then used like ordinary Nodes. Heart does not look up a local function by `name`, and the DSL does not contain a local path or closure:
 

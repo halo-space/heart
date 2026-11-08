@@ -9,7 +9,7 @@ use futures_core::Stream;
 use futures_util::{StreamExt, stream};
 use serde_json::{Map, Value, json};
 
-use super::common::{self, Connection, Kind};
+use super::transport::{self, Connection, Kind};
 use crate::event::Event;
 use crate::message::{Message, Role};
 use crate::model::token::Usage;
@@ -43,7 +43,7 @@ impl model::chat::Chat for Chat {
     type Stream = Events;
 
     fn context_limit(&self) -> Option<u64> {
-        // The limit is a common model capability, not a provider wire option.
+        // The limit is a transport model capability, not a provider wire option.
         // Runtime sees it only through Chat::context_limit().
         self.config.context_limit.filter(|limit| *limit > 0)
     }
@@ -54,7 +54,7 @@ impl model::chat::Chat for Chat {
         let response = self.connection.post("chat/completions", body).await?;
         let metadata = self.connection.metadata(&self.config.model_name);
         if !request.stream {
-            let value: Value = response.json().await.map_err(common::transport_error)?;
+            let value: Value = response.json().await.map_err(transport::transport_error)?;
             let event = complete_response(&value, metadata, format)?;
             return Ok(Events {
                 inner: Box::pin(stream::iter([Ok(event)]).fuse()),
@@ -73,7 +73,7 @@ impl model::chat::Chat for Chat {
         }
         let wire = response.bytes_stream().eventsource().map(|event| {
             event.map(|event| event.data).map_err(|error| match error {
-                EventStreamError::Transport(error) => common::transport_error(error),
+                EventStreamError::Transport(error) => transport::transport_error(error),
                 _ => Error::new("INVALID_RESPONSE", "invalid SSE response framing"),
             })
         });
@@ -130,7 +130,7 @@ pub(super) fn encode_request(
         "dimensions",
         "encoding_format",
     ];
-    common::validate_options(&options, &reserved)?;
+    transport::validate_options(&options, &reserved)?;
     if kind == Kind::DeepSeek {
         if matches!(
             request.response_format,
@@ -453,9 +453,9 @@ impl Accumulator {
 
     pub(super) fn delta(&mut self, value: &Value) -> Result<Option<Message>, Error> {
         if value.get("error").is_some() {
-            return Err(common::api_error(0, value));
+            return Err(transport::api_error(0, value));
         }
-        if let Some(usage) = common::parse_usage(value.get("usage"))? {
+        if let Some(usage) = transport::parse_usage(value.get("usage"))? {
             self.usage = Some(usage);
         }
         let choices = value
