@@ -55,7 +55,7 @@ pub(super) async fn parse(
     options: &Map<String, Value>,
     cancellation: &Cancellation,
 ) -> Result<Vec<Document>, Error> {
-    super::check_cancelled(cancellation)?;
+    crate::cancellation::check(cancellation)?;
     let output_format = match options.get("output").and_then(Value::as_str) {
         Some("text") => OutputFormat::Text,
         _ => OutputFormat::Markdown,
@@ -107,7 +107,7 @@ pub(super) async fn parse(
         parser.parse(path).await
     }
     .map_err(|error| Error::new("PARSE_ERROR", error.to_string()).with_details("data"))?;
-    super::check_cancelled(cancellation)?;
+    crate::cancellation::check(cancellation)?;
 
     let clean = |text: &str| {
         let text = if options

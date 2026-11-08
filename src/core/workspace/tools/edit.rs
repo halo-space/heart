@@ -5,7 +5,7 @@ use serde_json::json;
 use tokio::sync::RwLock;
 
 use super::{Call, Files, Message, Tool, ToolDefinition, arguments, definition, tool_message};
-use crate::{Cancellation, Error, core::operation::cancellable};
+use crate::{Cancellation, Error, cancellation::cancellable};
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]

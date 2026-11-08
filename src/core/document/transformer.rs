@@ -4,7 +4,7 @@ use std::hash::{Hash, Hasher};
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 
-use super::check_cancelled;
+use crate::cancellation::check;
 use crate::{
     Cancellation,
     document::{self, Document, Error},
@@ -65,12 +65,12 @@ impl document::Transformer for Transformer {
         mut documents: Vec<Document>,
         cancellation: &Cancellation,
     ) -> Result<Vec<Document>, Error> {
-        check_cancelled(cancellation)?;
+        check(cancellation)?;
         for operation in &self.operations {
             let mut result: Vec<Document> = Vec::with_capacity(documents.len());
             let mut seen: HashMap<u64, Vec<usize>> = HashMap::new();
             for mut document in documents {
-                check_cancelled(cancellation)?;
+                check(cancellation)?;
                 match operation {
                     Operation::RemoveEmpty if document.content.trim().is_empty() => continue,
                     Operation::Filter(function) if !function(&document) => continue,
@@ -113,7 +113,7 @@ impl document::Transformer for Transformer {
                 result.push(document);
             }
             documents = result;
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
         }
         Ok(documents)
     }

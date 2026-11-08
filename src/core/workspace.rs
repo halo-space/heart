@@ -20,7 +20,7 @@ use crate::{
 };
 
 use super::dispatch::{Dispatch, ToolInputs};
-use super::operation::{cancellable, check};
+use crate::cancellation::{cancellable, check};
 
 pub mod docker;
 pub mod es;
@@ -177,7 +177,7 @@ impl Local {
             hasher.update([0]);
             hasher.update((bytes.len() as u64).to_le_bytes());
             hasher.update(bytes);
-            crate::core::operation::check(cancellation)?;
+            crate::cancellation::check(cancellation)?;
         }
         Ok(format!("sha256:{:x}", hasher.finalize()))
     }

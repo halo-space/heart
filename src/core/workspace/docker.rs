@@ -11,10 +11,10 @@ use tokio::sync::{Mutex, RwLock};
 use super::tools;
 use crate::{
     Cancellation, Error,
+    cancellation::{cancellable, check},
     components::{mcp::Server, skill::Skill},
     core::{
         dispatch::{Dispatch, ToolInputs},
-        operation::{cancellable, check},
         sandbox::docker as sandbox,
     },
     workspace::{Definition, Mode},

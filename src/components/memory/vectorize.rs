@@ -8,6 +8,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 use crate::{
     Cancellation, Error, Message,
+    cancellation::cancellable,
     model::embed::{Embed, Request},
 };
 
@@ -39,27 +40,12 @@ impl Configured {
         input: String,
         cancellation: &Cancellation,
     ) -> Result<Message, Error> {
-        if cancellation.is_cancelled() {
-            return Err(Error::new("CANCELLED", "embedding cancelled"));
-        }
         let request = Request {
             input,
             dimensions: None,
             options: Default::default(),
         };
         request.validate()?;
-        let mut future = std::pin::pin!(self.0.embed(request));
-        std::future::poll_fn(|context| {
-            cancellation.register(context.waker());
-            if cancellation.is_cancelled() {
-                return std::task::Poll::Ready(Err(Error::new("CANCELLED", "embedding cancelled")));
-            }
-            let result = future.as_mut().poll(context);
-            if cancellation.is_cancelled() {
-                return std::task::Poll::Ready(Err(Error::new("CANCELLED", "embedding cancelled")));
-            }
-            result
-        })
-        .await
+        cancellable(self.0.embed(request), cancellation).await
     }
 }

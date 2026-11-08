@@ -14,7 +14,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{
     Cancellation, Error,
-    core::operation,
+    cancellation::{cancellable, check},
     document::{self, Document},
     model::embed::{Embed, Request},
 };
@@ -95,7 +95,7 @@ where
         cancellation: &Cancellation,
         next_id: &mut (dyn FnMut() -> i64 + Send),
     ) -> Result<Vec<Document>, Error> {
-        operation::check(cancellation)?;
+        check(cancellation)?;
         let mut used: HashSet<_> = documents
             .iter()
             .filter_map(|document| document.id)
@@ -103,7 +103,7 @@ where
         let mut chunks = Vec::new();
         let mut cache_keys = HashSet::new();
         for document in documents {
-            operation::check(cancellation)?;
+            check(cancellation)?;
             if document.content.is_empty() {
                 continue;
             }
@@ -135,7 +135,7 @@ where
                     let result = if text.trim().is_empty() {
                         Ok(None)
                     } else {
-                        operation::cancellable(
+                        cancellable(
                             self.embed.embed(Request {
                                 input: text,
                                 dimensions: None,
@@ -169,7 +169,7 @@ where
             .buffer_unordered(self.options.max_concurrency)
             .collect::<Vec<_>>()
             .await;
-            operation::check(cancellation)?;
+            check(cancellation)?;
             results.sort_by_key(|(index, _)| *index);
             let mut vectors = Vec::new();
             let mut failure = None;
@@ -213,7 +213,7 @@ where
             let length = offsets.len() - 1;
             let mut start = 0;
             for index in 1..=range_count {
-                operation::check(cancellation)?;
+                check(cancellation)?;
                 let end = ends[index - 1];
                 let count = self.count(&document.content[offsets[start]..offsets[end]])?;
                 let should_cut = if index == range_count {
@@ -259,7 +259,7 @@ where
             }
         }
         for chunk in &mut chunks {
-            operation::check(cancellation)?;
+            check(cancellation)?;
             let id = next_id();
             if !used.insert(id) {
                 return Err(invalid(
@@ -268,7 +268,7 @@ where
             }
             chunk.id = Some(id);
         }
-        operation::check(cancellation)?;
+        check(cancellation)?;
         // Keep successful candidates while the entire call is incomplete,
         // including failures in later documents or final ID assignment. Once
         // delivered, the retry-only state must not leak into a new batch.
@@ -315,7 +315,7 @@ where
         let mut boundaries = Vec::new();
         for (index, character) in text.chars().enumerate() {
             if index % 1024 == 0 {
-                operation::check(cancellation)?;
+                check(cancellation)?;
             }
             if matches!(character, '\n' | '.' | '?' | '!' | '。' | '？' | '！') {
                 boundaries.push(index + 1);
@@ -329,7 +329,7 @@ where
         let mut start = 0;
         for end in boundaries {
             while start < end {
-                operation::check(cancellation)?;
+                check(cancellation)?;
                 if self.count(&text[offsets[start]..offsets[end]])? <= self.options.max_tokens {
                     ranges.push(start..end);
                     start = end;
@@ -346,7 +346,7 @@ where
                     }
                     let mut upper = end;
                     while upper - fitting > 1 {
-                        operation::check(cancellation)?;
+                        check(cancellation)?;
                         let middle = fitting + (upper - fitting) / 2;
                         if self.count(&text[offsets[start]..offsets[middle]])?
                             <= self.options.max_tokens

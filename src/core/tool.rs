@@ -13,7 +13,7 @@ pub async fn execute<T: Tool>(
 ) -> Result<(Message, Evaluation), Error> {
     let (call, message) = call_once(tool, call, cancellation).await?;
     let evaluation =
-        super::operation::cancellable(tool.eval(&call, &message, cancellation), cancellation)
+        crate::cancellation::cancellable(tool.eval(&call, &message, cancellation), cancellation)
             .await?;
     Ok((message, evaluation))
 }

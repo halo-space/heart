@@ -192,7 +192,7 @@ impl Tool for SkillReader {
                     "Skill resource requires a normalized relative path",
                 ));
             }
-            let data = await_stage(
+            let data = crate::cancellation::cancellable(
                 skill.read_resource(path.to_owned(), cancellation.clone()),
                 cancellation,
             )
@@ -204,7 +204,9 @@ impl Tool for SkillReader {
                 "name": name, "resource": path, "content": content
             })))
         } else {
-            let instructions = await_stage(skill.read(cancellation.clone()), cancellation).await?;
+            let instructions =
+                crate::cancellation::cancellable(skill.read(cancellation.clone()), cancellation)
+                    .await?;
             Ok(Message::function(serde_json::json!({
                 "name": name, "instructions": instructions
             })))
@@ -539,7 +541,13 @@ impl Dispatch {
         let base = self.with_workspace_skills(cancellation).await?;
         let mut skills = base.skills.clone();
         for loader in &base.skill_loaders {
-            skills.extend(await_stage(loader.discover(cancellation.clone()), cancellation).await?);
+            skills.extend(
+                crate::cancellation::cancellable(
+                    loader.discover(cancellation.clone()),
+                    cancellation,
+                )
+                .await?,
+            );
         }
         let view = Self {
             entries: base.entries.clone(),
@@ -733,7 +741,8 @@ impl Dispatch {
             .iter()
             .find(|entry| entry.definition().name == call.name)
             .ok_or_else(|| Error::new("NOT_FOUND", "tool is not registered"))?;
-        await_stage(entry.prepare(call, cancellation.clone()), cancellation).await
+        crate::cancellation::cancellable(entry.prepare(call, cancellation.clone()), cancellation)
+            .await
     }
 
     async fn advance_call(
@@ -782,7 +791,7 @@ impl Dispatch {
             .iter()
             .find(|entry| entry.definition().name == call.name)
             .ok_or_else(|| Error::new("NOT_FOUND", "tool is not registered"))?;
-        await_stage(entry.call(call, cancellation.clone()), cancellation).await
+        crate::cancellation::cancellable(entry.call(call, cancellation.clone()), cancellation).await
     }
 
     pub(crate) async fn finish(
@@ -796,7 +805,7 @@ impl Dispatch {
             .iter()
             .find(|entry| entry.definition().name == call.name)
             .ok_or_else(|| Error::new("NOT_FOUND", "tool is not registered"))?;
-        await_stage(
+        crate::cancellation::cancellable(
             entry.after(call, message, cancellation.clone()),
             cancellation,
         )
@@ -824,7 +833,7 @@ impl Dispatch {
             .iter()
             .find(|entry| entry.definition().name == call.name)
             .ok_or_else(|| Error::new("NOT_FOUND", "tool is not registered"))?;
-        await_stage(
+        crate::cancellation::cancellable(
             entry.evaluate(call.clone(), message.clone(), cancellation.clone()),
             cancellation,
         )
@@ -949,29 +958,6 @@ impl Entry for WorkspaceEntry {
     ) -> EvaluationFuture {
         Box::pin(async { Ok(Evaluation::passed()) })
     }
-}
-
-async fn await_stage<T>(
-    future: impl Future<Output = Result<T, Error>>,
-    cancellation: &Cancellation,
-) -> Result<T, Error> {
-    let mut future = std::pin::pin!(future);
-    std::future::poll_fn(|context| {
-        cancellation.register(context.waker());
-        if cancellation.is_cancelled() {
-            return std::task::Poll::Ready(Err(Error::new(
-                "CANCELLED",
-                "Capability operation cancelled",
-            )));
-        }
-        match future.as_mut().poll(context) {
-            std::task::Poll::Ready(_) if cancellation.is_cancelled() => std::task::Poll::Ready(
-                Err(Error::new("CANCELLED", "Capability operation cancelled")),
-            ),
-            result => result,
-        }
-    })
-    .await
 }
 
 fn escape_prompt_text(value: &str) -> String {

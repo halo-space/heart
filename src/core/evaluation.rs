@@ -37,7 +37,7 @@ impl<C: Chat> evaluation::Evaluator for Evaluator<C> {
         result: &Messages,
         cancellation: &Cancellation,
     ) -> Result<Evaluation, Error> {
-        super::operation::check(cancellation)?;
+        crate::cancellation::check(cancellation)?;
         let messages = Messages::new([
             crate::components::agent_input::user_message(input.clone()),
             super::structured::text(
@@ -63,8 +63,8 @@ where
         result: &Messages,
         cancellation: &Cancellation,
     ) -> Result<Evaluation, Error> {
-        super::operation::check(cancellation)?;
-        super::operation::cancellable(
+        crate::cancellation::check(cancellation)?;
+        crate::cancellation::cancellable(
             self(input.clone(), result.clone(), cancellation.clone()),
             cancellation,
         )

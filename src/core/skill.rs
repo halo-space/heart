@@ -109,9 +109,10 @@ impl Skill {
         path: &str,
         cancellation: &Cancellation,
     ) -> Result<Self, Error> {
-        super::operation::check(cancellation)?;
+        crate::cancellation::check(cancellation)?;
         let data =
-            super::operation::cancellable(workspace.read(path, cancellation), cancellation).await?;
+            crate::cancellation::cancellable(workspace.read(path, cancellation), cancellation)
+                .await?;
         let markdown = std::str::from_utf8(&data)
             .map_err(|_| Error::new("INVALID_ARGUMENTS", "skill document must be UTF-8"))?;
         let skill = Self::from_markdown(markdown)?;
@@ -126,7 +127,7 @@ impl Skill {
                 ));
             }
         }
-        super::operation::check(cancellation)?;
+        crate::cancellation::check(cancellation)?;
         Ok(skill)
     }
 }
@@ -137,9 +138,9 @@ impl Contract for Skill {
     }
 
     async fn read(&self, cancellation: &Cancellation) -> Result<String, Error> {
-        super::operation::check(cancellation)?;
+        crate::cancellation::check(cancellation)?;
         let instructions = self.instructions.clone();
-        super::operation::check(cancellation)?;
+        crate::cancellation::check(cancellation)?;
         Ok(instructions)
     }
 }

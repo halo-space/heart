@@ -2,7 +2,7 @@ use std::{future::Future, time::Duration};
 
 use crate::{Cancellation, Error, middleware::RetryPolicy};
 
-use super::operation::{cancellable, check};
+use crate::cancellation::{cancellable, check};
 
 /// Explicit caller-owned retry execution. Does not create Attempts, execution
 /// identities or state. The caller chooses the operation (for example eval

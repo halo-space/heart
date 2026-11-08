@@ -218,7 +218,7 @@ impl Sandbox for Docker {
         request: Request,
         cancellation: &Cancellation,
     ) -> Result<Response, Error> {
-        crate::core::operation::check(cancellation)?;
+        crate::cancellation::check(cancellation)?;
         if request.operation != "command" {
             return Err(Error::new(
                 "UNSUPPORTED",
@@ -246,7 +246,7 @@ impl Sandbox for Docker {
             token,
             armed: true,
         };
-        let result = crate::core::operation::cancellable(
+        let result = crate::cancellation::cancellable(
             async {
                 tokio::time::timeout(self.config.timeout, self.run(&input.args, &guard))
                     .await

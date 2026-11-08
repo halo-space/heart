@@ -3,8 +3,8 @@ use std::future::Future;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-use crate::Cancellation;
 use crate::components::message::{Message, Messages};
+use crate::{Cancellation, cancellation::check};
 
 pub type Error = crate::Error;
 
@@ -114,12 +114,12 @@ pub(crate) async fn prepare_call<T: Tool>(
     mut call: Call,
     cancellation: &Cancellation,
 ) -> Result<Call, Error> {
-    check_cancelled(cancellation)?;
+    check(cancellation)?;
     validate_call(tool.definition(), &call)?;
     let call_id = call.call_id.clone();
     let name = call.name.clone();
     tool.before(&mut call, cancellation).await?;
-    check_cancelled(cancellation)?;
+    check(cancellation)?;
     ensure_call_identity(&call, &call_id, &name)?;
     validate_call(tool.definition(), &call)?;
     Ok(call)
@@ -133,14 +133,6 @@ fn ensure_call_identity(call: &Call, call_id: &str, name: &str) -> Result<(), Er
         ));
     }
     Ok(())
-}
-
-fn check_cancelled(cancellation: &Cancellation) -> Result<(), Error> {
-    if cancellation.is_cancelled() {
-        Err(Error::new("CANCELLED", "tool operation cancelled"))
-    } else {
-        Ok(())
-    }
 }
 
 pub(crate) fn validate_call(definition: &ToolDefinition, call: &Call) -> Result<(), Error> {

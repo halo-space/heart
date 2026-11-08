@@ -6,7 +6,7 @@
 //! global progress. Ranges permit admission/authorization between phases.
 use std::future::Future;
 
-use super::operation::cancellable as interruptible;
+use crate::cancellation::cancellable;
 use crate::{Cancellation, Error};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
@@ -61,18 +61,17 @@ where
         // their inline size on the default thread stack. This spawns no task.
         match phase {
             Phase::Before => {
-                input = interruptible(Box::pin((methods.before)(input)), cancellation).await?;
+                input = cancellable(Box::pin((methods.before)(input)), cancellation).await?;
                 phase = Phase::Call;
             }
             Phase::Call => {
-                output = Some(
-                    interruptible(Box::pin((methods.call)(input.clone())), cancellation).await?,
-                );
+                output =
+                    Some(cancellable(Box::pin((methods.call)(input.clone())), cancellation).await?);
                 phase = Phase::After;
             }
             Phase::After => {
                 output = Some(
-                    interruptible(
+                    cancellable(
                         Box::pin((methods.after)(
                             input.clone(),
                             output.take().expect("validated result"),
@@ -85,7 +84,7 @@ where
             }
             Phase::Complete => unreachable!("complete is the last phase"),
         }
-        interruptible(
+        cancellable(
             Box::pin((methods.commit)(phase, &input, output.as_ref())),
             cancellation,
         )
@@ -129,7 +128,7 @@ where
 }
 
 fn check<E: From<Error>>(cancellation: &Cancellation) -> Result<(), E> {
-    super::operation::check(cancellation).map_err(Into::into)
+    crate::cancellation::check(cancellation).map_err(Into::into)
 }
 
 #[cfg(test)]

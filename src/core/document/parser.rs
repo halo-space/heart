@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, HashSet};
 use pulldown_cmark::{Event, Options as MarkdownOptions, Tag};
 use serde_json::{Map, Value, json};
 
-use super::check_cancelled;
+use crate::cancellation::check;
 use crate::{
     Cancellation,
     document::{self, Document, Error},
@@ -540,7 +540,7 @@ impl Parser {
         let mut offset = 0;
         let mut paragraph = 0u64;
         for line in text.split_inclusive('\n') {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             if line.trim().is_empty() {
                 if let Some(start) = start.take() {
                     paragraph += 1;
@@ -580,7 +580,7 @@ impl Parser {
                 | MarkdownOptions::ENABLE_TASKLISTS,
         );
         for (event, range) in pulldown_cmark::Parser::new_ext(text, options).into_offset_iter() {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             match event {
                 Event::Start(tag) => {
                     if depth == 0 {
@@ -618,7 +618,7 @@ impl Parser {
         let mut current = String::new();
         let mut clause = false;
         for line in text.split_inclusive('\n') {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             if is_law_heading(line) {
                 if !current.trim().is_empty() {
                     result.push(self.law_document(&current, clause));
@@ -642,7 +642,7 @@ impl Parser {
         let mut current = String::new();
         let mut section = false;
         for line in text.split_inclusive('\n') {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             if is_section_heading(line) {
                 if !current.trim().is_empty() {
                     result.push(self.section_document(&current, section));
@@ -674,7 +674,7 @@ impl Parser {
         let mut current = String::new();
         let mut section = false;
         for line in text.split_inclusive('\n') {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             if is_resume_heading(line) {
                 if !current.trim().is_empty() {
                     result.push(self.resume_document(&current, section));
@@ -702,7 +702,7 @@ impl Parser {
     /// original body is preserved rather than silently dropping an unknown
     /// multipart part.
     fn email(&self, text: &str, cancellation: &Cancellation) -> Result<Vec<Document>, Error> {
-        check_cancelled(cancellation)?;
+        check(cancellation)?;
         let (header_text, body) = split_email_parts(text);
         let headers = email_headers(header_text);
         let fields = self
@@ -716,7 +716,7 @@ impl Parser {
         let mut structured = Map::new();
         let mut visible = String::new();
         for field in fields {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             if field == "body" {
                 structured.insert(field.into(), json!(body));
                 if !body.is_empty() {
@@ -762,7 +762,7 @@ impl Parser {
     fn tag_text(&self, text: &str, cancellation: &Cancellation) -> Result<Vec<Document>, Error> {
         let mut result = Vec::new();
         for line in text.lines() {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             let line = line.trim();
             if line.is_empty() {
                 continue;
@@ -797,7 +797,7 @@ impl Parser {
             .ok_or_else(|| parse_error("tags", "CSV tags column is missing"))?;
         let mut result = Vec::new();
         for (index, record) in reader.records().enumerate() {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             let record = record.map_err(|_| {
                 parse_error(&format!("row={}", index + 1), "CSV row cannot be parsed")
             })?;
@@ -821,7 +821,7 @@ impl Parser {
         let tags_name = string_option(&self.options, "tags", "tags");
         let mut result = Vec::new();
         for (index, row) in rows.into_iter().enumerate() {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             let object = row.as_object().ok_or_else(|| {
                 parse_error(&format!("row={}", index + 1), "tag row must be an object")
             })?;
@@ -859,7 +859,7 @@ impl Parser {
     ) -> Result<Vec<Document>, Error> {
         let mut result = Vec::new();
         for page in pages {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             let parts = self.laws(&page.content, cancellation)?;
             if parts.len() <= 1 {
                 result.push(page);
@@ -888,7 +888,7 @@ impl Parser {
     ) -> Result<Vec<Document>, Error> {
         let mut result = Vec::new();
         for page in pages {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             let parts = self.sections(&page.content, cancellation)?;
             if parts.len() <= 1 {
                 result.push(page);
@@ -915,7 +915,7 @@ impl Parser {
     ) -> Result<Vec<Document>, Error> {
         let mut result = Vec::new();
         for page in pages {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             let parts = self.resume_sections(&page.content, cancellation)?;
             if parts.len() <= 1 {
                 result.push(page);
@@ -941,7 +941,7 @@ impl Parser {
         cancellation: &Cancellation,
     ) -> Result<Vec<Document>, Error> {
         for page in &mut pages {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             page.metadata
                 .insert("layout".into(), json!({"role":"slide"}));
         }
@@ -954,7 +954,7 @@ impl Parser {
         cancellation: &Cancellation,
     ) -> Result<Vec<Document>, Error> {
         for document in &mut documents {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             document.metadata.remove("location");
             document
                 .metadata
@@ -1003,7 +1003,7 @@ impl Parser {
         };
         let mut result = Vec::new();
         for (index, record) in reader.records().enumerate() {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             let record = record.map_err(|_| {
                 parse_error(&format!("row={}", index + 1), "CSV row cannot be parsed")
             })?;
@@ -1040,7 +1040,7 @@ impl Parser {
         };
         let mut result = Vec::new();
         for (index, row) in rows.into_iter().enumerate() {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             let context = format!("row={}", index + 1);
             let document = match self.method {
                 Method::Qa => {
@@ -1112,7 +1112,7 @@ fn validate_csv_quotes(
     let mut state = State::Start;
     for (index, byte) in data.iter().copied().enumerate() {
         if index % 4096 == 0 {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
         }
         state = match (state, byte) {
             (State::Quoted, b'"') => State::Closed,
@@ -1145,7 +1145,7 @@ impl document::Parser for Parser {
         data: &[u8],
         cancellation: &Cancellation,
     ) -> Result<Vec<Document>, Error> {
-        check_cancelled(cancellation)?;
+        check(cancellation)?;
         if let Format::Binary(extension) = self.format {
             let documents =
                 liteparse::parse(data, extension, self.method, &self.options, cancellation).await?;
@@ -1223,7 +1223,7 @@ impl document::Parser for Parser {
         if self.enabled("remove_empty", true) {
             result.retain(|document| !document.content.trim().is_empty());
         }
-        check_cancelled(cancellation)?;
+        check(cancellation)?;
         Ok(result)
     }
 }

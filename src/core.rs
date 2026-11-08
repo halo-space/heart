@@ -13,7 +13,6 @@ pub mod memory;
 mod message_transform;
 pub mod middleware;
 pub mod node;
-pub(crate) mod operation;
 pub mod permission;
 pub mod plan;
 pub mod protocol;

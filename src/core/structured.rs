@@ -41,7 +41,7 @@ pub(super) async fn run<C: Chat, T: DeserializeOwned>(
 ) -> Result<T, Error> {
     let message = run_message(chat, base, input, cancellation).await?;
     let result = decode(&message)?;
-    super::operation::check(cancellation)?;
+    crate::cancellation::check(cancellation)?;
     Ok(result)
 }
 
@@ -51,15 +51,16 @@ pub(super) async fn run_message<C: Chat>(
     input: Messages,
     cancellation: &Cancellation,
 ) -> Result<Message, Error> {
-    super::operation::check(cancellation)?;
+    crate::cancellation::check(cancellation)?;
     let mut request = base.clone();
     request.messages.0.extend(input.0);
     let request = crate::components::model::chat::fit_request(request, chat.context_limit())?;
-    let stream = super::operation::cancellable(chat.stream(request), cancellation).await?;
+    let stream = crate::cancellation::cancellable(chat.stream(request), cancellation).await?;
     let mut stream = std::pin::pin!(stream);
     loop {
         let event =
-            super::operation::cancellable(async { Ok(stream.next().await) }, cancellation).await?;
+            crate::cancellation::cancellable(async { Ok(stream.next().await) }, cancellation)
+                .await?;
         match event {
             Some(Ok(Event::Delta { .. })) => {}
             Some(Ok(Event::Complete {
@@ -75,7 +76,7 @@ pub(super) async fn run_message<C: Chat>(
                 if usage.is_some() {
                     message.usage = usage;
                 }
-                super::operation::check(cancellation)?;
+                crate::cancellation::check(cancellation)?;
                 return Ok(message);
             }
             Some(Err(error)) => return Err(error),

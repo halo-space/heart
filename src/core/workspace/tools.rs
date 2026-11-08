@@ -13,12 +13,12 @@ use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 
 use super::{Docker, Local};
+use crate::cancellation::check;
 use crate::components::message::{Message, Role};
 use crate::components::model::content::part::{Part, object as part_data};
 use crate::components::skill::{Definition as SkillDefinition, Loader as SkillLoader, Skill as _};
 use crate::components::tool::{Call, Tool, ToolDefinition};
 use crate::core::dispatch::Dispatch;
-use crate::core::operation::check;
 use crate::{Cancellation, Error};
 
 mod edit;
@@ -352,11 +352,9 @@ impl Tool for Write {
     async fn call(&self, call: &Call, cancellation: &Cancellation) -> Result<Message, Error> {
         let path = string_argument(call, "path")?;
         let content = string_argument(call, "content")?;
-        let _guard = super::super::operation::cancellable(
-            async { Ok(self.access.write().await) },
-            cancellation,
-        )
-        .await?;
+        let _guard =
+            crate::cancellation::cancellable(async { Ok(self.access.write().await) }, cancellation)
+                .await?;
         self.workspace
             .write(path, content.as_bytes().to_vec(), cancellation)
             .await?;
@@ -375,7 +373,7 @@ async fn reading<'a>(
     access: &'a RwLock<()>,
     cancellation: &Cancellation,
 ) -> Result<RwLockReadGuard<'a, ()>, Error> {
-    super::super::operation::cancellable(async { Ok(access.read().await) }, cancellation).await
+    crate::cancellation::cancellable(async { Ok(access.read().await) }, cancellation).await
 }
 
 fn string_argument<'a>(call: &'a Call, key: &str) -> Result<&'a str, Error> {

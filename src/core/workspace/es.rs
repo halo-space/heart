@@ -14,10 +14,10 @@ use serde_json::{Map, Value, json};
 use super::tools::{definition, tool_message};
 use crate::components::mcp::Server;
 use crate::core::dispatch::ToolInputs;
-use crate::core::{dispatch::Dispatch, operation::cancellable};
 use crate::tool::{Call, Tool, ToolDefinition};
 use crate::workspace::{Definition, Mode};
 use crate::{Cancellation, Error, Message};
+use crate::{cancellation::cancellable, core::dispatch::Dispatch};
 
 /// Binds an existing client to one concrete index. Performs no network I/O,
 /// connection setup, index creation or mapping modification.

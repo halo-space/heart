@@ -6,7 +6,7 @@ use tokio::sync::RwLock;
 use super::{
     Call, Files, Message, Tool, ToolDefinition, definition, string_argument, tool_message,
 };
-use crate::core::operation::cancellable;
+use crate::cancellation::cancellable;
 use crate::{Cancellation, Error};
 
 pub(super) struct Delete {

@@ -1,15 +1,16 @@
 use std::future::Future;
 
 use futures_core::Stream;
+use futures_util::StreamExt;
 use serde_json::Value;
 
-use crate::Cancellation;
 #[cfg(test)]
 use crate::components::document::location;
 use crate::components::document::{Document, Error, Loader, Relation, Source, graph_types};
 use crate::components::event::Event;
 use crate::components::message::{Message, Messages};
 use crate::components::model;
+use crate::{Cancellation, cancellation::cancellable};
 
 /// Built-in loader for the framework's default local-file source.
 #[derive(Clone, Debug, Default)]
@@ -17,16 +18,15 @@ pub struct LocalLoader;
 
 impl Loader for LocalLoader {
     async fn load(&self, source: &Source, cancellation: &Cancellation) -> Result<Vec<u8>, Error> {
-        if cancellation.is_cancelled() {
-            return Err(Error::new("CANCELLED", "document load cancelled"));
-        }
-        let data = tokio::fs::read(&source.uri)
-            .await
-            .map_err(|error| Error::new("IO_ERROR", error.to_string()))?;
-        if cancellation.is_cancelled() {
-            return Err(Error::new("CANCELLED", "document load cancelled"));
-        }
-        Ok(data)
+        cancellable(
+            async {
+                tokio::fs::read(&source.uri)
+                    .await
+                    .map_err(|error| Error::new("IO_ERROR", error.to_string()))
+            },
+            cancellation,
+        )
+        .await
     }
 }
 
@@ -51,31 +51,15 @@ async fn await_model<F: Future<Output = Result<T, model::Error>>, T>(
     future: F,
     cancellation: &Cancellation,
 ) -> Result<T, Error> {
-    let mut future = std::pin::pin!(future);
-    std::future::poll_fn(|context| {
-        cancellation.register(context.waker());
-        if cancellation.is_cancelled() {
-            return std::task::Poll::Ready(Err(Error::new(
-                "CANCELLED",
-                "document model call cancelled",
-            )));
-        }
-        let result = future.as_mut().poll(context);
-        // Implementations may cancel synchronously in the same poll that
-        // produces a result. Never commit that result as a successful batch.
-        if cancellation.is_cancelled() {
-            return std::task::Poll::Ready(Err(Error::new(
-                "CANCELLED",
-                "document model call cancelled",
-            )));
-        }
-        result.map(|result| {
-            result.map_err(|error| {
+    cancellable(
+        async {
+            future.await.map_err(|error| {
                 Error::new("MODEL_ERROR", error.message)
                     .with_details(error.details.unwrap_or(error.code))
             })
-        })
-    })
+        },
+        cancellation,
+    )
     .await
 }
 
@@ -84,9 +68,6 @@ async fn complete_request<C: model::chat::Chat>(
     request: model::chat::Request,
     cancellation: &Cancellation,
 ) -> Result<Message, Error> {
-    if cancellation.is_cancelled() {
-        return Err(Error::new("CANCELLED", "document model call cancelled"));
-    }
     let request = crate::components::model::chat::fit_request(request, chat.context_limit())
         .map_err(|error| {
             let mut mapped = Error::new(error.code, error.message);
@@ -95,22 +76,16 @@ async fn complete_request<C: model::chat::Chat>(
             }
             mapped
         })?;
-    let mut stream_future = Box::pin(chat.stream(request));
-    let stream = std::future::poll_fn(|context| {
-        cancellation.register(context.waker());
-        if cancellation.is_cancelled() {
-            return std::task::Poll::Ready(None);
-        }
-        stream_future.as_mut().poll(context).map(Some)
-    })
-    .await;
-    let stream = match stream {
-        None => return Err(Error::new("CANCELLED", "document model call cancelled")),
-        Some(result) => result.map_err(|error| {
-            Error::new("MODEL_ERROR", error.message)
-                .with_details(error.details.unwrap_or(error.code))
-        })?,
-    };
+    let stream = cancellable(
+        async {
+            chat.stream(request).await.map_err(|error| {
+                Error::new("MODEL_ERROR", error.message)
+                    .with_details(error.details.unwrap_or(error.code))
+            })
+        },
+        cancellation,
+    )
+    .await?;
     complete_stream(stream, cancellation).await
 }
 
@@ -120,17 +95,7 @@ where
 {
     let mut stream = Box::pin(stream);
     loop {
-        let item = std::future::poll_fn(|context| {
-            cancellation.register(context.waker());
-            if cancellation.is_cancelled() {
-                return std::task::Poll::Ready(None);
-            }
-            stream.as_mut().poll_next(context)
-        })
-        .await;
-        if cancellation.is_cancelled() {
-            return Err(Error::new("CANCELLED", "document model call cancelled"));
-        }
+        let item = cancellable(async { Ok::<_, Error>(stream.next().await) }, cancellation).await?;
         let item =
             item.ok_or_else(|| Error::new("INVALID_RESPONSE", "model did not return Complete"))?;
         match item.map_err(|error| {

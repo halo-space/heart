@@ -82,14 +82,14 @@ impl<C: Chat> plan::Planner for Planner<C> {
         feedback: Option<&Messages>,
         cancellation: &Cancellation,
     ) -> Result<Plan, Error> {
-        super::operation::check(cancellation)?;
+        crate::cancellation::check(cancellation)?;
         let input = input(query, current_plan, feedback)?;
         let plan: Plan =
             super::structured::run(&self.chat, &self.request, input, cancellation).await?;
         // The complete result is validated here before any caller can use it.
         // No Runtime repair, version increment or hidden retry occurs.
         plan.validate()?;
-        super::operation::check(cancellation)?;
+        crate::cancellation::check(cancellation)?;
         Ok(plan)
     }
 }

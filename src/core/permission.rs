@@ -101,7 +101,7 @@ impl Contract for Policy {
         request: &Request,
         cancellation: &Cancellation,
     ) -> Result<Decision, Error> {
-        super::operation::check(cancellation)?;
+        crate::cancellation::check(cancellation)?;
         if request.action.trim().is_empty() || request.resource.trim().is_empty() {
             return Err(Error::new(
                 "INVALID_ARGUMENTS",
@@ -134,14 +134,14 @@ where
         request: &Request,
         cancellation: &Cancellation,
     ) -> Result<Decision, Error> {
-        super::operation::check(cancellation)?;
+        crate::cancellation::check(cancellation)?;
         if request.action.trim().is_empty() || request.resource.trim().is_empty() {
             return Err(Error::new(
                 "INVALID_ARGUMENTS",
                 "permission action and resource are required",
             ));
         }
-        super::operation::cancellable(
+        crate::cancellation::cancellable(
             (self.check)(request.clone(), cancellation.clone()),
             cancellation,
         )

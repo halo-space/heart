@@ -4,7 +4,7 @@ use std::ops::Range;
 use serde::Deserialize;
 use serde_json::Value;
 
-use super::check_cancelled;
+use crate::cancellation::check;
 use crate::{
     Cancellation,
     document::{self, Document, Error, location::Location},
@@ -91,7 +91,7 @@ impl document::Chunker for Chunker {
         cancellation: &Cancellation,
         next_id: &mut (dyn FnMut() -> i64 + Send),
     ) -> Result<Vec<Document>, Error> {
-        check_cancelled(cancellation)?;
+        check(cancellation)?;
         // IDs are assigned only after all documents have been split. A failure
         // never exposes partial chunks. The application owns the ID allocator;
         // IDs already consumed from it cannot be rolled back by this component.
@@ -101,11 +101,11 @@ impl document::Chunker for Chunker {
             .collect();
         let mut chunks = Vec::new();
         for document in documents {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             let mut offsets = Vec::new();
             for (index, (offset, _)) in document.content.char_indices().enumerate() {
                 if index % 1024 == 0 {
-                    check_cancelled(cancellation)?;
+                    check(cancellation)?;
                 }
                 offsets.push(offset);
             }
@@ -121,7 +121,7 @@ impl document::Chunker for Chunker {
                 }
             };
             for range in ranges {
-                check_cancelled(cancellation)?;
+                check(cancellation)?;
                 let content = document.content[offsets[range.start]..offsets[range.end]].to_owned();
                 let sliced = range.start != 0 || range.end != length;
                 // Do not clone a potentially large whole-document vector for
@@ -147,7 +147,7 @@ impl document::Chunker for Chunker {
             }
         }
         for chunk in &mut chunks {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             let id = next_id();
             if !used.insert(id) {
                 return Err(invalid(
@@ -156,7 +156,7 @@ impl document::Chunker for Chunker {
             }
             chunk.id = Some(id);
         }
-        check_cancelled(cancellation)?;
+        check(cancellation)?;
         Ok(chunks)
     }
 }
@@ -172,7 +172,7 @@ impl Chunker {
         let length = offsets.len() - 1;
         let mut boundaries = Vec::new();
         for (index, _) in content.match_indices(delimiter) {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             // Include delimiters in the preceding unit: no text is dropped or
             // rewritten, including repeated separators and CRLF sequences.
             let boundary = offsets
@@ -187,14 +187,14 @@ impl Chunker {
         let mut start = 0;
         let mut end = 0;
         for boundary in boundaries {
-            check_cancelled(cancellation)?;
+            check(cancellation)?;
             if boundary - start > self.max_chars {
                 if end > start {
                     ranges.push(start..end);
                     start = end;
                 }
                 while boundary - start > self.max_chars {
-                    check_cancelled(cancellation)?;
+                    check(cancellation)?;
                     let next = start + self.max_chars;
                     ranges.push(start..next);
                     start = next;
@@ -218,7 +218,7 @@ fn windows(
     let mut ranges = Vec::new();
     let mut start = 0;
     while start < length {
-        check_cancelled(cancellation)?;
+        check(cancellation)?;
         let end = start.saturating_add(size).min(length);
         ranges.push(start..end);
         if end == length {

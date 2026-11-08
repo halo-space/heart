@@ -1,5 +1,5 @@
 use super::Backend;
-use crate::{Cancellation, Error, core::operation::check};
+use crate::{Cancellation, Error, cancellation::check};
 
 // Paths/data are always positional arguments/stdin, never shell interpolation.
 // All tools use this container cwd; find does not follow symlinks. Commands may
