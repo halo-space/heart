@@ -4,5 +4,5 @@ pub mod a2a;
 pub mod axum;
 pub mod client;
 pub mod sse;
-pub mod tasks;
+pub mod task;
 pub mod webhook;

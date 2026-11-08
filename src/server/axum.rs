@@ -18,7 +18,7 @@ use crate::Error;
 use crate::components::agent::Agent;
 use crate::components::protocol::a2a::{SendMessageRequest, StreamResponse};
 use crate::server::a2a::Service;
-use crate::server::tasks::Store;
+use crate::server::task::Store;
 
 /// JSON-RPC 2.0 request envelope used by the A2A HTTP binding.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

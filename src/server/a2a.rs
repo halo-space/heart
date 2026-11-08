@@ -18,7 +18,7 @@ use crate::components::protocol::a2a::{
     Context, Message, Part, Role, SendMessageRequest, StreamResponse, Task, TaskState, TaskStatus,
     TaskStatusUpdateEvent,
 };
-use crate::server::tasks::{InMemory, MessageState, Store};
+use crate::server::task::{MessageState, Store, memory::Memory};
 
 type Projection = Pin<Box<dyn Stream<Item = Result<StreamResponse, Error>> + Send + 'static>>;
 
@@ -135,7 +135,7 @@ pub fn task_matches(context: &Context, message: &Message) -> bool {
 ///
 /// The server owns only the A2A task projection. Agent state, waiting and
 /// checkpoint recovery remain inside the Agent implementation.
-pub struct Service<A, S = InMemory>
+pub struct Service<A, S = Memory>
 where
     A: Agent + 'static,
     S: Store,
@@ -161,14 +161,14 @@ where
     }
 }
 
-impl<A> Service<A, InMemory>
+impl<A> Service<A, Memory>
 where
     A: Agent + 'static,
 {
     pub fn new(agent: A) -> Self {
         Self {
             agent: Arc::new(agent),
-            store: InMemory::new(),
+            store: Memory::new(),
             live: Live::default(),
             projection: Arc::new(tokio::sync::Mutex::new(())),
         }

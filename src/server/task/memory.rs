@@ -1,8 +1,7 @@
-//! In-memory A2A task projection.
+//! In-memory implementation of the A2A task projection.
 //!
-//! This is a server projection, not a Runtime or Checkpoint. It keeps the
-//! current Task snapshot and idempotency facts. Live cancellation and event
-//! delivery are owned by the Server Service, while Runtime owns execution.
+//! This store owns only the externally visible task snapshot and idempotency
+//! facts; Runtime State and Checkpoint remain outside this module.
 
 use std::collections::BTreeMap;
 use std::future::Future;
@@ -11,54 +10,24 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+use super::{MessageState, Store};
 use crate::Error;
 use crate::components::protocol::a2a::{Context, Message, StreamResponse, Task, TaskState};
 
 #[derive(Clone, Default)]
-pub struct InMemory {
+pub struct Memory {
     next: Arc<AtomicU64>,
-    entries: Arc<Mutex<BTreeMap<String, TaskEntry>>>,
+    entries: Arc<Mutex<BTreeMap<String, Entry>>>,
 }
 
 #[derive(Clone)]
-struct TaskEntry {
+struct Entry {
     context: Context,
     task: Task,
     messages: BTreeMap<String, Vec<u8>>,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MessageState {
-    Accepted,
-    Duplicate,
-}
-
-/// Storage contract for the externally visible A2A Task projection.
-///
-/// Runtime State and Checkpoint data stay outside this contract. The default
-/// `InMemory` implementation is enough for local use; applications can provide
-/// a database-backed implementation with the same operations.
-pub trait Store: Clone + Send + Sync + 'static {
-    fn create(
-        &self,
-        session_id: i64,
-        chat_id: i64,
-    ) -> impl Future<Output = Result<Context, Error>> + Send;
-    fn task(&self, task_id: &str) -> impl Future<Output = Result<Task, Error>> + Send;
-    fn context(&self, task_id: &str) -> impl Future<Output = Result<Context, Error>> + Send;
-    fn message(
-        &self,
-        task_id: &str,
-        message: &Message,
-    ) -> impl Future<Output = Result<MessageState, Error>> + Send;
-    fn record(
-        &self,
-        task_id: &str,
-        response: StreamResponse,
-    ) -> impl Future<Output = Result<(), Error>> + Send;
-}
-
-impl InMemory {
+impl Memory {
     pub fn new() -> Self {
         Self::default()
     }
@@ -86,7 +55,7 @@ impl InMemory {
         };
         self.entries.lock().map_err(lock_error)?.insert(
             task_id,
-            TaskEntry {
+            Entry {
                 context: context.clone(),
                 task,
                 messages: BTreeMap::new(),
@@ -149,7 +118,7 @@ impl InMemory {
 }
 
 #[allow(clippy::manual_async_fn)]
-impl Store for InMemory {
+impl Store for Memory {
     fn create(
         &self,
         session_id: i64,
@@ -217,7 +186,7 @@ fn lock_error<T>(_: std::sync::PoisonError<T>) -> Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{InMemory, MessageState};
+    use super::{Memory, MessageState};
     use crate::components::protocol::a2a::{
         Message, Part, Role, StreamResponse, TaskState, TaskStatus, TaskStatusUpdateEvent,
     };
@@ -236,7 +205,7 @@ mod tests {
 
     #[test]
     fn creates_deduplicates_and_records_projection_events() {
-        let tasks = InMemory::new();
+        let tasks = Memory::new();
         let context = tasks.create(1, 2).unwrap();
         assert_eq!(
             tasks

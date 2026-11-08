@@ -35,7 +35,7 @@ pub mod server {
     pub use crate::server::axum;
     pub use crate::server::client;
     pub use crate::server::sse;
-    pub use crate::server::tasks;
+    pub use crate::server::task;
     pub use crate::server::webhook;
 }
 
