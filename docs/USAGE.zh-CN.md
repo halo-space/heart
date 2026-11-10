@@ -505,7 +505,7 @@ A2A、AG-UI、JSON-RPC、SSE 和 Webhook 是协议/传输层适配，不改变 R
 
 - 更完整的 Document Parser/布局解析和 OCR 策略；当前保留 Parser、Chunker、RAPTOR、Graph 的契约和 LiteParse 适配入口。
 - Provider 的完整 TTS、多模态输入输出和供应商特有字段扩展。
-- 更完整的服务器部署、任务队列、跨进程等待恢复和分布式锁。
+- Daemon 常驻进程、Heartbeat、Schedule 和完整任务队列；Server 已提供未完成 Task 查询与 Checkpoint 恢复入口，具体进程监管由应用或上层 Daemon 负责。
 - 业务应用的 DSL 编辑器、账号权限、数据库 schema、向量库/图数据库写入编排。
 - 更复杂的 Team 动态成员管理；当前 Team 成员在构建时确定。
 
@@ -644,6 +644,29 @@ cargo run --example console_harness
 Permission 复制成另一套 Harness 执行循环；完整代码见
 [`console_harness.rs`](../examples/console_harness.rs)。
 
+### 持久化 Harness 状态
+
+Harness 状态是可选的，并且与 Runtime Checkpoint 分开。需要让提示词、记忆、Skill、
+SubAgent 描述或长任务目标跨请求保留时，给 Harness 配置
+`harness::state::Store`：
+
+```rust,no_run
+let workspace = halo::agent::core::workspace::Local::new("./heart-workspace")?;
+let store = halo::harness::state::Store::new(workspace);
+let agent = halo::harness::builder()
+    .model(chat)
+    .state(store)
+    .build()?;
+
+let item = halo::harness::state::Item { /* ... */ };
+let change = halo::harness::state::Change { /* ... */ };
+agent.refine(item, change, &halo::Cancellation::new()).await?;
+```
+
+每次接受的 Refinement 都会生成一个新版本，旧 JSON 快照保留在 Workspace 中。模型适配器
+会在每次请求前读取最新状态，因此后续请求自然使用最新上下文，不会再创建第二套执行循环。
+`harness::state::Store` 是本地实现；服务端或数据库实现可以遵循相同的持久化边界。
+
 ---
 
 ## 短期、长期记忆和持久化
@@ -748,6 +771,10 @@ axum::serve(listener, router).await?;
 ```
 
 Server 的 Task Store 保存外部任务投影；Agent/Workflow Runtime 仍是实际执行真相。Server 不复制 State、事件排序或等待恢复逻辑。Webhook、客户端和 SSE 适配可从 `halo::agent::server` 访问。
+上层进程可以调用 `service.pending()` 查询未完成任务，再调用 `service.recover_pending()` 重新挂接
+Server 驱动。这个入口只恢复 Server 驱动；Runtime State 和 waiting 事实仍从 Agent 配置的
+Checkpoint 恢复。默认 `server::task::memory::Memory` 只在当前进程有效，跨进程恢复需要应用提供持久化
+的 `server::task::Store` 实现。
 
 ## 钉钉渠道
 

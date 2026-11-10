@@ -318,7 +318,7 @@ Use `bind_node`, `bind_agent`, `bind_tool`, `bind_graph`, `bind_condition`, and 
 
 ## Current limits
 
-The current Alpha does not promise a complete OCR/layout parser suite, every provider's TTS/multimodal extension, distributed task queues and locks, an application DSL editor, or dynamic Team member creation. These are extension/application concerns and do not prevent custom implementations of the public contracts.
+The current Alpha does not promise a complete OCR/layout parser suite, every provider's TTS/multimodal extension, Daemon heartbeats/schedules and a full distributed task queue, an application DSL editor, or dynamic Team member creation. Server exposes unfinished-task discovery and Checkpoint recovery hooks; process supervision remains an application or upper-level Daemon responsibility. These are extension/application concerns and do not prevent custom implementations of the public contracts.
 
 ---
 
@@ -390,6 +390,31 @@ cargo run --example console_harness
 Enter `exit` or `quit` to leave. The example does not fake tool results or create a
 second Harness execution loop. See [`console_harness.rs`](../examples/console_harness.rs).
 
+### Durable Harness state
+
+Harness state is optional and separate from Runtime Checkpoint. Attach a
+`harness::state::Store` when prompts, memories, Skills, SubAgent descriptions,
+or a long-task Goal must survive the next Agent request:
+
+```rust,no_run
+let workspace = halo::agent::core::workspace::Local::new("./heart-workspace")?;
+let store = halo::harness::state::Store::new(workspace);
+let agent = halo::harness::builder()
+    .model(chat)
+    .state(store)
+    .build()?;
+
+let item = halo::harness::state::Item { /* ... */ };
+let change = halo::harness::state::Change { /* ... */ };
+agent.refine(item, change, &halo::Cancellation::new()).await?;
+```
+
+Each accepted refinement creates one new version and keeps the previous JSON
+snapshot under the Workspace. The model adapter reloads the latest state before
+each request, so a later request sees the newest context without a second
+execution loop. `harness::state::Store` is the local implementation; a server
+or database-backed implementation can provide the same persistence boundary.
+
 ---
 
 ## Short/long memory and persistence
@@ -457,6 +482,12 @@ axum::serve(listener, router).await?;
 ```
 
 The external Task Store is a projection. Agent/Workflow Runtime remains the source of execution truth and the HTTP layer does not duplicate State or waiting logic.
+For process reattachment, call `service.pending()` and then
+`service.recover_pending()` from the application's upper-level process owner.
+The recovery hook only recreates the Server driver; the Agent's configured
+Checkpoint remains the source of Runtime State and waiting facts. The default
+in-memory Task Store is process-local, so cross-process recovery requires a
+persistent `server::task::Store` implementation.
 
 ## DingTalk channel
 

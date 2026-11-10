@@ -45,6 +45,23 @@ impl Live {
         );
     }
 
+    fn ensure(&self, task_id: &str) -> bool {
+        if let Ok(mut entries) = self.entries.lock()
+            && !entries.contains_key(task_id)
+        {
+            let (events, _) = broadcast::channel(64);
+            entries.insert(
+                task_id.to_owned(),
+                LiveEntry {
+                    cancel: crate::Cancellation::new(),
+                    events,
+                },
+            );
+            return true;
+        }
+        false
+    }
+
     fn cancellation(&self, task_id: &str) -> Result<crate::Cancellation, Error> {
         self.entries
             .lock()
@@ -194,6 +211,54 @@ where
     }
 
     pub async fn task(&self, task_id: &str) -> Result<Task, Error> {
+        self.store.task(task_id).await
+    }
+
+    /// Return unfinished tasks that a Server or Daemon can reattach after a
+    /// process restart. Runtime Checkpoint data remains outside this store.
+    pub async fn pending(&self) -> Result<Vec<Task>, Error> {
+        self.store.pending().await
+    }
+
+    /// Reattach every unfinished task exposed by the Task Store.
+    pub async fn recover_pending(&self) -> Result<Vec<Task>, Error>
+    where
+        A: Send + Sync,
+    {
+        let pending = self.pending().await?;
+        let mut recovered = Vec::with_capacity(pending.len());
+        for task in pending {
+            recovered.push(self.recover(&task.id).await?);
+        }
+        Ok(recovered)
+    }
+
+    /// Reattach one unfinished task to the existing Agent and its persisted
+    /// Checkpoint. This restores only the server driver; Runtime owns the
+    /// execution State, waiting and recovery facts.
+    pub async fn recover(&self, task_id: &str) -> Result<Task, Error>
+    where
+        A: Send + Sync,
+    {
+        let context = self.context(task_id).await?;
+        let task = self.store.task(task_id).await?;
+        if terminal(&task) {
+            return Ok(task);
+        }
+        if !self.live.ensure(task_id) {
+            return self.store.task(task_id).await;
+        }
+        let input = Input {
+            metadata: Map::from_iter([
+                ("session_id".into(), Value::from(context.session_id)),
+                ("chat_id".into(), Value::from(context.chat_id)),
+            ]),
+            payload: Vec::new(),
+        };
+        let service = self.clone();
+        tokio::spawn(async move {
+            let _ = service.drive(context, input).await;
+        });
         self.store.task(task_id).await
     }
 

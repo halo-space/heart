@@ -12,6 +12,7 @@
 pub mod context;
 pub mod observe;
 pub mod policy;
+pub mod state;
 
 use crate::Cancellation;
 use crate::components::agent::{Agent as AgentContract, Error, Input};
@@ -20,15 +21,20 @@ use crate::components::model::chat::Chat;
 use crate::components::workspace::Workspace;
 use crate::core::dispatch::Dispatch;
 use crate::runtime::agent::{react, subagent::SubAgent};
+use std::sync::Arc;
 
 pub use context::DEFAULT_SYSTEM_PROMPT;
 
 /// Start building the long-task Harness preset.
 pub fn builder() -> Builder {
+    let state = Arc::new(std::sync::Mutex::new(None));
+    let subagents = Arc::new(std::sync::Mutex::new(Vec::new()));
     Builder {
         inner: react::builder().system_prompt(context::system_prompt(None)),
         workspace: None,
         policy: policy::Policy::default(),
+        state,
+        subagents,
     }
 }
 
@@ -38,14 +44,22 @@ pub struct Builder<M = ()> {
     inner: react::Builder<M>,
     workspace: Option<Dispatch>,
     policy: policy::Policy,
+    state: Arc<std::sync::Mutex<Option<Arc<state::Store>>>>,
+    subagents: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl<M> Builder<M> {
-    pub fn model<N>(self, model: N) -> Builder<N> {
+    pub fn model<N>(self, model: N) -> Builder<context::ContextChat<N>> {
         Builder {
-            inner: self.inner.model(model),
+            inner: self.inner.model(context::ContextChat::new(
+                model,
+                Arc::clone(&self.state),
+                Arc::clone(&self.subagents),
+            )),
             workspace: self.workspace,
             policy: self.policy,
+            state: self.state,
+            subagents: self.subagents,
         }
     }
 
@@ -71,6 +85,14 @@ impl<M> Builder<M> {
     }
 
     pub fn subagents(mut self, subagents: impl IntoIterator<Item = SubAgent>) -> Self {
+        let subagents = subagents.into_iter().collect::<Vec<_>>();
+        *self
+            .subagents
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = subagents
+            .iter()
+            .map(|subagent| subagent.name().to_owned())
+            .collect();
         self.inner = self.inner.subagents(subagents);
         self
     }
@@ -120,6 +142,16 @@ impl<M> Builder<M> {
         self.inner = self.inner.with_id_fn(id_fn);
         self
     }
+
+    /// Attach the durable Harness state backend. Runtime Checkpoints and
+    /// Memory remain separate stores with their existing responsibilities.
+    pub fn state(self, store: state::Store) -> Self {
+        *self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(Arc::new(store));
+        self
+    }
 }
 
 impl<M> Builder<M>
@@ -134,7 +166,10 @@ where
         self.policy.validate()?;
         let dispatch = Dispatch::new().merge(self.workspace.unwrap_or_default())?;
         let inner = self.inner.with_dispatch(dispatch).build()?;
-        Ok(Agent { inner })
+        Ok(Agent {
+            inner,
+            state: self.state,
+        })
     }
 }
 
@@ -142,6 +177,70 @@ where
 /// wrapped Runtime ReAct Agent and its configured Core components.
 pub struct Agent<M> {
     inner: react::Agent<M>,
+    state: Arc<std::sync::Mutex<Option<Arc<state::Store>>>>,
+}
+
+impl<M> Agent<M> {
+    /// Load the durable Harness state attached to this Agent.
+    pub async fn load_state(
+        &self,
+        cancellation: &Cancellation,
+    ) -> Result<Option<state::State>, Error> {
+        let store = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| Error::new("NOT_CONFIGURED", "Harness state is not configured"))?;
+        store.load(cancellation).await
+    }
+
+    /// Persist a new Harness state version through the configured backend.
+    pub async fn save_state(
+        &self,
+        value: &state::State,
+        cancellation: &Cancellation,
+    ) -> Result<(), Error> {
+        let store = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| Error::new("NOT_CONFIGURED", "Harness state is not configured"))?;
+        store.save(value, cancellation).await
+    }
+
+    /// Apply one accepted Refinement and persist the next Harness version.
+    pub async fn refine(
+        &self,
+        item: state::Item,
+        change: state::Change,
+        cancellation: &Cancellation,
+    ) -> Result<state::State, Error> {
+        let store = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| Error::new("NOT_CONFIGURED", "Harness state is not configured"))?;
+        store.refine(item, change, cancellation).await
+    }
+
+    /// Update the persistent long-task Goal.
+    pub async fn update_goal(
+        &self,
+        goal: state::Goal,
+        change: state::Change,
+        cancellation: &Cancellation,
+    ) -> Result<state::State, Error> {
+        let store = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
+            .ok_or_else(|| Error::new("NOT_CONFIGURED", "Harness state is not configured"))?;
+        store.update_goal(goal, change, cancellation).await
+    }
 }
 
 impl<M> AgentContract for Agent<M>

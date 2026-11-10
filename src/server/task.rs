@@ -27,6 +27,7 @@ pub trait Store: Clone + Send + Sync + 'static {
         chat_id: i64,
     ) -> impl Future<Output = Result<Context, Error>> + Send;
     fn task(&self, task_id: &str) -> impl Future<Output = Result<Task, Error>> + Send;
+    fn pending(&self) -> impl Future<Output = Result<Vec<Task>, Error>> + Send;
     fn context(&self, task_id: &str) -> impl Future<Output = Result<Context, Error>> + Send;
     fn message(
         &self,

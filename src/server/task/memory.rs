@@ -73,6 +73,22 @@ impl Memory {
             .ok_or_else(|| Error::new("NOT_FOUND", "A2A task was not found"))
     }
 
+    pub fn pending(&self) -> Result<Vec<Task>, Error> {
+        Ok(self
+            .entries
+            .lock()
+            .map_err(lock_error)?
+            .values()
+            .map(|entry| entry.task.clone())
+            .filter(|task| {
+                matches!(
+                    task.status.state,
+                    TaskState::Working | TaskState::InputRequired | TaskState::AuthRequired
+                )
+            })
+            .collect())
+    }
+
     pub fn context(&self, task_id: &str) -> Result<Context, Error> {
         self.entries
             .lock()
@@ -129,6 +145,10 @@ impl Store for Memory {
 
     fn task(&self, task_id: &str) -> impl Future<Output = Result<Task, Error>> + Send {
         async move { Self::task(self, task_id) }
+    }
+
+    fn pending(&self) -> impl Future<Output = Result<Vec<Task>, Error>> + Send {
+        async move { Self::pending(self) }
     }
 
     fn context(&self, task_id: &str) -> impl Future<Output = Result<Context, Error>> + Send {
@@ -207,6 +227,7 @@ mod tests {
     fn creates_deduplicates_and_records_projection_events() {
         let tasks = Memory::new();
         let context = tasks.create(1, 2).unwrap();
+        assert_eq!(tasks.pending().unwrap().len(), 0);
         assert_eq!(
             tasks
                 .message(&context.task_id, &message("m-1", "a"))
@@ -240,6 +261,7 @@ mod tests {
                 }),
             )
             .unwrap();
+        assert_eq!(tasks.pending().unwrap().len(), 1);
         assert_eq!(
             tasks.task(&context.task_id).unwrap().status.state,
             TaskState::Working
