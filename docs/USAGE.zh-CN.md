@@ -665,7 +665,7 @@ agent.refine(item, change, &halo::Cancellation::new()).await?;
 
 每次接受的 Refinement 都会生成一个新版本，旧 JSON 快照保留在 Workspace 中。模型适配器
 会在每次请求前读取最新状态，因此后续请求自然使用最新上下文，不会再创建第二套执行循环。
-`harness::state::Store` 是本地实现；服务端或数据库实现可以遵循相同的持久化边界。
+当前 `harness::state::Store` 只持久化到配置的本地 Workspace；服务端或数据库状态后端属于后续能力。
 
 ---
 

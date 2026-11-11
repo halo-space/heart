@@ -79,23 +79,48 @@ where
                     r#type: "text".into(),
                     data: object(serde_json::json!({"value": context})),
                 });
-                let mut messages = Messages::new([context_message]);
-                messages.0.extend(request.messages.0);
-                request.messages = messages;
+                insert_context(&mut request.messages, context_message);
             }
         }
         self.model.stream(request).await
     }
 }
 
+/// Keep fixed system/developer instructions first, then place the latest
+/// Harness context before history and user input. This prevents durable state
+/// from accidentally becoming the highest-priority instruction.
+fn insert_context(messages: &mut Messages, context: Message) {
+    let index = messages
+        .0
+        .iter()
+        .take_while(|message| matches!(message.role, Role::System | Role::Developer))
+        .count();
+    messages.0.insert(index, context);
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{DEFAULT_SYSTEM_PROMPT, system_prompt};
+    use super::{DEFAULT_SYSTEM_PROMPT, insert_context, system_prompt};
+    use crate::components::message::{Message, Messages, Role};
 
     #[test]
     fn keeps_default_prompt_and_accepts_explicit_override() {
         assert_eq!(system_prompt(None), DEFAULT_SYSTEM_PROMPT);
         assert_eq!(system_prompt(Some("custom")), "custom");
         assert_eq!(system_prompt(Some("  ")), DEFAULT_SYSTEM_PROMPT);
+    }
+
+    #[test]
+    fn inserts_context_after_fixed_instructions() {
+        let mut messages = Messages::new([
+            Message::new(Role::System),
+            Message::new(Role::Developer),
+            Message::new(Role::User),
+        ]);
+        insert_context(&mut messages, Message::new(Role::System));
+        assert!(matches!(messages.0[0].role, Role::System));
+        assert!(matches!(messages.0[1].role, Role::Developer));
+        assert!(matches!(messages.0[2].role, Role::System));
+        assert!(matches!(messages.0[3].role, Role::User));
     }
 }

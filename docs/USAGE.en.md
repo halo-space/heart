@@ -412,8 +412,8 @@ agent.refine(item, change, &halo::Cancellation::new()).await?;
 Each accepted refinement creates one new version and keeps the previous JSON
 snapshot under the Workspace. The model adapter reloads the latest state before
 each request, so a later request sees the newest context without a second
-execution loop. `harness::state::Store` is the local implementation; a server
-or database-backed implementation can provide the same persistence boundary.
+execution loop. `harness::state::Store` currently persists to the configured
+local Workspace; a server or database-backed state contract is future work.
 
 ---
 
