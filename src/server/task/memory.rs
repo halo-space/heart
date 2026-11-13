@@ -17,11 +17,11 @@ use crate::components::protocol::a2a::{Context, Message, StreamResponse, Task, T
 #[derive(Clone, Default)]
 pub struct Memory {
     next: Arc<AtomicU64>,
-    entries: Arc<Mutex<BTreeMap<String, Entry>>>,
+    entries: Arc<Mutex<BTreeMap<String, TaskRecord>>>,
 }
 
 #[derive(Clone)]
-struct Entry {
+struct TaskRecord {
     context: Context,
     task: Task,
     messages: BTreeMap<String, Vec<u8>>,
@@ -55,7 +55,7 @@ impl Memory {
         };
         self.entries.lock().map_err(lock_error)?.insert(
             task_id,
-            Entry {
+            TaskRecord {
                 context: context.clone(),
                 task,
                 messages: BTreeMap::new(),

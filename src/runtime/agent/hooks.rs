@@ -17,7 +17,7 @@ pub(crate) enum Stage {
     Compression,
 }
 
-trait Entry: Send + Sync {
+trait Hook: Send + Sync {
     fn apply(
         &self,
         stage: Stage,
@@ -27,8 +27,8 @@ trait Entry: Send + Sync {
     ) -> HookFuture;
 }
 
-struct Adapter<M>(Arc<M>);
-impl<M: Middleware + 'static> Entry for Adapter<M> {
+struct MiddlewareAdapter<M>(Arc<M>);
+impl<M: Middleware + 'static> Hook for MiddlewareAdapter<M> {
     fn apply(
         &self,
         stage: Stage,
@@ -84,7 +84,7 @@ impl<M: Middleware + 'static> Entry for Adapter<M> {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct Hooks(Vec<Arc<dyn Entry>>);
+pub(crate) struct Hooks(Vec<Arc<dyn Hook>>);
 
 impl Hooks {
     pub(crate) fn len(&self) -> usize {
@@ -92,7 +92,8 @@ impl Hooks {
     }
 
     pub(crate) fn add<M: Middleware + 'static>(&mut self, middleware: M) {
-        self.0.push(Arc::new(Adapter(Arc::new(middleware))));
+        self.0
+            .push(Arc::new(MiddlewareAdapter(Arc::new(middleware))));
     }
 
     async fn apply<T: Clone + Serialize + DeserializeOwned>(

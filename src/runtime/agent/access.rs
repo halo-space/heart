@@ -8,12 +8,12 @@ use crate::{
 
 type CheckFuture = Pin<Box<dyn Future<Output = Result<Decision, Error>> + Send + 'static>>;
 
-trait Entry: Send + Sync {
+trait Policy: Send + Sync {
     fn check(&self, request: Request, cancellation: Cancellation) -> CheckFuture;
 }
 
-struct Adapter<P>(Arc<P>);
-impl<P: Permission + 'static> Entry for Adapter<P> {
+struct PolicyAdapter<P>(Arc<P>);
+impl<P: Permission + 'static> Policy for PolicyAdapter<P> {
     fn check(&self, request: Request, cancellation: Cancellation) -> CheckFuture {
         let policy = self.0.clone();
         Box::pin(async move { policy.check(&request, &cancellation).await })
@@ -21,11 +21,11 @@ impl<P: Permission + 'static> Entry for Adapter<P> {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct Access(Option<Arc<dyn Entry>>);
+pub(crate) struct Access(Option<Arc<dyn Policy>>);
 
 impl Access {
     pub(crate) fn set<P: Permission + 'static>(&mut self, policy: P) {
-        self.0 = Some(Arc::new(Adapter(Arc::new(policy))));
+        self.0 = Some(Arc::new(PolicyAdapter(Arc::new(policy))));
     }
 
     pub(crate) fn is_configured(&self) -> bool {

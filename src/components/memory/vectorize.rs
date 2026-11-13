@@ -14,13 +14,13 @@ use crate::{
 
 type FutureResult = Pin<Box<dyn Future<Output = Result<Message, Error>> + Send + 'static>>;
 
-trait Entry: Send + Sync {
+trait Embedder: Send + Sync {
     fn embed(&self, request: Request) -> FutureResult;
 }
 
-struct Adapter<E>(Arc<E>);
+struct EmbedderAdapter<E>(Arc<E>);
 
-impl<E: Embed + 'static> Entry for Adapter<E> {
+impl<E: Embed + 'static> Embedder for EmbedderAdapter<E> {
     fn embed(&self, request: Request) -> FutureResult {
         let component = self.0.clone();
         Box::pin(async move { component.embed(request).await })
@@ -28,11 +28,11 @@ impl<E: Embed + 'static> Entry for Adapter<E> {
 }
 
 #[derive(Clone)]
-pub(crate) struct Configured(Arc<dyn Entry>);
+pub(crate) struct Configured(Arc<dyn Embedder>);
 
 impl Configured {
     pub(crate) fn new<E: Embed + 'static>(component: E) -> Self {
-        Self(Arc::new(Adapter(Arc::new(component))))
+        Self(Arc::new(EmbedderAdapter(Arc::new(component))))
     }
 
     pub(crate) async fn embed(

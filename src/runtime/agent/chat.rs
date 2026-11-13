@@ -26,7 +26,7 @@ use crate::components::{mcp::Server, skill::Skill};
 use crate::core::dispatch::{Dispatch, ToolInputs};
 use crate::runtime::agent::access::Access;
 use crate::runtime::agent::checkpoint::Backend;
-use crate::runtime::agent::history::{History, Run};
+use crate::runtime::agent::history::{History, HistoryRun};
 use crate::runtime::agent::hooks::Hooks;
 use crate::runtime::agent::node::Step;
 use crate::runtime::agent::step;
@@ -463,7 +463,7 @@ where
         let preparing = preparation.as_ref().is_some_and(|state| {
             state.stage != crate::runtime::agent::preparation::Stage::Complete
         });
-        let mut run = Run::default();
+        let mut run = HistoryRun::default();
         // Preparation belongs to this run too. Retain its constructed input
         // before Dispatch preparation, model hooks or Provider dispatch stop it.
         let mut preparation_messages = restored_messages.clone().unwrap_or_default();

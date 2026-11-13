@@ -15,18 +15,18 @@ pub(crate) const READER_NAME: &str = "skill";
 type SkillFuture = Pin<Box<dyn Future<Output = Result<String, Error>> + Send + 'static>>;
 type ResourceFuture = Pin<Box<dyn Future<Output = Result<Vec<u8>, Error>> + Send + 'static>>;
 type DiscoveryFuture =
-    Pin<Box<dyn Future<Output = Result<Vec<Arc<dyn Entry>>, Error>> + Send + 'static>>;
+    Pin<Box<dyn Future<Output = Result<Vec<Arc<dyn SkillView>>, Error>> + Send + 'static>>;
 
 #[derive(Clone)]
 pub(crate) struct SkillSnapshot {
     version: String,
-    entries: Vec<Arc<dyn Entry>>,
+    entries: Vec<Arc<dyn SkillView>>,
 }
 
 /// One Skill that can expose its instructions and optional resources.
 /// The entry hides whether the content is direct, workspace-backed or loaded
 /// from another source.
-pub(crate) trait Entry: Send + Sync {
+pub(crate) trait SkillView: Send + Sync {
     fn definition(&self) -> &SkillDefinition;
     fn read(&self, cancellation: Cancellation) -> SkillFuture;
     fn read_resource(&self, _path: String, _cancellation: Cancellation) -> ResourceFuture {
@@ -40,17 +40,17 @@ pub(crate) trait Entry: Send + Sync {
 }
 
 /// Object-safe discovery boundary for the public `skill::Loader` contract.
-pub(crate) trait Source: Send + Sync {
+pub(crate) trait LoaderSource: Send + Sync {
     fn discover(&self, cancellation: Cancellation) -> DiscoveryFuture;
 }
 
 /// Adapts one concrete `skill::Loader` and keeps its versioned catalog cache.
-pub(crate) struct Adapter<S> {
+pub(crate) struct LoaderAdapter<S> {
     pub(crate) loader: Arc<S>,
     pub(crate) cache: Arc<RwLock<Option<SkillSnapshot>>>,
 }
 
-impl<S: Loader + 'static> Source for Adapter<S> {
+impl<S: Loader + 'static> LoaderSource for LoaderAdapter<S> {
     fn discover(&self, cancellation: Cancellation) -> DiscoveryFuture {
         let loader = Arc::clone(&self.loader);
         let cache = Arc::clone(&self.cache);
@@ -63,13 +63,13 @@ impl<S: Loader + 'static> Source for Adapter<S> {
             }
 
             let definitions = loader.list(&cancellation).await?;
-            let entries: Vec<Arc<dyn Entry>> = definitions
+            let entries: Vec<Arc<dyn SkillView>> = definitions
                 .into_iter()
                 .map(|definition| {
-                    Arc::new(SourceSkill {
+                    Arc::new(LoadedSkill {
                         loader: Arc::clone(&loader),
                         definition,
-                    }) as Arc<dyn Entry>
+                    }) as Arc<dyn SkillView>
                 })
                 .collect();
             *cache.write().await = Some(SkillSnapshot {
@@ -82,12 +82,12 @@ impl<S: Loader + 'static> Source for Adapter<S> {
 }
 
 /// A catalog definition whose body is read from its Loader by name.
-struct SourceSkill<S> {
+struct LoadedSkill<S> {
     loader: Arc<S>,
     definition: SkillDefinition,
 }
 
-impl<S: Loader + 'static> Entry for SourceSkill<S> {
+impl<S: Loader + 'static> SkillView for LoadedSkill<S> {
     fn definition(&self) -> &SkillDefinition {
         &self.definition
     }
@@ -111,7 +111,7 @@ pub(crate) struct Direct<S> {
     pub(crate) definition: SkillDefinition,
 }
 
-impl<S: Skill + 'static> Entry for Direct<S> {
+impl<S: Skill + 'static> SkillView for Direct<S> {
     fn definition(&self) -> &SkillDefinition {
         &self.definition
     }
@@ -128,7 +128,7 @@ pub(crate) struct Workspace {
     pub(crate) definition: SkillDefinition,
 }
 
-impl Entry for Workspace {
+impl SkillView for Workspace {
     fn definition(&self) -> &SkillDefinition {
         &self.definition
     }

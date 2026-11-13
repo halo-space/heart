@@ -329,7 +329,7 @@ async fn collect(
 }
 
 pub(super) fn submit(
-    run: &Arc<Inner>,
+    run: &Arc<super::RunState>,
     mut questions: std::sync::MutexGuard<'_, BTreeMap<i64, Question>>,
     id: i64,
     input: Input,

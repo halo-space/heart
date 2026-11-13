@@ -30,7 +30,7 @@ use crate::core::dispatch::{Dispatch, ToolInputs};
 use crate::runtime::agent::access::Access;
 use crate::runtime::agent::checkpoint::{Backend, invalid as invalid_checkpoint};
 use crate::runtime::agent::graph::Graph;
-use crate::runtime::agent::history::{History, Run};
+use crate::runtime::agent::history::{History, HistoryRun};
 use crate::runtime::agent::hooks::Hooks;
 use crate::runtime::agent::node::Step;
 use crate::runtime::agent::subagent::SubAgent;
@@ -467,7 +467,7 @@ where
         let preparing = preparation.as_ref().is_some_and(|state| {
             state.stage != crate::runtime::agent::preparation::Stage::Complete
         });
-        let mut run = Run::default();
+        let mut run = HistoryRun::default();
         let mut messages = Messages::default();
         let prepared = async {
             if let Some(state) = preparation.as_mut() {

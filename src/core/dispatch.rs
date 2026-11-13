@@ -35,10 +35,10 @@ use crate::workspace::Workspace;
 #[derive(Clone)]
 #[doc(hidden)]
 pub struct Dispatch {
-    entries: Vec<Arc<dyn tool::Entry>>,
+    entries: Vec<Arc<dyn tool::ToolEntry>>,
     mcp_catalog: Vec<crate::mcp::Definition>,
-    skills: Vec<Arc<dyn entry::Entry>>,
-    skill_loaders: Vec<Arc<dyn entry::Source>>,
+    skills: Vec<Arc<dyn entry::SkillView>>,
+    skill_loaders: Vec<Arc<dyn entry::LoaderSource>>,
     skill_reader: bool,
     workspace: Option<Arc<dyn Workspace>>,
 }
@@ -57,7 +57,7 @@ where
     T: Tool + 'static,
 {
     fn append_to(self, dispatch: &mut Dispatch) {
-        dispatch.entries.push(Arc::new(tool::Adapter {
+        dispatch.entries.push(Arc::new(tool::ToolAdapter {
             tool: Arc::new(self),
         }));
     }
@@ -69,7 +69,7 @@ where
 {
     fn append_to(self, dispatch: &mut Dispatch) {
         for tool in self {
-            dispatch.entries.push(Arc::new(tool::Adapter {
+            dispatch.entries.push(Arc::new(tool::ToolAdapter {
                 tool: Arc::new(tool),
             }));
         }
@@ -82,7 +82,7 @@ where
 {
     fn append_to(self, dispatch: &mut Dispatch) {
         for tool in self {
-            dispatch.entries.push(Arc::new(tool::Adapter {
+            dispatch.entries.push(Arc::new(tool::ToolAdapter {
                 tool: Arc::new(tool),
             }));
         }
@@ -122,7 +122,7 @@ impl Dispatch {
                 Arc::new(tool::WorkspaceTool {
                     workspace: Arc::clone(&workspace),
                     definition,
-                }) as Arc<dyn tool::Entry>
+                }) as Arc<dyn tool::ToolEntry>
             })
             .collect();
         Self {
@@ -218,7 +218,7 @@ impl Dispatch {
     /// asynchronously for each run; the dispatch table never assumes local
     /// file paths.
     pub(crate) fn skill<S: Loader + 'static>(mut self, loader: S) -> Self {
-        self.skill_loaders.push(Arc::new(entry::Adapter {
+        self.skill_loaders.push(Arc::new(entry::LoaderAdapter {
             loader: Arc::new(loader),
             cache: Arc::new(RwLock::new(None)),
         }));
@@ -262,7 +262,7 @@ impl Dispatch {
             Arc::new(entry::Workspace {
                 workspace: Arc::clone(workspace),
                 definition,
-            }) as Arc<dyn entry::Entry>
+            }) as Arc<dyn entry::SkillView>
         }));
         Ok(Self {
             entries: self.entries.clone(),
@@ -300,7 +300,7 @@ impl Dispatch {
         })
     }
 
-    fn validate_names(&self, entries: &[Arc<dyn tool::Entry>]) -> Result<(), Error> {
+    fn validate_names(&self, entries: &[Arc<dyn tool::ToolEntry>]) -> Result<(), Error> {
         let mut names = BTreeSet::new();
         for name in entries.iter().map(|entry| entry.definition().name) {
             if !names.insert(name) {
@@ -355,7 +355,7 @@ impl Dispatch {
         discovered.validate_names(&entries)?;
         let skill_reader = !discovered.skills.is_empty();
         if skill_reader && !discovered.skill_reader {
-            entries.push(Arc::new(tool::Adapter {
+            entries.push(Arc::new(tool::ToolAdapter {
                 tool: Arc::new(reader::Reader::new(discovered.skills.clone())),
             }));
         }

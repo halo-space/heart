@@ -31,10 +31,10 @@ pub(crate) use restore::pending as prepare_pending;
 pub(crate) use restore::prepare as prepare_restore;
 
 #[derive(Default)]
-pub(crate) struct Hub(Mutex<BTreeMap<i64, Weak<Inner>>>);
+pub(crate) struct Hub(Mutex<BTreeMap<i64, Weak<RunState>>>);
 
 #[derive(Clone)]
-pub(crate) struct Run(Arc<Inner>);
+pub(crate) struct Run(Arc<RunState>);
 
 /// Owned only by the original stream state, never by a notification.
 pub(crate) struct Owner(Run);
@@ -44,7 +44,7 @@ impl Drop for Owner {
     }
 }
 
-struct Inner {
+struct RunState {
     metadata: Map<String, Value>,
     questions: Arc<Mutex<BTreeMap<i64, Question>>>,
     /// Active question order is the business-assembled FIFO, shared by the
@@ -56,7 +56,7 @@ struct Inner {
     /// Enclosing planned tasks retain ownership of these permits. A child
     /// reacquires them before continuing, but must never release them itself.
     enclosing: Vec<Slot>,
-    children: Mutex<Vec<Weak<Inner>>>,
+    children: Mutex<Vec<Weak<RunState>>>,
     suspended: AtomicBool,
     changes: Mutex<VecDeque<Change>>,
     consumer: AtomicWaker,
@@ -69,7 +69,7 @@ struct Inner {
 
 struct Question {
     active: bool,
-    owner: Weak<Inner>,
+    owner: Weak<RunState>,
     sender: Option<oneshot::Sender<Input>>,
     submitted: Option<Value>,
     feedback: Option<feedback::Delivery>,
@@ -227,7 +227,7 @@ impl Hub {
                 "this Agent already has a live run for chat_id",
             ));
         }
-        let run = Run(Arc::new(Inner {
+        let run = Run(Arc::new(RunState {
             metadata,
             questions: Default::default(),
             order: Default::default(),
@@ -395,7 +395,7 @@ impl Run {
         if let Some(slot) = &self.0.slot {
             enclosing.push(slot.clone());
         }
-        let run = Self(Arc::new(Inner {
+        let run = Self(Arc::new(RunState {
             metadata: self.0.metadata.clone(),
             questions: self.0.questions.clone(),
             order: self.0.order.clone(),

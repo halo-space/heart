@@ -29,16 +29,16 @@ pub(crate) struct RecoveryError {
     pub(crate) error: Error,
 }
 
-trait Entry: Send + Sync {
+trait ToolEntry: Send + Sync {
     fn definition(&self) -> ToolDefinition;
     fn execute(&self, step: Step, facts: Facts, cancellation: Cancellation) -> ToolFuture;
 }
 
-struct Adapter<T> {
+struct ToolAdapter<T> {
     tool: Arc<T>,
 }
 
-impl<T> Entry for Adapter<T>
+impl<T> ToolEntry for ToolAdapter<T>
 where
     T: Tool + 'static,
 {
@@ -137,7 +137,7 @@ pub enum ExecutionMode {
 /// Execution identity, retry and persistence remain owned by the surrounding
 /// runtime::workflow Runtime.
 pub struct ToolNode {
-    tools: Vec<Box<dyn Entry>>,
+    tools: Vec<Box<dyn ToolEntry>>,
     execution_mode: ExecutionMode,
 }
 
@@ -149,7 +149,7 @@ impl ToolNode {
         T: Tool + 'static,
     {
         Self {
-            tools: vec![Box::new(Adapter {
+            tools: vec![Box::new(ToolAdapter {
                 tool: Arc::new(tool),
             })],
             execution_mode: ExecutionMode::default(),
@@ -162,7 +162,7 @@ impl ToolNode {
     where
         T: Tool + 'static,
     {
-        self.tools.push(Box::new(Adapter {
+        self.tools.push(Box::new(ToolAdapter {
             tool: Arc::new(tool),
         }));
         self
@@ -203,7 +203,7 @@ impl ToolNode {
         Ok(())
     }
 
-    fn entry(&self, name: &str) -> Result<&dyn Entry, Error> {
+    fn entry(&self, name: &str) -> Result<&dyn ToolEntry, Error> {
         self.tools
             .iter()
             .find(|entry| entry.definition().name == name)

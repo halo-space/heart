@@ -5,7 +5,7 @@ use crate::{Cancellation, Error, Messages, compression::Compressor};
 
 type FutureResult = Pin<Box<dyn Future<Output = Result<Messages, Error>> + Send + 'static>>;
 
-trait Entry: Send + Sync {
+trait Compression: Send + Sync {
     fn size(&self) -> Option<u64>;
     fn limit(&self) -> Option<u64>;
     fn retain(&self) -> Option<u64>;
@@ -13,8 +13,8 @@ trait Entry: Send + Sync {
     fn compress(&self, input: Messages, cancellation: Cancellation) -> FutureResult;
 }
 
-struct Adapter<P>(Arc<P>);
-impl<P: Compressor + 'static> Entry for Adapter<P> {
+struct CompressionAdapter<P>(Arc<P>);
+impl<P: Compressor + 'static> Compression for CompressionAdapter<P> {
     fn size(&self) -> Option<u64> {
         self.0.size()
     }
@@ -39,11 +39,11 @@ impl<P: Compressor + 'static> Entry for Adapter<P> {
 }
 
 #[derive(Clone)]
-pub(crate) struct Configured(Arc<dyn Entry>);
+pub(crate) struct Configured(Arc<dyn Compression>);
 
 impl Configured {
     pub(crate) fn new<P: Compressor + 'static>(component: P) -> Self {
-        Self(Arc::new(Adapter(Arc::new(component))))
+        Self(Arc::new(CompressionAdapter(Arc::new(component))))
     }
 
     pub(crate) fn validate(&self) -> Result<(), Error> {

@@ -32,7 +32,7 @@ type LoadFuture = Pin<Box<dyn Future<Output = Result<Vec<Message>, Error>> + Sen
 type CreateFuture = Pin<Box<dyn Future<Output = Result<chat::Chat, Error>> + Send + 'static>>;
 type SaveFuture = Pin<Box<dyn Future<Output = Result<(), Error>> + Send + 'static>>;
 
-trait Entry: Send + Sync {
+trait HistoryBackend: Send + Sync {
     fn validate(&self) -> Result<(), Error>;
     fn load(
         &self,
@@ -45,9 +45,9 @@ trait Entry: Send + Sync {
     fn save(&self, value: chat::Chat, state: Option<Value>) -> SaveFuture;
 }
 
-struct Adapter<S, L>(Arc<memory::Config<S, L>>);
+struct MemoryBackend<S, L>(Arc<memory::Config<S, L>>);
 
-impl<S, L> Entry for Adapter<S, L>
+impl<S, L> HistoryBackend for MemoryBackend<S, L>
 where
     S: short::Store + 'static,
     L: Memory + 'static,
@@ -146,14 +146,14 @@ where
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct History(Option<Arc<dyn Entry>>);
+pub(crate) struct History(Option<Arc<dyn HistoryBackend>>);
 
 impl History {
     pub(crate) async fn resume(
         &self,
         input: Input,
         cancellation: &Cancellation,
-    ) -> Result<Run, Error> {
+    ) -> Result<HistoryRun, Error> {
         self.resume_for(input, short::Type::Agent, cancellation)
             .await
     }
@@ -163,12 +163,12 @@ impl History {
         input: Input,
         owner: short::Type,
         cancellation: &Cancellation,
-    ) -> Result<Run, Error> {
+    ) -> Result<HistoryRun, Error> {
         let record = match &self.0 {
             Some(entry) => Some(entry.resume(input, owner, cancellation.clone()).await?),
             None => None,
         };
-        Ok(Run {
+        Ok(HistoryRun {
             history: self.clone(),
             record,
             usage: Ledger::default(),
@@ -192,7 +192,7 @@ impl History {
         S: short::Store + 'static,
         L: Memory + 'static,
     {
-        self.0 = Some(Arc::new(Adapter(Arc::new(config))));
+        self.0 = Some(Arc::new(MemoryBackend(Arc::new(config))));
     }
 
     pub(crate) fn validate(&self) -> Result<(), Error> {
@@ -224,7 +224,7 @@ impl History {
         &self,
         input: Input,
         cancellation: &Cancellation,
-    ) -> Result<Run, Error> {
+    ) -> Result<HistoryRun, Error> {
         self.begin_for(input, short::Type::Agent, cancellation)
             .await
     }
@@ -234,12 +234,12 @@ impl History {
         input: Input,
         owner: short::Type,
         cancellation: &Cancellation,
-    ) -> Result<Run, Error> {
+    ) -> Result<HistoryRun, Error> {
         let record = match &self.0 {
             Some(entry) => Some(entry.create(input, owner, cancellation.clone()).await?),
             None => None,
         };
-        Ok(Run {
+        Ok(HistoryRun {
             history: self.clone(),
             record,
             usage: Ledger::default(),
@@ -250,13 +250,13 @@ impl History {
 /// Persistence closure for one Agent or Workflow Chat. Model accounting is maintained
 /// by runtime::agent; this type owns only the configured writeback operation.
 #[derive(Clone, Default)]
-pub(crate) struct Run {
+pub(crate) struct HistoryRun {
     history: History,
     record: Option<chat::Chat>,
     usage: Ledger,
 }
 
-impl Run {
+impl HistoryRun {
     pub(crate) fn settle(&self, usage: Option<crate::model::token::Usage>) {
         self.usage.settle(usage);
     }

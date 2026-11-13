@@ -80,7 +80,7 @@ pub(crate) struct ReActState<M: Chat> {
     pub(crate) access: Access,
     pub(crate) evaluator: Option<EvaluatorHandle>,
     pub(crate) metadata: Map<String, Value>,
-    pub(crate) run: Run,
+    pub(crate) run: HistoryRun,
     pub(crate) model_pending: bool,
     pub(crate) model_settled: bool,
     pub(crate) input_tokens: u64,

@@ -12,7 +12,7 @@ pub(super) struct Engine {
     pub(super) max_concurrency: usize,
     pub(super) checkpoint: Option<CheckpointSave>,
     pub(super) memory: Option<History>,
-    pub(super) history_run: Option<Run>,
+    pub(super) history_run: Option<HistoryRun>,
     pub(super) history_closed: bool,
     // Derived from the parent's earlier Attempt.graph, not separate truth.
     // It supplies inherited scenes when a failed nested Graph Node is retried.

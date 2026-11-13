@@ -27,7 +27,7 @@ pub(crate) struct McpServer<S> {
 }
 
 impl<S: Server + 'static> McpServer<S> {
-    pub(crate) fn entries(&self) -> Vec<Arc<dyn Entry>> {
+    pub(crate) fn entries(&self) -> Vec<Arc<dyn ToolEntry>> {
         let server = Arc::clone(&self.server);
         server
             .tools()
@@ -37,7 +37,7 @@ impl<S: Server + 'static> McpServer<S> {
                 Arc::new(Mcp {
                     server: Arc::clone(&server),
                     definition,
-                }) as Arc<dyn Entry>
+                }) as Arc<dyn ToolEntry>
             })
             .collect()
     }
@@ -48,7 +48,7 @@ struct Mcp<S> {
     definition: ToolDefinition,
 }
 
-impl<S: Server + 'static> Entry for Mcp<S> {
+impl<S: Server + 'static> ToolEntry for Mcp<S> {
     fn definition(&self) -> ToolDefinition {
         self.definition.clone()
     }
@@ -80,7 +80,7 @@ impl<S: Server + 'static> Entry for Mcp<S> {
     }
 }
 
-pub(crate) trait Entry: Send + Sync {
+pub(crate) trait ToolEntry: Send + Sync {
     fn definition(&self) -> ToolDefinition;
     fn prepare(&self, call: Call, cancellation: Cancellation) -> PrepareFuture;
     fn call(&self, call: Call, cancellation: Cancellation) -> CallFuture;
@@ -95,11 +95,11 @@ pub(crate) trait Entry: Send + Sync {
     ) -> EvaluationFuture;
 }
 
-pub(crate) struct Adapter<T> {
+pub(crate) struct ToolAdapter<T> {
     pub(crate) tool: Arc<T>,
 }
 
-impl<T> Entry for Adapter<T>
+impl<T> ToolEntry for ToolAdapter<T>
 where
     T: Tool + 'static,
 {
@@ -144,7 +144,7 @@ pub(crate) struct WorkspaceTool {
     pub(crate) definition: ToolDefinition,
 }
 
-impl Entry for WorkspaceTool {
+impl ToolEntry for WorkspaceTool {
     fn definition(&self) -> ToolDefinition {
         self.definition.clone()
     }

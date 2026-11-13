@@ -24,12 +24,12 @@ pub trait Extractor: Send + Sync {
 
 type ExtractFuture = Pin<Box<dyn Future<Output = Result<Messages, Error>> + Send + 'static>>;
 type MergeFuture = Pin<Box<dyn Future<Output = Result<String, Error>> + Send + 'static>>;
-trait Entry: Send + Sync {
+trait Extraction: Send + Sync {
     fn extract(&self, input: Messages, cancellation: Cancellation) -> ExtractFuture;
     fn merge(&self, current: Item, content: String, cancellation: Cancellation) -> MergeFuture;
 }
-struct Adapter<E>(Arc<E>);
-impl<E: Extractor + 'static> Entry for Adapter<E> {
+struct ExtractionAdapter<E>(Arc<E>);
+impl<E: Extractor + 'static> Extraction for ExtractionAdapter<E> {
     fn extract(&self, input: Messages, cancellation: Cancellation) -> ExtractFuture {
         let component = self.0.clone();
         Box::pin(async move { component.extract(&input, &cancellation).await })
@@ -41,7 +41,7 @@ impl<E: Extractor + 'static> Entry for Adapter<E> {
 }
 #[derive(Clone)]
 pub(crate) struct Configured {
-    component: Arc<dyn Entry>,
+    component: Arc<dyn Extraction>,
 }
 impl Configured {
     pub(crate) fn new<E>(component: E) -> Self
@@ -49,7 +49,7 @@ impl Configured {
         E: Extractor + 'static,
     {
         Self {
-            component: Arc::new(Adapter(Arc::new(component))),
+            component: Arc::new(ExtractionAdapter(Arc::new(component))),
         }
     }
     pub(crate) async fn extract(

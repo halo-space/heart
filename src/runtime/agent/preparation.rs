@@ -5,7 +5,7 @@ use crate::Cancellation;
 use crate::Error;
 use crate::components::agent::Input;
 use crate::components::message::Messages;
-use crate::runtime::agent::history::{History, Run};
+use crate::runtime::agent::history::{History, HistoryRun};
 use crate::runtime::agent::hooks::{Hooks, Stage as Hook};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -81,7 +81,7 @@ pub(crate) async fn advance(
     state: &mut State,
     query: &Input,
     messages: &mut Messages,
-    run: &mut Run,
+    run: &mut HistoryRun,
     history: &History,
     hooks: &Hooks,
     cancellation: &Cancellation,
