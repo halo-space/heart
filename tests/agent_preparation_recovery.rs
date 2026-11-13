@@ -669,7 +669,7 @@ fn graph(react: bool, hooks: Isolated, model: Model) -> CompiledWorkflow {
         builder.add_edge(START, node).unwrap();
     }
     builder.add_node("merge", halo::agent::node::Echo).unwrap();
-    builder.add_join(["a", "b"], "merge").unwrap();
+    builder.add_join_edge(["a", "b"], "merge").unwrap();
     builder.add_edge("merge", END).unwrap();
     let child = builder.compile().unwrap();
     let mut parent = Builder::new("preparation-wrapper");

@@ -13,6 +13,7 @@ pub mod context;
 pub mod observe;
 pub mod policy;
 pub mod state;
+mod state_store;
 
 use crate::Cancellation;
 use crate::components::agent::{Agent as AgentContract, Error, Input};

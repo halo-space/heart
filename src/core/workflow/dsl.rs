@@ -11,7 +11,7 @@ use serde_json::{Map, Value};
 
 use crate::Error;
 
-pub const CURRENT_VERSION: u32 = 1;
+pub const CURRENT_VERSION: u32 = 2;
 pub const START: &str = "START";
 pub const END: &str = "END";
 
@@ -29,7 +29,9 @@ pub struct Document {
     pub nodes: BTreeMap<String, Node>,
     pub edges: Vec<Edge>,
     #[serde(default)]
-    pub joins: Vec<Join>,
+    /// Join-edge declarations. Each entry describes a relation between
+    /// existing nodes, never a node.
+    pub join_edges: Vec<JoinEdge>,
     #[serde(default)]
     pub conditions: Vec<Condition>,
     #[serde(default)]
@@ -78,7 +80,7 @@ impl Document {
             }
         }
         self.validate_edges()?;
-        self.validate_joins()?;
+        self.validate_join_edges()?;
         self.validate_conditions()?;
         self.validate_fan_outs()?;
         self.validate_loops()?;
@@ -139,26 +141,24 @@ impl Document {
         Ok(())
     }
 
-    fn validate_joins(&self) -> Result<(), Error> {
+    fn validate_join_edges(&self) -> Result<(), Error> {
         let mut targets = BTreeSet::new();
-        for join in &self.joins {
+        for join in &self.join_edges {
             if join.from.len() < 2
                 || join.from.iter().collect::<BTreeSet<_>>().len() != join.from.len()
             {
-                return Err(invalid("Join requires at least two distinct sources"));
+                return Err(invalid("Join edge requires at least two distinct sources"));
             }
             for source in &join.from {
                 self.validate_endpoint(source, false, false)?;
             }
             self.validate_endpoint(&join.to, false, false)?;
             if !targets.insert(&join.to) {
-                return Err(invalid(
-                    "a workflow node cannot have multiple Join definitions",
-                ));
+                return Err(invalid("a workflow node cannot have multiple Join edges"));
             }
             if self.edges.iter().any(|edge| edge.to == join.to) {
                 return Err(invalid(
-                    "Join target cannot also have an ordinary incoming edge",
+                    "Join edge target cannot also have an ordinary incoming edge",
                 ));
             }
         }
@@ -259,7 +259,7 @@ impl Document {
                     .push(edge.to.as_str());
             }
         }
-        for join in &self.joins {
+        for join in &self.join_edges {
             for source in &join.from {
                 adjacency.entry(source.as_str()).or_default().push(&join.to);
             }
@@ -334,7 +334,7 @@ impl Document {
                 _ => {}
             }
         }
-        for join in &self.joins {
+        for join in &self.join_edges {
             for source in &join.from {
                 reverse.entry(join.to.as_str()).or_default().push(source);
             }
@@ -624,7 +624,7 @@ pub struct Edge {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct Join {
+pub struct JoinEdge {
     pub from: Vec<String>,
     pub to: String,
 }
@@ -679,7 +679,7 @@ mod tests {
 
     fn valid_document() -> Value {
         json!({
-            "version": 1,
+            "version": 2,
             "definition_id": "weather",
             "nodes": {
                 "search": {
@@ -708,7 +708,7 @@ mod tests {
         let document = Document::parse(valid_document()).expect("valid Native DSL");
         assert_eq!(document.version, CURRENT_VERSION);
         assert_eq!(document.nodes["search"].retry.max_retries, 0);
-        assert!(document.joins.is_empty());
+        assert!(document.join_edges.is_empty());
     }
 
     #[test]
@@ -788,7 +788,7 @@ mod tests {
             {"from": "search", "to": "other"},
             {"from": "other", "to": "END"}
         ]);
-        value["joins"] = json!([{"from": ["search", "other"], "to": "other"}]);
+        value["join_edges"] = json!([{"from": ["search", "other"], "to": "other"}]);
         assert_eq!(
             Document::parse(value).unwrap_err().code,
             "INVALID_ARGUMENTS"

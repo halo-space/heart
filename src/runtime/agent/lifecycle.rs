@@ -95,7 +95,7 @@ pub(super) async fn model_prepare(
 /// Keep component/business failures separate from permission and framework
 /// control failures. Callers retain their own result presentation and State.
 #[derive(Debug)]
-pub(super) enum Failure {
+pub(crate) enum Failure {
     Policy(Error, Box<Call>),
     Hook(Error),
     Tool(Error),

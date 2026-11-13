@@ -198,7 +198,7 @@ fn workflow_at(
     }
     child.add_edge(START, "a").unwrap();
     child.add_edge(START, "b").unwrap();
-    child.add_join(["a", "b"], "merge").unwrap();
+    child.add_join_edge(["a", "b"], "merge").unwrap();
     child.add_edge("merge", END).unwrap();
     let child = child.compile().unwrap();
     let child = if nested {

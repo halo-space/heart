@@ -115,7 +115,7 @@ fn graph(react: bool, tool: SharedTool, model: VllmChat) -> CompiledWorkflow {
         builder.add_edge(START, id).unwrap();
     }
     builder.add_node("merge", halo::agent::node::Echo).unwrap();
-    builder.add_join(["a", "b"], "merge").unwrap();
+    builder.add_join_edge(["a", "b"], "merge").unwrap();
     builder.add_edge("merge", END).unwrap();
     builder.compile().unwrap()
 }

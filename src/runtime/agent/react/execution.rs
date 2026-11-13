@@ -33,7 +33,7 @@ fn task_messages(mut messages: Messages, input: Message) -> Messages {
     messages
 }
 
-pub(super) struct Active {
+pub(crate) struct Active {
     run: Run,
     slot: crate::runtime::agent::reply::Slot,
 }
@@ -43,7 +43,7 @@ impl Active {
     }
 }
 
-pub(super) struct TaskProgress<M: Chat> {
+pub(crate) struct TaskProgress<M: Chat> {
     task: Box<Task<M>>,
     result: Option<Result<Event, Error>>,
 }

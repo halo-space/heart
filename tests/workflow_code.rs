@@ -17,7 +17,7 @@ use serde_json::{Value, json};
 
 fn document() -> serde_json::Value {
     json!({
-        "version": 1,
+        "version": 2,
         "definition_id": "code-test",
         "nodes": {
             "add": {

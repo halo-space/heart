@@ -77,7 +77,7 @@ fn gated(
         })
         .unwrap();
     builder
-        .add_join((0..branches).map(|index| format!("leaf_{index}")), "merge")
+        .add_join_edge((0..branches).map(|index| format!("leaf_{index}")), "merge")
         .unwrap();
     builder.add_edge("merge", END).unwrap();
     let mut graph = builder.compile().unwrap();
@@ -150,7 +150,7 @@ async fn sibling_graphs_and_direct_leaves_share_one_budget() {
             })
             .unwrap();
         builder
-            .add_join(["left", "right", "direct"], "merge")
+            .add_join_edge(["left", "right", "direct"], "merge")
             .unwrap();
         builder.add_edge("merge", END).unwrap();
         let runtime = Runtime::new(1001, builder.compile().unwrap())

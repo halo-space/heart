@@ -502,7 +502,7 @@ fn shared_nodes(log: Arc<Log>) -> CompiledWorkflow {
         builder.add_edge(source, target).unwrap();
     }
     builder.add_node("merge", halo::agent::node::Echo).unwrap();
-    builder.add_join(["a", "b"], "merge").unwrap();
+    builder.add_join_edge(["a", "b"], "merge").unwrap();
     builder.add_edge("merge", END).unwrap();
     builder.compile().unwrap()
 }

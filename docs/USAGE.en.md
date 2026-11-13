@@ -204,13 +204,13 @@ Relations are explicit:
 
 ```rust
 builder.add_edge(START, "a")?;
-builder.add_join(["b", "c"], "merge")?;
+builder.add_join_edge(["b", "c"], "merge")?;
 builder.add_conditional_edges("route", route, ["b", "c"])?;
 builder.add_fan_out_edges("split", "worker")?;
 builder.add_loop_edge("retry", "work", |messages| should_retry(messages))?;
 ```
 
-An ordinary edge activates after a successful source; a Join waits for all listed sources. Conditional routes must select a declared target. Fan-out branches can run concurrently. `START` and `END` are graph boundary endpoints. `add_agent_node` embeds a built Agent; `add_graph_node` embeds a compiled subgraph with an explicit boundary.
+An ordinary edge activates after a successful source; a Join edge waits for all listed sources. `add_join_edge` only declares that relation between existing nodes; it does not create a Join node. Conditional routes must select a declared target. Fan-out branches can run concurrently. `START` and `END` are graph boundary endpoints. `add_agent_node` embeds a built Agent; `add_graph_node` embeds a compiled subgraph with an explicit boundary.
 
 Run and observe the shared event stream:
 
@@ -243,6 +243,10 @@ DSL JSON -> agent::workflow::dsl parse, validate, and normalize
 
 Applications provide static execution configuration during initialization; each request only supplies DSL and business input. Unknown functions, tools, Agents, or subgraphs must fail at binding/plan submission. Heart does not add a public registration table or dynamic runtime capability catalog. A2A/AG-UI/JSON-RPC/SSE adapters live at the protocol/HTTP layer and convert existing Events.
 
+Native DSL relation arrays use explicit names: `edges` for ordinary edges and
+`join_edges` for Join edges. A `join_edges` entry references existing source
+and target nodes; it never declares a Join node.
+
 Page-authored function nodes are created by Core from the DSL and then used like ordinary Nodes. Heart does not look up a local function by `name`, and the DSL does not contain a local path or closure:
 
 ```rust
@@ -254,7 +258,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 let document = parse(json!({
-    "version": 1,
+    "version": 2,
     "definition_id": "reload-flow",
     "nodes": {
         "reload": {

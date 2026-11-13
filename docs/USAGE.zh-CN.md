@@ -356,14 +356,14 @@ let workflow = builder.compile()?;
 ```rust
 builder.add_edge(START, "a")?;
 builder.add_edge("a", "b")?;
-builder.add_join(["b", "c"], "merge")?;
+builder.add_join_edge(["b", "c"], "merge")?;
 builder.add_conditional_edges("route", route, ["a", "b"])?;
 builder.add_fan_out_edges("split", "worker")?;
 builder.add_loop_edge("retry", "work", |messages| should_retry(messages))?;
 ```
 
 - `add_edge` 是普通关系：任一成功来源满足激活条件即可；多个来源的结果仍保存在各自 Node State，目标节点按 `attrs.input` 取所需字段。
-- `add_join` 是显式等待关系：列出的所有来源都成功后才能激活目标；一个来源最终失败，Join 不会伪造成功。
+- `add_join_edge` 是显式等待关系：它只给已有节点声明一条 Join 边，不创建 Join 节点；列出的所有来源都成功后才能激活目标；一个来源最终失败，Join 边不会伪造成功。
 - `add_conditional_edges` 先执行来源节点的路由函数，实际选择必须属于声明的目标集合。
 - `add_fan_out_edges` 表示同一来源向多条执行分支分发，分支执行可并发；每个执行实例有自己的执行身份，结果回收遵循运行时状态。
 - `add_loop_edge` 是受条件控制的循环关系；不能创建自环、重复边或非法图环路。
@@ -395,7 +395,7 @@ while let Some(event) = events.next().await {
 let state = runtime.state();
 ```
 
-Workflow 一次按当前可执行前沿推进。一个 Step 内可以并发执行多个节点，但 Join 必须等待全部来源完成；`State` 保存图、节点状态、执行实例、Attempt、结果和等待队列。子图通过 `add_graph_node` 作为一个明确的图边界嵌入父图，不会变成父图的普通节点集合。
+Workflow 一次按当前可执行前沿推进。一个 Step 内可以并发执行多个节点，但 Join 边必须等待全部来源完成；`State` 保存图、节点状态、执行实例、Attempt、结果和等待队列。子图通过 `add_graph_node` 作为一个明确的图边界嵌入父图，不会变成父图的普通节点集合。
 
 ### 6.5 Workflow 与 Agent 的关系
 
@@ -421,6 +421,9 @@ Heart 借鉴 LangGraph 的 `START/END`、条件边、子图和 Checkpoint 现场
 
 应用在初始化阶段提供静态执行配置，请求阶段只传入 DSL 和业务输入。DSL 只描述图和参数，不能绕过应用已配置的函数、工具、Agent 或子图；未知能力在构建或计划提交阶段失败。Heart 不增加公共注册表或动态能力目录。
 
+Native DSL 的关系数组使用明确命名：普通关系使用 `edges`，Join 关系使用
+`join_edges`。`join_edges` 只引用已有来源节点和目标节点，不声明或创建 Join 节点。
+
 页面代码函数节点由 Core 根据 DSL 直接创建执行器，再像普通 Node 一样交给 Workflow Builder；不会按
 `name` 查找本地函数，也不会把闭包或本地路径写进 DSL：
 
@@ -433,7 +436,7 @@ use serde_json::json;
 use std::collections::BTreeMap;
 
 let document = parse(json!({
-    "version": 1,
+    "version": 2,
     "definition_id": "reload-flow",
     "nodes": {
         "reload": {
