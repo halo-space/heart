@@ -12,7 +12,7 @@ use std::task::{Context, Poll};
 
 use super::runner::execute_subagent;
 use super::*;
-use crate::components::agent::Agent as AgentContract;
+use crate::components::agent::Agent as _;
 use crate::components::event::Event;
 use crate::components::message::Role;
 use crate::components::tool::{Call, Tool, ToolDefinition};
@@ -43,7 +43,7 @@ struct CountingSubAgent {
     calls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-impl AgentContract for WaitingSubAgent {
+impl crate::components::agent::Agent for WaitingSubAgent {
     async fn reply(
         &self,
         _: crate::components::agent::Input,
@@ -81,7 +81,7 @@ impl AgentContract for WaitingSubAgent {
     }
 }
 
-impl AgentContract for CountingSubAgent {
+impl crate::components::agent::Agent for CountingSubAgent {
     async fn reply(
         &self,
         _: crate::components::agent::Input,

@@ -12,8 +12,13 @@ trait Policy: Send + Sync {
     fn check(&self, request: Request, cancellation: Cancellation) -> CheckFuture;
 }
 
-struct PolicyAdapter<P>(Arc<P>);
-impl<P: Permission + 'static> Policy for PolicyAdapter<P> {
+mod adapter {
+    use std::sync::Arc;
+
+    pub(super) struct Policy<P>(pub(super) Arc<P>);
+}
+
+impl<P: Permission + 'static> Policy for adapter::Policy<P> {
     fn check(&self, request: Request, cancellation: Cancellation) -> CheckFuture {
         let policy = self.0.clone();
         Box::pin(async move { policy.check(&request, &cancellation).await })
@@ -25,7 +30,7 @@ pub(crate) struct Access(Option<Arc<dyn Policy>>);
 
 impl Access {
     pub(crate) fn set<P: Permission + 'static>(&mut self, policy: P) {
-        self.0 = Some(Arc::new(PolicyAdapter(Arc::new(policy))));
+        self.0 = Some(Arc::new(adapter::Policy(Arc::new(policy))));
     }
 
     pub(crate) fn is_configured(&self) -> bool {

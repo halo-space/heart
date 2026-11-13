@@ -16,7 +16,7 @@ pub mod state;
 mod state_store;
 
 use crate::Cancellation;
-use crate::components::agent::{Agent as AgentContract, Error, Input};
+use crate::components::agent::{Error, Input};
 use crate::components::evaluation::Evaluator;
 use crate::components::model::chat::Chat;
 use crate::components::workspace::Workspace;
@@ -244,11 +244,11 @@ impl<M> Agent<M> {
     }
 }
 
-impl<M> AgentContract for Agent<M>
+impl<M> crate::components::agent::Agent for Agent<M>
 where
     M: Chat + 'static,
 {
-    type Stream = <react::Agent<M> as AgentContract>::Stream;
+    type Stream = <react::Agent<M> as crate::components::agent::Agent>::Stream;
 
     async fn run(
         &self,

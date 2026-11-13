@@ -20,10 +20,10 @@ use std::sync::{Arc, Mutex};
 use futures_util::StreamExt;
 
 use crate::Error;
-use crate::components::agent::{Input as AgentInput, Payload as AgentPayload};
+use crate::components::agent::{Input, Payload};
 use crate::components::message::{Messages, Role};
 use crate::components::node::{Signal, View};
-use crate::runtime::agent::history::{History, HistoryRun};
+use crate::runtime::agent::history::{Execute, History};
 use crate::runtime::workflow::node::ExecutionRef;
 
 pub use graph::{
@@ -78,7 +78,7 @@ pub struct Runtime {
 #[derive(Clone)]
 pub(crate) struct RecoveryReply {
     response: Messages,
-    input: AgentInput,
+    input: Input,
     path: Vec<graph::ReplyExecution>,
 }
 

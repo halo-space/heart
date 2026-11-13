@@ -2,7 +2,7 @@
 //! Session metadata before external writes and after acknowledged completion.
 use crate::cancellation::cancellable;
 use crate::runtime::observation::observe_usage;
-use crate::runtime::trace::fastrace::Root as TraceRoot;
+use crate::runtime::trace::fastrace::Root;
 use crate::{
     Cancellation, Error, Messages,
     memory::{self, Item, Memory, Request},
@@ -246,7 +246,7 @@ pub(super) async fn resume_job<L: Memory, P: Progress>(
 ) -> Result<(), Error> {
     // Extraction is a background model call without a foreground Event. Its
     // Usage is audited separately and is never added to the Chat ledger.
-    let trace = TraceRoot::start("memory.extraction");
+    let trace = Root::start("memory.extraction");
     if job.tasks.is_none() {
         let output = cancellable(
             component.extract(job.input.clone(), cancellation),
@@ -352,7 +352,7 @@ async fn prepare<L: Memory>(
     component: &memory::extraction::Configured,
     store: &L,
     vectorizer: Option<&memory::Vectorizer>,
-    trace: &TraceRoot,
+    trace: &Root,
     next_id: fn() -> i64,
     cancellation: &Cancellation,
 ) -> Result<bool, Error> {

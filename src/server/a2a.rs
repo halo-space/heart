@@ -24,21 +24,26 @@ type Projection = Pin<Box<dyn Stream<Item = Result<StreamResponse, Error>> + Sen
 
 #[derive(Clone, Default)]
 struct Live {
-    entries: Arc<Mutex<BTreeMap<String, LiveEntry>>>,
+    tasks: Arc<Mutex<BTreeMap<String, task::Handle>>>,
 }
 
-#[derive(Clone)]
-struct LiveEntry {
-    cancel: crate::Cancellation,
-    events: broadcast::Sender<StreamResponse>,
+mod task {
+    use super::StreamResponse;
+    use tokio::sync::broadcast;
+
+    #[derive(Clone)]
+    pub(super) struct Handle {
+        pub(super) cancel: crate::Cancellation,
+        pub(super) events: broadcast::Sender<StreamResponse>,
+    }
 }
 
 impl Live {
     fn create(&self, task_id: &str) {
         let (events, _) = broadcast::channel(64);
-        self.entries.lock().expect("A2A live lock poisoned").insert(
+        self.tasks.lock().expect("A2A live lock poisoned").insert(
             task_id.to_owned(),
-            LiveEntry {
+            task::Handle {
                 cancel: crate::Cancellation::new(),
                 events,
             },
@@ -46,13 +51,13 @@ impl Live {
     }
 
     fn ensure(&self, task_id: &str) -> bool {
-        if let Ok(mut entries) = self.entries.lock()
-            && !entries.contains_key(task_id)
+        if let Ok(mut tasks) = self.tasks.lock()
+            && !tasks.contains_key(task_id)
         {
             let (events, _) = broadcast::channel(64);
-            entries.insert(
+            tasks.insert(
                 task_id.to_owned(),
-                LiveEntry {
+                task::Handle {
                     cancel: crate::Cancellation::new(),
                     events,
                 },
@@ -63,43 +68,43 @@ impl Live {
     }
 
     fn cancellation(&self, task_id: &str) -> Result<crate::Cancellation, Error> {
-        self.entries
+        self.tasks
             .lock()
             .map_err(|_| Error::new("CONFLICT", "A2A live lock is poisoned"))?
             .get(task_id)
-            .map(|entry| entry.cancel.clone())
+            .map(|handle| handle.cancel.clone())
             .ok_or_else(|| Error::new("CONFLICT", "A2A task is not attached to a live run"))
     }
 
     fn cancel(&self, task_id: &str) -> Result<(), Error> {
-        let entries = self
-            .entries
+        let tasks = self
+            .tasks
             .lock()
             .map_err(|_| Error::new("CONFLICT", "A2A live lock is poisoned"))?;
-        if let Some(entry) = entries.get(task_id) {
-            entry.cancel.cancel();
+        if let Some(task) = tasks.get(task_id) {
+            task.cancel.cancel();
         }
         Ok(())
     }
 
     fn publish(&self, task_id: &str, response: StreamResponse) {
-        if let Ok(entries) = self.entries.lock()
-            && let Some(entry) = entries.get(task_id)
+        if let Ok(tasks) = self.tasks.lock()
+            && let Some(task) = tasks.get(task_id)
         {
-            let _ = entry.events.send(response);
+            let _ = task.events.send(response);
         }
     }
 
     fn subscribe(&self, task_id: &str) -> Result<broadcast::Receiver<StreamResponse>, Error> {
-        let entries = self
-            .entries
+        let tasks = self
+            .tasks
             .lock()
             .map_err(|_| Error::new("CONFLICT", "A2A live lock is poisoned"))?;
-        let Some(entry) = entries.get(task_id) else {
+        let Some(task) = tasks.get(task_id) else {
             let (_, receiver) = broadcast::channel(1);
             return Ok(receiver);
         };
-        Ok(entry.events.subscribe())
+        Ok(task.events.subscribe())
     }
 }
 

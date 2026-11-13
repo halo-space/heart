@@ -42,9 +42,9 @@ impl Node<Messages, Messages, crate::Error> for Flaky {
     }
 }
 
-struct InspectView;
+struct InspectNode;
 
-impl Node<Messages, Messages, crate::Error> for InspectView {
+impl Node<Messages, Messages, crate::Error> for InspectNode {
     async fn call(
         &self,
         input: Messages,
@@ -447,7 +447,7 @@ fn workflow_usage_counts_failed_and_successful_agent_attempts_once() {
 #[test]
 fn node_receives_only_its_read_only_local_view() {
     let mut builder = Builder::new("node-view");
-    builder.add_node("inspect", InspectView).unwrap();
+    builder.add_node("inspect", InspectNode).unwrap();
     builder.add_edge(START, "inspect").unwrap();
     builder.add_edge("inspect", END).unwrap();
     let mut runtime = Runtime::new(93, builder.compile().unwrap()).unwrap();

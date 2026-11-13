@@ -27,8 +27,13 @@ trait Hook: Send + Sync {
     ) -> HookFuture;
 }
 
-struct MiddlewareAdapter<M>(Arc<M>);
-impl<M: Middleware + 'static> Hook for MiddlewareAdapter<M> {
+mod adapter {
+    use std::sync::Arc;
+
+    pub(super) struct Middleware<M>(pub(super) Arc<M>);
+}
+
+impl<M: Middleware + 'static> Hook for adapter::Middleware<M> {
     fn apply(
         &self,
         stage: Stage,
@@ -93,7 +98,7 @@ impl Hooks {
 
     pub(crate) fn add<M: Middleware + 'static>(&mut self, middleware: M) {
         self.0
-            .push(Arc::new(MiddlewareAdapter(Arc::new(middleware))));
+            .push(Arc::new(adapter::Middleware(Arc::new(middleware))));
     }
 
     async fn apply<T: Clone + Serialize + DeserializeOwned>(

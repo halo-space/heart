@@ -2,7 +2,7 @@ use std::future::Future;
 
 use crate::{
     Cancellation, Error,
-    permission::{Decision, Permission as Contract, Request},
+    permission::{Decision, Request},
 };
 
 /// Built-in permission policies. The policy is intentionally small: it only
@@ -95,7 +95,7 @@ fn decision(mode: Mode, request: &Request) -> Decision {
     }
 }
 
-impl Contract for Policy {
+impl crate::components::permission::Permission for Policy {
     async fn check(
         &self,
         request: &Request,
@@ -124,7 +124,7 @@ impl<F> Permission<F> {
     }
 }
 
-impl<F, Fut> Contract for Permission<F>
+impl<F, Fut> crate::components::permission::Permission for Permission<F>
 where
     F: Fn(Request, Cancellation) -> Fut + Send + Sync,
     Fut: Future<Output = Result<Decision, Error>> + Send,
@@ -153,7 +153,7 @@ where
 mod tests {
     use futures_executor::block_on;
 
-    use super::Contract;
+    use crate::components::permission::Permission as _;
     use crate::{Cancellation, permission::Behavior};
 
     fn request(action: &str) -> crate::permission::Request {

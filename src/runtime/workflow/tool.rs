@@ -11,7 +11,7 @@ use crate::Error;
 use crate::components::message::{Message, Messages, Role};
 use crate::components::model::content::part::Part;
 use crate::components::node::{Node, Signal};
-use crate::components::tool::{Call, Tool, ToolDefinition};
+use crate::components::tool::{Call, ToolDefinition};
 use crate::core::lifecycle::Phase;
 
 // Working facts for this invocation only; every acknowledged change is handed
@@ -29,18 +29,22 @@ pub(crate) struct RecoveryError {
     pub(crate) error: Error,
 }
 
-trait ToolEntry: Send + Sync {
+trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
     fn execute(&self, step: Step, facts: Facts, cancellation: Cancellation) -> ToolFuture;
 }
 
-struct ToolAdapter<T> {
-    tool: Arc<T>,
+mod adapter {
+    use std::sync::Arc;
+
+    pub(super) struct Tool<T> {
+        pub(super) tool: Arc<T>,
+    }
 }
 
-impl<T> ToolEntry for ToolAdapter<T>
+impl<T> Tool for adapter::Tool<T>
 where
-    T: Tool + 'static,
+    T: crate::components::tool::Tool + 'static,
 {
     fn definition(&self) -> ToolDefinition {
         self.tool.definition().clone()
@@ -137,7 +141,7 @@ pub enum ExecutionMode {
 /// Execution identity, retry and persistence remain owned by the surrounding
 /// runtime::workflow Runtime.
 pub struct ToolNode {
-    tools: Vec<Box<dyn ToolEntry>>,
+    tools: Vec<Box<dyn Tool>>,
     execution_mode: ExecutionMode,
 }
 
@@ -146,10 +150,10 @@ impl ToolNode {
     /// be added with [`ToolNode::tool`].
     pub fn new<T>(tool: T) -> Self
     where
-        T: Tool + 'static,
+        T: crate::components::tool::Tool + 'static,
     {
         Self {
-            tools: vec![Box::new(ToolAdapter {
+            tools: vec![Box::new(adapter::Tool {
                 tool: Arc::new(tool),
             })],
             execution_mode: ExecutionMode::default(),
@@ -160,9 +164,9 @@ impl ToolNode {
     /// unchanged. Duplicate names are rejected before any call is executed.
     pub fn tool<T>(mut self, tool: T) -> Self
     where
-        T: Tool + 'static,
+        T: crate::components::tool::Tool + 'static,
     {
-        self.tools.push(Box::new(ToolAdapter {
+        self.tools.push(Box::new(adapter::Tool {
             tool: Arc::new(tool),
         }));
         self
@@ -203,7 +207,7 @@ impl ToolNode {
         Ok(())
     }
 
-    fn entry(&self, name: &str) -> Result<&dyn ToolEntry, Error> {
+    fn find_tool(&self, name: &str) -> Result<&dyn Tool, Error> {
         self.tools
             .iter()
             .find(|entry| entry.definition().name == name)
@@ -220,7 +224,7 @@ impl ToolNode {
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "tool node cancelled"));
         }
-        let entry = self.entry(&call.name)?;
+        let tool = self.find_tool(&call.name)?;
         let mut step = facts
             .lock()
             .expect("Tool invocation facts poisoned")
@@ -259,7 +263,7 @@ impl ToolNode {
             }
         }
         acknowledge(facts.clone(), step.clone()).await?;
-        entry.execute(step, facts, cancellation.clone()).await
+        tool.execute(step, facts, cancellation.clone()).await
     }
 
     fn merge_parallel_errors(errors: Vec<(Call, Error)>) -> Error {
@@ -433,14 +437,17 @@ impl ToolNode {
                 )
                 .with_details(&call.call_id));
             }
-            self.entry(&call.name)?;
+            self.find_tool(&call.name)?;
         }
         validate_facts(&calls, committed)?;
         for step in &committed.steps {
             if step.stage.as_deref() != Some("before") {
                 let call = step.call.as_ref().expect("validated Call");
-                crate::components::tool::validate_call(&self.entry(&call.name)?.definition(), call)
-                    .map_err(|_| invalid_facts())?;
+                crate::components::tool::validate_call(
+                    &self.find_tool(&call.name)?.definition(),
+                    call,
+                )
+                .map_err(|_| invalid_facts())?;
             }
         }
         Ok(calls)
@@ -667,7 +674,7 @@ mod tests {
         reject: bool,
     }
 
-    impl Tool for Weather {
+    impl crate::components::tool::Tool for Weather {
         fn definition(&self) -> &crate::components::tool::ToolDefinition {
             static DEFINITION: std::sync::OnceLock<crate::components::tool::ToolDefinition> =
                 std::sync::OnceLock::new();
@@ -727,7 +734,7 @@ mod tests {
         called: Arc<AtomicBool>,
     }
 
-    impl Tool for Search {
+    impl crate::components::tool::Tool for Search {
         fn definition(&self) -> &crate::components::tool::ToolDefinition {
             &self.definition
         }
@@ -762,7 +769,7 @@ mod tests {
         evaluated: Arc<AtomicBool>,
     }
 
-    impl Tool for EvalSearch {
+    impl crate::components::tool::Tool for EvalSearch {
         fn definition(&self) -> &crate::components::tool::ToolDefinition {
             &self.definition
         }
@@ -888,7 +895,7 @@ mod tests {
         calls: Arc<std::sync::atomic::AtomicUsize>,
     }
 
-    impl Tool for FlakySearch {
+    impl crate::components::tool::Tool for FlakySearch {
         fn definition(&self) -> &crate::components::tool::ToolDefinition {
             &self.definition
         }

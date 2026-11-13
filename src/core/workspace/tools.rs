@@ -16,7 +16,7 @@ use super::{Docker, Local};
 use crate::cancellation::check;
 use crate::components::message::{Message, Role};
 use crate::components::model::content::part::{Part, object as part_data};
-use crate::components::skill::{Definition as SkillDefinition, Loader as SkillLoader, Skill as _};
+use crate::components::skill::{Definition as SkillDefinition, Loader, Skill as _};
 use crate::components::tool::{Call, Tool, ToolDefinition};
 use crate::core::dispatch::Dispatch;
 use crate::{Cancellation, Error};
@@ -279,7 +279,7 @@ pub(crate) struct DirectorySnapshot {
     skills: BTreeMap<String, CachedSkill>,
 }
 
-impl SkillLoader for DirectoryLoader {
+impl Loader for DirectoryLoader {
     async fn list(&self, cancellation: &Cancellation) -> Result<Vec<SkillDefinition>, Error> {
         Ok(self
             .snapshot(cancellation)

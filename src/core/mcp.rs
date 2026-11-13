@@ -4,7 +4,7 @@ use serde_json::{Map, Value, json};
 
 use crate::{
     Cancellation, Error, Message,
-    mcp::{Definition, Server as Contract},
+    mcp::Definition,
     message::Role,
     model::content::part::{Part, object as part_data},
     pkg,
@@ -56,7 +56,7 @@ impl Server {
     }
 }
 
-impl Contract for Server {
+impl crate::components::mcp::Server for Server {
     fn definition(&self) -> &Definition {
         &self.definition
     }

@@ -18,9 +18,13 @@ trait Embedder: Send + Sync {
     fn embed(&self, request: Request) -> FutureResult;
 }
 
-struct EmbedderAdapter<E>(Arc<E>);
+mod adapter {
+    use std::sync::Arc;
 
-impl<E: Embed + 'static> Embedder for EmbedderAdapter<E> {
+    pub(super) struct Embedder<E>(pub(super) Arc<E>);
+}
+
+impl<E: Embed + 'static> Embedder for adapter::Embedder<E> {
     fn embed(&self, request: Request) -> FutureResult {
         let component = self.0.clone();
         Box::pin(async move { component.embed(request).await })
@@ -32,7 +36,7 @@ pub(crate) struct Configured(Arc<dyn Embedder>);
 
 impl Configured {
     pub(crate) fn new<E: Embed + 'static>(component: E) -> Self {
-        Self(Arc::new(EmbedderAdapter(Arc::new(component))))
+        Self(Arc::new(adapter::Embedder(Arc::new(component))))
     }
 
     pub(crate) async fn embed(

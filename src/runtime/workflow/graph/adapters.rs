@@ -35,11 +35,11 @@ pub(crate) trait ErasedAgent: Send + Sync + 'static {
     ) -> AgentFuture;
 }
 
-pub(crate) struct AgentAdapter<A> {
+pub(crate) struct Agent<A> {
     pub(super) agent: Arc<A>,
 }
 
-impl<A: Agent + 'static> ErasedAgent for AgentAdapter<A> {
+impl<A: crate::components::agent::Agent + 'static> ErasedAgent for Agent<A> {
     fn call(
         &self,
         input: agent::Input,
@@ -407,16 +407,16 @@ pub(crate) trait ErasedNode: Send + Sync + 'static {
 }
 
 #[allow(dead_code)]
-pub(crate) struct NodeAdapter<N, I, O, E> {
+pub(crate) struct Node<N, I, O, E> {
     pub(super) node: Arc<N>,
     pub(super) input_schema: jsonschema::Validator,
     pub(super) output_schema: jsonschema::Validator,
     pub(super) marker: std::marker::PhantomData<fn(I, O, E)>,
 }
 
-impl<N, I, O, E> ErasedNode for NodeAdapter<N, I, O, E>
+impl<N, I, O, E> ErasedNode for Node<N, I, O, E>
 where
-    N: Node<I, O, E> + Any,
+    N: crate::components::node::Node<I, O, E> + Any,
     I: DeserializeOwned + Send + 'static,
     O: Serialize + Send + 'static,
     E: Into<Error> + Send + 'static,
@@ -515,4 +515,11 @@ where
             }
         }))
     }
+}
+
+/// Concrete adapters are kept behind this module so their names describe the
+/// wrapped capability (`adapter::Agent`, `adapter::Node`) instead of exposing
+/// an implementation-suffix type in the runtime graph API.
+pub(crate) mod adapter {
+    pub(crate) use super::{Agent, Node};
 }

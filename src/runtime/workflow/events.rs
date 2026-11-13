@@ -10,7 +10,7 @@ use std::{
 use futures_core::Stream;
 use futures_util::task::AtomicWaker;
 
-use crate::runtime::trace::fastrace::Root as TraceRoot;
+use crate::runtime::trace::fastrace::Root;
 use crate::{Error, Message, Messages, event::Event};
 
 pub(crate) fn project_message(message: &Message) -> Message {
@@ -72,7 +72,7 @@ impl Output {
 
 tokio::task_local! {
     static CURRENT: Output;
-    static TRACE: TraceRoot;
+    static TRACE: Root;
     static SOURCE: (i64, String, i64);
     static INTERACTION: crate::runtime::agent::reply::Run;
     static RELAY:Relay;
@@ -228,7 +228,7 @@ pub(super) fn stream<F>(
 where
     F: Future<Output = Result<Messages, Error>>,
 {
-    let trace = TraceRoot::start("workflow");
+    let trace = Root::start("workflow");
     trace.property("chat_id", chat_id.to_string());
     let execution = CURRENT.scope(output.clone(), execution);
     let mut execution = Box::pin(TRACE.scope(trace.clone(), execution));

@@ -1,6 +1,6 @@
 //! Tool lifecycle facts. Futures/permits are transient; saved Steps own the
 //! effective Call, completed business result and completed eval feedback.
-use crate::runtime::agent::checkpoint::invalid as invalid_checkpoint;
+use crate::runtime::agent::checkpoint::invalid;
 use crate::{
     Error, Message, Messages,
     message::Role,
@@ -157,7 +157,7 @@ pub(crate) fn resume_calls(
             if wait.kind.trim().is_empty()
                 || !matches!(wait.status.as_str(), "waiting" | "resolved")
             {
-                return Err(invalid_checkpoint("invalid Agent Step waiting record"));
+                return Err(invalid("invalid Agent Step waiting record"));
             }
         }
     }
@@ -169,7 +169,7 @@ pub(crate) fn resume_calls(
             step.stage.as_deref(),
             Some("before" | "call" | "after" | "eval" | "complete" | "committed")
         ) {
-            return Err(invalid_checkpoint("unknown Tool lifecycle stage"));
+            return Err(invalid("unknown Tool lifecycle stage"));
         }
     }
     // The current model Complete supplies Call order only. It is never
@@ -187,15 +187,13 @@ pub(crate) fn resume_calls(
         let call = step
             .call
             .as_ref()
-            .ok_or_else(|| invalid_checkpoint("Tool step has no actual Call"))?;
+            .ok_or_else(|| invalid("Tool step has no actual Call"))?;
         if step.call_id.as_deref() != Some(&call.call_id) || !ids.insert(call.call_id.clone()) {
-            return Err(invalid_checkpoint(
-                "invalid or duplicate active Tool step identity",
-            ));
+            return Err(invalid("invalid or duplicate active Tool step identity"));
         }
         let message = batch
             .and_then(|index| messages.0.get(index))
-            .ok_or_else(|| invalid_checkpoint("Tool steps have no selecting model Complete"))?;
+            .ok_or_else(|| invalid("Tool steps have no selecting model Complete"))?;
         let indexes = message
             .content
             .iter()
@@ -207,9 +205,7 @@ pub(crate) fn resume_calls(
             .map(|(index, _)| index)
             .collect::<Vec<_>>();
         if indexes.len() != 1 {
-            return Err(invalid_checkpoint(
-                "Tool step does not match one selected Call",
-            ));
+            return Err(invalid("Tool step does not match one selected Call"));
         }
         let selected = message
             .content
@@ -218,7 +214,7 @@ pub(crate) fn resume_calls(
             .nth(indexes[0])
             .expect("validated selected Call index");
         if selected.data.get("name").and_then(Value::as_str) != Some(&call.name) {
-            return Err(invalid_checkpoint(
+            return Err(invalid(
                 "Tool step changed the selected capability identity",
             ));
         }
@@ -235,7 +231,7 @@ pub(crate) fn resume_calls(
                 if step.message.is_some()
                     && ((step.status == "succeeded" && step.eval.is_some())
                         || (step.status == "failed" && step.error.is_some())) => {}
-            _ => return Err(invalid_checkpoint("inconsistent Tool lifecycle stage")),
+            _ => return Err(invalid("inconsistent Tool lifecycle stage")),
         }
         pending.push((indexes[0], call.clone()));
     }

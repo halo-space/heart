@@ -1,13 +1,10 @@
-pub(crate) mod entry;
+pub(crate) mod load;
 pub(crate) mod reader;
 
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
-use crate::{
-    Cancellation, Error,
-    skill::{Definition, Skill as Contract},
-};
+use crate::{Cancellation, Error, skill::Definition};
 
 /// A Skill's instructions and resource references. Loading or reading it does
 /// not execute scripts, fetch references, or grant tool/permission access.
@@ -135,7 +132,7 @@ impl Skill {
     }
 }
 
-impl Contract for Skill {
+impl crate::components::skill::Skill for Skill {
     fn definition(&self) -> &Definition {
         &self.definition
     }

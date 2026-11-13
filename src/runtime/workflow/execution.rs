@@ -12,7 +12,7 @@ pub(super) struct Engine {
     pub(super) max_concurrency: usize,
     pub(super) checkpoint: Option<CheckpointSave>,
     pub(super) memory: Option<History>,
-    pub(super) history_run: Option<HistoryRun>,
+    pub(super) history_run: Option<Execute>,
     pub(super) history_closed: bool,
     // Derived from the parent's earlier Attempt.graph, not separate truth.
     // It supplies inherited scenes when a failed nested Graph Node is retried.
@@ -332,7 +332,7 @@ impl Engine {
     pub(super) fn reply_saved(
         &mut self,
         response: Messages,
-        input: AgentInput,
+        input: Input,
         cancellation: &crate::Cancellation,
     ) -> Result<(), Error> {
         if !self.accepts_saved_replies {
@@ -1125,7 +1125,7 @@ impl Engine {
     fn input_for(&self, node_id: &str, from: &[ExecutionRef]) -> Result<Value, Error> {
         if self.is_failure_activation(node_id, from) {
             if self.definition().nodes[node_id].agent {
-                return serde_json::to_value(AgentInput::default())
+                return serde_json::to_value(Input::default())
                     .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()));
             }
             if self.workflow.input_is_messages(node_id) {
@@ -1352,7 +1352,7 @@ impl Engine {
         Ok(view)
     }
 
-    fn agent_input_for(&self, node_id: &str, from: &[ExecutionRef]) -> Result<AgentInput, Error> {
+    fn agent_input_for(&self, node_id: &str, from: &[ExecutionRef]) -> Result<Input, Error> {
         let attrs = &self.definition().nodes[node_id].attrs.input;
         if !attrs.is_empty() {
             let values = self.bound_values(node_id, from)?;
@@ -1546,7 +1546,7 @@ impl Engine {
                 }
                 match self.target_for(&node_id, exec_id)? {
                     Target::Agent(_, _) if reply.path.is_empty() => {
-                        let mut agent_input: AgentInput = serde_json::from_value(input)
+                        let mut agent_input: Input = serde_json::from_value(input)
                             .map_err(|error| Error::new("INVALID_STATE", error.to_string()))?;
                         agent_input.payload = reply.input.payload;
                         agent_input.metadata.extend(reply.input.metadata);
@@ -2163,7 +2163,7 @@ fn prepend_agent_observations(attempt: &mut node::Attempt, base: &node::Attempt)
 /// Search the complete Workflow snapshot for a reply already accepted by any
 /// embedded Agent scene. A duplicate is harmless and must not wake a second
 /// waiting owner.
-fn reply_duplicate(state: &graph::State, input: &AgentInput) -> Result<bool, Error> {
+fn reply_duplicate(state: &graph::State, input: &Input) -> Result<bool, Error> {
     let mut duplicate = false;
     for node in state.nodes.values() {
         for execution in node.executions.values() {
@@ -2490,7 +2490,7 @@ pub(crate) fn invoke_with_retry(
                     }
                 }
                 Target::Agent(executor, restore) => {
-                    let mut agent_input: AgentInput = match serde_json::from_value(input.clone()) {
+                    let mut agent_input: Input = match serde_json::from_value(input.clone()) {
                         Ok(input) => input,
                         Err(error) => {
                             attempt.status = node::AttemptStatus::Failed;
@@ -2768,7 +2768,7 @@ pub(crate) fn invoke_with_retry(
     })
 }
 
-pub(crate) fn messages_to_agent_input(messages: &Messages) -> AgentInput {
+pub(crate) fn messages_to_agent_input(messages: &Messages) -> Input {
     let message = messages
         .as_slice()
         .iter()
@@ -2776,12 +2776,12 @@ pub(crate) fn messages_to_agent_input(messages: &Messages) -> AgentInput {
         .find(|message| message.role == Role::User)
         .or_else(|| messages.as_slice().last());
     let Some(message) = message else {
-        return AgentInput::default();
+        return Input::default();
     };
     let payload = message
         .content
         .iter()
-        .map(|part| AgentPayload {
+        .map(|part| Payload {
             r#type: part.r#type.clone(),
             data: serde_json::Value::Object(part.data.clone()),
             mime_type: part
@@ -2791,7 +2791,7 @@ pub(crate) fn messages_to_agent_input(messages: &Messages) -> AgentInput {
                 .map(str::to_owned),
         })
         .collect();
-    AgentInput {
+    Input {
         metadata: message.metadata.clone(),
         payload,
     }

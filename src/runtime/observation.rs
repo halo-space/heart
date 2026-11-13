@@ -2,13 +2,13 @@
 
 use crate::components::message::Role;
 use crate::model::token::Usage;
-use crate::runtime::trace::fastrace::Root as TraceRoot;
+use crate::runtime::trace::fastrace::Root;
 use crate::{Error, Message, event::Event};
 
 /// Record settled model usage with the same field names for foreground Events
 /// and background Memory work. The audit is a trace projection only; it never
 /// changes Runtime usage or the Chat billing record.
-pub(crate) fn observe_usage(trace: &TraceRoot, event: &'static str, usage: Option<&Usage>) {
+pub(crate) fn observe_usage(trace: &Root, event: &'static str, usage: Option<&Usage>) {
     trace.event_properties(event, usage_properties(usage));
 }
 
@@ -33,7 +33,7 @@ fn usage_properties(usage: Option<&Usage>) -> Vec<(String, String)> {
 /// Keep Trace as a compact projection instead of copying the Event Stream.
 /// AgentScope records content on Agent/Model/Tool spans; streaming deltas stay
 /// in the public Event Stream and are not duplicated into the trace backend.
-pub(crate) fn observe_trace(trace: &TraceRoot, result: &Result<Event, Error>) {
+pub(crate) fn observe_trace(trace: &Root, result: &Result<Event, Error>) {
     match result {
         Ok(Event::Delta { .. }) => {}
         Ok(Event::Complete {

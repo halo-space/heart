@@ -1,7 +1,7 @@
 //! Internal assembly for the Agent's Tool, MCP, Skill and Workspace views.
 //!
 //! The concrete adapters are split by responsibility: `dispatch::tool` owns
-//! executable Tool/MCP/Workspace entries, while `skill::entry` and
+//! executable Tool/MCP/Workspace entries, while `skill::load` and
 //! `skill::reader` own Skill discovery and instruction reading. This module
 //! only combines them.
 
@@ -19,7 +19,7 @@ use crate::components::mcp::Server;
 use crate::components::message::Message;
 use crate::components::skill::{Definition as SkillDefinition, Loader, Skill};
 use crate::components::tool::{Call, Evaluation, Tool, ToolDefinition, validate_call};
-use crate::core::skill::{entry, reader};
+use crate::core::skill::{load, reader};
 use crate::workspace::Workspace;
 
 /// Internal dispatch table for heterogeneous Tools, MCP servers and Skills.
@@ -35,10 +35,10 @@ use crate::workspace::Workspace;
 #[derive(Clone)]
 #[doc(hidden)]
 pub struct Dispatch {
-    entries: Vec<Arc<dyn tool::ToolEntry>>,
+    entries: Vec<Arc<dyn tool::Tool>>,
     mcp_catalog: Vec<crate::mcp::Definition>,
-    skills: Vec<Arc<dyn entry::SkillView>>,
-    skill_loaders: Vec<Arc<dyn entry::LoaderSource>>,
+    skills: Vec<Arc<dyn load::Skill>>,
+    skill_loaders: Vec<Arc<dyn load::Loader>>,
     skill_reader: bool,
     workspace: Option<Arc<dyn Workspace>>,
 }
@@ -57,7 +57,7 @@ where
     T: Tool + 'static,
 {
     fn append_to(self, dispatch: &mut Dispatch) {
-        dispatch.entries.push(Arc::new(tool::ToolAdapter {
+        dispatch.entries.push(Arc::new(tool::adapter::Tool {
             tool: Arc::new(self),
         }));
     }
@@ -69,7 +69,7 @@ where
 {
     fn append_to(self, dispatch: &mut Dispatch) {
         for tool in self {
-            dispatch.entries.push(Arc::new(tool::ToolAdapter {
+            dispatch.entries.push(Arc::new(tool::adapter::Tool {
                 tool: Arc::new(tool),
             }));
         }
@@ -82,7 +82,7 @@ where
 {
     fn append_to(self, dispatch: &mut Dispatch) {
         for tool in self {
-            dispatch.entries.push(Arc::new(tool::ToolAdapter {
+            dispatch.entries.push(Arc::new(tool::adapter::Tool {
                 tool: Arc::new(tool),
             }));
         }
@@ -122,7 +122,7 @@ impl Dispatch {
                 Arc::new(tool::WorkspaceTool {
                     workspace: Arc::clone(&workspace),
                     definition,
-                }) as Arc<dyn tool::ToolEntry>
+                }) as Arc<dyn tool::Tool>
             })
             .collect();
         Self {
@@ -205,7 +205,7 @@ impl Dispatch {
                     "skill name must not be empty",
                 ));
             }
-            self.skills.push(Arc::new(entry::Direct {
+            self.skills.push(Arc::new(load::Direct {
                 skill: Arc::new(skill),
                 definition,
             }));
@@ -218,7 +218,7 @@ impl Dispatch {
     /// asynchronously for each run; the dispatch table never assumes local
     /// file paths.
     pub(crate) fn skill<S: Loader + 'static>(mut self, loader: S) -> Self {
-        self.skill_loaders.push(Arc::new(entry::LoaderAdapter {
+        self.skill_loaders.push(Arc::new(load::adapter::Loader {
             loader: Arc::new(loader),
             cache: Arc::new(RwLock::new(None)),
         }));
@@ -259,10 +259,10 @@ impl Dispatch {
         let definitions = workspace.skill(cancellation).await?;
         let mut skills = self.skills.clone();
         skills.extend(definitions.into_iter().map(|definition| {
-            Arc::new(entry::Workspace {
+            Arc::new(load::Workspace {
                 workspace: Arc::clone(workspace),
                 definition,
-            }) as Arc<dyn entry::SkillView>
+            }) as Arc<dyn load::Skill>
         }));
         Ok(Self {
             entries: self.entries.clone(),
@@ -300,7 +300,7 @@ impl Dispatch {
         })
     }
 
-    fn validate_names(&self, entries: &[Arc<dyn tool::ToolEntry>]) -> Result<(), Error> {
+    fn validate_names(&self, entries: &[Arc<dyn tool::Tool>]) -> Result<(), Error> {
         let mut names = BTreeSet::new();
         for name in entries.iter().map(|entry| entry.definition().name) {
             if !names.insert(name) {
@@ -310,7 +310,7 @@ impl Dispatch {
                 ));
             }
         }
-        if !self.skills.is_empty() && !self.skill_reader && names.contains(entry::READER_NAME) {
+        if !self.skills.is_empty() && !self.skill_reader && names.contains(load::READER_NAME) {
             return Err(Error::new(
                 "INVALID_ARGUMENTS",
                 "the skill Tool name is reserved when Skills are configured",
@@ -355,7 +355,7 @@ impl Dispatch {
         discovered.validate_names(&entries)?;
         let skill_reader = !discovered.skills.is_empty();
         if skill_reader && !discovered.skill_reader {
-            entries.push(Arc::new(tool::ToolAdapter {
+            entries.push(Arc::new(tool::adapter::Tool {
                 tool: Arc::new(reader::Reader::new(discovered.skills.clone())),
             }));
         }
@@ -519,7 +519,7 @@ mod tests {
         let definitions = prepared.tool_catalog();
         assert_eq!(definitions.len(), 2);
         assert_eq!(definitions[0].name, "weather");
-        assert_eq!(definitions[1].name, entry::READER_NAME);
+        assert_eq!(definitions[1].name, load::READER_NAME);
         let prompt = prepared.system_prompt(None).unwrap();
         assert!(prompt.contains("research"));
         assert!(prompt.contains("Research a topic and cite sources."));
@@ -527,13 +527,13 @@ mod tests {
         let (call, output) = block_on(prepared.call(
             Call {
                 call_id: "call_skill".into(),
-                name: entry::READER_NAME.into(),
+                name: load::READER_NAME.into(),
                 arguments: Map::from_iter([("skill".into(), json!("research"))]),
             },
             &cancellation,
         ))
         .unwrap();
-        assert_eq!(call.name, entry::READER_NAME);
+        assert_eq!(call.name, load::READER_NAME);
         assert_eq!(output.values["instructions"], "Use sources.");
 
         // Preparing an already prepared view remains idempotent.

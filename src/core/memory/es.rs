@@ -12,9 +12,7 @@ use elasticsearch::Elasticsearch;
 use serde_json::{Map, Value, json};
 
 use crate::components::memory::short as short_contracts;
-use crate::components::memory::{
-    self, Error, Filter, Item, Memory as MemoryContract, Request, Type,
-};
+use crate::components::memory::{self, Error, Filter, Item, Request, Type};
 use crate::{Cancellation, cancellation::check};
 
 mod backend;
@@ -57,7 +55,7 @@ impl Memory {
     }
 }
 
-impl MemoryContract for Memory {
+impl crate::components::memory::Memory for Memory {
     async fn write(&self, request: Request, cancellation: &Cancellation) -> Result<Item, Error> {
         check(cancellation)?;
         validate_request(&request, self.vector_dimension)?;

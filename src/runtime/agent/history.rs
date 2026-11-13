@@ -153,7 +153,7 @@ impl History {
         &self,
         input: Input,
         cancellation: &Cancellation,
-    ) -> Result<HistoryRun, Error> {
+    ) -> Result<Execute, Error> {
         self.resume_for(input, short::Type::Agent, cancellation)
             .await
     }
@@ -163,12 +163,12 @@ impl History {
         input: Input,
         owner: short::Type,
         cancellation: &Cancellation,
-    ) -> Result<HistoryRun, Error> {
+    ) -> Result<Execute, Error> {
         let record = match &self.0 {
             Some(entry) => Some(entry.resume(input, owner, cancellation.clone()).await?),
             None => None,
         };
-        Ok(HistoryRun {
+        Ok(Execute {
             history: self.clone(),
             record,
             usage: Ledger::default(),
@@ -224,7 +224,7 @@ impl History {
         &self,
         input: Input,
         cancellation: &Cancellation,
-    ) -> Result<HistoryRun, Error> {
+    ) -> Result<Execute, Error> {
         self.begin_for(input, short::Type::Agent, cancellation)
             .await
     }
@@ -234,12 +234,12 @@ impl History {
         input: Input,
         owner: short::Type,
         cancellation: &Cancellation,
-    ) -> Result<HistoryRun, Error> {
+    ) -> Result<Execute, Error> {
         let record = match &self.0 {
             Some(entry) => Some(entry.create(input, owner, cancellation.clone()).await?),
             None => None,
         };
-        Ok(HistoryRun {
+        Ok(Execute {
             history: self.clone(),
             record,
             usage: Ledger::default(),
@@ -250,13 +250,13 @@ impl History {
 /// Persistence closure for one Agent or Workflow Chat. Model accounting is maintained
 /// by runtime::agent; this type owns only the configured writeback operation.
 #[derive(Clone, Default)]
-pub(crate) struct HistoryRun {
+pub(crate) struct Execute {
     history: History,
     record: Option<chat::Chat>,
     usage: Ledger,
 }
 
-impl HistoryRun {
+impl Execute {
     pub(crate) fn settle(&self, usage: Option<crate::model::token::Usage>) {
         self.usage.settle(usage);
     }

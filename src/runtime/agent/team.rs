@@ -9,7 +9,7 @@ use std::pin::Pin;
 use futures_core::Stream;
 
 use crate::Cancellation;
-use crate::components::agent::{Agent as AgentContract, Error, Input};
+use crate::components::agent::{Error, Input};
 use crate::components::event::Event;
 use crate::components::model::chat::Chat;
 use crate::runtime::agent::react;
@@ -146,7 +146,7 @@ pub struct Agent<M> {
     inner: react::Agent<M>,
 }
 
-impl<M> AgentContract for Agent<M>
+impl<M> crate::components::agent::Agent for Agent<M>
 where
     M: Chat + 'static,
 {

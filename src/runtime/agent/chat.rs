@@ -14,7 +14,7 @@ use serde_json::{Map, Value, json};
 
 use crate::Cancellation;
 use crate::cancellation::cancellable;
-use crate::components::agent::{Agent as AgentContract, Error, Input};
+use crate::components::agent::{Error, Input};
 use crate::components::agent_input::user_message;
 use crate::components::evaluation::{Evaluation, Evaluator};
 use crate::components::event::Event;
@@ -26,7 +26,7 @@ use crate::components::{mcp::Server, skill::Skill};
 use crate::core::dispatch::{Dispatch, ToolInputs};
 use crate::runtime::agent::access::Access;
 use crate::runtime::agent::checkpoint::Backend;
-use crate::runtime::agent::history::{History, HistoryRun};
+use crate::runtime::agent::history::{Execute, History};
 use crate::runtime::agent::hooks::Hooks;
 use crate::runtime::agent::node::Step;
 use crate::runtime::agent::step;
@@ -259,7 +259,7 @@ impl<M> Agent<M> {
     }
 }
 
-impl<M> AgentContract for Agent<M>
+impl<M> crate::components::agent::Agent for Agent<M>
 where
     M: Chat + 'static,
 {
@@ -463,7 +463,7 @@ where
         let preparing = preparation.as_ref().is_some_and(|state| {
             state.stage != crate::runtime::agent::preparation::Stage::Complete
         });
-        let mut run = HistoryRun::default();
+        let mut run = Execute::default();
         // Preparation belongs to this run too. Retain its constructed input
         // before Dispatch preparation, model hooks or Provider dispatch stop it.
         let mut preparation_messages = restored_messages.clone().unwrap_or_default();

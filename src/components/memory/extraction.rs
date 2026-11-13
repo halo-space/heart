@@ -28,8 +28,13 @@ trait Extraction: Send + Sync {
     fn extract(&self, input: Messages, cancellation: Cancellation) -> ExtractFuture;
     fn merge(&self, current: Item, content: String, cancellation: Cancellation) -> MergeFuture;
 }
-struct ExtractionAdapter<E>(Arc<E>);
-impl<E: Extractor + 'static> Extraction for ExtractionAdapter<E> {
+mod adapter {
+    use std::sync::Arc;
+
+    pub(super) struct Extraction<E>(pub(super) Arc<E>);
+}
+
+impl<E: Extractor + 'static> Extraction for adapter::Extraction<E> {
     fn extract(&self, input: Messages, cancellation: Cancellation) -> ExtractFuture {
         let component = self.0.clone();
         Box::pin(async move { component.extract(&input, &cancellation).await })
@@ -49,7 +54,7 @@ impl Configured {
         E: Extractor + 'static,
     {
         Self {
-            component: Arc::new(ExtractionAdapter(Arc::new(component))),
+            component: Arc::new(adapter::Extraction(Arc::new(component))),
         }
     }
     pub(crate) async fn extract(

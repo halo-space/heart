@@ -80,12 +80,12 @@ pub(crate) struct ReActState<M: Chat> {
     pub(crate) access: Access,
     pub(crate) evaluator: Option<EvaluatorHandle>,
     pub(crate) metadata: Map<String, Value>,
-    pub(crate) run: HistoryRun,
+    pub(crate) run: Execute,
     pub(crate) model_pending: bool,
     pub(crate) model_settled: bool,
     pub(crate) input_tokens: u64,
     pub(crate) request: Option<Box<Request>>,
-    pub(crate) trace: TraceRoot,
+    pub(crate) trace: Root,
     pub(crate) model_span: Option<SpanScope>,
 }
 
@@ -131,7 +131,7 @@ pub(crate) struct ToolExecution {
     access: Access,
     metadata: Map<String, Value>,
     cancellation: Cancellation,
-    trace: TraceRoot,
+    trace: Root,
 }
 
 pub(crate) async fn prepare_tool(

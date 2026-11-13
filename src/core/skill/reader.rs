@@ -5,17 +5,17 @@ use crate::components::agent::Error;
 use crate::components::message::Message;
 use crate::components::tool::{Call, Tool, ToolDefinition};
 
-use super::entry::{READER_NAME, SkillView};
+use super::load::{READER_NAME, Skill};
 
 /// The single model-visible Tool used to read a selected Skill's instructions
 /// or a normalized resource path. It never executes Skill scripts.
 pub(crate) struct Reader {
-    skills: Vec<Arc<dyn SkillView>>,
+    skills: Vec<Arc<dyn Skill>>,
     definition: ToolDefinition,
 }
 
 impl Reader {
-    pub(crate) fn new(skills: Vec<Arc<dyn SkillView>>) -> Self {
+    pub(crate) fn new(skills: Vec<Arc<dyn Skill>>) -> Self {
         Self {
             skills,
             definition: ToolDefinition {

@@ -36,7 +36,7 @@ pub const END: &str = "END";
 mod adapters;
 mod state;
 
-pub(crate) use adapters::{AgentAdapter, ErasedAgent, ErasedNode, NodeAdapter};
+pub(crate) use adapters::{ErasedAgent, ErasedNode, adapter};
 pub(crate) use state::ReplyExecution;
 pub use state::{State, Status, Wait};
 
@@ -684,7 +684,7 @@ impl Builder {
             .insert(node_id.clone(), (input_messages, output_messages));
         self.executors.insert(
             node_id,
-            Arc::new(NodeAdapter::<N, I, O, E> {
+            Arc::new(adapter::Node::<N, I, O, E> {
                 node: Arc::new(node),
                 input_schema,
                 output_schema,
@@ -766,7 +766,7 @@ impl Builder {
         self.codecs.insert(node_id.clone(), (false, true));
         self.agents.insert(
             node_id,
-            Arc::new(AgentAdapter {
+            Arc::new(adapter::Agent {
                 agent: Arc::new(agent),
             }),
         );

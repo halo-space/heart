@@ -11,10 +11,8 @@ use crate::Cancellation;
 use crate::components::agent::Error;
 use crate::components::mcp::Server;
 use crate::components::message::Message;
-use crate::components::tool::{
-    Call, Evaluation, Tool, ToolDefinition, prepare_call, validate_call,
-};
-use crate::workspace::Workspace as WorkspaceContract;
+use crate::components::tool::{Call, Evaluation, ToolDefinition, prepare_call, validate_call};
+use crate::workspace::Workspace;
 
 pub(crate) type CallFuture =
     Pin<Box<dyn Future<Output = Result<(Call, Message), Error>> + Send + 'static>>;
@@ -27,7 +25,7 @@ pub(crate) struct McpServer<S> {
 }
 
 impl<S: Server + 'static> McpServer<S> {
-    pub(crate) fn entries(&self) -> Vec<Arc<dyn ToolEntry>> {
+    pub(crate) fn entries(&self) -> Vec<Arc<dyn Tool>> {
         let server = Arc::clone(&self.server);
         server
             .tools()
@@ -37,7 +35,7 @@ impl<S: Server + 'static> McpServer<S> {
                 Arc::new(Mcp {
                     server: Arc::clone(&server),
                     definition,
-                }) as Arc<dyn ToolEntry>
+                }) as Arc<dyn Tool>
             })
             .collect()
     }
@@ -48,7 +46,7 @@ struct Mcp<S> {
     definition: ToolDefinition,
 }
 
-impl<S: Server + 'static> ToolEntry for Mcp<S> {
+impl<S: Server + 'static> Tool for Mcp<S> {
     fn definition(&self) -> ToolDefinition {
         self.definition.clone()
     }
@@ -80,7 +78,7 @@ impl<S: Server + 'static> ToolEntry for Mcp<S> {
     }
 }
 
-pub(crate) trait ToolEntry: Send + Sync {
+pub(crate) trait Tool: Send + Sync {
     fn definition(&self) -> ToolDefinition;
     fn prepare(&self, call: Call, cancellation: Cancellation) -> PrepareFuture;
     fn call(&self, call: Call, cancellation: Cancellation) -> CallFuture;
@@ -95,13 +93,17 @@ pub(crate) trait ToolEntry: Send + Sync {
     ) -> EvaluationFuture;
 }
 
-pub(crate) struct ToolAdapter<T> {
-    pub(crate) tool: Arc<T>,
+pub(crate) mod adapter {
+    use std::sync::Arc;
+
+    pub(crate) struct Tool<T> {
+        pub(crate) tool: Arc<T>,
+    }
 }
 
-impl<T> ToolEntry for ToolAdapter<T>
+impl<T> Tool for adapter::Tool<T>
 where
-    T: Tool + 'static,
+    T: crate::components::tool::Tool + 'static,
 {
     fn definition(&self) -> ToolDefinition {
         self.tool.definition().clone()
@@ -140,11 +142,11 @@ where
 }
 
 pub(crate) struct WorkspaceTool {
-    pub(crate) workspace: Arc<dyn WorkspaceContract>,
+    pub(crate) workspace: Arc<dyn Workspace>,
     pub(crate) definition: ToolDefinition,
 }
 
-impl ToolEntry for WorkspaceTool {
+impl Tool for WorkspaceTool {
     fn definition(&self) -> ToolDefinition {
         self.definition.clone()
     }

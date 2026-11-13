@@ -21,7 +21,7 @@ use super::{extraction, progress};
 use crate::components::memory::short::session::Store as _;
 use crate::runtime::agent::hooks::Hooks;
 use crate::runtime::observation::observe_usage;
-use crate::runtime::trace::fastrace::Root as TraceRoot;
+use crate::runtime::trace::fastrace::Root;
 
 type Key = (usize, i64);
 static ACTIVE: OnceLock<Mutex<HashSet<Key>>> = OnceLock::new();
@@ -94,7 +94,7 @@ pub(super) fn start<S, L>(
         let _claim = claim;
         // Background Memory calls have no public Event stream. Keep their
         // settled model usage visible through the existing trace audit.
-        let trace = TraceRoot::start("memory.compression");
+        let trace = Root::start("memory.compression");
         let work = async move {
             // Independent of cancellation of the foreground Chat. Backend
             // timeouts remain the backend's responsibility.

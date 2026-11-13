@@ -34,7 +34,7 @@ fn task_messages(mut messages: Messages, input: Message) -> Messages {
 }
 
 pub(crate) struct Active {
-    run: HistoryRun,
+    run: Execute,
     slot: crate::runtime::agent::reply::Slot,
 }
 impl Active {
@@ -348,7 +348,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 access: state.access.clone(),
                 evaluator: None, // The Agent Evaluator only judges the final answer.
                 metadata,
-                run: HistoryRun::default(), // No second Chat/history lifecycle per task.
+                run: Execute::default(), // No second Chat/history lifecycle per task.
                 model_pending: false,
                 model_settled: false,
                 input_tokens: 0,

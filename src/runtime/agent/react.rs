@@ -30,13 +30,13 @@ use crate::core::dispatch::{Dispatch, ToolInputs};
 use crate::runtime::agent::access::Access;
 use crate::runtime::agent::checkpoint::{Backend, invalid as invalid_checkpoint};
 use crate::runtime::agent::graph::Graph;
-use crate::runtime::agent::history::{History, HistoryRun};
+use crate::runtime::agent::history::{Execute, History};
 use crate::runtime::agent::hooks::Hooks;
 use crate::runtime::agent::node::Step;
 use crate::runtime::agent::subagent::SubAgent;
 use crate::runtime::agent::subagent::{Failure as SubAgentFailure, Progress as SubAgentProgress};
 use crate::runtime::agent::{State as AgentState, graph};
-use crate::runtime::trace::fastrace::{Root as TraceRoot, SpanScope};
+use crate::runtime::trace::fastrace::{Root, SpanScope};
 
 mod execution;
 mod tools;
@@ -467,7 +467,7 @@ where
         let preparing = preparation.as_ref().is_some_and(|state| {
             state.stage != crate::runtime::agent::preparation::Stage::Complete
         });
-        let mut run = HistoryRun::default();
+        let mut run = Execute::default();
         let mut messages = Messages::default();
         let prepared = async {
             if let Some(state) = preparation.as_mut() {
@@ -582,7 +582,7 @@ where
             model_settled: false,
             input_tokens: 0,
             request: None,
-            trace: TraceRoot::start("agent.react"),
+            trace: Root::start("agent.react"),
             model_span: None,
         };
         // Record the original public input once. The Agent graph and

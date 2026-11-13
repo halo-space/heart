@@ -13,8 +13,13 @@ trait Compression: Send + Sync {
     fn compress(&self, input: Messages, cancellation: Cancellation) -> FutureResult;
 }
 
-struct CompressionAdapter<P>(Arc<P>);
-impl<P: Compressor + 'static> Compression for CompressionAdapter<P> {
+mod adapter {
+    use std::sync::Arc;
+
+    pub(super) struct Compression<P>(pub(super) Arc<P>);
+}
+
+impl<P: Compressor + 'static> Compression for adapter::Compression<P> {
     fn size(&self) -> Option<u64> {
         self.0.size()
     }
@@ -43,7 +48,7 @@ pub(crate) struct Configured(Arc<dyn Compression>);
 
 impl Configured {
     pub(crate) fn new<P: Compressor + 'static>(component: P) -> Self {
-        Self(Arc::new(CompressionAdapter(Arc::new(component))))
+        Self(Arc::new(adapter::Compression(Arc::new(component))))
     }
 
     pub(crate) fn validate(&self) -> Result<(), Error> {

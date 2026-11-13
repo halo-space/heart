@@ -12,7 +12,7 @@ use halo::agent::{self, Agent, Cancellation, Error, Input, Message, Payload};
 use halo::agent::{
     core,
     memory::short::{self, chat, session},
-    memory::{self, Memory, extraction::Extractor as ExtractorContract},
+    memory::{self, Memory},
     message::Role,
     model::{self, embed::Embed as _},
     provider::{deepseek::DeepSeek, zhipu::Zhipu},
@@ -78,7 +78,7 @@ impl halo::agent::compression::Compressor for InputCompressor {
 
 struct InputExtractor;
 
-impl ExtractorContract for InputExtractor {
+impl halo::agent::memory::extraction::Extractor for InputExtractor {
     async fn extract(
         &self,
         input: &halo::agent::Messages,
