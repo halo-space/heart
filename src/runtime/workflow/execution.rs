@@ -1,10 +1,24 @@
 //! Workflow execution engine and nested graph invocation.
 //!
-//! This module owns mutable execution, retry, reply, checkpoint and subgraph
-//! progression. The parent module exposes only the Runtime facade and graph
-//! contracts.
+//! This module coordinates mutable Workflow execution. Retry, history, and
+//! nested graph concerns live in focused child modules; the parent exposes only
+//! the Runtime facade and graph contracts.
 
 use super::*;
+
+mod facts;
+mod history;
+mod retry;
+mod subgraph;
+
+use facts::{
+    agent_scene_for_reply_path, attempt_feedback, attempt_waiting, commit_feedback,
+    prepend_agent_observations, reply_duplicate,
+};
+pub(crate) use facts::{attempt_question, messages_to_agent_input};
+pub use retry::invoke_with_retry;
+use retry::{cancelled_observations, committed_tool_facts, terminal_observations};
+use subgraph::outgoing;
 
 pub(super) struct Engine {
     pub(super) workflow: CompiledWorkflow,
@@ -12,7 +26,7 @@ pub(super) struct Engine {
     pub(super) max_concurrency: usize,
     pub(super) checkpoint: Option<CheckpointSave>,
     pub(super) memory: Option<History>,
-    pub(super) history_run: Option<Execute>,
+    pub(super) history_execute: Option<Execute>,
     pub(super) history_closed: bool,
     // Derived from the parent's earlier Attempt.graph, not separate truth.
     // It supplies inherited scenes when a failed nested Graph Node is retried.
@@ -41,9 +55,9 @@ impl Engine {
             let execution = self.state.node_mut(node_id)?.execution_mut(exec_id)?;
             if !matches!(
                 execution.status,
-                node::ExecutionStatus::Pending
-                    | node::ExecutionStatus::Running
-                    | node::ExecutionStatus::Waiting
+                node::status::execution::Status::Pending
+                    | node::status::execution::Status::Running
+                    | node::status::execution::Status::Waiting
             ) {
                 return Err(Error::new(
                     "INVALID_STATE",
@@ -55,8 +69,8 @@ impl Engine {
                 .last_mut()
                 .filter(|current| current.idx == attempt.idx)
                 .ok_or_else(|| Error::new("INVALID_STATE", "admission target Attempt changed"))?;
-            execution.status = node::ExecutionStatus::Running;
-            current.status = node::AttemptStatus::Running;
+            execution.status = node::status::execution::Status::Running;
+            current.status = node::status::attempt::Status::Running;
             // In-memory handoff only: neither a new Event nor a Checkpoint.
             return Box::pin(self.publish(None, false)).await;
         }
@@ -95,9 +109,9 @@ impl Engine {
         if !delta {
             let execution = self.state.node_mut(node_id)?.execution_mut(exec_id)?;
             execution.status = if attempt_waiting(&attempt) {
-                node::ExecutionStatus::Waiting
+                node::status::execution::Status::Waiting
             } else {
-                node::ExecutionStatus::Running
+                node::status::execution::Status::Running
             };
             let idx = attempt.idx as usize;
             if idx > execution.attempts.len() {
@@ -169,9 +183,9 @@ impl Engine {
                 node::Attempt {
                     idx: events::attempt_index(),
                     status: if self.state.status == graph::Status::Paused {
-                        node::AttemptStatus::Waiting
+                        node::status::attempt::Status::Waiting
                     } else {
-                        node::AttemptStatus::Running
+                        node::status::attempt::Status::Running
                     },
                     usage: self.state.usage.clone(),
                     graph: Some(Box::new(self.state.clone())),
@@ -197,7 +211,7 @@ impl Engine {
             max_concurrency: 100,
             checkpoint: None,
             memory: None,
-            history_run: None,
+            history_execute: None,
             history_closed: false,
             retry_source: None,
             recovery_reply: None,
@@ -214,7 +228,7 @@ impl Engine {
             return Err(Error::new("INVALID_ARGUMENTS", "chat_id must be positive"));
         }
         let state: State = serde_json::from_value(snapshot)
-            .map_err(|error| Error::new("INVALID_CHECKPOINT", error.to_string()))?;
+            .map_err(|error| Error::new("INVALID_STATE", error.to_string()))?;
         state.check_identity(chat_id)?;
         wait::validate(&state)?;
         if state.definition_id != workflow.definition().definition_id
@@ -231,7 +245,7 @@ impl Engine {
             max_concurrency: 100,
             checkpoint: None,
             memory: None,
-            history_run: None,
+            history_execute: None,
             history_closed: false,
             retry_source: None,
             recovery_reply: None,
@@ -436,7 +450,7 @@ impl Engine {
     /// Produces the exact graph-state JSON accepted by Checkpoint.
     pub fn snapshot(&self) -> Result<Value, Error> {
         serde_json::to_value(&self.state)
-            .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))
+            .map_err(|error| Error::new("SERIALIZATION", error.to_string()))
     }
 
     pub(super) fn validate_run_input(&self, initial_messages: &Messages) -> Result<(), Error> {
@@ -529,9 +543,9 @@ impl Engine {
                             .filter(|(_, execution)| {
                                 matches!(
                                     execution.status,
-                                    node::ExecutionStatus::Pending
-                                        | node::ExecutionStatus::Running
-                                        | node::ExecutionStatus::Waiting
+                                    node::status::execution::Status::Pending
+                                        | node::status::execution::Status::Running
+                                        | node::status::execution::Status::Waiting
                                 )
                             })
                             .map(move |(exec_id, _)| (id.clone(), *exec_id))
@@ -551,62 +565,6 @@ impl Engine {
         }
         self.close_history(&result).await?;
         result
-    }
-
-    async fn begin_history(
-        &mut self,
-        initial_messages: &Messages,
-        cancellation: &crate::Cancellation,
-    ) -> Result<(), Error> {
-        let Some(history) = self.memory.clone() else {
-            return Ok(());
-        };
-        if self.history_run.is_some() {
-            return Ok(());
-        }
-        let input = messages_to_agent_input(initial_messages);
-        let run = if self.state.initial.is_some() {
-            history
-                .resume_for(input, crate::memory::short::Type::Workflow, cancellation)
-                .await?
-        } else {
-            history
-                .begin_for(input, crate::memory::short::Type::Workflow, cancellation)
-                .await?
-        };
-        self.history_run = Some(run);
-        Ok(())
-    }
-
-    async fn close_history(&mut self, result: &Result<Messages, Error>) -> Result<(), Error> {
-        if self.history_closed {
-            return Ok(());
-        }
-        let Some(run) = self.history_run.clone() else {
-            return Ok(());
-        };
-        let status = match result {
-            Err(error) if error.code == "WAITING" => return Ok(()),
-            Ok(_) => crate::memory::short::chat::Status::Completed,
-            Err(error) if error.code == "CANCELLED" => crate::memory::short::chat::Status::Stopped,
-            Err(_) => crate::memory::short::chat::Status::Failed,
-        };
-        run.settle(self.state.usage.clone());
-        let graph = serde_json::to_value(self.definition())
-            .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))?;
-        let state = self.snapshot()?;
-        let message = result.as_ref().ok().and_then(|messages| {
-            messages
-                .as_slice()
-                .iter()
-                .rev()
-                .find(|message| message.role == Role::Assistant)
-                .cloned()
-        });
-        run.close_workflow(status, message, Some(graph), Some(state))
-            .await?;
-        self.history_closed = true;
-        Ok(())
     }
 
     /// Executes the compiled graph until it reaches END, waiting, failure or
@@ -655,14 +613,14 @@ impl Engine {
                         // ownership still reaches the Agent's canonical check.
                         input.metadata.extend(reply.metadata);
                         serde_json::to_value(input)
-                            .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))?
+                            .map_err(|error| Error::new("SERIALIZATION", error.to_string()))?
                     }
                     Target::Graph { .. } => self.input_for(
                         &node_id,
                         &self.state.nodes[&node_id].executions[&exec_id].from,
                     )?,
                     Target::Node(_) => serde_json::to_value(response)
-                        .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))?,
+                        .map_err(|error| Error::new("SERIALIZATION", error.to_string()))?,
                 };
                 let retry = self.definition().nodes[&node_id].retry.clone();
                 let start_idx = self.state.nodes[&node_id].executions[&exec_id]
@@ -805,7 +763,7 @@ impl Engine {
                     self.state
                         .node_mut(node_id)?
                         .execution_mut(*exec_id)?
-                        .status = node::ExecutionStatus::Pending;
+                        .status = node::status::execution::Status::Pending;
                 }
             }
             // Capture allocated child executions before polling their work,
@@ -852,7 +810,7 @@ impl Engine {
                                 from,
                                 Invocation {
                                     attempts: vec![node::Attempt {
-                                        status: node::AttemptStatus::Cancelled,
+                                        status: node::status::attempt::Status::Cancelled,
                                         ..Default::default()
                                     }],
                                     outcome: Outcome::Failed(error),
@@ -918,7 +876,9 @@ impl Engine {
                         if self.state.nodes[node_id].executions[exec_id]
                             .attempts
                             .last()
-                            .is_some_and(|attempt| attempt.status == node::AttemptStatus::Waiting)
+                            .is_some_and(|attempt| {
+                                attempt.status == node::status::attempt::Status::Waiting
+                            })
                             && let Some(run) = run
                             && run.children_blocked()
                         {
@@ -1000,7 +960,7 @@ impl Engine {
             if self.state.nodes.values().any(|node| {
                 node.executions.values().any(|execution| {
                     execution.idx == self.state.step
-                        && execution.status == node::ExecutionStatus::Cancelled
+                        && execution.status == node::status::execution::Status::Cancelled
                 })
             }) {
                 self.state.status = graph::Status::Cancelled;
@@ -1019,7 +979,7 @@ impl Engine {
     fn reached_end(&self) -> bool {
         self.state.nodes.values().any(|state| {
             state.executions.values().any(|execution| {
-                execution.status == node::ExecutionStatus::Succeeded
+                execution.status == node::status::execution::Status::Succeeded
                     && execution.to.iter().any(|target| target == graph::END)
             })
         })
@@ -1030,7 +990,7 @@ impl Engine {
         for node_id in self.definition().nodes.keys() {
             if let Some(state) = self.state.nodes.get(node_id) {
                 for execution in state.executions.values() {
-                    if execution.status == node::ExecutionStatus::Succeeded
+                    if execution.status == node::status::execution::Status::Succeeded
                         && execution.to.iter().any(|target| target == graph::END)
                     {
                         messages.0.extend(execution.messages.0.clone());
@@ -1103,9 +1063,9 @@ impl Engine {
                     .filter(|execution| {
                         matches!(
                             execution.status,
-                            node::ExecutionStatus::Pending
-                                | node::ExecutionStatus::Running
-                                | node::ExecutionStatus::Waiting
+                            node::status::execution::Status::Pending
+                                | node::status::execution::Status::Running
+                                | node::status::execution::Status::Waiting
                         )
                     })
                     .map(|execution| (node_id.clone(), execution.exec_id))
@@ -1126,17 +1086,17 @@ impl Engine {
         if self.is_failure_activation(node_id, from) {
             if self.definition().nodes[node_id].agent {
                 return serde_json::to_value(Input::default())
-                    .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()));
+                    .map_err(|error| Error::new("SERIALIZATION", error.to_string()));
             }
             if self.workflow.input_is_messages(node_id) {
                 return serde_json::to_value(Messages::default())
-                    .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()));
+                    .map_err(|error| Error::new("SERIALIZATION", error.to_string()));
             }
             return Ok(Value::Object(serde_json::Map::new()));
         }
         if self.definition().nodes[node_id].agent {
             return serde_json::to_value(self.agent_input_for(node_id, from)?)
-                .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()));
+                .map_err(|error| Error::new("SERIALIZATION", error.to_string()));
         }
         if !self.definition().nodes[node_id].attrs.input.is_empty() {
             return self.bound_values(node_id, from).map(Value::Object);
@@ -1146,7 +1106,7 @@ impl Engine {
                 return serde_json::to_value(self.state.initial.as_ref().ok_or_else(|| {
                     Error::new("INVALID_STATE", "workflow initial Messages are missing")
                 })?)
-                .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()));
+                .map_err(|error| Error::new("SERIALIZATION", error.to_string()));
             }
             let values = self
                 .state
@@ -1171,7 +1131,7 @@ impl Engine {
                 messages.0.extend(execution.messages.0.clone());
             }
             return serde_json::to_value(messages)
-                .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()));
+                .map_err(|error| Error::new("SERIALIZATION", error.to_string()));
         }
         self.bound_values(node_id, from).map(Value::Object)
     }
@@ -1210,13 +1170,13 @@ impl Engine {
             view.result = (!execution.messages.is_empty())
                 .then(|| serde_json::to_value(&execution.messages))
                 .transpose()
-                .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))?;
+                .map_err(|error| Error::new("SERIALIZATION", error.to_string()))?;
             view.attempts = execution
                 .attempts
                 .iter()
                 .map(|attempt| {
                     serde_json::to_value(attempt)
-                        .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))
+                        .map_err(|error| Error::new("SERIALIZATION", error.to_string()))
                 })
                 .collect::<Result<_, _>>()?;
             view.error = execution
@@ -1224,13 +1184,13 @@ impl Engine {
                 .as_ref()
                 .map(serde_json::to_value)
                 .transpose()
-                .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))?;
+                .map_err(|error| Error::new("SERIALIZATION", error.to_string()))?;
             view.waiting = execution
                 .waits
                 .values()
                 .map(|wait| {
                     serde_json::to_value(wait)
-                        .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))
+                        .map_err(|error| Error::new("SERIALIZATION", error.to_string()))
                 })
                 .collect::<Result<_, _>>()?;
             view.usage = execution
@@ -1238,7 +1198,7 @@ impl Engine {
                 .as_ref()
                 .map(serde_json::to_value)
                 .transpose()
-                .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string()))?;
+                .map_err(|error| Error::new("SERIALIZATION", error.to_string()))?;
             if let Some(attempt) = execution.attempts.last() {
                 if let Some(scene) = &attempt.agent {
                     view.children.extend(
@@ -1413,7 +1373,7 @@ impl Engine {
                 .get(source_id)
                 .and_then(|state| state.executions.get(&source.exec_id))
                 .ok_or_else(|| Error::new("NOT_FOUND", "source execution missing"))?;
-            if execution.status != node::ExecutionStatus::Succeeded {
+            if execution.status != node::status::execution::Status::Succeeded {
                 return Err(Error::new(
                     "INVALID_STATE",
                     "input source execution has not succeeded",
@@ -1441,7 +1401,7 @@ impl Engine {
                             .get(&source.node_id)
                             .and_then(|state| state.executions.get(&source.exec_id))
                             .is_some_and(|execution| {
-                                execution.status == node::ExecutionStatus::Failed
+                                execution.status == node::status::execution::Status::Failed
                                     && (relation.codes.is_empty()
                                         || execution.error.as_ref().is_some_and(|error| {
                                             relation.codes.iter().any(|code| code == &error.code)
@@ -1482,7 +1442,8 @@ impl Engine {
                         && execution.waits.is_empty()
                         && matches!(
                             execution.status,
-                            node::ExecutionStatus::Running | node::ExecutionStatus::Waiting
+                            node::status::execution::Status::Running
+                                | node::status::execution::Status::Waiting
                         )
                 })
                 .filter(|execution| {
@@ -1506,12 +1467,12 @@ impl Engine {
                             && execution.waits.is_empty()
                             && matches!(
                                 execution.status,
-                                node::ExecutionStatus::Pending
-                                    | node::ExecutionStatus::Running
-                                    | node::ExecutionStatus::Waiting
+                                node::status::execution::Status::Pending
+                                    | node::status::execution::Status::Running
+                                    | node::status::execution::Status::Waiting
                             )
                             && execution.attempts.last().is_some_and(|attempt| {
-                                attempt.status == node::AttemptStatus::Waiting
+                                attempt.status == node::status::attempt::Status::Waiting
                             })
                     })
                     .map(move |execution| (node_id.clone(), execution.exec_id))
@@ -1550,9 +1511,8 @@ impl Engine {
                             .map_err(|error| Error::new("INVALID_STATE", error.to_string()))?;
                         agent_input.payload = reply.input.payload;
                         agent_input.metadata.extend(reply.input.metadata);
-                        input = serde_json::to_value(agent_input).map_err(|error| {
-                            Error::new("SERIALIZATION_ERROR", error.to_string())
-                        })?;
+                        input = serde_json::to_value(agent_input)
+                            .map_err(|error| Error::new("SERIALIZATION", error.to_string()))?;
                     }
                     Target::Graph { .. } if !reply.path.is_empty() => {
                         nested_reply = Some(reply);
@@ -1690,7 +1650,9 @@ impl Engine {
                     if self.state.nodes[node_id].executions[exec_id]
                         .attempts
                         .last()
-                        .is_some_and(|attempt| attempt.status == node::AttemptStatus::Waiting)
+                        .is_some_and(|attempt| {
+                            attempt.status == node::status::attempt::Status::Waiting
+                        })
                         && let Some(run) = run
                         && run.children_blocked()
                     {
@@ -1822,10 +1784,9 @@ impl Engine {
                     .executions
                     .values()
                     .any(|execution| {
-                        execution
-                            .attempts
-                            .last()
-                            .is_some_and(|attempt| attempt.status == node::AttemptStatus::Waiting)
+                        execution.attempts.last().is_some_and(|attempt| {
+                            attempt.status == node::status::attempt::Status::Waiting
+                        })
                     })
                     && let Some(run) = &run
                     && run.children_blocked()
@@ -1879,7 +1840,7 @@ impl Engine {
             return Ok(());
         }
         let execution = &self.state.nodes[node_id].executions[&exec_id];
-        let messages = if execution.status == node::ExecutionStatus::Succeeded {
+        let messages = if execution.status == node::status::execution::Status::Succeeded {
             execution
                 .messages
                 .as_slice()
@@ -1990,7 +1951,7 @@ impl Engine {
     // A Tool lifecycle wait has no fabricated human question or response.
     fn wait_call(&mut self, node_id: &str, exec_id: i64) -> Result<(), Error> {
         self.state.node_mut(node_id)?.execution_mut(exec_id)?.status =
-            node::ExecutionStatus::Waiting;
+            node::status::execution::Status::Waiting;
         Ok(())
     }
 
@@ -2074,175 +2035,16 @@ impl Engine {
 }
 
 #[derive(Debug)]
-pub(crate) struct Invocation {
-    pub(crate) attempts: Vec<node::Attempt>,
-    pub(crate) outcome: Outcome,
-    pub(crate) graph: Option<Box<graph::State>>,
-}
-
-fn attempt_waiting(attempt: &node::Attempt) -> bool {
-    attempt
-        .steps
-        .iter()
-        .any(|step| step.stage.is_some() && step.status == "waiting")
-        || attempt
-            .agent
-            .as_ref()
-            .and_then(|scene| scene["waits"].as_array())
-            .is_some_and(|waits| !waits.is_empty())
-        || attempt.graph.as_ref().is_some_and(|state| {
-            !state.waits.is_empty()
-                || !state.pauses().is_empty()
-                || state
-                    .nodes
-                    .values()
-                    .flat_map(|node| node.executions.values())
-                    .any(|execution| execution.attempts.last().is_some_and(attempt_waiting))
-        })
-}
-
-fn attempt_feedback(attempt: &node::Attempt) -> std::collections::BTreeMap<String, usize> {
-    let mut progress = attempt
-        .agent
-        .as_ref()
-        .map(crate::runtime::agent::wait::input_progress)
-        .unwrap_or_default();
-    if let Some(graph) = &attempt.graph {
-        for execution in graph
-            .nodes
-            .values()
-            .flat_map(|node| node.executions.values())
-        {
-            if execution.idx == graph.step
-                && let Some(attempt) = execution.attempts.last()
-            {
-                progress.extend(attempt_feedback(attempt));
-            }
-        }
-    }
-    progress
-}
-
-fn commit_feedback(
-    attempt: &node::Attempt,
-    run: &crate::runtime::agent::reply::Run,
-) -> Result<(), Error> {
-    if let Some(scene) = &attempt.agent {
-        run.commit_scene_feedback(scene)?;
-    }
-    if let Some(graph) = &attempt.graph {
-        for execution in graph
-            .nodes
-            .values()
-            .flat_map(|node| node.executions.values())
-        {
-            if execution.idx == graph.step
-                && let Some(attempt) = execution.attempts.last()
-            {
-                commit_feedback(attempt, run)?;
-            }
-        }
-    }
-    Ok(())
-}
-
-fn prepend_agent_observations(attempt: &mut node::Attempt, base: &node::Attempt) {
-    let mut messages = base.messages.clone();
-    messages.0.append(&mut attempt.messages.0);
-    attempt.messages = messages;
-    let mut steps = base.steps.clone();
-    for (index, step) in attempt.steps.iter_mut().enumerate() {
-        step.id = format!("complete_{}", base.steps.len() + index + 1);
-    }
-    steps.append(&mut attempt.steps);
-    attempt.steps = steps;
-}
-
-// A resolved contribution remains a fact even after its locator leaves the
-// pending queue or its containing graph finishes. It is not a new submission.
-/// Search the complete Workflow snapshot for a reply already accepted by any
-/// embedded Agent scene. A duplicate is harmless and must not wake a second
-/// waiting owner.
-fn reply_duplicate(state: &graph::State, input: &Input) -> Result<bool, Error> {
-    let mut duplicate = false;
-    for node in state.nodes.values() {
-        for execution in node.executions.values() {
-            if let Some(attempt) = execution.attempts.last() {
-                if let Some(scene) = &attempt.agent {
-                    duplicate |= crate::runtime::agent::reply::reply_duplicate(scene, input)?;
-                }
-                if let Some(child) = &attempt.graph {
-                    duplicate |= reply_duplicate(child, input)?;
-                }
-            }
-        }
-    }
-    Ok(duplicate)
-}
-
-fn agent_scene_for_reply_path<'a>(
-    state: &'a graph::State,
-    path: &[graph::ReplyExecution],
-) -> Result<&'a Value, Error> {
-    let Some((first, rest)) = path.split_first() else {
-        return Err(Error::new("INVALID_STATE", "saved reply path is empty"));
-    };
-    let execution = state
-        .nodes
-        .get(&first.node_id)
-        .and_then(|node| node.executions.get(&first.exec_id))
-        .filter(|execution| execution.idx == state.step)
-        .ok_or_else(|| Error::new("INVALID_STATE", "saved reply execution is stale"))?;
-    let attempt = execution
-        .attempts
-        .last()
-        .filter(|attempt| attempt.idx == first.idx)
-        .ok_or_else(|| Error::new("INVALID_STATE", "saved reply Attempt is stale"))?;
-    if rest.is_empty() {
-        return attempt
-            .agent
-            .as_ref()
-            .ok_or_else(|| Error::new("INVALID_STATE", "saved reply has no Agent scene"));
-    }
-    agent_scene_for_reply_path(
-        attempt
-            .graph
-            .as_deref()
-            .ok_or_else(|| Error::new("INVALID_STATE", "saved reply Graph scene is missing"))?,
-        rest,
-    )
-}
-
-pub(crate) fn attempt_question(attempt: &node::Attempt, id: i64) -> Result<bool, Error> {
-    if let Some(scene) = &attempt.agent
-        && scene["waits"]
-            .as_array()
-            .is_some_and(|waits| !waits.is_empty())
-        && crate::runtime::agent::wait::question(scene, id)?
-    {
-        return Ok(true);
-    }
-    if let Some(state) = &attempt.graph {
-        for execution in state
-            .nodes
-            .values()
-            .flat_map(|node| node.executions.values())
-        {
-            if matches!(
-                execution.status,
-                node::ExecutionStatus::Running | node::ExecutionStatus::Waiting
-            ) && let Some(attempt) = execution.attempts.last()
-                && attempt_question(attempt, id)?
-            {
-                return Ok(true);
-            }
-        }
-    }
-    Ok(false)
+#[doc(hidden)]
+pub struct Invocation {
+    pub attempts: Vec<node::Attempt>,
+    pub outcome: Outcome,
+    pub graph: Option<Box<graph::State>>,
 }
 
 #[derive(Debug)]
-pub(crate) enum Outcome {
+#[doc(hidden)]
+pub enum Outcome {
     Complete(Value),
     Wait(String),
     Waiting,
@@ -2250,7 +2052,8 @@ pub(crate) enum Outcome {
     Cancelled,
 }
 
-pub(crate) enum Target {
+#[doc(hidden)]
+pub enum Target {
     Node(Arc<dyn graph::ErasedNode + 'static>),
     Agent(Arc<dyn graph::ErasedAgent + 'static>, Option<Value>),
     Graph {
@@ -2258,743 +2061,4 @@ pub(crate) enum Target {
         state: Option<Box<graph::State>>,
         history: Option<Box<graph::State>>,
     },
-}
-
-// Reconstruct successful sub-call facts from the entire logical execution,
-// not just its latest Attempt: an in-flight retry may have no messages yet.
-// This is private ToolNode recovery input, never a partial normal Node output.
-fn committed_tool_facts(execution: &node::Execution) -> node::Attempt {
-    let mut committed = std::collections::BTreeMap::new();
-    let mut steps = std::collections::BTreeMap::new();
-    for step in execution.attempts.iter().flat_map(|attempt| &attempt.steps) {
-        steps.insert(step.id.clone(), step.clone());
-    }
-    for message in execution
-        .attempts
-        .iter()
-        .flat_map(|attempt| attempt.messages.as_slice())
-    {
-        if let Some(call_id) = message.metadata.get("call_id").and_then(Value::as_str) {
-            committed.insert(call_id, message);
-        }
-    }
-    node::Attempt {
-        messages: Messages::new(committed.into_values().cloned()),
-        steps: steps.into_values().collect(),
-        ..Default::default()
-    }
-}
-
-// Replay only actual saved cancellation Completes, never synthesize one from
-// Delta or turn the cancelled execution into a successful downstream result.
-fn terminal_observations(state: &graph::State) -> Vec<crate::event::Event> {
-    let mut events = Vec::new();
-    for (node_id, node) in &state.nodes {
-        for execution in node.executions.values() {
-            if execution.status != node::ExecutionStatus::Succeeded
-                || !execution.to.iter().any(|to| to == graph::END)
-            {
-                continue;
-            }
-            if let Some(child) = execution
-                .attempts
-                .last()
-                .and_then(|attempt| attempt.graph.as_ref())
-            {
-                events.extend(terminal_observations(child));
-            } else {
-                for message in execution.messages.as_slice() {
-                    let mut event = crate::event::Event::Complete {
-                        message: events::project_message(message),
-                        usage: message.usage.clone(),
-                        finish_reason: None,
-                    };
-                    crate::runtime::observation::associate(
-                        &mut event,
-                        Some(state.chat_id),
-                        Some((node_id, execution.exec_id)),
-                    );
-                    events.push(event);
-                }
-            }
-        }
-    }
-    events
-}
-
-fn cancelled_observations(state: &graph::State) -> Vec<crate::event::Event> {
-    let mut events = Vec::new();
-    for (node_id, node) in &state.nodes {
-        for execution in node.executions.values() {
-            for attempt in &execution.attempts {
-                if let Some(child) = &attempt.graph {
-                    events.extend(cancelled_observations(child));
-                }
-                for (step, message) in attempt.steps.iter().zip(attempt.messages.as_slice()) {
-                    if let Some(call) = step.attempts.last()
-                        && call.finish_reason.as_deref() == Some("cancelled")
-                        && message.role == Role::Assistant
-                    {
-                        let mut event = crate::event::Event::Complete {
-                            message: events::project_message(message),
-                            usage: call.usage.clone(),
-                            finish_reason: call.finish_reason.clone(),
-                        };
-                        crate::runtime::observation::associate(
-                            &mut event,
-                            Some(state.chat_id),
-                            Some((node_id, execution.exec_id)),
-                        );
-                        events.push(event);
-                    }
-                }
-            }
-        }
-    }
-    events
-}
-
-// The final argument is the already committed ToolNode context restored from
-// Checkpoint; keeping it alongside the retry inputs makes recovery explicit.
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn invoke_with_retry(
-    target: Target,
-    input: Value,
-    view: View,
-    cancellation: crate::Cancellation,
-    retry: graph::RetryPolicy,
-    next_exec_id: Arc<dyn Fn() -> i64 + Send + Sync>,
-    chat_id: i64,
-    attempt_start: u32,
-    committed: node::Attempt,
-    recovery_reply: Option<RecoveryReply>,
-) -> Pin<Box<dyn Future<Output = Invocation> + Send + 'static>> {
-    Box::pin(async move {
-        let mut attempts: Vec<node::Attempt> = Vec::new();
-        if !matches!(&target, Target::Graph { .. })
-            && let Err(error) = events::entered(attempt_start).await
-        {
-            return Invocation {
-                attempts: vec![node::Attempt {
-                    idx: attempt_start,
-                    status: node::AttemptStatus::Failed,
-                    error: Some(error.clone()),
-                    ..Default::default()
-                }],
-                outcome: Outcome::Failed(error),
-                graph: None,
-            };
-        }
-        // ToolNode-only committed call facts. They remain private to this one
-        // logical execution and are restored from all saved Attempts on recovery;
-        // ordinary Nodes keep the unchanged single-call path.
-        let mut committed_tool_facts = committed;
-        let mut graph_retry_state = match &target {
-            Target::Graph { state, .. } => state.clone(),
-            _ => None,
-        };
-        let mut graph_retry_history = match &target {
-            Target::Graph { history, .. } => history.clone(),
-            _ => None,
-        };
-        let retry_policy = retry.clone();
-        let mut recovery_reply = recovery_reply;
-        // A resumed wait continues the same Attempt. Its existing idx consumes
-        // the original execution's retry budget; recovery never resets it.
-        for offset in 0..=retry.max_retries.saturating_sub(attempt_start) {
-            let idx = attempt_start.saturating_add(offset);
-            let mut current_view = view.clone();
-            current_view.attempt_idx = Some(idx);
-            current_view.status = "running".into();
-            if !attempts.is_empty() {
-                current_view.attempts = attempts
-                    .iter()
-                    .filter_map(|attempt| serde_json::to_value(attempt).ok())
-                    .collect();
-            }
-            if let Some(previous) = attempts.last() {
-                current_view.error = previous
-                    .error
-                    .as_ref()
-                    .and_then(|error| serde_json::to_value(error).ok());
-            }
-            if current_view.result.is_none() && !committed_tool_facts.messages.is_empty() {
-                current_view.result = serde_json::to_value(&committed_tool_facts.messages).ok();
-            }
-            let mut attempt = node::Attempt {
-                idx,
-                status: node::AttemptStatus::Running,
-                ..Default::default()
-            };
-            if cancellation.is_cancelled() {
-                attempt.status = node::AttemptStatus::Cancelled;
-                attempts.push(attempt);
-                return Invocation {
-                    attempts,
-                    outcome: Outcome::Cancelled,
-                    graph: None,
-                };
-            }
-            let call_result = match &target {
-                Target::Node(executor) => {
-                    if let Some(future) = executor.call_with_recovery(
-                        input.clone(),
-                        cancellation.clone(),
-                        node::Attempt {
-                            idx,
-                            ..committed_tool_facts.clone()
-                        },
-                    ) {
-                        match events::with_attempt(idx, future).await {
-                            Ok((Signal::Complete(value), steps)) => {
-                                attempt.steps = steps;
-                                if let Ok(messages) =
-                                    serde_json::from_value::<Messages>(value.clone())
-                                {
-                                    attempt.messages = messages;
-                                }
-                                Ok(Signal::Complete(value))
-                            }
-                            Ok((Signal::Wait(wait), steps)) => {
-                                attempt.steps = steps;
-                                Ok(Signal::Wait(wait))
-                            }
-                            Err(failure) => {
-                                committed_tool_facts = node::Attempt {
-                                    messages: failure.completed.clone(),
-                                    steps: failure.steps.clone(),
-                                    ..Default::default()
-                                };
-                                attempt.messages = failure.completed;
-                                attempt.steps = failure.steps;
-                                if failure.error.code == "WAITING" {
-                                    attempt.status = node::AttemptStatus::Waiting;
-                                    attempts.push(attempt);
-                                    return Invocation {
-                                        attempts,
-                                        outcome: Outcome::Waiting,
-                                        graph: None,
-                                    };
-                                }
-                                Err(failure.error)
-                            }
-                        }
-                    } else {
-                        executor
-                            .call_with_view(
-                                input.clone(),
-                                cancellation.clone(),
-                                current_view.clone(),
-                            )
-                            .await
-                    }
-                }
-                Target::Agent(executor, restore) => {
-                    let mut agent_input: Input = match serde_json::from_value(input.clone()) {
-                        Ok(input) => input,
-                        Err(error) => {
-                            attempt.status = node::AttemptStatus::Failed;
-                            let error = Error::new("INVALID_ARGUMENTS", error.to_string());
-                            attempt.error = Some(error.clone());
-                            attempts.push(attempt);
-                            return Invocation {
-                                attempts,
-                                outcome: Outcome::Failed(error),
-                                graph: None,
-                            };
-                        }
-                    };
-                    if agent_input
-                        .metadata
-                        .get("chat_id")
-                        .is_some_and(|id| id.as_i64() != Some(chat_id))
-                    {
-                        let error = Error::new(
-                            "CONFLICT",
-                            "Agent input chat_id does not match its Workflow",
-                        );
-                        attempt.status = node::AttemptStatus::Failed;
-                        attempt.error = Some(error.clone());
-                        attempts.push(attempt);
-                        return Invocation {
-                            attempts,
-                            outcome: Outcome::Failed(error),
-                            graph: None,
-                        };
-                    }
-                    agent_input
-                        .metadata
-                        .insert("chat_id".into(), Value::from(chat_id));
-                    if let Some(reply) = recovery_reply.take() {
-                        if !reply.path.is_empty() {
-                            let error = Error::new(
-                                "INVALID_STATE",
-                                "saved reply was not routed through its nested Graph",
-                            );
-                            attempt.status = node::AttemptStatus::Failed;
-                            attempt.error = Some(error.clone());
-                            attempts.push(attempt);
-                            return Invocation {
-                                attempts,
-                                outcome: Outcome::Failed(error),
-                                graph: None,
-                            };
-                        }
-                        agent_input.payload = reply.input.payload;
-                        agent_input.metadata.extend(reply.input.metadata);
-                    }
-                    let run = events::with_attempt(
-                        idx,
-                        executor.call(
-                            agent_input,
-                            cancellation.clone(),
-                            restore.clone(),
-                            current_view.clone(),
-                        ),
-                    )
-                    .await;
-                    attempt.steps = run.steps;
-                    attempt.messages = run.messages;
-                    attempt.usage = run.usage;
-                    let agent_wait_id = run
-                        .scene
-                        .as_ref()
-                        .and_then(|scene| scene.get("wait_id"))
-                        .and_then(Value::as_str)
-                        .filter(|wait_id| !wait_id.trim().is_empty())
-                        .map(str::to_owned);
-                    attempt.agent = run.scene.map(|mut scene| {
-                        // An embedded Agent does not own a top-level checkpoint,
-                        // so the Workflow supplies the single run identity.
-                        scene["chat_id"] = Value::from(chat_id);
-                        scene
-                    });
-                    match run.result {
-                        Ok(messages) => serde_json::to_value(messages)
-                            .map(Signal::Complete)
-                            .map_err(|error| Error::new("SERIALIZATION_ERROR", error.to_string())),
-                        // Agent implementations use the shared Error contract for
-                        // an external wait.  Translate it at the Workflow
-                        // boundary into the same Signal used by ordinary Nodes;
-                        // it must never consume retry budget or become a failure.
-                        Err(error) if error.code == "WAITING" => {
-                            let wait_id = agent_wait_id
-                                .as_deref()
-                                .or(error.details.as_deref())
-                                .filter(|wait_id| !wait_id.trim().is_empty())
-                                .unwrap_or("agent")
-                                .to_owned();
-                            Ok(Signal::Wait(crate::components::node::Wait { wait_id }))
-                        }
-                        Err(error) => Err(error),
-                    }
-                }
-                Target::Graph { workflow, .. } => {
-                    let nested_reply = recovery_reply.take();
-                    match events::with_attempt(
-                        idx,
-                        run_subgraph(
-                            Arc::clone(workflow),
-                            input.clone(),
-                            cancellation.clone(),
-                            Arc::clone(&next_exec_id),
-                            chat_id,
-                            SubgraphScenes {
-                                snapshot: graph_retry_state.clone(),
-                                history: graph_retry_history.clone(),
-                                reply: nested_reply,
-                            },
-                        ),
-                    )
-                    .await
-                    {
-                        Ok((value, state)) => {
-                            attempt.status = node::AttemptStatus::Succeeded;
-                            attempt.usage = state.usage.clone();
-                            attempts.push(attempt);
-                            return Invocation {
-                                attempts,
-                                outcome: Outcome::Complete(value),
-                                graph: Some(Box::new(state)),
-                            };
-                        }
-                        Err(failure) => {
-                            if failure.error.code == "WAITING" {
-                                let Some(state) = failure.state else {
-                                    attempt.status = node::AttemptStatus::Failed;
-                                    let error = Error::new(
-                                        "INVALID_STATE",
-                                        "waiting child workflow did not return its state",
-                                    );
-                                    attempt.error = Some(error.clone());
-                                    attempts.push(attempt);
-                                    return Invocation {
-                                        attempts,
-                                        outcome: Outcome::Failed(error),
-                                        graph: None,
-                                    };
-                                };
-                                let pauses = state.pauses();
-                                if pauses.is_empty()
-                                    && state
-                                        .nodes
-                                        .values()
-                                        .flat_map(|node| node.executions.values())
-                                        .any(|execution| {
-                                            execution.attempts.last().is_some_and(attempt_waiting)
-                                        })
-                                {
-                                    attempt.status = node::AttemptStatus::Waiting;
-                                    attempt.graph = Some(Box::new(state));
-                                    attempts.push(attempt);
-                                    return Invocation {
-                                        attempts,
-                                        outcome: Outcome::Waiting,
-                                        graph: None,
-                                    };
-                                }
-                                let Some(wait_id) =
-                                    (pauses.len() == 1).then(|| pauses[0].wait_id.clone())
-                                else {
-                                    attempt.status = node::AttemptStatus::Failed;
-                                    let error = Error::new(
-                                        "CONFLICT",
-                                        "waiting child workflow must have exactly one active wait",
-                                    );
-                                    attempt.error = Some(error.clone());
-                                    attempts.push(attempt);
-                                    return Invocation {
-                                        attempts,
-                                        outcome: Outcome::Failed(error),
-                                        graph: None,
-                                    };
-                                };
-                                attempt.status = node::AttemptStatus::Waiting;
-                                attempt.usage = state.usage.clone();
-                                attempt.graph = Some(Box::new(state));
-                                attempts.push(attempt);
-                                return Invocation {
-                                    attempts,
-                                    outcome: Outcome::Wait(wait_id),
-                                    graph: None,
-                                };
-                            }
-                            if let Some(state) = failure.state {
-                                if retry_policy.should_retry(idx, &failure.error) {
-                                    // Only a real outer retry inherits successes.
-                                    // Checkpoint continuation still uses the exact
-                                    // original current-Attempt scene above.
-                                    graph_retry_state =
-                                        Some(Box::new(retry_graph_state(workflow, &state)));
-                                    graph_retry_history = Some(Box::new(state.clone()));
-                                }
-                                attempt.usage = state.usage.clone();
-                                attempt.graph = Some(Box::new(state));
-                            }
-                            Err(failure.error)
-                        }
-                    }
-                }
-            };
-            match call_result {
-                Ok(crate::node::Signal::Complete(value)) => {
-                    attempt.status = node::AttemptStatus::Succeeded;
-                    attempts.push(attempt);
-                    return Invocation {
-                        attempts,
-                        outcome: Outcome::Complete(value),
-                        graph: None,
-                    };
-                }
-                Ok(crate::node::Signal::Wait(wait)) => {
-                    attempt.status = node::AttemptStatus::Waiting;
-                    attempts.push(attempt);
-                    return Invocation {
-                        attempts,
-                        outcome: Outcome::Wait(wait.wait_id),
-                        graph: None,
-                    };
-                }
-                Err(error) => {
-                    if error.code == "CANCELLED" {
-                        attempt.status = node::AttemptStatus::Cancelled;
-                        attempts.push(attempt);
-                        return Invocation {
-                            attempts,
-                            outcome: Outcome::Cancelled,
-                            graph: None,
-                        };
-                    }
-                    attempt.status = node::AttemptStatus::Failed;
-                    attempt.error = Some(error.clone());
-                    if events::has_parent()
-                        && let Err(owner_error) = events::progress(attempt.clone(), None).await
-                    {
-                        attempts.push(attempt);
-                        return Invocation {
-                            attempts,
-                            outcome: Outcome::Failed(owner_error),
-                            graph: None,
-                        };
-                    }
-                    attempts.push(attempt);
-                    if !retry_policy.should_retry(idx, &error) {
-                        return Invocation {
-                            attempts,
-                            outcome: Outcome::Failed(error),
-                            graph: None,
-                        };
-                    }
-                    if let Err(error) =
-                        crate::core::middleware::wait(&retry_policy, idx, &cancellation).await
-                    {
-                        // Waiting does not constitute a new actual Attempt. Keep
-                        // the original failed Attempt and report run cancellation
-                        // or a timer setup error separately.
-                        return Invocation {
-                            attempts,
-                            outcome: if error.code == "CANCELLED" {
-                                Outcome::Cancelled
-                            } else {
-                                Outcome::Failed(error)
-                            },
-                            graph: None,
-                        };
-                    }
-                }
-            }
-        }
-        unreachable!()
-    })
-}
-
-pub(crate) fn messages_to_agent_input(messages: &Messages) -> Input {
-    let message = messages
-        .as_slice()
-        .iter()
-        .rev()
-        .find(|message| message.role == Role::User)
-        .or_else(|| messages.as_slice().last());
-    let Some(message) = message else {
-        return Input::default();
-    };
-    let payload = message
-        .content
-        .iter()
-        .map(|part| Payload {
-            r#type: part.r#type.clone(),
-            data: serde_json::Value::Object(part.data.clone()),
-            mime_type: part
-                .data
-                .get("mime_type")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
-        })
-        .collect();
-    Input {
-        metadata: message.metadata.clone(),
-        payload,
-    }
-}
-
-struct SubgraphFailure {
-    error: Error,
-    state: Option<graph::State>,
-}
-
-// Derive the next outer Attempt's child scene from existing graph facts. The
-// failed Attempt keeps its full unmodified scene; only complete, unaffected
-// successful child executions are inherited into this new scene.
-fn retry_graph_state(workflow: &CompiledWorkflow, previous: &graph::State) -> graph::State {
-    let definition = workflow.definition();
-    let mut affected = previous
-        .nodes
-        .iter()
-        .filter(|(_, state)| {
-            state
-                .executions
-                .values()
-                .any(|execution| execution.status == node::ExecutionStatus::Failed)
-        })
-        .map(|(node_id, _)| node_id.clone())
-        .collect::<BTreeSet<_>>();
-    let mut pending = affected.iter().cloned().collect::<Vec<_>>();
-    while let Some(node_id) = pending.pop() {
-        let mut downstream = outgoing(definition, &node_id);
-        downstream.extend(
-            definition
-                .graph
-                .conditional_edges
-                .iter()
-                .filter(|relation| relation.from == node_id)
-                .flat_map(|relation| relation.to.iter().cloned()),
-        );
-        downstream.extend(
-            definition
-                .graph
-                .loop_definitions
-                .iter()
-                .filter(|relation| relation.from == node_id)
-                .map(|relation| relation.to.clone()),
-        );
-        downstream.extend(
-            definition
-                .graph
-                .failure_relations
-                .iter()
-                .filter(|relation| relation.from.contains(&node_id))
-                .flat_map(|relation| relation.to.iter().cloned()),
-        );
-        for to in downstream {
-            if definition.nodes.contains_key(&to) && affected.insert(to.clone()) {
-                pending.push(to);
-            }
-        }
-    }
-    let mut state = graph::State::new(previous.chat_id, definition);
-    state.initial = previous.initial.clone();
-    state.step = previous
-        .nodes
-        .iter()
-        .filter(|(node_id, _)| affected.contains(*node_id))
-        .flat_map(|(_, node)| node.executions.values().map(|execution| execution.idx))
-        .min()
-        .unwrap_or(previous.step);
-    for (node_id, node) in &previous.nodes {
-        if affected.contains(node_id) {
-            continue;
-        }
-        let executions = node
-            .executions
-            .iter()
-            .filter(|(_, execution)| execution.status == node::ExecutionStatus::Succeeded)
-            .map(|(exec_id, execution)| (*exec_id, execution.clone()))
-            .collect::<std::collections::BTreeMap<_, _>>();
-        if !executions.is_empty() {
-            state.nodes.insert(
-                node_id.clone(),
-                node::State {
-                    status: node::Status::Succeeded,
-                    executions,
-                },
-            );
-        }
-    }
-    state.recompute_usage();
-    state
-}
-
-type SubgraphFuture = std::pin::Pin<
-    Box<
-        dyn std::future::Future<Output = Result<(Value, graph::State), SubgraphFailure>>
-            + Send
-            + 'static,
-    >,
->;
-
-struct SubgraphScenes {
-    snapshot: Option<Box<graph::State>>,
-    history: Option<Box<graph::State>>,
-    reply: Option<RecoveryReply>,
-}
-
-fn run_subgraph(
-    workflow: Arc<CompiledWorkflow>,
-    input: Value,
-    cancellation: crate::Cancellation,
-    next_exec_id: Arc<dyn Fn() -> i64 + Send + Sync>,
-    chat_id: i64,
-    scenes: SubgraphScenes,
-) -> SubgraphFuture {
-    Box::pin(async move {
-        let SubgraphScenes {
-            snapshot,
-            history,
-            reply,
-        } = scenes;
-        let messages: Messages =
-            serde_json::from_value(input).map_err(|error| SubgraphFailure {
-                error: Error::new("INVALID_ARGUMENTS", error.to_string()),
-                state: None,
-            })?;
-        // A nested Graph Node can have a new execution while still reusing
-        // its unchanged-input internal successes from the parent's history.
-        let stable_input = snapshot
-            .as_ref()
-            .and_then(|scene| scene.initial.as_ref())
-            .unwrap_or(&messages);
-        let history = history.filter(|previous| {
-            previous.chat_id == chat_id
-                && previous.definition_id == workflow.definition().definition_id
-                && previous.version == workflow.definition().version
-                && previous.initial.as_ref() == Some(stable_input)
-        });
-        let snapshot = snapshot.or_else(|| {
-            history
-                .as_ref()
-                .map(|previous| Box::new(retry_graph_state(&workflow, previous)))
-        });
-        let mut runtime = match snapshot {
-            Some(snapshot) => Engine::from_snapshot(
-                chat_id,
-                (*workflow).clone(),
-                serde_json::to_value(*snapshot).map_err(|error| SubgraphFailure {
-                    error: Error::new("SERIALIZATION_ERROR", error.to_string()),
-                    state: None,
-                })?,
-            )
-            .map_err(|error| SubgraphFailure { error, state: None })?,
-            None => Engine::new(chat_id, (*workflow).clone())
-                .map_err(|error| SubgraphFailure { error, state: None })?,
-        };
-        runtime.retry_source = history;
-        runtime.recovery_reply = reply;
-        let run_input = runtime.state.initial.clone().unwrap_or(messages);
-        let output = runtime
-            .execute(run_input, next_exec_id, cancellation)
-            .await
-            .map_err(|error| SubgraphFailure {
-                error,
-                state: Some(runtime.state.clone()),
-            })?;
-        let state = runtime.state.clone();
-        let value = serde_json::to_value(output).map_err(|error| SubgraphFailure {
-            error: Error::new("SERIALIZATION_ERROR", error.to_string()),
-            state: Some(state.clone()),
-        })?;
-        Ok((value, state))
-    })
-}
-
-fn outgoing(definition: &Definition, node_id: &str) -> Vec<String> {
-    let mut result: Vec<String> = definition
-        .graph
-        .ordinary_edges
-        .iter()
-        .filter(|edge| edge.from.node() == Some(node_id))
-        .map(|edge| match &edge.to {
-            Endpoint::Node(id) => id.clone(),
-            Endpoint::End => graph::END.into(),
-            Endpoint::Start => graph::START.into(),
-        })
-        .collect();
-    result.extend(
-        definition
-            .graph
-            .fan_out_definitions
-            .iter()
-            .filter(|relation| relation.from == node_id)
-            .map(|relation| relation.to.clone()),
-    );
-    result.extend(
-        definition
-            .graph
-            .join_edges
-            .iter()
-            .filter(|relation| relation.from.iter().any(|source| source == node_id))
-            .map(|relation| relation.to.clone()),
-    );
-    result.sort();
-    result.dedup();
-    result
 }

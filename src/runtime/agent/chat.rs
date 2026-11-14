@@ -46,7 +46,8 @@ pub struct Builder<M = ()> {
     evaluator: Option<EvaluatorHandle>,
     checkpoint: Option<CheckpointSave>,
     history: History,
-    max_concurrency: usize,
+    #[doc(hidden)]
+    pub max_concurrency: usize,
     id_fn: Option<fn() -> i64>,
 }
 
@@ -89,7 +90,6 @@ impl<M> Builder<M> {
     }
 
     /// Register application Tools directly on this Agent.
-    #[allow(private_bounds)]
     pub fn tools<I>(mut self, tools: I) -> Self
     where
         I: ToolInputs,
@@ -100,7 +100,6 @@ impl<M> Builder<M> {
     }
 
     /// Register already connected and discovered MCP servers on this Agent.
-    #[allow(private_bounds)]
     pub fn mcps<S>(mut self, servers: impl IntoIterator<Item = S>) -> Self
     where
         S: Server + 'static,
@@ -111,7 +110,6 @@ impl<M> Builder<M> {
     }
 
     /// Register in-process Skills on this Agent.
-    #[allow(private_bounds)]
     pub fn skills<S>(mut self, skills: impl IntoIterator<Item = S>) -> Result<Self, Error>
     where
         S: Skill + 'static,
@@ -161,7 +159,7 @@ impl<M> Builder<M> {
     }
 
     /// Compose short history with explicitly selected long recall scopes.
-    pub fn memory<S, L>(mut self, config: crate::memory::Config<S, L>) -> Self
+    pub fn memory<S, L>(mut self, config: crate::runtime::agent::memory::Config<S, L>) -> Self
     where
         S: crate::memory::short::Store + 'static,
         L: crate::memory::Memory + 'static,
@@ -244,8 +242,10 @@ fn validate_subagents(subagents: &[SubAgent]) -> Result<(), Error> {
     Ok(())
 }
 
-mod runner;
-pub(crate) use crate::components::model::chat::{estimate_input_tokens, fit_request};
+#[doc(hidden)]
+pub mod runner;
+#[doc(hidden)]
+pub use crate::components::model::chat::{estimate_input_tokens, fit_request};
 pub(crate) use runner::{
     CheckpointSave, EvaluatorHandle, Events, EventsConfig, ProviderFactory, ToolBatchConfig,
     checkpoint_id, checkpoint_identity_matches, checkpoint_messages, checkpoint_pending_subagents,
@@ -753,7 +753,3 @@ where
         }
     }
 }
-
-#[cfg(test)]
-#[path = "../../../tests/unit/agent_chat.rs"]
-mod tests;

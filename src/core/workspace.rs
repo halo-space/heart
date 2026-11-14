@@ -91,7 +91,6 @@ impl Local {
     /// workspace. This only stores configuration; it performs no tool calls
     /// or discovery. Standard local file tools
     /// are added when the Workspace is consumed by an Agent or Harness.
-    #[allow(private_bounds)]
     pub fn tools<I>(mut self, tools: I) -> Self
     where
         I: ToolInputs,
@@ -101,7 +100,6 @@ impl Local {
     }
 
     /// Register already connected and discovered MCP servers on this Workspace.
-    #[allow(private_bounds)]
     pub fn mcps<S>(mut self, servers: impl IntoIterator<Item = S>) -> Self
     where
         S: Server + 'static,
@@ -112,7 +110,6 @@ impl Local {
 
     /// Register in-process Skills on this Workspace. Local directory discovery
     /// remains owned by the Workspace backend and is cached there.
-    #[allow(private_bounds)]
     pub fn skills<S>(mut self, skills: impl IntoIterator<Item = S>) -> Result<Self, Error>
     where
         S: Skill + 'static,

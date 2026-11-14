@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use halo::agent::{Message, Messages};
 use halo::{
     agent::message::Role,
-    agent::runtime::agent::{
+    agent::state::{
         State,
         node::{Step, Wait},
     },
@@ -20,7 +20,7 @@ fn native_step_roundtrip_preserves_questions_feedback_and_business_result_separa
     let step = Step {
         id: "tool_0".into(),
         kind: "tool".into(),
-        status: "waiting".into(),
+        status: halo::agent::state::node::status::step::Status::Waiting,
         stage: Some("eval".into()),
         message: Some(business.clone()),
         waits: BTreeMap::from([
@@ -28,7 +28,7 @@ fn native_step_roundtrip_preserves_questions_feedback_and_business_result_separa
                 5001,
                 Wait {
                     kind: "approval".into(),
-                    status: "resolved".into(),
+                    status: halo::agent::state::node::status::wait::Status::Resolved,
                     count: 1,
                     question: question.clone(),
                     feedback: Messages::new([first.clone()]),
@@ -38,7 +38,7 @@ fn native_step_roundtrip_preserves_questions_feedback_and_business_result_separa
                 5002,
                 Wait {
                     kind: "ask".into(),
-                    status: "waiting".into(),
+                    status: halo::agent::state::node::status::wait::Status::Waiting,
                     count: 3,
                     question: question.clone(),
                     feedback: Messages::new([first, second]),
@@ -50,7 +50,7 @@ fn native_step_roundtrip_preserves_questions_feedback_and_business_result_separa
     let state = State {
         chat_id: Some(1001),
         r#type: "agent".into(),
-        status: "waiting".into(),
+        status: halo::agent::state::Status::Waiting,
         steps: vec![step],
         ..Default::default()
     };
@@ -64,9 +64,13 @@ fn native_step_roundtrip_preserves_questions_feedback_and_business_result_separa
     assert_eq!(wait["feedback"].as_array().unwrap().len(), 2);
     let restored: State = serde_json::from_value(value).unwrap();
     assert_eq!(restored, state);
-    assert_eq!(restored.steps[0].waits[&5001].status, "resolved");
     assert_eq!(
-        restored.steps[0].status, "waiting",
+        restored.steps[0].waits[&5001].status,
+        halo::agent::state::node::status::wait::Status::Resolved
+    );
+    assert_eq!(
+        restored.steps[0].status,
+        halo::agent::state::node::status::step::Status::Waiting,
         "resolved is not node success"
     );
     assert_eq!(restored.steps[0].message.as_ref(), Some(&business));
@@ -81,7 +85,7 @@ fn reply_identity_remains_exact_i64_despite_json_object_keys() {
             reply_id,
             Wait {
                 kind: "ask".into(),
-                status: "waiting".into(),
+                status: halo::agent::state::node::status::wait::Status::Waiting,
                 count: 1,
                 question: Message::new(Role::Assistant),
                 feedback: Messages::default(),

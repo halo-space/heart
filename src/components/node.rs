@@ -127,6 +127,11 @@ pub trait Node<I, O, E>: Send + Sync + 'static {
 /// A normal async function or closure is a Node without an adapter object.
 /// Its successful value is promoted to `Signal::Complete` by the blanket
 /// implementation; functions that need `Wait` can implement `Node` directly.
+///
+/// The explicit Node method receives `&Cancellation`; the ordinary free
+/// function/closure form accepts an owned `Cancellation` so its returned
+/// future can be moved into Runtime execution. Inherent methods marked with
+/// `#[node(call = ...)]` use the borrowed form.
 impl<I, O, E, F, Fut> Node<I, O, E> for F
 where
     I: Send + 'static,

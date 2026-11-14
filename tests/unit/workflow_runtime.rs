@@ -1,21 +1,23 @@
+#[allow(unused_imports)]
 use super::*;
-use crate::Cancellation;
-use crate::checkpoint::Checkpoint;
-use crate::components::agent::{Agent, Input as AgentInput};
-use crate::components::node::{Node, Signal, View, Wait as NodeWait};
-use crate::runtime::workflow::graph::{END, START};
+use halo::agent::Cancellation;
+use serde_json::Value;
+use halo::agent::checkpoint::Checkpoint;
+use halo::agent::{Agent, Input as AgentInput};
+use halo::agent::node::{Node, Signal, View, Wait as NodeWait};
+use halo::agent::workflow::graph::{END, START};
 use futures_executor::block_on;
 use futures_util::stream;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 struct WaitOnce(AtomicBool);
 
-impl Node<Messages, Messages, crate::Error> for WaitOnce {
+impl Node<Messages, Messages, halo::agent::Error> for WaitOnce {
     async fn call(
         &self,
         input: Messages,
         _cancellation: &Cancellation,
-    ) -> Result<Signal<Messages>, crate::Error> {
+    ) -> Result<Signal<Messages>, halo::agent::Error> {
         if !self.0.swap(true, Ordering::AcqRel) {
             Ok(Signal::Wait(NodeWait {
                 wait_id: "approval".into(),
@@ -28,14 +30,14 @@ impl Node<Messages, Messages, crate::Error> for WaitOnce {
 
 struct Flaky(AtomicBool);
 
-impl Node<Messages, Messages, crate::Error> for Flaky {
+impl Node<Messages, Messages, halo::agent::Error> for Flaky {
     async fn call(
         &self,
         input: Messages,
         _cancellation: &Cancellation,
-    ) -> Result<Signal<Messages>, crate::Error> {
+    ) -> Result<Signal<Messages>, halo::agent::Error> {
         if !self.0.swap(true, Ordering::AcqRel) {
-            Err(crate::Error::new("TIMEOUT", "temporary"))
+            Err(halo::agent::Error::new("TIMEOUT", "temporary"))
         } else {
             Ok(Signal::Complete(input))
         }
@@ -44,12 +46,12 @@ impl Node<Messages, Messages, crate::Error> for Flaky {
 
 struct InspectNode;
 
-impl Node<Messages, Messages, crate::Error> for InspectNode {
+impl Node<Messages, Messages, halo::agent::Error> for InspectNode {
     async fn call(
         &self,
         input: Messages,
         _cancellation: &Cancellation,
-    ) -> Result<Signal<Messages>, crate::Error> {
+    ) -> Result<Signal<Messages>, halo::agent::Error> {
         Ok(Signal::Complete(input))
     }
 
@@ -58,7 +60,7 @@ impl Node<Messages, Messages, crate::Error> for InspectNode {
         _input: Messages,
         view: &View,
         _cancellation: &Cancellation,
-    ) -> impl Future<Output = Result<Signal<Messages>, crate::Error>> + Send {
+    ) -> impl Future<Output = Result<Signal<Messages>, halo::agent::Error>> + Send {
         let observed = serde_json::json!({
             "node_id": view.node_id,
             "exec_id": view.exec_id,
@@ -69,7 +71,7 @@ impl Node<Messages, Messages, crate::Error> for InspectNode {
             "sources": view.sources,
         });
         async move {
-            Ok(Signal::Complete(Messages::new([crate::Message::function(
+            Ok(Signal::Complete(Messages::new([halo::agent::Message::function(
                 observed,
             )])))
         }
@@ -79,7 +81,7 @@ impl Node<Messages, Messages, crate::Error> for InspectNode {
 struct InspectAgent;
 
 impl Agent for InspectAgent {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<crate::event::Event, Error>>>;
+    type Stream = stream::Iter<std::vec::IntoIter<Result<halo::agent::event::Event, Error>>>;
 
     async fn run(
         &self,
@@ -87,8 +89,8 @@ impl Agent for InspectAgent {
         _stream: bool,
         _cancellation: Cancellation,
     ) -> Result<Self::Stream, Error> {
-        Ok(stream::iter(vec![Ok(crate::event::Event::Complete {
-            message: crate::Message::new(Role::Assistant),
+        Ok(stream::iter(vec![Ok(halo::agent::event::Event::Complete {
+            message: halo::agent::Message::new(Role::Assistant),
             usage: None,
             finish_reason: Some("stop".into()),
         })]))
@@ -101,7 +103,7 @@ impl Agent for InspectAgent {
         _cancellation: Cancellation,
         view: &View,
     ) -> impl Future<Output = Result<Self::Stream, Error>> + Send {
-        let mut message = crate::Message::new(Role::Assistant);
+        let mut message = halo::agent::Message::new(Role::Assistant);
         message.values = serde_json::Map::from_iter([
             ("node_id".into(), view.node_id.clone().into()),
             ("exec_id".into(), view.exec_id.into()),
@@ -109,7 +111,7 @@ impl Agent for InspectAgent {
             ("status".into(), view.status.clone().into()),
         ]);
         async move {
-            Ok(stream::iter(vec![Ok(crate::event::Event::Complete {
+            Ok(stream::iter(vec![Ok(halo::agent::event::Event::Complete {
                 message,
                 usage: None,
                 finish_reason: Some("stop".into()),
@@ -123,34 +125,34 @@ impl Agent for InspectAgent {
 }
 
 struct RetryTool {
-    definition: crate::components::tool::ToolDefinition,
+    definition: halo::agent::tool::ToolDefinition,
     calls: Arc<AtomicI64>,
     fail_first: bool,
 }
 
-impl crate::components::tool::Tool for RetryTool {
-    fn definition(&self) -> &crate::components::tool::ToolDefinition {
+impl halo::agent::tool::Tool for RetryTool {
+    fn definition(&self) -> &halo::agent::tool::ToolDefinition {
         &self.definition
     }
 
     async fn call(
         &self,
-        call: &crate::components::tool::Call,
+        call: &halo::agent::tool::Call,
         _cancellation: &Cancellation,
-    ) -> Result<crate::Message, Error> {
+    ) -> Result<halo::agent::Message, Error> {
         let count = self.calls.fetch_add(1, Ordering::SeqCst);
         if self.fail_first && count == 0 {
             return Err(Error::new("TIMEOUT", "temporary tool failure"));
         }
-        Ok(crate::Message::function(serde_json::json!({
+        Ok(halo::agent::Message::function(serde_json::json!({
             "tool": call.name,
             "ok": true,
         })))
     }
 }
 
-fn workflow_tool_definition(name: &str) -> crate::components::tool::ToolDefinition {
-    crate::components::tool::ToolDefinition {
+fn workflow_tool_definition(name: &str) -> halo::agent::tool::ToolDefinition {
+    halo::agent::tool::ToolDefinition {
         name: name.into(),
         description: format!("{name} test tool"),
         parameters: serde_json::from_value(serde_json::json!({
@@ -162,19 +164,19 @@ fn workflow_tool_definition(name: &str) -> crate::components::tool::ToolDefiniti
 }
 
 fn workflow_tool_input() -> Messages {
-    let mut assistant = crate::Message::new(Role::Assistant);
+    let mut assistant = halo::agent::Message::new(Role::Assistant);
     assistant.content = vec![
-        crate::model::content::part::Part {
+        halo::agent::model::content::part::Part {
             r#type: "tool_call".into(),
-            data: crate::components::model::content::part::object(serde_json::json!({
+            data: halo::agent::model::content::part::object(serde_json::json!({
                 "call_id": "call_a",
                 "name": "first",
                 "arguments": {}
             })),
         },
-        crate::model::content::part::Part {
+        halo::agent::model::content::part::Part {
             r#type: "tool_call".into(),
-            data: crate::components::model::content::part::object(serde_json::json!({
+            data: halo::agent::model::content::part::object(serde_json::json!({
                 "call_id": "call_b",
                 "name": "second",
                 "arguments": {}
@@ -196,15 +198,15 @@ struct WaitingAgent;
 impl Agent for WaitingAgent {
     async fn reply(
         &self,
-        _: crate::components::agent::Input,
-        _: crate::Cancellation,
-    ) -> Result<(), crate::Error> {
-        Err(crate::Error::new(
+        _: halo::agent::Input,
+        _: halo::agent::Cancellation,
+    ) -> Result<(), halo::agent::Error> {
+        Err(halo::agent::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))
     }
-    type Stream = stream::Iter<std::vec::IntoIter<Result<crate::event::Event, Error>>>;
+    type Stream = stream::Iter<std::vec::IntoIter<Result<halo::agent::event::Event, Error>>>;
 
     async fn run(
         &self,
@@ -212,22 +214,22 @@ impl Agent for WaitingAgent {
         _stream: bool,
         _cancellation: Cancellation,
     ) -> Result<Self::Stream, Error> {
-        if crate::runtime::agent::scope::restore().is_none() {
-            crate::runtime::agent::scope::capture(serde_json::json!({
+        if halo::agent::scope::restore().is_none() {
+            halo::agent::scope::capture(serde_json::json!({
                 "type": "agent",
                 "status": "waiting",
                 "wait_id": "approval"
             }));
             return Err(Error::new("WAITING", "agent is waiting for approval"));
         }
-        let mut message = crate::Message::new(Role::Assistant);
-        message.content.push(crate::model::content::part::Part {
+        let mut message = halo::agent::Message::new(Role::Assistant);
+        message.content.push(halo::agent::model::content::part::Part {
             r#type: "text".into(),
-            data: crate::components::model::content::part::object(
+            data: halo::agent::model::content::part::object(
                 serde_json::json!({"value": "approved"}),
             ),
         });
-        Ok(stream::iter(vec![Ok(crate::event::Event::Complete {
+        Ok(stream::iter(vec![Ok(halo::agent::event::Event::Complete {
             message,
             usage: None,
             finish_reason: Some("stop".into()),
@@ -238,15 +240,15 @@ impl Agent for WaitingAgent {
 impl Agent for RestoringAgent {
     async fn reply(
         &self,
-        _: crate::components::agent::Input,
-        _: crate::Cancellation,
-    ) -> Result<(), crate::Error> {
-        Err(crate::Error::new(
+        _: halo::agent::Input,
+        _: halo::agent::Cancellation,
+    ) -> Result<(), halo::agent::Error> {
+        Err(halo::agent::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))
     }
-    type Stream = stream::Iter<std::vec::IntoIter<Result<crate::event::Event, Error>>>;
+    type Stream = stream::Iter<std::vec::IntoIter<Result<halo::agent::event::Event, Error>>>;
 
     async fn run(
         &self,
@@ -254,19 +256,19 @@ impl Agent for RestoringAgent {
         _stream: bool,
         _cancellation: Cancellation,
     ) -> Result<Self::Stream, Error> {
-        let value = if crate::runtime::agent::scope::restore().is_some() {
+        let value = if halo::agent::scope::restore().is_some() {
             "restored_scene"
         } else {
             "fresh"
         };
-        let mut message = crate::Message::new(Role::Assistant);
-        message.content.push(crate::model::content::part::Part {
+        let mut message = halo::agent::Message::new(Role::Assistant);
+        message.content.push(halo::agent::model::content::part::Part {
             r#type: "text".into(),
-            data: crate::components::model::content::part::object(
+            data: halo::agent::model::content::part::object(
                 serde_json::json!({"value": value}),
             ),
         });
-        Ok(stream::iter(vec![Ok(crate::event::Event::Complete {
+        Ok(stream::iter(vec![Ok(halo::agent::event::Event::Complete {
             message,
             usage: None,
             finish_reason: Some("stop".into()),
@@ -282,15 +284,15 @@ struct MeteredAgent {
 impl Agent for MeteredAgent {
     async fn reply(
         &self,
-        _: crate::components::agent::Input,
-        _: crate::Cancellation,
-    ) -> Result<(), crate::Error> {
-        Err(crate::Error::new(
+        _: halo::agent::Input,
+        _: halo::agent::Cancellation,
+    ) -> Result<(), halo::agent::Error> {
+        Err(halo::agent::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))
     }
-    type Stream = stream::Iter<std::vec::IntoIter<Result<crate::event::Event, Error>>>;
+    type Stream = stream::Iter<std::vec::IntoIter<Result<halo::agent::event::Event, Error>>>;
 
     async fn run(
         &self,
@@ -299,23 +301,23 @@ impl Agent for MeteredAgent {
         _cancellation: Cancellation,
     ) -> Result<Self::Stream, Error> {
         let call = self.calls.fetch_add(1, Ordering::SeqCst);
-        let usage = crate::model::token::Usage {
+        let usage = halo::agent::model::token::Usage {
             input: Some(10),
             output: Some(4),
             total: Some(14),
-            input_details: Some(crate::model::token::InputDetails { cached: Some(3) }),
-            output_details: Some(crate::model::token::OutputDetails { think: Some(2) }),
+            input_details: Some(halo::agent::model::token::InputDetails { cached: Some(3) }),
+            output_details: Some(halo::agent::model::token::OutputDetails { think: Some(2) }),
             details: serde_json::Map::from_iter([("raw".into(), serde_json::json!(call))]),
         };
-        let mut message = crate::Message::new(Role::Assistant);
-        message.content.push(crate::model::content::part::Part {
+        let mut message = halo::agent::Message::new(Role::Assistant);
+        message.content.push(halo::agent::model::content::part::Part {
             r#type: "text".into(),
-            data: crate::components::model::content::part::object(
+            data: halo::agent::model::content::part::object(
                 serde_json::json!({"value":"answer"}),
             ),
         });
         message.usage = Some(usage.clone());
-        let mut events = vec![Ok(crate::event::Event::Complete {
+        let mut events = vec![Ok(halo::agent::event::Event::Complete {
             message,
             usage: Some(usage),
             finish_reason: Some("stop".into()),
@@ -328,10 +330,10 @@ impl Agent for MeteredAgent {
 }
 
 fn user_input() -> Messages {
-    let mut message = crate::Message::new(Role::User);
-    message.content.push(crate::model::content::part::Part {
+    let mut message = halo::agent::Message::new(Role::User);
+    message.content.push(halo::agent::model::content::part::Part {
         r#type: "text".into(),
-        data: crate::components::model::content::part::object(serde_json::json!({"value":"hello"})),
+        data: halo::agent::model::content::part::object(serde_json::json!({"value":"hello"})),
     });
     Messages::new([message])
 }
@@ -348,33 +350,33 @@ fn workflow_input() -> Messages {
     messages
 }
 
-type WorkflowMemoryConfig = crate::memory::Config<
-    crate::memory::short::Pair<
-        crate::core::memory::short::session::InMemory,
-        crate::core::memory::short::chat::InMemory,
+type WorkflowMemoryConfig = halo::agent::memory::Config<
+    halo::agent::core::memory::short::Pair<
+        halo::agent::core::memory::short::session::InMemory,
+        halo::agent::core::memory::short::chat::InMemory,
     >,
-    crate::core::memory::InMemory,
+    halo::agent::core::memory::InMemory,
 >;
 
 fn workflow_memory() -> WorkflowMemoryConfig {
-    use crate::memory::short::session::Store as _;
+    use halo::agent::memory::short::session::Store as _;
     let config = WorkflowMemoryConfig::new(
-        crate::memory::short::Pair::new(
-            crate::core::memory::short::session::InMemory::new(),
-            crate::core::memory::short::chat::InMemory::new(),
+        halo::agent::core::memory::short::Pair::new(
+            halo::agent::core::memory::short::session::InMemory::new(),
+            halo::agent::core::memory::short::chat::InMemory::new(),
         ),
-        crate::core::memory::InMemory::new(),
+        halo::agent::core::memory::InMemory::new(),
     );
     block_on(config.session().create(
-        crate::memory::short::session::Session {
+        halo::agent::memory::short::session::Session {
             id: 4,
             tenant_id: 1,
             user_id: 2,
-            r#type: crate::memory::short::Type::Workflow,
+            r#type: halo::agent::memory::short::Type::Workflow,
             title: None,
             summary: None,
             usage: None,
-            status: crate::memory::short::session::Status::Active,
+            status: halo::agent::memory::short::session::Status::Active,
             metadata: serde_json::Map::new(),
             created_time: 0,
             updated_time: 0,
@@ -525,15 +527,15 @@ fn nested_workflow_usage_is_included_without_billing_the_parent_twice() {
 impl Agent for FakeAgent {
     async fn reply(
         &self,
-        _: crate::components::agent::Input,
-        _: crate::Cancellation,
-    ) -> Result<(), crate::Error> {
-        Err(crate::Error::new(
+        _: halo::agent::Input,
+        _: halo::agent::Cancellation,
+    ) -> Result<(), halo::agent::Error> {
+        Err(halo::agent::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))
     }
-    type Stream = stream::Iter<std::vec::IntoIter<Result<crate::event::Event, Error>>>;
+    type Stream = stream::Iter<std::vec::IntoIter<Result<halo::agent::event::Event, Error>>>;
 
     async fn run(
         &self,
@@ -547,16 +549,16 @@ impl Agent for FakeAgent {
             return Err(Error::new("BUSINESS", "agent failed"));
         }
         let make_message = |role| {
-            let mut message = crate::Message::new(role);
-            message.content.push(crate::model::content::part::Part {
+            let mut message = halo::agent::Message::new(role);
+            message.content.push(halo::agent::model::content::part::Part {
                 r#type: "text".into(),
-                data: crate::components::model::content::part::object(
+                data: halo::agent::model::content::part::object(
                     serde_json::json!({"value": "agent result"}),
                 ),
             });
             message
         };
-        let first = (self.mode == "many").then(|| crate::event::Event::Complete {
+        let first = (self.mode == "many").then(|| halo::agent::event::Event::Complete {
             message: make_message(Role::Tool),
             usage: None,
             finish_reason: Some("tool".into()),
@@ -566,12 +568,12 @@ impl Agent for FakeAgent {
         } else {
             "stop"
         };
-        let final_event = crate::event::Event::Complete {
+        let final_event = halo::agent::event::Event::Complete {
             message: make_message(Role::Assistant),
             usage: None,
             finish_reason: Some(finish_reason.into()),
         };
-        let events: Vec<Result<crate::event::Event, Error>> =
+        let events: Vec<Result<halo::agent::event::Event, Error>> =
             first.into_iter().chain([final_event]).map(Ok).collect();
         Ok(stream::iter(events))
     }
@@ -580,7 +582,7 @@ impl Agent for FakeAgent {
 #[test]
 fn runtime_owns_one_state_and_exposes_checkpoint_json() {
     let mut builder = Builder::new("runtime");
-    builder.add_node("answer", crate::node::Echo).unwrap();
+    builder.add_node("answer", halo::agent::node::Echo).unwrap();
     builder.add_edge(START, "answer").unwrap();
     builder.add_edge("answer", END).unwrap();
     let workflow = builder.compile().unwrap();
@@ -615,10 +617,10 @@ fn run_executes_agent_node_and_preserves_agent_steps() {
     builder.add_edge("agent", END).unwrap();
     let workflow = builder.compile().unwrap();
     let mut runtime = Runtime::new(31, workflow).unwrap();
-    let mut input = crate::Message::new(Role::User);
-    input.content.push(crate::model::content::part::Part {
+    let mut input = halo::agent::Message::new(Role::User);
+    input.content.push(halo::agent::model::content::part::Part {
         r#type: "text".into(),
-        data: crate::components::model::content::part::object(
+        data: halo::agent::model::content::part::object(
             serde_json::json!({"value": "hello"}),
         ),
     });
@@ -627,7 +629,7 @@ fn run_executes_agent_node_and_preserves_agent_steps() {
         block_on(runtime.execute(Messages::new([input]), ids, Cancellation::new())).unwrap();
     assert_eq!(result.as_slice()[0].role, Role::Assistant);
     let execution = &runtime.state().nodes["agent"].executions[&3100];
-    assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+    assert_eq!(execution.status, node::status::execution::Status::Succeeded);
     assert_eq!(execution.attempts[0].steps.len(), 1);
     assert_eq!(execution.attempts[0].messages.as_slice().len(), 1);
 }
@@ -642,10 +644,10 @@ fn agent_node_keeps_each_complete_as_a_step_and_commits_last_assistant() {
     builder.add_edge("agent", END).unwrap();
     let workflow = builder.compile().unwrap();
     let mut runtime = Runtime::new(32, workflow).unwrap();
-    let mut input = crate::Message::new(Role::User);
-    input.content.push(crate::model::content::part::Part {
+    let mut input = halo::agent::Message::new(Role::User);
+    input.content.push(halo::agent::model::content::part::Part {
         r#type: "text".into(),
-        data: crate::components::model::content::part::object(
+        data: halo::agent::model::content::part::object(
             serde_json::json!({"value": "hello"}),
         ),
     });
@@ -671,10 +673,10 @@ fn cancelled_agent_does_not_activate_end() {
     builder.add_edge("agent", END).unwrap();
     let workflow = builder.compile().unwrap();
     let mut runtime = Runtime::new(33, workflow).unwrap();
-    let mut input = crate::Message::new(Role::User);
-    input.content.push(crate::model::content::part::Part {
+    let mut input = halo::agent::Message::new(Role::User);
+    input.content.push(halo::agent::model::content::part::Part {
         r#type: "text".into(),
-        data: crate::components::model::content::part::object(
+        data: halo::agent::model::content::part::object(
             serde_json::json!({"value": "hello"}),
         ),
     });
@@ -685,7 +687,7 @@ fn cancelled_agent_does_not_activate_end() {
     ));
     assert_eq!(
         runtime.state().nodes["agent"].executions[&3300].status,
-        node::ExecutionStatus::Cancelled
+        node::status::execution::Status::Cancelled
     );
     assert_ne!(runtime.state().status, Status::Succeeded);
 }
@@ -700,10 +702,10 @@ fn failed_agent_is_recorded_without_successful_outgoing_relations() {
     builder.add_edge("agent", END).unwrap();
     let workflow = builder.compile().unwrap();
     let mut runtime = Runtime::new(34, workflow).unwrap();
-    let mut input = crate::Message::new(Role::User);
-    input.content.push(crate::model::content::part::Part {
+    let mut input = halo::agent::Message::new(Role::User);
+    input.content.push(halo::agent::model::content::part::Part {
         r#type: "text".into(),
-        data: crate::components::model::content::part::object(
+        data: halo::agent::model::content::part::object(
             serde_json::json!({"value": "hello"}),
         ),
     });
@@ -713,7 +715,7 @@ fn failed_agent_is_recorded_without_successful_outgoing_relations() {
         Cancellation::new(),
     ));
     let execution = &runtime.state().nodes["agent"].executions[&3400];
-    assert_eq!(execution.status, node::ExecutionStatus::Failed);
+    assert_eq!(execution.status, node::status::execution::Status::Failed);
     assert!(execution.to.is_empty());
     assert_eq!(
         execution.error.as_ref().map(|error| error.code.as_str()),
@@ -724,14 +726,14 @@ fn failed_agent_is_recorded_without_successful_outgoing_relations() {
 #[test]
 fn run_executes_a_dag_and_commits_each_barrier() {
     let mut builder = Builder::new("run");
-    builder.add_node("a", crate::node::Echo).unwrap();
-    builder.add_node("b", crate::node::Echo).unwrap();
+    builder.add_node("a", halo::agent::node::Echo).unwrap();
+    builder.add_node("b", halo::agent::node::Echo).unwrap();
     builder.add_edge(START, "a").unwrap();
     builder.add_edge("a", "b").unwrap();
     builder.add_edge("b", END).unwrap();
     let workflow = builder.compile().unwrap();
     let mut runtime = Runtime::new(11, workflow).unwrap();
-    let initial = Messages::new([crate::Message::function(serde_json::json!({
+    let initial = Messages::new([halo::agent::Message::function(serde_json::json!({
         "query": "hello"
     }))]);
     let next = Arc::new(std::sync::atomic::AtomicI64::new(100));
@@ -757,7 +759,7 @@ fn run_executes_a_dag_and_commits_each_barrier() {
 fn run_persists_a_conditional_route_in_execution_to() {
     let mut builder = Builder::new("conditional-run");
     for id in ["router", "left", "right"] {
-        builder.add_node(id, crate::node::Echo).unwrap();
+        builder.add_node(id, halo::agent::node::Echo).unwrap();
     }
     builder.add_edge(START, "router").unwrap();
     builder
@@ -779,7 +781,7 @@ fn run_persists_a_conditional_route_in_execution_to() {
     builder.add_edge("right", END).unwrap();
     let workflow = builder.compile().unwrap();
     let mut runtime = Runtime::new(14, workflow).unwrap();
-    let initial = Messages::new([crate::Message::function(serde_json::json!({
+    let initial = Messages::new([halo::agent::Message::function(serde_json::json!({
         "route": "right"
     }))]);
     let next = Arc::new(std::sync::atomic::AtomicI64::new(400));
@@ -799,14 +801,14 @@ fn run_persists_a_conditional_route_in_execution_to() {
 #[test]
 fn runtime_can_save_and_restore_its_single_checkpoint() {
     let mut builder = Builder::new("checkpoint-run");
-    builder.add_node("answer", crate::node::Echo).unwrap();
+    builder.add_node("answer", halo::agent::node::Echo).unwrap();
     builder.add_edge(START, "answer").unwrap();
     builder.add_edge("answer", END).unwrap();
     let workflow = builder.compile().unwrap();
     let mut runtime = Runtime::new(16, workflow.clone()).unwrap();
     let ids = Arc::new(|| 600);
     block_on(runtime.execute(Messages::default(), ids, Cancellation::new())).unwrap();
-    let checkpoint = crate::core::checkpoint::InMemory::new();
+    let checkpoint = halo::agent::core::checkpoint::InMemory::new();
     block_on(runtime.save_checkpoint(&checkpoint, &Cancellation::new())).unwrap();
     let snapshot = block_on(checkpoint.load(16, &Cancellation::new())).unwrap();
     let mut restored = Runtime::from_snapshot(16, workflow, snapshot).unwrap();
@@ -816,11 +818,11 @@ fn runtime_can_save_and_restore_its_single_checkpoint() {
 #[test]
 fn configured_checkpoint_saves_one_closeout_snapshot_after_success() {
     let mut builder = Builder::new("checkpoint-closeout");
-    builder.add_node("answer", crate::node::Echo).unwrap();
+    builder.add_node("answer", halo::agent::node::Echo).unwrap();
     builder.add_edge(START, "answer").unwrap();
     builder.add_edge("answer", END).unwrap();
     let workflow = builder.compile().unwrap();
-    let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+    let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
     let mut runtime = Runtime::new(160, workflow.clone())
         .unwrap()
         .with_checkpoint(checkpoint.clone());
@@ -836,11 +838,11 @@ fn configured_checkpoint_saves_one_closeout_snapshot_after_success() {
 #[test]
 fn configured_checkpoint_preserves_cancelled_state_even_when_run_is_cancelled() {
     let mut builder = Builder::new("checkpoint-cancel");
-    builder.add_node("answer", crate::node::Echo).unwrap();
+    builder.add_node("answer", halo::agent::node::Echo).unwrap();
     builder.add_edge(START, "answer").unwrap();
     builder.add_edge("answer", END).unwrap();
     let workflow = builder.compile().unwrap();
-    let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+    let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
     let mut runtime = Runtime::new(161, workflow)
         .unwrap()
         .with_checkpoint(checkpoint.clone());
@@ -856,7 +858,7 @@ fn configured_checkpoint_preserves_cancelled_state_even_when_run_is_cancelled() 
 
 #[test]
 fn workflow_memory_writes_chat_graph_and_state_only_at_closeout() {
-    use crate::memory::short::chat::Store as _;
+    use halo::agent::memory::short::chat::Store as _;
 
     let mut builder = Builder::new("workflow-memory-closeout");
     builder
@@ -875,8 +877,8 @@ fn workflow_memory_writes_chat_graph_and_state_only_at_closeout() {
     block_on(runtime.execute(workflow_input(), Arc::new(|| 5_001), Cancellation::new())).unwrap();
 
     let chat = block_on(chats.chat().read(5, &Cancellation::new())).unwrap();
-    assert_eq!(chat.r#type, crate::memory::short::Type::Workflow);
-    assert_eq!(chat.status, crate::memory::short::chat::Status::Completed);
+    assert_eq!(chat.r#type, halo::agent::memory::short::Type::Workflow);
+    assert_eq!(chat.status, halo::agent::memory::short::chat::Status::Completed);
     assert_eq!(
         chat.graph,
         Some(serde_json::to_value(runtime.definition()).unwrap())
@@ -893,7 +895,7 @@ fn workflow_memory_writes_chat_graph_and_state_only_at_closeout() {
 
 #[test]
 fn terminal_workflow_snapshot_is_idempotent_with_memory() {
-    use crate::memory::short::chat::Store as _;
+    use halo::agent::memory::short::chat::Store as _;
 
     let mut builder = Builder::new("workflow-terminal-restore");
     builder
@@ -921,7 +923,7 @@ fn terminal_workflow_snapshot_is_idempotent_with_memory() {
         block_on(chats.chat().read(5, &Cancellation::new()))
             .unwrap()
             .status,
-        crate::memory::short::chat::Status::Completed
+        halo::agent::memory::short::chat::Status::Completed
     );
     assert_eq!(
         block_on(chats.chat().read(5, &Cancellation::new()))
@@ -935,7 +937,7 @@ fn terminal_workflow_snapshot_is_idempotent_with_memory() {
 #[test]
 fn workflow_snapshot_rejects_a_different_chat_id() {
     let mut builder = Builder::new("workflow-checkpoint-identity");
-    builder.add_node("answer", crate::node::Echo).unwrap();
+    builder.add_node("answer", halo::agent::node::Echo).unwrap();
     builder.add_edge(START, "answer").unwrap();
     builder.add_edge("answer", END).unwrap();
     let workflow = builder.compile().unwrap();
@@ -949,7 +951,7 @@ fn workflow_snapshot_rejects_a_different_chat_id() {
 
 #[test]
 fn workflow_memory_keeps_waiting_chat_open_until_resume_closeout() {
-    use crate::memory::short::chat::Store as _;
+    use halo::agent::memory::short::chat::Store as _;
 
     let mut builder = Builder::new("workflow-memory-wait");
     builder
@@ -973,7 +975,7 @@ fn workflow_memory_keeps_waiting_chat_open_until_resume_closeout() {
         block_on(chats.chat().read(5, &Cancellation::new()))
             .unwrap()
             .status,
-        crate::memory::short::chat::Status::Running
+        halo::agent::memory::short::chat::Status::Running
     );
     assert!(
         block_on(chats.chat().read(5, &Cancellation::new()))
@@ -985,7 +987,7 @@ fn workflow_memory_keeps_waiting_chat_open_until_resume_closeout() {
     runtime
         .resume(
             "approval",
-            Messages::new([crate::Message::function(serde_json::json!({
+            Messages::new([halo::agent::Message::function(serde_json::json!({
                 "approved": true
             }))]),
         )
@@ -995,7 +997,7 @@ fn workflow_memory_keeps_waiting_chat_open_until_resume_closeout() {
         block_on(chats.chat().read(5, &Cancellation::new()))
             .unwrap()
             .status,
-        crate::memory::short::chat::Status::Completed
+        halo::agent::memory::short::chat::Status::Completed
     );
     assert!(
         block_on(chats.chat().read(5, &Cancellation::new()))
@@ -1007,17 +1009,17 @@ fn workflow_memory_keeps_waiting_chat_open_until_resume_closeout() {
 
 #[test]
 fn workflow_memory_closes_failed_and_cancelled_runs_with_state() {
-    use crate::memory::short::chat::Store as _;
+    use halo::agent::memory::short::chat::Store as _;
 
     for (mode, expected_chat_status, expected_state) in [
         (
             "error",
-            crate::memory::short::chat::Status::Failed,
+            halo::agent::memory::short::chat::Status::Failed,
             "failed",
         ),
         (
             "cancel",
-            crate::memory::short::chat::Status::Stopped,
+            halo::agent::memory::short::chat::Status::Stopped,
             "cancelled",
         ),
     ] {
@@ -1063,7 +1065,7 @@ fn failed_node_can_activate_an_explicit_failure_relation() {
         Err(Error::new("BUSINESS", "failed"))
     };
     builder.add_node("fail", fail).unwrap();
-    builder.add_node("handle", crate::node::Echo).unwrap();
+    builder.add_node("handle", halo::agent::node::Echo).unwrap();
     builder.add_edge(START, "fail").unwrap();
     builder
         .add_failure_edges(["fail"], ["handle"], "node_failed")
@@ -1077,10 +1079,10 @@ fn failed_node_can_activate_an_explicit_failure_relation() {
         Arc::new(move || next.fetch_add(1, std::sync::atomic::Ordering::AcqRel))
     };
     block_on(runtime.execute(Messages::default(), ids, Cancellation::new())).unwrap();
-    assert_eq!(runtime.state().nodes["fail"].status, node::Status::Failed);
+    assert_eq!(runtime.state().nodes["fail"].status, node::status::Status::Failed);
     assert_eq!(
         runtime.state().nodes["handle"].status,
-        node::Status::Succeeded
+        node::status::Status::Succeeded
     );
     assert_eq!(runtime.state().status, Status::Succeeded);
 }
@@ -1088,7 +1090,7 @@ fn failed_node_can_activate_an_explicit_failure_relation() {
 #[test]
 fn run_executes_a_graph_node_and_keeps_child_state_on_attempt() {
     let mut child_builder = Builder::new("child-run");
-    child_builder.add_node("inner", crate::node::Echo).unwrap();
+    child_builder.add_node("inner", halo::agent::node::Echo).unwrap();
     child_builder.add_edge(START, "inner").unwrap();
     child_builder.add_edge("inner", END).unwrap();
     let child = child_builder.compile().unwrap();
@@ -1099,7 +1101,7 @@ fn run_executes_a_graph_node_and_keeps_child_state_on_attempt() {
     parent_builder.add_edge("child", END).unwrap();
     let parent = parent_builder.compile().unwrap();
     let mut runtime = Runtime::new(15, parent).unwrap();
-    let initial = Messages::new([crate::Message::function(serde_json::json!({
+    let initial = Messages::new([halo::agent::Message::function(serde_json::json!({
         "query": "nested"
     }))]);
     let next = Arc::new(std::sync::atomic::AtomicI64::new(500));
@@ -1109,7 +1111,7 @@ fn run_executes_a_graph_node_and_keeps_child_state_on_attempt() {
     };
     block_on(runtime.execute(initial.clone(), ids, Cancellation::new())).unwrap();
     let execution = &runtime.state().nodes["child"].executions[&500];
-    assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+    assert_eq!(execution.status, node::status::execution::Status::Succeeded);
     assert_eq!(
         execution.attempts[0].graph.as_ref().unwrap().status,
         Status::Succeeded
@@ -1139,20 +1141,20 @@ fn nested_graph_wait_resumes_through_the_parent_execution() {
     assert_eq!(runtime.state().status, Status::Paused);
     assert_eq!(
         runtime.state().nodes["child"].executions[&1_200].status,
-        node::ExecutionStatus::Waiting
+        node::status::execution::Status::Waiting
     );
 
     runtime
         .resume(
             "child",
-            Messages::new([crate::Message::function(
+            Messages::new([halo::agent::Message::function(
                 serde_json::json!({"approved": true}),
             )]),
         )
         .unwrap();
     block_on(runtime.execute(initial, Arc::new(|| 1_201), Cancellation::new())).unwrap();
     let execution = &runtime.state().nodes["child"].executions[&1_200];
-    assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+    assert_eq!(execution.status, node::status::execution::Status::Succeeded);
     assert_eq!(execution.attempts.len(), 1);
     assert_eq!(
         execution.attempts[0].graph.as_ref().unwrap().status,
@@ -1175,7 +1177,7 @@ fn nested_graph_checkpoint_restores_child_wait_before_parent_resume() {
     parent_builder.add_edge(START, "child").unwrap();
     parent_builder.add_edge("child", END).unwrap();
     let parent = parent_builder.compile().unwrap();
-    let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+    let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
     let mut runtime = Runtime::new(19, parent.clone())
         .unwrap()
         .with_checkpoint(checkpoint.clone());
@@ -1202,7 +1204,7 @@ fn nested_graph_checkpoint_restores_child_wait_before_parent_resume() {
     restored
         .resume(
             "child",
-            Messages::new([crate::Message::function(
+            Messages::new([halo::agent::Message::function(
                 serde_json::json!({"approved": true}),
             )]),
         )
@@ -1210,7 +1212,7 @@ fn nested_graph_checkpoint_restores_child_wait_before_parent_resume() {
     block_on(restored.execute(initial, Arc::new(|| 1_301), Cancellation::new())).unwrap();
 
     let execution = &restored.state().nodes["child"].executions[&1_300];
-    assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+    assert_eq!(execution.status, node::status::execution::Status::Succeeded);
     assert_eq!(execution.attempts.len(), 1);
     assert_eq!(
         execution.attempts[0].graph.as_ref().unwrap().status,
@@ -1229,7 +1231,7 @@ fn nested_graph_checkpoint_restores_child_wait_before_parent_resume() {
 #[test]
 fn checkpoint_recovery_retries_waiting_node_without_allocating_a_new_execution() {
     let mut builder = Builder::new("checkpoint-waiting-node");
-    builder.add_node("answer", crate::node::Echo).unwrap();
+    builder.add_node("answer", halo::agent::node::Echo).unwrap();
     builder
         .set_retry(
             "answer",
@@ -1266,9 +1268,9 @@ fn checkpoint_recovery_retries_waiting_node_without_allocating_a_new_execution()
     .unwrap();
 
     let execution = &restored.state().nodes["answer"].executions[&17_001];
-    assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+    assert_eq!(execution.status, node::status::execution::Status::Succeeded);
     assert_eq!(execution.attempts.len(), 1);
-    assert_eq!(execution.attempts[0].status, node::AttemptStatus::Succeeded);
+    assert_eq!(execution.attempts[0].status, node::status::attempt::Status::Succeeded);
     assert_eq!(allocated.load(Ordering::SeqCst), 0);
 }
 
@@ -1310,9 +1312,9 @@ fn checkpoint_recovery_resumes_agent_attempt_without_allocating_new_identity() {
     .unwrap();
 
     let execution = &restored.state().nodes["agent"].executions[&17_011];
-    assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+    assert_eq!(execution.status, node::status::execution::Status::Succeeded);
     assert_eq!(execution.attempts.len(), 1);
-    assert_eq!(execution.attempts[0].status, node::AttemptStatus::Succeeded);
+    assert_eq!(execution.attempts[0].status, node::status::attempt::Status::Succeeded);
     assert_eq!(execution.attempts[0].idx, 0);
     assert_eq!(allocated.load(Ordering::SeqCst), 0);
 }
@@ -1330,9 +1332,9 @@ fn embedded_agent_wait_uses_workflow_wait_and_resumes_same_execution() {
     assert_eq!(first.unwrap_err().code, "WAITING");
     assert_eq!(runtime.state().status, Status::Paused);
     let execution = &runtime.state().nodes["agent"].executions[&17_041];
-    assert_eq!(execution.status, node::ExecutionStatus::Waiting);
+    assert_eq!(execution.status, node::status::execution::Status::Waiting);
     assert_eq!(execution.attempts.len(), 1);
-    assert_eq!(execution.attempts[0].status, node::AttemptStatus::Waiting);
+    assert_eq!(execution.attempts[0].status, node::status::attempt::Status::Waiting);
     assert!(runtime.state().waits.is_empty());
     assert_eq!(
         runtime.state().pause("agent").unwrap().unwrap().wait_id,
@@ -1342,7 +1344,7 @@ fn embedded_agent_wait_uses_workflow_wait_and_resumes_same_execution() {
     runtime
         .resume(
             "agent",
-            Messages::new([crate::Message::function(serde_json::json!({
+            Messages::new([halo::agent::Message::function(serde_json::json!({
                 "approved": true
             }))]),
         )
@@ -1350,7 +1352,7 @@ fn embedded_agent_wait_uses_workflow_wait_and_resumes_same_execution() {
     block_on(runtime.execute(user_input(), Arc::new(|| 17_042), Cancellation::new())).unwrap();
 
     let execution = &runtime.state().nodes["agent"].executions[&17_041];
-    assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+    assert_eq!(execution.status, node::status::execution::Status::Succeeded);
     assert_eq!(execution.attempts.len(), 1);
     assert_eq!(execution.attempts[0].idx, 0);
     assert!(runtime.state().waits.is_empty());
@@ -1398,7 +1400,7 @@ fn checkpoint_recovery_passes_embedded_agent_scene_to_the_same_attempt() {
     let execution = &restored.state().nodes["agent"].executions[&17_031];
     assert_eq!(execution.attempts.len(), 1);
     assert_eq!(execution.attempts[0].idx, 0);
-    assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+    assert_eq!(execution.status, node::status::execution::Status::Succeeded);
     assert_eq!(
         execution.messages.0[0].content[0].data["value"],
         serde_json::json!("restored_scene")
@@ -1409,7 +1411,7 @@ fn checkpoint_recovery_passes_embedded_agent_scene_to_the_same_attempt() {
 #[test]
 fn checkpoint_recovery_resumes_running_node_without_retry_budget() {
     let mut builder = Builder::new("checkpoint-waiting-no-retry");
-    builder.add_node("answer", crate::node::Echo).unwrap();
+    builder.add_node("answer", halo::agent::node::Echo).unwrap();
     builder.add_edge(START, "answer").unwrap();
     builder.add_edge("answer", END).unwrap();
     let workflow = builder.compile().unwrap();
@@ -1433,17 +1435,17 @@ fn checkpoint_recovery_resumes_running_node_without_retry_budget() {
 
     assert!(result.is_empty());
     let execution = &restored.state().nodes["answer"].executions[&17_021];
-    assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+    assert_eq!(execution.status, node::status::execution::Status::Succeeded);
     assert_eq!(execution.attempts.len(), 1);
-    assert_eq!(execution.attempts[0].status, node::AttemptStatus::Succeeded);
+    assert_eq!(execution.attempts[0].status, node::status::attempt::Status::Succeeded);
     assert_eq!(allocated.load(Ordering::SeqCst), 0);
 }
 
 #[test]
 fn run_waits_at_a_barrier_instead_of_activating_downstream() {
     let mut builder = Builder::new("wait");
-    builder.add_node("a", crate::node::Echo).unwrap();
-    builder.add_node("b", crate::node::Echo).unwrap();
+    builder.add_node("a", halo::agent::node::Echo).unwrap();
+    builder.add_node("b", halo::agent::node::Echo).unwrap();
     builder.add_edge(START, "a").unwrap();
     builder.add_edge("a", "b").unwrap();
     builder.add_edge("b", END).unwrap();
@@ -1471,12 +1473,12 @@ fn resolved_wait_reuses_the_same_execution_id_and_attempt() {
     builder.add_edge("approval", END).unwrap();
     let workflow = builder.compile().unwrap();
     let mut runtime = Runtime::new(13, workflow).unwrap();
-    let mut request = crate::Message::new(crate::components::message::Role::User);
+    let mut request = halo::agent::Message::new(halo::agent::message::Role::User);
     request
         .content
-        .push(crate::components::model::content::part::Part {
+        .push(halo::agent::model::content::part::Part {
             r#type: "text".into(),
-            data: crate::components::model::content::part::object(
+            data: halo::agent::model::content::part::object(
                 serde_json::json!({"value":"request"}),
             ),
         });
@@ -1491,24 +1493,24 @@ fn resolved_wait_reuses_the_same_execution_id_and_attempt() {
         Cancellation::new(),
     ));
     assert_eq!(first.unwrap_err().code, "WAITING");
-    let mut approved = crate::Message::new(crate::components::message::Role::User);
+    let mut approved = halo::agent::Message::new(halo::agent::message::Role::User);
     approved
         .content
-        .push(crate::components::model::content::part::Part {
+        .push(halo::agent::model::content::part::Part {
             r#type: "text".into(),
-            data: crate::components::model::content::part::object(
+            data: halo::agent::model::content::part::object(
                 serde_json::json!({"value":"approved"}),
             ),
         });
     let approved = Messages::new([approved]);
     runtime.resume("approval", approved.clone()).unwrap();
     runtime.resume("approval", approved).unwrap();
-    let mut changed = crate::Message::new(crate::components::message::Role::User);
+    let mut changed = halo::agent::Message::new(halo::agent::message::Role::User);
     changed
         .content
-        .push(crate::components::model::content::part::Part {
+        .push(halo::agent::model::content::part::Part {
             r#type: "text".into(),
-            data: crate::components::model::content::part::object(
+            data: halo::agent::model::content::part::object(
                 serde_json::json!({"value":"changed"}),
             ),
         });
@@ -1530,20 +1532,20 @@ fn resolved_wait_reuses_the_same_execution_id_and_attempt() {
     .unwrap();
     assert_eq!(
         output.as_slice()[0].content[0].data,
-        crate::components::model::content::part::object(serde_json::json!({"value":"approved"}))
+        halo::agent::model::content::part::object(serde_json::json!({"value":"approved"}))
     );
     let execution = &runtime.state().nodes["approval"].executions[&700];
     assert_eq!(execution.attempts.len(), 1);
     assert_eq!(execution.attempts[0].idx, 0);
-    assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+    assert_eq!(execution.status, node::status::execution::Status::Succeeded);
     assert_eq!(ids.load(Ordering::Acquire), 701);
 }
 
 #[test]
 fn fan_out_relation_activates_one_target_execution() {
     let mut builder = Builder::new("fan-out");
-    builder.add_node("source", crate::node::Echo).unwrap();
-    builder.add_node("target", crate::node::Echo).unwrap();
+    builder.add_node("source", halo::agent::node::Echo).unwrap();
+    builder.add_node("target", halo::agent::node::Echo).unwrap();
     builder.add_edge(START, "source").unwrap();
     builder.add_fan_out_edges("source", "target").unwrap();
     builder.add_edge("target", END).unwrap();
@@ -1569,8 +1571,8 @@ fn fan_out_relation_activates_one_target_execution() {
 #[test]
 fn loop_relation_uses_the_declared_condition_and_new_execution_ids() {
     let mut builder = Builder::new("loop");
-    builder.add_node("first", crate::node::Echo).unwrap();
-    builder.add_node("second", crate::node::Echo).unwrap();
+    builder.add_node("first", halo::agent::node::Echo).unwrap();
+    builder.add_node("second", halo::agent::node::Echo).unwrap();
     builder.add_edge(START, "first").unwrap();
     builder.add_edge("first", "second").unwrap();
     builder.add_edge("second", END).unwrap();
@@ -1606,11 +1608,11 @@ fn join_failure_waits_for_all_sources_and_activates_handler() {
     let mut builder = Builder::new("join-failure");
     builder
         .add_node("failed", |_input: Messages, _| async {
-            Err::<Messages, crate::Error>(crate::Error::new("FAILED", "boom"))
+            Err::<Messages, halo::agent::Error>(halo::agent::Error::new("FAILED", "boom"))
         })
         .unwrap();
-    builder.add_node("ok", crate::node::Echo).unwrap();
-    builder.add_node("handler", crate::node::Echo).unwrap();
+    builder.add_node("ok", halo::agent::node::Echo).unwrap();
+    builder.add_node("handler", halo::agent::node::Echo).unwrap();
     builder.add_edge(START, "failed").unwrap();
     builder.add_edge(START, "ok").unwrap();
     builder.add_join_edge(["failed", "ok"], "handler").unwrap();
@@ -1636,7 +1638,7 @@ fn join_failure_waits_for_all_sources_and_activates_handler() {
         .next()
         .unwrap();
     assert_eq!(handler.from.len(), 2);
-    assert_eq!(handler.status, node::ExecutionStatus::Succeeded);
+    assert_eq!(handler.status, node::status::execution::Status::Succeeded);
 }
 
 #[test]
@@ -1663,8 +1665,8 @@ fn runtime_retries_only_transient_node_errors() {
         .unwrap();
     let execution = &runtime.state().nodes["retry"].executions[&1_100];
     assert_eq!(execution.attempts.len(), 2);
-    assert_eq!(execution.attempts[0].status, node::AttemptStatus::Failed);
-    assert_eq!(execution.attempts[1].status, node::AttemptStatus::Succeeded);
+    assert_eq!(execution.attempts[0].status, node::status::attempt::Status::Failed);
+    assert_eq!(execution.attempts[1].status, node::status::attempt::Status::Succeeded);
 }
 
 #[test]
@@ -1675,7 +1677,7 @@ fn runtime_tool_retry_skips_successful_call_ids() {
     builder
         .add_node(
             "tools",
-            crate::runtime::workflow::tool::ToolNode::new(RetryTool {
+            halo::agent::workflow::tool::ToolNode::new(RetryTool {
                 definition: workflow_tool_definition("first"),
                 calls: first_calls.clone(),
                 fail_first: false,
@@ -1764,7 +1766,7 @@ async fn runtime_waits_for_backoff_before_starting_the_next_attempt() {
         execution.attempts[0].error.as_ref().unwrap().code,
         "TIMEOUT"
     );
-    assert_eq!(execution.attempts[1].status, node::AttemptStatus::Succeeded);
+    assert_eq!(execution.attempts[1].status, node::status::attempt::Status::Succeeded);
 }
 
 #[tokio::test(start_paused = true)]
@@ -1787,10 +1789,10 @@ async fn cancellation_during_backoff_preserves_the_failed_attempt() {
     assert_eq!(run.await.unwrap_err().code, "CANCELLED");
     let execution = &runtime.state().nodes["retry"].executions[&900];
     assert_eq!(calls.load(Ordering::SeqCst), 1);
-    assert_eq!(execution.status, node::ExecutionStatus::Cancelled);
+    assert_eq!(execution.status, node::status::execution::Status::Cancelled);
     assert!(execution.error.is_none());
     assert_eq!(execution.attempts.len(), 1);
-    assert_eq!(execution.attempts[0].status, node::AttemptStatus::Failed);
+    assert_eq!(execution.attempts[0].status, node::status::attempt::Status::Failed);
     assert_eq!(
         execution.attempts[0].error.as_ref().unwrap().code,
         "TIMEOUT"
@@ -1857,7 +1859,7 @@ fn checkpoint_recovery_toolnode_reuses_committed_call_ids() {
     builder
         .add_node(
             "tools",
-            crate::runtime::workflow::tool::ToolNode::new(RetryTool {
+            halo::agent::workflow::tool::ToolNode::new(RetryTool {
                 definition: workflow_tool_definition("first"),
                 calls: first_calls.clone(),
                 fail_first: false,
@@ -1873,7 +1875,7 @@ fn checkpoint_recovery_toolnode_reuses_committed_call_ids() {
     builder.add_edge("tools", END).unwrap();
     let workflow = builder.compile().unwrap();
 
-    let mut committed = crate::Message::function(serde_json::json!({
+    let mut committed = halo::agent::Message::function(serde_json::json!({
         "tool": "first",
         "ok": true,
     }));
@@ -1950,7 +1952,7 @@ fn tool_checkpoint_recovers_in_a_fresh_process_without_replaying_successes() {
         let prior_attempt = std::env::var_os(RETRY).is_some();
         let snapshot: Value = serde_json::from_slice(&std::fs::read(path).unwrap()).unwrap();
         let workflow = recovery_workflow(recovery_tools(&calls, parallel, !prior_attempt));
-        let checkpoint = Arc::new(crate::core::checkpoint::InMemory::new());
+        let checkpoint = Arc::new(halo::agent::core::checkpoint::InMemory::new());
         let mut runtime = Runtime::from_snapshot(19, workflow, snapshot)
             .unwrap()
             .with_checkpoint(checkpoint.clone());
@@ -1969,14 +1971,14 @@ fn tool_checkpoint_recovers_in_a_fresh_process_without_replaying_successes() {
         let execution = &runtime.state().nodes["tools"].executions[&1_300];
         assert_eq!(execution.attempts.len(), 2);
         assert_eq!(execution.attempts[0].idx, 0);
-        assert_eq!(execution.attempts[0].status, node::AttemptStatus::Failed);
+        assert_eq!(execution.attempts[0].status, node::status::attempt::Status::Failed);
         assert_eq!(
             execution.attempts[0].error.as_ref().unwrap().code,
             "TIMEOUT"
         );
         assert_eq!(execution.attempts[1].idx, 1);
-        assert_eq!(execution.attempts[1].status, node::AttemptStatus::Succeeded);
-        assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+        assert_eq!(execution.attempts[1].status, node::status::attempt::Status::Succeeded);
+        assert_eq!(execution.status, node::status::execution::Status::Succeeded);
         assert!(execution.error.is_none());
         let ids = output
             .as_slice()
@@ -2011,9 +2013,9 @@ fn tool_checkpoint_recovers_in_a_fresh_process_without_replaying_successes() {
         let calls = std::array::from_fn(|_| Arc::new(AtomicI64::new(0)));
         let tools = recovery_tools(&calls, parallel, true);
         let mut input = workflow_tool_input();
-        input.0[0].content.push(crate::model::content::part::Part {
+        input.0[0].content.push(halo::agent::model::content::part::Part {
             r#type: "tool_call".into(),
-            data: crate::model::content::part::object(serde_json::json!({
+            data: halo::agent::model::content::part::object(serde_json::json!({
                 "call_id": "call_c", "name": "third", "arguments": {}
             })),
         });
@@ -2052,7 +2054,7 @@ fn tool_checkpoint_recovers_in_a_fresh_process_without_replaying_successes() {
                 .executions
                 .get_mut(&1_300)
                 .unwrap();
-            execution.attempts[0].status = node::AttemptStatus::Failed;
+            execution.attempts[0].status = node::status::attempt::Status::Failed;
             execution.attempts[0].error = Some(partial.error);
             // A crash after starting the next Attempt must not lose
             // successful calls retained only in the previous Attempt.
@@ -2067,7 +2069,7 @@ fn tool_checkpoint_recovers_in_a_fresh_process_without_replaying_successes() {
                 .0
                 .is_empty()
         );
-        let checkpoint = crate::core::checkpoint::InMemory::new();
+        let checkpoint = halo::agent::core::checkpoint::InMemory::new();
         block_on(runtime.save_checkpoint(&checkpoint, &Cancellation::new())).unwrap();
         let saved = block_on(checkpoint.load(19, &Cancellation::new())).unwrap();
         let path = std::env::temp_dir().join(format!(

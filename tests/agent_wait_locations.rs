@@ -9,10 +9,8 @@ use halo::{
     agent::checkpoint::Checkpoint,
     agent::core,
     agent::message::Role,
-    agent::runtime::agent::{
-        State,
-        wait::{Node, Wait},
-    },
+    agent::state::State,
+    agent::wait::{Node, Wait},
     agent::{self, Agent, Input},
 };
 use serde_json::{Value, json};
@@ -51,16 +49,16 @@ fn input() -> Input {
 }
 
 fn step(id: &str, reply_id: i64) -> Value {
-    serde_json::to_value(halo::agent::runtime::agent::node::Step {
+    serde_json::to_value(halo::agent::state::node::Step {
         id: id.into(),
         kind: "human".into(),
-        status: "waiting".into(),
+        status: halo::agent::state::node::status::step::Status::Waiting,
         waits: [(
             reply_id,
-            halo::agent::runtime::agent::node::Wait {
+            halo::agent::state::node::Wait {
                 count: 1,
                 kind: "approval".into(),
-                status: "waiting".into(),
+                status: halo::agent::state::node::status::wait::Status::Waiting,
                 question: Message::new(Role::Assistant),
                 feedback: Default::default(),
             },
@@ -94,7 +92,7 @@ fn scene(steps: Vec<Value>) -> Value {
     serde_json::to_value(State {
         chat_id: Some(1001),
         r#type: "agent".into(),
-        status: "waiting".into(),
+        status: halo::agent::state::Status::Waiting,
         steps: steps
             .into_iter()
             .map(|v| serde_json::from_value(v).unwrap())
@@ -151,7 +149,7 @@ async fn cases<A: Agent>(
     let base = serde_json::to_value(State {
         chat_id: Some(1001),
         r#type: "agent".into(),
-        status: "succeeded".into(),
+        status: halo::agent::state::Status::Succeeded,
         ..Default::default()
     })
     .unwrap();

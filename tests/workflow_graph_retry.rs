@@ -106,7 +106,7 @@ fn restored_external_wait_advances_the_barrier_and_runs_its_downstream() {
         );
         let execution = &restored.state().nodes["approval"].executions[&8501];
         assert_eq!(execution.attempts.len(), 1);
-        assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+        assert_eq!(execution.status, node::status::execution::Status::Succeeded);
         assert_eq!(restored.state().nodes["next"].executions.len(), 1);
         assert_eq!(
             checkpoint.load(908, &Cancellation::new()).await.unwrap(),
@@ -458,7 +458,10 @@ fn graph_node_retry_inherits_successes_without_recounting_their_usage() {
         assert_eq!(downstream.load(Ordering::SeqCst), 1);
         let execution = &runtime.state().nodes["batch"].executions[&5001];
         assert_eq!(execution.attempts.len(), 2);
-        assert_eq!(execution.attempts[0].status, node::AttemptStatus::Failed);
+        assert_eq!(
+            execution.attempts[0].status,
+            node::status::attempt::Status::Failed
+        );
         let before = execution.attempts[0].graph.as_ref().unwrap();
         let after = execution.attempts[1].graph.as_ref().unwrap();
         assert_eq!(before.status, graph::Status::Failed);

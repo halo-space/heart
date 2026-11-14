@@ -1,5 +1,5 @@
 use super::*;
-use crate::{
+use halo::agent::{
     middleware::Middleware,
     permission::{Decision, Permission, Request},
     tool::{Tool, ToolDefinition},
@@ -46,7 +46,7 @@ impl Permission for Policy {
                 .unwrap()
         ));
         Ok(Decision {
-            behavior: crate::permission::Behavior::Allow,
+            behavior: halo::agent::permission::Behavior::Allow,
             reason: None,
         })
     }

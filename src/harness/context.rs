@@ -18,7 +18,7 @@ use crate::components::message::{Message, Messages, Role};
 use crate::components::model::Error;
 use crate::components::model::chat::{Chat, Request};
 use crate::components::model::content::part::{Part, object};
-use crate::{Cancellation, harness::state::Store};
+use crate::harness::state::Store;
 use serde_json::Value;
 
 /// Chat adapter that refreshes Harness context immediately before each model
@@ -60,8 +60,9 @@ where
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone();
+        let cancellation = crate::cancellation::current().unwrap_or_default();
         if let Some(store) = store
-            && let Some(state) = store.load(&Cancellation::new()).await?
+            && let Some(state) = store.load(&cancellation).await?
         {
             let registered = self
                 .subagents

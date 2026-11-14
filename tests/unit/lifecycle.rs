@@ -1,4 +1,3 @@
-//! Native test scenes stand in for distinct owners, not a recovery store.
 use super::*;
 use std::{cell::RefCell, rc::Rc};
 

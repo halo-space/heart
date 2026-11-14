@@ -1,5 +1,6 @@
 //! Corrupt checkpoint protocol is tested from canonical State, not from a
 //! scripted Chat implementation that invents a successful model response.
+use halo::agent::wait;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -11,10 +12,9 @@ use halo::agent::{
 };
 use halo::{
     agent::core,
-    agent::runtime::agent::{
+    agent::state::{
         State,
         node::{Step, Wait},
-        wait,
     },
 };
 use serde_json::{Value, json};
@@ -52,12 +52,12 @@ fn valid_waiting_state() -> Value {
     serde_json::to_value(State {
         chat_id: Some(1001),
         r#type: "agent".into(),
-        status: "waiting".into(),
+        status: halo::agent::state::Status::Waiting,
         stream: true,
         steps: vec![Step {
             id: "model_0".into(),
             kind: "model".into(),
-            status: "waiting".into(),
+            status: halo::agent::state::node::status::step::Status::Waiting,
             waits: BTreeMap::from([(5001, wait)]),
             ..Default::default()
         }],

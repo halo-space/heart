@@ -142,6 +142,7 @@ where
         started: false,
         terminal: false,
         sequence: 0,
+        active_artifact: None,
     };
 
     stream::unfold(state, |mut state| async move {
@@ -161,7 +162,6 @@ where
 
             match state.source.next().await {
                 Some(Ok(event)) => {
-                    state.sequence += 1;
                     let cancelled = matches!(
                         &event,
                         HeartEvent::Complete {
@@ -223,6 +223,7 @@ struct State<'a> {
     started: bool,
     terminal: bool,
     sequence: u64,
+    active_artifact: Option<String>,
 }
 
 impl State<'_> {
@@ -239,7 +240,7 @@ impl State<'_> {
         }
     }
 
-    fn convert(&self, event: HeartEvent) -> Result<Option<StreamResponse>, Error> {
+    fn convert(&mut self, event: HeartEvent) -> Result<Option<StreamResponse>, Error> {
         match event {
             HeartEvent::Delta { message } => self
                 .artifact_update(message, true, false)
@@ -251,12 +252,13 @@ impl State<'_> {
     }
 
     fn artifact_update(
-        &self,
+        &mut self,
         message: HeartMessage,
         append: bool,
         last_chunk: bool,
     ) -> Result<Option<TaskArtifactUpdateEvent>, Error> {
         let parts = message_parts(&message)?;
+        let artifact_id = self.artifact_id(&message, last_chunk);
         if parts.is_empty() {
             return Ok(None);
         }
@@ -264,7 +266,7 @@ impl State<'_> {
             task_id: self.context.task_id(),
             context_id: self.context.context_id(),
             artifact: Artifact {
-                artifact_id: self.artifact_id(&message),
+                artifact_id,
                 name: None,
                 parts,
                 metadata: message.metadata,
@@ -275,7 +277,7 @@ impl State<'_> {
         }))
     }
 
-    fn artifact_id(&self, message: &HeartMessage) -> String {
+    fn artifact_id(&mut self, message: &HeartMessage, last_chunk: bool) -> String {
         if let Some(id) = message.metadata.get("message_id").and_then(Value::as_str) {
             return id.to_owned();
         }
@@ -285,7 +287,16 @@ impl State<'_> {
         ) {
             return format!("{node_id}:{exec_id}");
         }
-        format!("{}:artifact:{}", self.context.task_id(), self.sequence)
+        let id = self.active_artifact.clone().unwrap_or_else(|| {
+            self.sequence += 1;
+            format!("{}:artifact:{}", self.context.task_id(), self.sequence)
+        });
+        if last_chunk {
+            self.active_artifact = None;
+        } else {
+            self.active_artifact = Some(id.clone());
+        }
+        id
     }
 
     fn error_status(&self, error: &Error) -> TaskStatusUpdateEvent {
@@ -634,6 +645,46 @@ mod tests {
                 if update.artifact.artifact_id == "m-1"
                     && update.artifact.parts[0].data == Some(json!({"data": "ok"}))
         )));
+    }
+
+    #[tokio::test]
+    async fn keeps_delta_and_complete_in_one_artifact_without_message_id() {
+        let mut delta = Message::new(Role::Assistant);
+        delta.content.push(Part {
+            r#type: "text".into(),
+            data: json!({"value": "北京"}).as_object().unwrap().clone(),
+        });
+        let mut complete = Message::new(Role::Assistant);
+        complete.content.push(Part {
+            r#type: "text".into(),
+            data: json!({"value": "北京今天晴朗"})
+                .as_object()
+                .unwrap()
+                .clone(),
+        });
+        let output = adapt(
+            futures_util::stream::iter(vec![
+                Ok(HeartEvent::Delta { message: delta }),
+                Ok(HeartEvent::Complete {
+                    message: complete,
+                    usage: None,
+                    finish_reason: Some("stop".into()),
+                }),
+            ]),
+            Context::new(2001, 3001, "task-3001"),
+        )
+        .collect::<Vec<_>>()
+        .await;
+        let ids = output
+            .iter()
+            .filter_map(|response| match response {
+                Ok(StreamResponse::TaskArtifactUpdateEvent(update)) => {
+                    Some(update.artifact.artifact_id.clone())
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(ids, vec!["task-3001:artifact:1", "task-3001:artifact:1"]);
     }
 
     #[tokio::test]

@@ -7,6 +7,7 @@ license = "MIT"
 description = "Halo Agent and Workflow execution kernel"
 repository = "https://github.com/halo-space/heart"
 readme = "README.md"
+exclude = ["docs/DOCUMENT.zh-CN.md", "docs/DOCUMENT.en.md"]
 
 [lib]
 name = "halo"

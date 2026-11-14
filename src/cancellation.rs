@@ -1,6 +1,6 @@
 use std::sync::{
-    Arc, Mutex,
-    atomic::{AtomicBool, Ordering},
+    Arc, Mutex, Weak,
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 use std::{
     future::Future,
@@ -14,7 +14,8 @@ use crate::Error;
 #[derive(Debug, Default)]
 struct State {
     cancelled: AtomicBool,
-    waiters: Mutex<Vec<Waker>>,
+    next_waiter: AtomicUsize,
+    waiters: Mutex<Vec<(usize, Waker)>>,
 }
 
 /// A cooperative cancellation signal scoped to one execution.
@@ -38,7 +39,7 @@ impl Cancellation {
         if !self.state.cancelled.swap(true, Ordering::AcqRel) {
             let waiters =
                 std::mem::take(&mut *self.state.waiters.lock().expect("cancel lock poisoned"));
-            for waiter in waiters {
+            for (_, waiter) in waiters {
                 waiter.wake();
             }
         }
@@ -48,16 +49,88 @@ impl Cancellation {
         self.state.cancelled.load(Ordering::Acquire)
     }
 
+    #[cfg(test)]
+    fn waiter_count(&self) -> usize {
+        self.state
+            .waiters
+            .lock()
+            .expect("cancel lock poisoned")
+            .len()
+    }
+
     /// Register a stream poller so cancellation wakes it even if its provider
     /// stream has no new item. Rechecking under the lock avoids a lost wake-up.
-    pub(crate) fn register(&self, waker: &Waker) {
+    pub(crate) fn register(&self, waker: &Waker) -> Registration {
         let mut waiters = self.state.waiters.lock().expect("cancel lock poisoned");
         if self.is_cancelled() {
             waker.wake_by_ref();
-        } else if !waiters.iter().any(|waiter| waiter.will_wake(waker)) {
-            waiters.push(waker.clone());
+            return Registration {
+                state: Weak::new(),
+                id: None,
+            };
+        }
+        let id = self.state.next_waiter.fetch_add(1, Ordering::Relaxed);
+        waiters.push((id, waker.clone()));
+        Registration {
+            state: Arc::downgrade(&self.state),
+            id: Some(id),
         }
     }
+}
+
+/// A cancellation waiter that unregisters itself when the owning poller is
+/// finished. Keeping this guard with a stream prevents completed runs from
+/// retaining their task wakers in the cancellation scope.
+pub(crate) struct Registration {
+    state: Weak<State>,
+    id: Option<usize>,
+}
+
+impl Registration {
+    pub(crate) fn update(&self, waker: &Waker) {
+        let Some(id) = self.id else {
+            waker.wake_by_ref();
+            return;
+        };
+        let Some(state) = self.state.upgrade() else {
+            return;
+        };
+        let mut waiters = state.waiters.lock().expect("cancel lock poisoned");
+        if state.cancelled.load(Ordering::Acquire) {
+            waker.wake_by_ref();
+        } else if let Some((_, saved)) = waiters.iter_mut().find(|(saved_id, _)| *saved_id == id)
+            && !saved.will_wake(waker)
+        {
+            *saved = waker.clone();
+        }
+    }
+}
+
+impl Drop for Registration {
+    fn drop(&mut self) {
+        let Some(id) = self.id.take() else {
+            return;
+        };
+        if let Some(state) = self.state.upgrade() {
+            let mut waiters = state.waiters.lock().expect("cancel lock poisoned");
+            waiters.retain(|(saved_id, _)| *saved_id != id);
+        }
+    }
+}
+
+tokio::task_local! {
+    static CURRENT: Cancellation;
+}
+
+pub(crate) async fn scope<F>(cancellation: Cancellation, future: F) -> F::Output
+where
+    F: Future,
+{
+    CURRENT.scope(cancellation, future).await
+}
+
+pub(crate) fn current() -> Option<Cancellation> {
+    CURRENT.try_with(Clone::clone).ok()
 }
 
 /// Check the shared cancellation signal using the common runtime error shape.
@@ -75,17 +148,26 @@ pub(crate) async fn cancellable<T, E: From<Error>>(
     future: impl Future<Output = Result<T, E>>,
     cancellation: &Cancellation,
 ) -> Result<T, E> {
-    let mut future = std::pin::pin!(future);
-    poll_fn(|cx| {
-        cancellation.register(cx.waker());
-        if let Err(error) = check(cancellation) {
-            return Poll::Ready(Err(error.into()));
-        }
-        let result = future.as_mut().poll(cx);
-        if let Err(error) = check(cancellation) {
-            return Poll::Ready(Err(error.into()));
-        }
-        result
+    let cancellation_scope = cancellation.clone();
+    scope(cancellation_scope, async move {
+        let mut future = std::pin::pin!(future);
+        let mut registration: Option<Registration> = None;
+        poll_fn(move |cx| {
+            if let Some(waiter) = &registration {
+                waiter.update(cx.waker());
+            } else {
+                registration = Some(cancellation.register(cx.waker()));
+            }
+            if let Err(error) = check(cancellation) {
+                return Poll::Ready(Err(error.into()));
+            }
+            let result = future.as_mut().poll(cx);
+            if let Err(error) = check(cancellation) {
+                return Poll::Ready(Err(error.into()));
+            }
+            result
+        })
+        .await
     })
     .await
 }
@@ -93,6 +175,7 @@ pub(crate) async fn cancellable<T, E: From<Error>>(
 #[cfg(test)]
 mod tests {
     use super::Cancellation;
+    use std::task::Waker;
 
     #[test]
     fn cancellation_is_shared_within_a_run_but_isolated_between_runs() {
@@ -104,5 +187,15 @@ mod tests {
 
         assert!(first_run_child.is_cancelled());
         assert!(!second_run.is_cancelled());
+    }
+
+    #[test]
+    fn a_finished_waiter_is_removed_from_the_cancellation_scope() {
+        let cancellation = Cancellation::new();
+        let waker = Waker::noop();
+        let waiter = cancellation.register(waker);
+        assert_eq!(cancellation.waiter_count(), 1);
+        drop(waiter);
+        assert_eq!(cancellation.waiter_count(), 0);
     }
 }

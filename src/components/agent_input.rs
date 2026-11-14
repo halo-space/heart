@@ -8,7 +8,8 @@ use crate::{
     components::model::content::part::Part,
 };
 
-pub(crate) fn user_message(input: Input) -> Message {
+#[doc(hidden)]
+pub fn user_message(input: Input) -> Message {
     let content = input
         .payload
         .into_iter()

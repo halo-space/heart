@@ -1,4 +1,5 @@
 //! Native waiting-fact collection, not the complete generic live handoff.
+use halo::agent::wait;
 use std::collections::BTreeMap;
 
 use halo::agent::{Cancellation, Message};
@@ -7,10 +8,9 @@ use halo::{
     agent::core,
     agent::message::Role,
     agent::model::content::part::Part,
-    agent::runtime::agent::{
+    agent::state::{
         State,
         node::{Step, Wait},
-        wait,
     },
 };
 use serde_json::json;
@@ -36,7 +36,7 @@ fn one_feedback_resolves_the_wait_but_not_the_step_or_its_business_result() {
     let mut step = Step {
         id: "human_0".into(),
         kind: "human".into(),
-        status: "waiting".into(),
+        status: halo::agent::state::node::status::step::Status::Waiting,
         waits: BTreeMap::from([(5001, Wait::new("input", question(), 1).unwrap())]),
         ..Default::default()
     };
@@ -48,9 +48,16 @@ fn one_feedback_resolves_the_wait_but_not_the_step_or_its_business_result() {
             .reply(feedback.clone())
             .unwrap()
     );
-    assert_eq!(step.waits[&5001].status, "resolved");
+    assert_eq!(
+        step.waits[&5001].status,
+        halo::agent::state::node::status::wait::Status::Resolved
+    );
     assert_eq!(step.waits[&5001].feedback.as_slice(), &[feedback]);
-    assert_eq!(step.status, "waiting", "only the owner resumes execution");
+    assert_eq!(
+        step.status,
+        halo::agent::state::node::status::step::Status::Waiting,
+        "only the owner resumes execution"
+    );
     assert!(
         step.message.is_none(),
         "collection is not a business result"
@@ -70,15 +77,15 @@ async fn three_feedback_parts_preserve_required_count_and_progress_through_check
     let state = State {
         chat_id: Some(1001),
         r#type: "agent".into(),
-        status: "waiting".into(),
+        status: halo::agent::state::Status::Waiting,
         steps: vec![Step {
             id: "human_0".into(),
             kind: "human".into(),
-            status: "waiting".into(),
+            status: halo::agent::state::node::status::step::Status::Waiting,
             waits: BTreeMap::from([(5001, record)]),
             ..Default::default()
         }],
-        waits: vec![halo::agent::runtime::agent::wait::Wait {
+        waits: vec![halo::agent::wait::Wait {
             nodes: vec![],
             step: "human_0".into(),
         }],
@@ -97,7 +104,10 @@ async fn three_feedback_parts_preserve_required_count_and_progress_through_check
         "retry must not count twice"
     );
     assert!(!record.reply(second.clone()).unwrap());
-    assert_eq!(record.status, "waiting");
+    assert_eq!(
+        record.status,
+        halo::agent::state::node::status::wait::Status::Waiting
+    );
     assert_eq!(record.feedback.as_slice(), &[first.clone(), second.clone()]);
     assert!(record.reply(third.clone()).unwrap());
     assert_eq!(record.feedback.as_slice(), &[first, second, third.clone()]);
@@ -109,7 +119,8 @@ async fn three_feedback_parts_preserve_required_count_and_progress_through_check
     );
     assert_eq!(record.feedback.as_slice().len(), 3);
     assert_eq!(
-        restored.status, "waiting",
+        restored.status,
+        halo::agent::state::Status::Waiting,
         "owner still controls runtime state"
     );
     assert_eq!(
@@ -129,7 +140,10 @@ fn changed_metadata_never_recounts_a_part_or_changes_the_required_count() {
     assert!(!record.reply(retry).unwrap());
     assert_eq!(record.count, 3);
     assert_eq!(record.feedback.as_slice().len(), 1);
-    assert_eq!(record.status, "waiting");
+    assert_eq!(
+        record.status,
+        halo::agent::state::node::status::wait::Status::Waiting
+    );
 }
 
 #[test]
@@ -175,15 +189,11 @@ fn initiation_rejects_zero_count_empty_kind_and_multi_part_approval() {
 fn invalid_restored_count_or_status_rejects_feedback_atomically() {
     let mut waiting = Wait::new("input", question(), 3).unwrap();
     assert!(!waiting.reply(message(Role::User, "已有内容")).unwrap());
-    for (count, status) in [
-        (0, "waiting"),
-        (1, "waiting"),
-        (3, "resolved"),
-        (3, "received"),
-    ] {
-        let mut corrupt = waiting.clone();
-        corrupt.count = count;
-        corrupt.status = status.into();
+    for (count, status) in [(0, "waiting"), (1, "waiting"), (3, "resolved")] {
+        let mut value = serde_json::to_value(&waiting).unwrap();
+        value["count"] = json!(count);
+        value["status"] = json!(status);
+        let mut corrupt: Wait = serde_json::from_value(value).unwrap();
         let saved = corrupt.clone();
         assert_eq!(
             corrupt
@@ -194,6 +204,9 @@ fn invalid_restored_count_or_status_rejects_feedback_atomically() {
         );
         assert_eq!(corrupt, saved);
     }
+    let mut value = serde_json::to_value(&waiting).unwrap();
+    value["status"] = json!("received");
+    assert!(serde_json::from_value::<Wait>(value).is_err());
 }
 
 #[test]
@@ -219,9 +232,15 @@ fn same_payload_for_different_questions_does_not_share_feedback_or_status() {
     assert!(second.feedback.is_empty());
     assert!(!second.reply(feedback).unwrap());
     assert_eq!(second.count, 3);
-    assert_eq!(second.status, "waiting");
+    assert_eq!(
+        second.status,
+        halo::agent::state::node::status::wait::Status::Waiting
+    );
     assert_eq!(second.question, other_question);
-    assert_eq!(first.status, "resolved");
+    assert_eq!(
+        first.status,
+        halo::agent::state::node::status::wait::Status::Resolved
+    );
 }
 
 #[tokio::test]

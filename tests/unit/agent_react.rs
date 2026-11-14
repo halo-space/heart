@@ -1,6 +1,6 @@
 use super::*;
-use crate::components::evaluation::{Evaluation, Evaluator};
-use crate::components::plan::{Edge, Plan, PlanNode};
+use halo::agent::evaluation::{Evaluation, Evaluator};
+use halo::agent::plan::{Edge, Plan, PlanNode};
 use futures_executor::block_on;
 
 struct Accept;
@@ -111,23 +111,23 @@ fn application_id() -> i64 {
 }
 
 fn uncalled_provider_chat() -> impl Chat {
-    crate::core::provider::vllm::Vllm::builder()
+    halo::agent::core::provider::vllm::Vllm::builder()
         .api_key("compile-only")
         .build()
         .expect("construct provider without sending a request")
-        .chat(crate::model::chat::Config::new("compile-only"))
+        .chat(halo::agent::model::chat::Config::new("compile-only"))
         .expect("construct Provider Chat")
 }
 
 #[test]
 fn id_function_is_optional_and_is_not_called_by_build() {
-    let agent = crate::agent::react()
+    let agent = halo::agent::react()
         .model(uncalled_provider_chat())
         .build()
         .expect("react agent without an ID source builds");
     assert!(agent.id_fn.is_none());
 
-    let configured = crate::agent::react()
+    let configured = halo::agent::react()
         .with_id_fn(application_id)
         .model(uncalled_provider_chat())
         .build()
@@ -140,7 +140,7 @@ fn id_function_is_optional_and_is_not_called_by_build() {
 
 #[test]
 fn id_function_survives_model_rebinding_without_memory() {
-    let configured = crate::agent::react()
+    let configured = halo::agent::react()
         .model(uncalled_provider_chat())
         .with_id_fn(application_id)
         .model(uncalled_provider_chat())

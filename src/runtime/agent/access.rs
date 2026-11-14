@@ -25,11 +25,13 @@ impl<P: Permission + 'static> Policy for adapter::Policy<P> {
     }
 }
 
+#[doc(hidden)]
 #[derive(Clone, Default)]
-pub(crate) struct Access(Option<Arc<dyn Policy>>);
+pub struct Access(Option<Arc<dyn Policy>>);
 
 impl Access {
-    pub(crate) fn set<P: Permission + 'static>(&mut self, policy: P) {
+    #[doc(hidden)]
+    pub fn set<P: Permission + 'static>(&mut self, policy: P) {
         self.0 = Some(Arc::new(adapter::Policy(Arc::new(policy))));
     }
 
@@ -169,7 +171,7 @@ pub(crate) async fn check_tool<K, KF>(
     metadata: serde_json::Map<String, serde_json::Value>,
     call: &crate::tool::Call,
     cancellation: &Cancellation,
-    interaction: Option<&crate::runtime::agent::reply::Run>,
+    interaction: Option<&crate::runtime::agent::reply::Handle>,
     id_fn: Option<fn() -> i64>,
     approval: Option<&crate::tool::Call>,
     saved: Option<crate::runtime::agent::permission::State>,
@@ -757,7 +759,7 @@ mod tests {
         let step = crate::runtime::agent::node::Step {
             id: "tool-step".into(),
             kind: "tool".into(),
-            status: "running".into(),
+            status: crate::runtime::agent::node::status::step::Status::Running,
             permission: Some(Box::new(permission)),
             ..Default::default()
         };

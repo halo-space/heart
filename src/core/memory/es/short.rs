@@ -7,7 +7,6 @@ use super::{Backend, encode_error, now_ms, parse_chat_options, validate_chat, va
 use crate::Cancellation;
 use crate::cancellation::check;
 use crate::components::memory::Error;
-use crate::components::memory::short as short_contracts;
 
 /// Index names used by the two short-memory records.
 ///
@@ -53,7 +52,7 @@ impl Memory {
     }
 }
 
-impl short_contracts::Store for Memory {
+impl crate::components::memory::short::Store for Memory {
     type Session = Session;
     type Chat = Chat;
 
@@ -82,12 +81,12 @@ impl Chat {
     }
 }
 
-impl short_contracts::session::Store for Session {
+impl crate::components::memory::short::session::Store for Session {
     async fn create(
         &self,
-        mut value: short_contracts::session::Session,
+        mut value: crate::components::memory::short::session::Session,
         cancellation: &Cancellation,
-    ) -> Result<short_contracts::session::Session, Error> {
+    ) -> Result<crate::components::memory::short::session::Session, Error> {
         check(cancellation)?;
         validate_session(&value)?;
         self.backend.ensure_index().await?;
@@ -106,7 +105,7 @@ impl short_contracts::session::Store for Session {
         &self,
         id: i64,
         cancellation: &Cancellation,
-    ) -> Result<short_contracts::session::Session, Error> {
+    ) -> Result<crate::components::memory::short::session::Session, Error> {
         check(cancellation)?;
         self.backend
             .get(id)
@@ -117,14 +116,14 @@ impl short_contracts::session::Store for Session {
 
     async fn update(
         &self,
-        mut value: short_contracts::session::Session,
+        mut value: crate::components::memory::short::session::Session,
         cancellation: &Cancellation,
-    ) -> Result<short_contracts::session::Session, Error> {
+    ) -> Result<crate::components::memory::short::session::Session, Error> {
         check(cancellation)?;
         validate_session(&value)?;
         let current = self
             .backend
-            .get::<short_contracts::session::Session>(value.id)
+            .get::<crate::components::memory::short::session::Session>(value.id)
             .await?
             .ok_or_else(|| Error::new("NOT_FOUND", "session not found"))?;
         if current.source.tenant_id != value.tenant_id
@@ -157,12 +156,12 @@ impl short_contracts::session::Store for Session {
     }
 }
 
-impl short_contracts::chat::Store for Chat {
+impl crate::components::memory::short::chat::Store for Chat {
     async fn create(
         &self,
-        mut value: short_contracts::chat::Chat,
+        mut value: crate::components::memory::short::chat::Chat,
         cancellation: &Cancellation,
-    ) -> Result<short_contracts::chat::Chat, Error> {
+    ) -> Result<crate::components::memory::short::chat::Chat, Error> {
         check(cancellation)?;
         validate_chat(&value)?;
         self.backend.ensure_index().await?;
@@ -181,7 +180,7 @@ impl short_contracts::chat::Store for Chat {
         &self,
         id: i64,
         cancellation: &Cancellation,
-    ) -> Result<short_contracts::chat::Chat, Error> {
+    ) -> Result<crate::components::memory::short::chat::Chat, Error> {
         check(cancellation)?;
         self.backend
             .get(id)
@@ -192,14 +191,14 @@ impl short_contracts::chat::Store for Chat {
 
     async fn update(
         &self,
-        mut value: short_contracts::chat::Chat,
+        mut value: crate::components::memory::short::chat::Chat,
         cancellation: &Cancellation,
-    ) -> Result<short_contracts::chat::Chat, Error> {
+    ) -> Result<crate::components::memory::short::chat::Chat, Error> {
         check(cancellation)?;
         validate_chat(&value)?;
         let current = self
             .backend
-            .get::<short_contracts::chat::Chat>(value.id)
+            .get::<crate::components::memory::short::chat::Chat>(value.id)
             .await?
             .ok_or_else(|| Error::new("NOT_FOUND", "chat not found"))?;
         if current.source.tenant_id != value.tenant_id
@@ -237,7 +236,7 @@ impl short_contracts::chat::Store for Chat {
         &self,
         options: Map<String, Value>,
         cancellation: &Cancellation,
-    ) -> Result<Vec<short_contracts::chat::Chat>, Error> {
+    ) -> Result<Vec<crate::components::memory::short::chat::Chat>, Error> {
         check(cancellation)?;
         let (filters, descending, offset, limit) = parse_chat_options(&options)?;
         let order = if descending { "desc" } else { "asc" };
@@ -252,7 +251,7 @@ impl short_contracts::chat::Store for Chat {
         });
         Ok(self
             .backend
-            .search::<short_contracts::chat::Chat>(body)
+            .search::<crate::components::memory::short::chat::Chat>(body)
             .await?
             .into_iter()
             .map(|record| record.source)

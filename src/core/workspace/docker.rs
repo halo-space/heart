@@ -114,7 +114,6 @@ impl Docker {
     }
 
     /// Register application Tools on this Workspace.
-    #[allow(private_bounds)]
     pub fn tools<I>(mut self, tools: I) -> Self
     where
         I: ToolInputs,
@@ -124,7 +123,6 @@ impl Docker {
     }
 
     /// Register already connected and discovered MCP servers on this Workspace.
-    #[allow(private_bounds)]
     pub fn mcps<S>(mut self, servers: impl IntoIterator<Item = S>) -> Self
     where
         S: Server + 'static,
@@ -134,7 +132,6 @@ impl Docker {
     }
 
     /// Register in-process Skills on this Workspace.
-    #[allow(private_bounds)]
     pub fn skills<S>(mut self, skills: impl IntoIterator<Item = S>) -> Result<Self, Error>
     where
         S: Skill + 'static,

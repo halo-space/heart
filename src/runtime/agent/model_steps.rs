@@ -1,8 +1,10 @@
 //! Actual Model calls retain their native input and output continuations.
-use super::node::{Status, Step, StepAttempt};
+use super::node::status::Status;
+use super::node::{Step, StepAttempt};
 use crate::{Error, Message, event::Event, model::token::Usage};
 
-pub(crate) fn pending_input(steps: &[Step]) -> Option<&Step> {
+#[doc(hidden)]
+pub fn pending_input(steps: &[Step]) -> Option<&Step> {
     steps.iter().rev().find(|step| {
         step.kind == "model" && matches!(step.stage.as_deref(), Some("before" | "call"))
     })
@@ -10,7 +12,8 @@ pub(crate) fn pending_input(steps: &[Step]) -> Option<&Step> {
 
 /// Provider-origin ordinary WAITING accepts new external input. It is not an
 /// unfinished input Hook; the next actual attempt must recheck that new input.
-pub(crate) fn external_wait(steps: &[Step]) -> bool {
+#[doc(hidden)]
+pub fn external_wait(steps: &[Step]) -> bool {
     pending_input(steps).is_some_and(|step| {
         step.stage.as_deref() == Some("call")
             && step
@@ -20,11 +23,13 @@ pub(crate) fn external_wait(steps: &[Step]) -> bool {
     })
 }
 
-pub(crate) fn continuing(steps: &[Step]) -> bool {
+#[doc(hidden)]
+pub fn continuing(steps: &[Step]) -> bool {
     pending(steps).is_some() || (pending_input(steps).is_some() && !external_wait(steps))
 }
 
-pub(crate) fn input(steps: &mut Vec<Step>, request: crate::model::chat::Request) -> Step {
+#[doc(hidden)]
+pub fn input(steps: &mut Vec<Step>, request: crate::model::chat::Request) -> Step {
     if external_wait(steps) {
         let step = steps
             .iter_mut()
@@ -34,7 +39,7 @@ pub(crate) fn input(steps: &mut Vec<Step>, request: crate::model::chat::Request)
         step.stage = Some("before".into());
         step.idx = Some(0);
         step.request = Some(Box::new(request));
-        step.status = "running".into();
+        step.status = crate::runtime::agent::node::status::step::Status::Running;
         step.error = None;
         return step.clone();
     }
@@ -44,7 +49,7 @@ pub(crate) fn input(steps: &mut Vec<Step>, request: crate::model::chat::Request)
     let step = Step {
         id: format!("model_{}", steps.len()),
         kind: "model".into(),
-        status: "running".into(),
+        status: crate::runtime::agent::node::status::step::Status::Running,
         stage: Some("before".into()),
         idx: Some(0),
         request: Some(Box::new(request)),
@@ -56,7 +61,8 @@ pub(crate) fn input(steps: &mut Vec<Step>, request: crate::model::chat::Request)
 
 /// Enter only the Provider call, not a successful input Hook. A later fresh
 /// dispatch retains an earlier unsuccessful attempt rather than overwriting it.
-pub(crate) fn calling(steps: &mut [Step]) {
+#[doc(hidden)]
+pub fn calling(steps: &mut [Step]) {
     if let Some(step) = steps
         .iter_mut()
         .rev()
@@ -71,18 +77,20 @@ pub(crate) fn calling(steps: &mut [Step]) {
             status: Status::Running,
             ..Default::default()
         });
-        step.status = "running".into();
+        step.status = crate::runtime::agent::node::status::step::Status::Running;
         step.error = None;
     }
 }
 
-pub(crate) fn pending(steps: &[Step]) -> Option<&Step> {
+#[doc(hidden)]
+pub fn pending(steps: &[Step]) -> Option<&Step> {
     steps
         .iter()
         .rev()
         .find(|step| step.kind == "model" && step.stage.as_deref() == Some("after"))
 }
-pub(crate) fn returned(
+#[doc(hidden)]
+pub fn returned(
     steps: &mut Vec<Step>,
     request: Option<Box<crate::model::chat::Request>>,
     message: Message,
@@ -93,7 +101,7 @@ pub(crate) fn returned(
     let mut step = Step {
         id: format!("model_{}", steps.len()),
         kind: "model".into(),
-        status: "running".into(),
+        status: crate::runtime::agent::node::status::step::Status::Running,
         stage: Some("after".into()),
         idx: Some(0),
         request,
@@ -126,7 +134,8 @@ pub(crate) fn returned(
         steps.push(step);
     }
 }
-pub(crate) fn validate(steps: &[Step], count: usize) -> Result<(), Error> {
+#[doc(hidden)]
+pub fn validate(steps: &[Step], count: usize) -> Result<(), Error> {
     let mut active = 0;
     let mut ids = std::collections::BTreeSet::new();
     if steps.iter().any(|step| {
@@ -192,7 +201,8 @@ pub(crate) fn validate(steps: &[Step], count: usize) -> Result<(), Error> {
                 .and_then(|message| message.usage.as_ref())
                 != attempt.usage.as_ref()
             || (step.stage.as_deref() == Some("committed") && step.idx != Some(count))
-            || (step.stage.as_deref() == Some("committed") && step.status != "succeeded")
+            || (step.stage.as_deref() == Some("committed")
+                && step.status != crate::runtime::agent::node::status::step::Status::Succeeded)
             || (step.stage.as_deref() == Some("after")
                 && !matches!(
                     step.status.as_str(),
@@ -215,7 +225,8 @@ pub(crate) fn validate(steps: &[Step], count: usize) -> Result<(), Error> {
     }
     Ok(())
 }
-pub(crate) fn validate_owner(
+#[doc(hidden)]
+pub fn validate_owner(
     steps: &[Step],
     completion: Option<&super::completion::State>,
     count: usize,
@@ -259,7 +270,8 @@ pub(crate) fn validate_owner(
     }
     Ok(())
 }
-pub(crate) fn refine(steps: &mut [Step], usage: &Usage) {
+#[doc(hidden)]
+pub fn refine(steps: &mut [Step], usage: &Usage) {
     if let Some(step) = steps.iter_mut().rev().find(|step| step.kind == "model") {
         if let Some(attempt) = step.attempts.last_mut() {
             attempt.usage = Some(usage.clone());
@@ -272,7 +284,8 @@ pub(crate) fn refine(steps: &mut [Step], usage: &Usage) {
 
 /// Retain only observed unfinished output on its actual call Attempt, never
 /// on Step.message (which remains the Provider Complete/after continuation).
-pub(crate) fn unfinished(steps: &mut [Step], message: &Message, usage: &Usage) {
+#[doc(hidden)]
+pub fn unfinished(steps: &mut [Step], message: &Message, usage: &Usage) {
     if let Some(step) = steps
         .iter_mut()
         .rev()
@@ -290,7 +303,8 @@ fn invalid() -> Error {
 }
 /// Validate this Agent and its own planned attempts before component work or
 /// persistence. Nested child Agents validate with their own middleware config.
-pub(crate) fn validate_scene(scene: &serde_json::Value, count: usize) -> Result<(), Error> {
+#[doc(hidden)]
+pub fn validate_scene(scene: &serde_json::Value, count: usize) -> Result<(), Error> {
     let steps: Vec<Step> = scene
         .get("steps")
         .cloned()
@@ -320,7 +334,8 @@ pub(crate) fn validate_scene(scene: &serde_json::Value, count: usize) -> Result<
     }
     Ok(())
 }
-pub(crate) fn event(step: &Step) -> Result<Event, Error> {
+#[doc(hidden)]
+pub fn event(step: &Step) -> Result<Event, Error> {
     let attempt = step.attempts.last().ok_or_else(invalid)?;
     Ok(Event::Complete {
         message: step.message.clone().ok_or_else(invalid)?,
@@ -328,16 +343,16 @@ pub(crate) fn event(step: &Step) -> Result<Event, Error> {
         finish_reason: attempt.finish_reason.clone(),
     })
 }
-pub(crate) fn stopped(steps: &mut [Step], error: &Error) {
+#[doc(hidden)]
+pub fn stopped(steps: &mut [Step], error: &Error) {
     if let Some(step) = steps.iter_mut().rev().find(|step| {
         step.kind == "model" && matches!(step.stage.as_deref(), Some("before" | "call" | "after"))
     }) {
         step.status = match error.code.as_str() {
-            "WAITING" => "waiting",
-            "CANCELLED" => "cancelled",
-            _ => "failed",
-        }
-        .into();
+            "WAITING" => crate::runtime::agent::node::status::step::Status::Waiting,
+            "CANCELLED" => crate::runtime::agent::node::status::step::Status::Cancelled,
+            _ => crate::runtime::agent::node::status::step::Status::Failed,
+        };
         step.error = (error.code != "WAITING").then(|| error.clone());
         if step.stage.as_deref() == Some("call")
             && let Some(attempt) = step.attempts.last_mut()

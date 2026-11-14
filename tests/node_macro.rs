@@ -289,7 +289,7 @@ fn a_signal_component_waits_in_the_existing_workflow_scene() {
         assert!(runtime.state().waits.is_empty());
         assert_eq!(
             runtime.state().nodes["review"].executions[&502].waits["approval"].status,
-            "waiting"
+            halo::agent::workflow::node::status::wait::Status::Waiting
         );
     });
 }

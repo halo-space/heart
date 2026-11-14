@@ -1,5 +1,6 @@
 //! SubAgent assembly plus private child execution and usage settlement.
-use crate::runtime::agent::node::{State, Status, Step};
+use crate::runtime::agent::node::status::Status;
+use crate::runtime::agent::node::{State, Step};
 use crate::{
     Cancellation, Error, Message,
     components::agent::{Agent, Input},
@@ -217,14 +218,18 @@ impl std::fmt::Debug for SubAgent {
     }
 }
 
-mod relay;
-mod root;
+#[doc(hidden)]
+pub mod relay;
+#[doc(hidden)]
+pub mod root;
 mod run;
 
-pub(crate) use relay::{Observation, Observer, Relay, cancel_ready};
+#[doc(hidden)]
+pub use relay::{Observation, Observer, Relay, cancel_ready};
+#[doc(hidden)]
+pub use root::{Progress, Root};
 pub(crate) use root::{
-    Progress, Root, cancel_pending, complete, message, observe, prepare, resume_calls, source,
-    sync_waits,
+    cancel_pending, complete, message, observe, prepare, resume_calls, source, sync_waits,
 };
 #[cfg(test)]
 pub(crate) use run::result_message;
@@ -272,7 +277,8 @@ mod result_message_tests {
 #[cfg(test)]
 mod observation_tests {
     use super::*;
-    use crate::runtime::agent::node::{Attempt, Execution, State, Status};
+    use crate::runtime::agent::node::status::Status;
+    use crate::runtime::agent::node::{Attempt, Execution, State};
     use serde_json::json;
     use std::collections::BTreeMap;
 

@@ -18,7 +18,7 @@ pub(crate) fn project_message(message: &Message) -> Message {
     Message {
         role: message.role.clone(),
         content: message.content.clone(),
-        values: Default::default(),
+        values: message.values.clone(),
         metadata: message.metadata.clone(),
         usage: message.usage.clone(),
     }
@@ -74,19 +74,19 @@ tokio::task_local! {
     static CURRENT: Output;
     static TRACE: Root;
     static SOURCE: (i64, String, i64);
-    static INTERACTION: crate::runtime::agent::reply::Run;
+    static INTERACTION: crate::runtime::agent::reply::Handle;
     static RELAY:Relay;
     static ATTEMPT:u32;
 }
 
 pub(super) async fn with_interaction<F: Future>(
-    interaction: crate::runtime::agent::reply::Run,
+    interaction: crate::runtime::agent::reply::Handle,
     future: F,
 ) -> F::Output {
     INTERACTION.scope(interaction, future).await
 }
 pub(super) async fn with_optional_interaction<F: Future>(
-    interaction: Option<crate::runtime::agent::reply::Run>,
+    interaction: Option<crate::runtime::agent::reply::Handle>,
     future: F,
 ) -> F::Output {
     match interaction {
@@ -94,7 +94,7 @@ pub(super) async fn with_optional_interaction<F: Future>(
         None => future.await,
     }
 }
-pub(super) fn interaction() -> Option<crate::runtime::agent::reply::Run> {
+pub(super) fn interaction() -> Option<crate::runtime::agent::reply::Handle> {
     INTERACTION.try_with(Clone::clone).ok()
 }
 pub(super) async fn with_relay<F: Future>(relay: Relay, future: F) -> F::Output {
@@ -201,11 +201,6 @@ pub(crate) async fn emit(mut event: Event) {
             Some((node_id, *exec_id)),
         );
     });
-    match &mut event {
-        Event::Delta { message } | Event::Complete { message, .. } => {
-            message.values.clear();
-        }
-    }
     output.push(Ok(event));
     let mut yielded = false;
     std::future::poll_fn(|context| {

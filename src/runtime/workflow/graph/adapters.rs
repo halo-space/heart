@@ -3,8 +3,10 @@
 
 use super::*;
 
-type BoxFuture = Pin<Box<dyn Future<Output = Result<Signal<Value>, Error>> + Send + 'static>>;
-type RecoveryFuture<'a> = Pin<
+#[doc(hidden)]
+pub type BoxFuture = Pin<Box<dyn Future<Output = Result<Signal<Value>, Error>> + Send + 'static>>;
+#[doc(hidden)]
+pub type RecoveryFuture<'a> = Pin<
     Box<
         dyn Future<
                 Output = Result<
@@ -15,9 +17,11 @@ type RecoveryFuture<'a> = Pin<
             + 'a,
     >,
 >;
-type AgentFuture = Pin<Box<dyn Future<Output = AgentRun> + Send + 'static>>;
+#[doc(hidden)]
+pub type AgentFuture = Pin<Box<dyn Future<Output = AgentRun> + Send + 'static>>;
 
-pub(crate) struct AgentRun {
+#[doc(hidden)]
+pub struct AgentRun {
     pub result: Result<Messages, Error>,
     pub messages: Messages,
     pub steps: Vec<Step>,
@@ -25,7 +29,8 @@ pub(crate) struct AgentRun {
     pub scene: Option<Value>,
 }
 
-pub(crate) trait ErasedAgent: Send + Sync + 'static {
+#[doc(hidden)]
+pub trait ErasedAgent: Send + Sync + 'static {
     fn call(
         &self,
         input: agent::Input,
@@ -247,15 +252,19 @@ impl<A: crate::components::agent::Agent + 'static> ErasedAgent for Agent<A> {
                             steps.push(Step {
                                 id: format!("complete_{index}"),
                                 kind: kind.into(),
-                                status: if cancelled { "cancelled" } else { "succeeded" }.into(),
+                                status: if cancelled {
+                                    super::super::node::status::step::Status::Cancelled
+                                } else {
+                                    super::super::node::status::step::Status::Succeeded
+                                },
                                 from: Vec::new(),
                                 to: Vec::new(),
                                 call_id: None,
                                 attempts: vec![StepAttempt {
                                     status: if cancelled {
-                                        AttemptStatus::Cancelled
+                                        super::super::node::status::attempt::Status::Cancelled
                                     } else {
-                                        AttemptStatus::Succeeded
+                                        super::super::node::status::attempt::Status::Succeeded
                                     },
                                     created_time: None,
                                     finished_time: None,
@@ -367,9 +376,9 @@ fn agent_attempt(
             .and_then(|scene| scene["waits"].as_array())
             .is_some_and(|waits| !waits.is_empty())
         {
-            AttemptStatus::Waiting
+            super::super::node::status::attempt::Status::Waiting
         } else {
-            AttemptStatus::Running
+            super::super::node::status::attempt::Status::Running
         },
         steps: steps.to_vec(),
         messages: messages.clone(),
@@ -381,7 +390,8 @@ fn agent_attempt(
 
 /// Internal heterogeneous execution boundary, not a second public Node API.
 #[allow(dead_code)]
-pub(crate) trait ErasedNode: Send + Sync + 'static {
+#[doc(hidden)]
+pub trait ErasedNode: Send + Sync + 'static {
     fn call(&self, input: Value, cancellation: Cancellation) -> BoxFuture;
 
     fn call_with_view(&self, input: Value, cancellation: Cancellation, view: View) -> BoxFuture;
@@ -515,11 +525,4 @@ where
             }
         }))
     }
-}
-
-/// Concrete adapters are kept behind this module so their names describe the
-/// wrapped capability (`adapter::Agent`, `adapter::Node`) instead of exposing
-/// an implementation-suffix type in the runtime graph API.
-pub(crate) mod adapter {
-    pub(crate) use super::{Agent, Node};
 }

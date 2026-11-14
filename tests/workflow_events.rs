@@ -166,7 +166,7 @@ fn message(event: &Event) -> &Message {
 }
 
 #[test]
-fn nested_graphs_forward_each_real_event_once_without_leaking_values() {
+fn nested_graphs_forward_each_real_event_once_with_message_values() {
     block_on(async {
         let calls = Arc::new(AtomicUsize::new(0));
         let downstream = Arc::new(AtomicUsize::new(0));
@@ -210,13 +210,10 @@ fn nested_graphs_forward_each_real_event_once_without_leaking_values() {
         };
         assert_eq!(observed.len(), 5, "no container aggregate Complete");
         assert!(matches!(observed[0], Event::Delta { .. }));
-        assert!(
-            observed
-                .iter()
-                .all(|event| message(event).values.is_empty())
-        );
         for (actual, original) in observed[..4].iter().zip(sequence) {
-            assert_eq!(message(actual).content, message(&original.unwrap()).content);
+            let original = original.unwrap();
+            assert_eq!(message(actual).content, message(&original).content);
+            assert_eq!(message(actual).values, message(&original).values);
         }
         let model = &observed[1];
         let Event::Complete {
@@ -335,10 +332,10 @@ fn invocation_completes_do_not_assert_agent_or_workflow_completion() {
             .values()
             .next()
             .unwrap();
-        assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+        assert_eq!(execution.status, node::status::execution::Status::Succeeded);
         assert_eq!(
             execution.attempts.last().unwrap().status,
-            node::AttemptStatus::Succeeded
+            node::status::attempt::Status::Succeeded
         );
         assert_eq!(execution.messages.0[0].values["answer"], 21);
     });
@@ -590,7 +587,7 @@ fn waiting_stream_ends_after_saving_the_same_waiting_scene() {
         );
         assert_eq!(
             runtime.state().nodes["review"].executions[&15000].status,
-            node::ExecutionStatus::Waiting
+            node::status::execution::Status::Waiting
         );
     });
 }
@@ -637,7 +634,7 @@ fn terminal_run_observes_cached_results_without_calls_or_new_ids() {
                 .await;
             assert_eq!(observed.len(), 1);
             assert!(matches!(observed[0], Ok(Event::Complete { .. })));
-            assert!(message(observed[0].as_ref().unwrap()).values.is_empty());
+            assert_eq!(message(observed[0].as_ref().unwrap()).values["doubled"], 42);
             let source = &message(observed[0].as_ref().unwrap()).metadata;
             assert_eq!(source["chat_id"], 1008);
             assert_eq!(source["node_id"], "double");
@@ -828,7 +825,7 @@ fn native_tool_batch_observes_saved_successes_once_without_error_messages() {
             };
             assert_eq!(good_event.metadata["call_id"], "good");
             assert_eq!(good_event.role, Role::Tool);
-            assert!(good_event.values.is_empty());
+            assert_eq!(good_event.values["private"], 42);
             assert!(usage.is_none() && finish_reason.is_none());
             let execution = &runtime.state().nodes["tools"].executions[&19000];
             assert_eq!(execution.attempts[0].messages.0[0].values["private"], 42);

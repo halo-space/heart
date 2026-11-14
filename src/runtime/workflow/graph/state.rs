@@ -21,10 +21,11 @@ pub use crate::runtime::workflow::wait::Wait;
 /// Derived lookup for an ordinary Node pause. The actual record remains in
 /// Execution.waits; this is never a parallel persisted index.
 #[derive(Clone)]
-pub(crate) struct Pause {
-    pub(crate) node_id: String,
-    pub(crate) exec_id: i64,
-    pub(crate) wait_id: String,
+#[doc(hidden)]
+pub struct Pause {
+    pub node_id: String,
+    pub exec_id: i64,
+    pub wait_id: String,
 }
 
 /// Serializable Workflow Runtime state for one `chat_id`.
@@ -54,10 +55,11 @@ pub struct State {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct ReplyExecution {
-    pub(crate) node_id: String,
-    pub(crate) exec_id: i64,
-    pub(crate) idx: u32,
+#[doc(hidden)]
+pub struct ReplyExecution {
+    pub node_id: String,
+    pub exec_id: i64,
+    pub idx: u32,
 }
 
 impl State {
@@ -69,7 +71,7 @@ impl State {
                 (
                     node_id.clone(),
                     crate::runtime::workflow::node::State::new(
-                        crate::runtime::workflow::node::Status::Idle,
+                        crate::runtime::workflow::node::status::Status::Idle,
                     ),
                 )
             })
@@ -153,15 +155,17 @@ impl State {
             for execution in node.executions.values_mut() {
                 if !matches!(
                     execution.status,
-                    crate::runtime::workflow::node::ExecutionStatus::Pending
-                        | crate::runtime::workflow::node::ExecutionStatus::Running
+                    crate::runtime::workflow::node::status::execution::Status::Pending
+                        | crate::runtime::workflow::node::status::execution::Status::Running
                 ) {
                     continue;
                 }
                 if let Some(attempt) = execution.attempts.last_mut()
-                    && attempt.status == crate::runtime::workflow::node::AttemptStatus::Running
+                    && attempt.status
+                        == crate::runtime::workflow::node::status::attempt::Status::Running
                 {
-                    attempt.status = crate::runtime::workflow::node::AttemptStatus::Waiting;
+                    attempt.status =
+                        crate::runtime::workflow::node::status::attempt::Status::Waiting;
                     changed = true;
                 }
                 if let Some(attempt) = execution.attempts.last_mut()
@@ -183,8 +187,8 @@ impl State {
                 execution.idx == self.step
                     && matches!(
                         execution.status,
-                        crate::runtime::workflow::node::ExecutionStatus::Running
-                            | crate::runtime::workflow::node::ExecutionStatus::Waiting
+                        crate::runtime::workflow::node::status::execution::Status::Running
+                            | crate::runtime::workflow::node::status::execution::Status::Waiting
                     )
             }) {
                 let Some(attempt) = execution.attempts.last() else {
@@ -192,8 +196,8 @@ impl State {
                 };
                 if !matches!(
                     attempt.status,
-                    crate::runtime::workflow::node::AttemptStatus::Running
-                        | crate::runtime::workflow::node::AttemptStatus::Waiting
+                    crate::runtime::workflow::node::status::attempt::Status::Running
+                        | crate::runtime::workflow::node::status::attempt::Status::Waiting
                 ) {
                     continue;
                 }
@@ -220,7 +224,8 @@ impl State {
 
     /// Rebuilds the graph-level usage from committed node Attempt details.
     /// This is deliberately idempotent and safe to call after restore.
-    pub(crate) fn recompute_usage(&mut self) {
+    #[doc(hidden)]
+    pub fn recompute_usage(&mut self) {
         let mut usage = None;
         for state in self.nodes.values_mut() {
             for execution in state.executions.values_mut() {
@@ -290,13 +295,15 @@ impl State {
                     .filter(move |execution| {
                         execution.idx == self.step
                             && execution.status
-                                == crate::runtime::workflow::node::ExecutionStatus::Waiting
+                                == crate::runtime::workflow::node::status::execution::Status::Waiting
                     })
                     .flat_map(move |execution| {
                         execution
                             .waits
                             .iter()
-                            .filter(|(_, record)| record.status == "waiting")
+                            .filter(|(_, record)| {
+                                record.status == crate::runtime::workflow::node::status::wait::Status::Waiting
+                            })
                             .map(move |(wait_id, _)| Pause {
                                 node_id: node_id.clone(),
                                 exec_id: execution.exec_id,
@@ -307,7 +314,8 @@ impl State {
             .collect()
     }
 
-    pub(crate) fn pause(&self, node_id: &str) -> Result<Option<Pause>, Error> {
+    #[doc(hidden)]
+    pub fn pause(&self, node_id: &str) -> Result<Option<Pause>, Error> {
         let mut matches = self
             .nodes
             .get(node_id)
@@ -315,13 +323,17 @@ impl State {
             .flat_map(|node| node.executions.values())
             .filter(|execution| {
                 execution.idx == self.step
-                    && execution.status == crate::runtime::workflow::node::ExecutionStatus::Waiting
+                    && execution.status
+                        == crate::runtime::workflow::node::status::execution::Status::Waiting
             })
             .flat_map(|execution| {
                 execution
                     .waits
                     .iter()
-                    .filter(|(_, record)| record.status == "waiting")
+                    .filter(|(_, record)| {
+                        record.status
+                            == crate::runtime::workflow::node::status::wait::Status::Waiting
+                    })
                     .map(move |(wait_id, _)| Pause {
                         node_id: node_id.into(),
                         exec_id: execution.exec_id,
@@ -350,9 +362,9 @@ impl State {
                     execution.idx < self.step
                         && matches!(
                             execution.status,
-                            crate::runtime::workflow::node::ExecutionStatus::Succeeded
-                                | crate::runtime::workflow::node::ExecutionStatus::Failed
-                                | crate::runtime::workflow::node::ExecutionStatus::Cancelled
+                            crate::runtime::workflow::node::status::execution::Status::Succeeded
+                                | crate::runtime::workflow::node::status::execution::Status::Failed
+                                | crate::runtime::workflow::node::status::execution::Status::Cancelled
                         )
                 })
                 .map(|execution| execution.idx)
@@ -368,14 +380,17 @@ impl State {
     /// Applies the external response to the single active wait for a node.
     /// The response is kept in execution facts so a restored runtime can
     /// resume without a second mailbox or scheduler record.
-    pub(crate) fn resume(&mut self, node_id: &str, response: Messages) -> Result<(), Error> {
+    #[doc(hidden)]
+    pub fn resume(&mut self, node_id: &str, response: Messages) -> Result<(), Error> {
         let wait = match self.pause(node_id)? {
             Some(wait) => wait,
             None => {
                 let already_resolved = self.nodes.get(node_id).and_then(|node| {
                     node.executions.values().find_map(|execution| {
                         execution.waits.values().find_map(|wait| {
-                            (wait.status == "resolved").then(|| wait.response.clone())
+                            (wait.status
+                                == crate::runtime::workflow::node::status::wait::Status::Resolved)
+                                .then(|| wait.response.clone())
                         })
                     })
                 });
@@ -456,7 +471,7 @@ impl State {
             .waits
             .get_mut(&wait.wait_id)
             .ok_or_else(|| Error::new("INVALID_STATE", "active wait is missing from execution"))?;
-        if record.status == "resolved" {
+        if record.status == crate::runtime::workflow::node::status::wait::Status::Resolved {
             if record.response.as_ref() == Some(&response) {
                 return Ok(());
             }
@@ -465,21 +480,22 @@ impl State {
                 "wait was already resolved differently",
             ));
         }
-        if record.status != "waiting"
-            || execution.status != crate::runtime::workflow::node::ExecutionStatus::Waiting
+        if record.status != crate::runtime::workflow::node::status::wait::Status::Waiting
+            || execution.status
+                != crate::runtime::workflow::node::status::execution::Status::Waiting
         {
             return Err(Error::new("INVALID_STATE", "execution is not waiting"));
         }
-        record.status = "resolved".into();
+        record.status = crate::runtime::workflow::node::status::wait::Status::Resolved;
         record.resolved_time = Some(0);
         record.response = Some(response);
-        execution.status = crate::runtime::workflow::node::ExecutionStatus::Running;
+        execution.status = crate::runtime::workflow::node::status::execution::Status::Running;
         if let Some(attempt) = execution.attempts.last_mut() {
-            attempt.status = crate::runtime::workflow::node::AttemptStatus::Running;
+            attempt.status = crate::runtime::workflow::node::status::attempt::Status::Running;
         }
         let node = self.node_mut(node_id)?;
         node.executions.insert(wait.exec_id, execution);
-        node.status = crate::runtime::workflow::node::Status::Active;
+        node.status = crate::runtime::workflow::node::status::Status::Active;
         self.status = Status::Running;
         Ok(())
     }
@@ -488,18 +504,21 @@ impl State {
     pub(crate) fn resolved_wait(&self) -> Option<(String, i64, String, Messages)> {
         self.nodes.iter().find_map(|(node_id, node)| {
             node.executions.values().find_map(|execution| {
-                if execution.status != crate::runtime::workflow::node::ExecutionStatus::Running {
+                if execution.status
+                    != crate::runtime::workflow::node::status::execution::Status::Running
+                {
                     return None;
                 }
                 execution.waits.iter().find_map(|(wait_id, wait)| {
-                    (wait.status == "resolved").then(|| {
-                        (
-                            node_id.clone(),
-                            execution.exec_id,
-                            wait_id.clone(),
-                            wait.response.clone().unwrap_or_default(),
-                        )
-                    })
+                    (wait.status == crate::runtime::workflow::node::status::wait::Status::Resolved)
+                        .then(|| {
+                            (
+                                node_id.clone(),
+                                execution.exec_id,
+                                wait_id.clone(),
+                                wait.response.clone().unwrap_or_default(),
+                            )
+                        })
                 })
             })
         })
@@ -517,9 +536,9 @@ impl State {
                 execution.idx == self.step
                     && matches!(
                         execution.status,
-                        crate::runtime::workflow::node::ExecutionStatus::Pending
-                            | crate::runtime::workflow::node::ExecutionStatus::Running
-                            | crate::runtime::workflow::node::ExecutionStatus::Waiting
+                        crate::runtime::workflow::node::status::execution::Status::Pending
+                            | crate::runtime::workflow::node::status::execution::Status::Running
+                            | crate::runtime::workflow::node::status::execution::Status::Waiting
                     )
             })
         }) {
@@ -540,8 +559,6 @@ impl State {
         definition: &Definition,
         node_id: &str,
     ) -> Option<Vec<crate::runtime::workflow::node::ExecutionRef>> {
-        use crate::runtime::workflow::node::ExecutionStatus;
-
         let target = self.nodes.get(node_id)?;
         if target
             .executions
@@ -579,14 +596,15 @@ impl State {
                             execution.idx == common_step
                                 && matches!(
                                     execution.status,
-                                    ExecutionStatus::Succeeded
-                                        | ExecutionStatus::Failed
-                                        | ExecutionStatus::Cancelled
+                                    crate::runtime::workflow::node::status::execution::Status::Succeeded
+                                        | crate::runtime::workflow::node::status::execution::Status::Failed
+                                        | crate::runtime::workflow::node::status::execution::Status::Cancelled
                                 )
                         })
                         .max_by_key(|execution| (execution.idx, execution.exec_id))
                 })?;
-                any_failed |= execution.status == ExecutionStatus::Failed
+                any_failed |= execution.status
+                    == crate::runtime::workflow::node::status::execution::Status::Failed
                     && (relation.codes.is_empty()
                         || execution.error.as_ref().is_some_and(|error| {
                             relation.codes.iter().any(|code| code == &error.code)
@@ -661,9 +679,11 @@ impl State {
                     .executions
                     .values()
                     .filter(|execution| {
-                        let normal = execution.status == ExecutionStatus::Succeeded
+                        let normal = execution.status
+                            == crate::runtime::workflow::node::status::execution::Status::Succeeded
                             && execution.to.iter().any(|target| target == node_id);
-                        let failure = execution.status == ExecutionStatus::Failed
+                        let failure = execution.status
+                            == crate::runtime::workflow::node::status::execution::Status::Failed
                             && execution.error.is_some()
                             && definition.graph.failure_relations.iter().any(|relation| {
                                 relation.on == "node_failed"
@@ -789,11 +809,11 @@ impl State {
         }
         let step = self.step;
         let node = self.node_mut(node_id)?;
-        node.status = crate::runtime::workflow::node::Status::Active;
+        node.status = crate::runtime::workflow::node::status::Status::Active;
         node.insert(crate::runtime::workflow::node::Execution {
             exec_id,
             idx: step,
-            status: crate::runtime::workflow::node::ExecutionStatus::Running,
+            status: crate::runtime::workflow::node::status::execution::Status::Running,
             from,
             ..Default::default()
         })?;
@@ -801,7 +821,7 @@ impl State {
             exec_id,
             crate::runtime::workflow::node::Attempt {
                 idx: 0,
-                status: crate::runtime::workflow::node::AttemptStatus::Running,
+                status: crate::runtime::workflow::node::status::attempt::Status::Running,
                 ..Default::default()
             },
         )
@@ -818,18 +838,18 @@ impl State {
         let execution = node.execution_mut(exec_id)?;
         if !matches!(
             execution.status,
-            crate::runtime::workflow::node::ExecutionStatus::Running
-                | crate::runtime::workflow::node::ExecutionStatus::Waiting
+            crate::runtime::workflow::node::status::execution::Status::Running
+                | crate::runtime::workflow::node::status::execution::Status::Waiting
         ) {
             return Err(Error::new("INVALID_STATE", "execution is not active"));
         }
-        execution.status = crate::runtime::workflow::node::ExecutionStatus::Succeeded;
+        execution.status = crate::runtime::workflow::node::status::execution::Status::Succeeded;
         if let Some(attempt) = execution.attempts.last_mut() {
-            attempt.status = crate::runtime::workflow::node::AttemptStatus::Succeeded;
+            attempt.status = crate::runtime::workflow::node::status::attempt::Status::Succeeded;
         }
         execution.messages = messages;
         execution.to = to;
-        node.status = crate::runtime::workflow::node::Status::Succeeded;
+        node.status = crate::runtime::workflow::node::status::Status::Succeeded;
         self.forget_wait_locations(node_id, exec_id);
         Ok(())
     }
@@ -850,23 +870,23 @@ impl State {
         // check above still rejects registering that record twice.
         if !matches!(
             execution.status,
-            crate::runtime::workflow::node::ExecutionStatus::Running
-                | crate::runtime::workflow::node::ExecutionStatus::Waiting
+            crate::runtime::workflow::node::status::execution::Status::Running
+                | crate::runtime::workflow::node::status::execution::Status::Waiting
         ) {
             return Err(Error::new("INVALID_STATE", "execution is not active"));
         }
         if execution.waits.contains_key(&wait_id) {
             return Err(Error::new("CONFLICT", "execution wait already exists"));
         }
-        execution.status = crate::runtime::workflow::node::ExecutionStatus::Waiting;
+        execution.status = crate::runtime::workflow::node::status::execution::Status::Waiting;
         if let Some(attempt) = execution.attempts.last_mut() {
-            attempt.status = crate::runtime::workflow::node::AttemptStatus::Waiting;
+            attempt.status = crate::runtime::workflow::node::status::attempt::Status::Waiting;
         }
         execution.waits.insert(
             wait_id.clone(),
             crate::runtime::workflow::node::Wait {
                 kind: "external".into(),
-                status: "waiting".into(),
+                status: crate::runtime::workflow::node::status::wait::Status::Waiting,
                 created_time: 0,
                 resolved_time: None,
                 response: None,
@@ -885,25 +905,25 @@ impl State {
         let execution = node.execution_mut(exec_id)?;
         if !matches!(
             execution.status,
-            crate::runtime::workflow::node::ExecutionStatus::Pending
-                | crate::runtime::workflow::node::ExecutionStatus::Running
-                | crate::runtime::workflow::node::ExecutionStatus::Waiting
+            crate::runtime::workflow::node::status::execution::Status::Pending
+                | crate::runtime::workflow::node::status::execution::Status::Running
+                | crate::runtime::workflow::node::status::execution::Status::Waiting
         ) {
             return Err(Error::new("INVALID_STATE", "execution is not active"));
         }
-        execution.status = crate::runtime::workflow::node::ExecutionStatus::Failed;
+        execution.status = crate::runtime::workflow::node::status::execution::Status::Failed;
         if let Some(attempt) = execution.attempts.last_mut()
             && matches!(
                 attempt.status,
-                crate::runtime::workflow::node::AttemptStatus::Running
-                    | crate::runtime::workflow::node::AttemptStatus::Waiting
+                crate::runtime::workflow::node::status::attempt::Status::Running
+                    | crate::runtime::workflow::node::status::attempt::Status::Waiting
             )
         {
-            attempt.status = crate::runtime::workflow::node::AttemptStatus::Failed;
+            attempt.status = crate::runtime::workflow::node::status::attempt::Status::Failed;
             attempt.error = Some(error.clone());
         }
         execution.error = Some(error);
-        node.status = crate::runtime::workflow::node::Status::Failed;
+        node.status = crate::runtime::workflow::node::status::Status::Failed;
         self.forget_wait_locations(node_id, exec_id);
         Ok(())
     }
@@ -913,23 +933,23 @@ impl State {
         let execution = node.execution_mut(exec_id)?;
         if !matches!(
             execution.status,
-            crate::runtime::workflow::node::ExecutionStatus::Pending
-                | crate::runtime::workflow::node::ExecutionStatus::Running
-                | crate::runtime::workflow::node::ExecutionStatus::Waiting
+            crate::runtime::workflow::node::status::execution::Status::Pending
+                | crate::runtime::workflow::node::status::execution::Status::Running
+                | crate::runtime::workflow::node::status::execution::Status::Waiting
         ) {
             return Err(Error::new("INVALID_STATE", "execution is not active"));
         }
-        execution.status = crate::runtime::workflow::node::ExecutionStatus::Cancelled;
+        execution.status = crate::runtime::workflow::node::status::execution::Status::Cancelled;
         if let Some(attempt) = execution.attempts.last_mut()
             && matches!(
                 attempt.status,
-                crate::runtime::workflow::node::AttemptStatus::Running
-                    | crate::runtime::workflow::node::AttemptStatus::Waiting
+                crate::runtime::workflow::node::status::attempt::Status::Running
+                    | crate::runtime::workflow::node::status::attempt::Status::Waiting
             )
         {
-            attempt.status = crate::runtime::workflow::node::AttemptStatus::Cancelled;
+            attempt.status = crate::runtime::workflow::node::status::attempt::Status::Cancelled;
         }
-        node.status = crate::runtime::workflow::node::Status::Cancelled;
+        node.status = crate::runtime::workflow::node::status::Status::Cancelled;
         self.forget_wait_locations(node_id, exec_id);
         Ok(())
     }
@@ -951,9 +971,9 @@ impl State {
                 execution.idx == self.step
                     && matches!(
                         execution.status,
-                        crate::runtime::workflow::node::ExecutionStatus::Pending
-                            | crate::runtime::workflow::node::ExecutionStatus::Running
-                            | crate::runtime::workflow::node::ExecutionStatus::Waiting
+                        crate::runtime::workflow::node::status::execution::Status::Pending
+                            | crate::runtime::workflow::node::status::execution::Status::Running
+                            | crate::runtime::workflow::node::status::execution::Status::Waiting
                     )
             })
         });

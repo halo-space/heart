@@ -9,6 +9,7 @@ use crate::{Cancellation, Error};
 
 const LOCK_TIMEOUT_SECONDS: u64 = 300;
 const LOCK_RETRY_MILLISECONDS: u64 = 10;
+static LOCK_OWNER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 /// Local Workspace persistence for Harness state.
 ///
@@ -21,11 +22,19 @@ pub struct Store {
 
 struct Lock {
     path: std::path::PathBuf,
+    owner: String,
 }
 
 impl Drop for Lock {
     fn drop(&mut self) {
-        let _ = std::fs::remove_dir(&self.path);
+        let owner_path = self.path.join("owner");
+        let owned = std::fs::read_to_string(&owner_path)
+            .map(|owner| owner == self.owner)
+            .unwrap_or(false);
+        if owned {
+            let _ = std::fs::remove_file(owner_path);
+            let _ = std::fs::remove_dir(&self.path);
+        }
     }
 }
 
@@ -91,9 +100,21 @@ impl Store {
         self.workspace
             .write(&history_path, encoded.clone(), cancellation)
             .await?;
-        self.workspace
+        if let Err(error) = self
+            .workspace
             .write(".heart/harness/state.json", encoded, cancellation)
             .await
+        {
+            // The history file was created for this version only. Remove it
+            // when the current-state commit fails, otherwise a later
+            // rollback could restore a version that was never committed.
+            let _ = self
+                .workspace
+                .delete(&history_path, &Cancellation::new())
+                .await;
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Apply one accepted Refinement against the latest local state and save
@@ -181,7 +202,24 @@ impl Store {
         loop {
             crate::cancellation::check(cancellation)?;
             match tokio::fs::create_dir(&lock_path).await {
-                Ok(()) => return Ok(Lock { path: lock_path }),
+                Ok(()) => {
+                    let owner = format!(
+                        "{}-{}",
+                        std::process::id(),
+                        LOCK_OWNER.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+                    );
+                    if let Err(error) = tokio::fs::write(lock_path.join("owner"), &owner).await {
+                        let _ = tokio::fs::remove_dir(&lock_path).await;
+                        return Err(Error::new(
+                            "IO_ERROR",
+                            format!("failed to write Harness lock owner: {error}"),
+                        ));
+                    }
+                    return Ok(Lock {
+                        path: lock_path,
+                        owner,
+                    });
+                }
                 Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
                     let stale = tokio::fs::metadata(&lock_path)
                         .await
@@ -190,6 +228,8 @@ impl Store {
                         .and_then(|modified| modified.elapsed().ok())
                         .is_some_and(|age| age.as_secs() >= LOCK_TIMEOUT_SECONDS);
                     if stale {
+                        let owner_path = lock_path.join("owner");
+                        let _ = tokio::fs::remove_file(owner_path).await;
                         let _ = tokio::fs::remove_dir(&lock_path).await;
                         continue;
                     }

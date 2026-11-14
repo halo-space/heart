@@ -118,7 +118,7 @@ impl<M> Builder<M> {
         self
     }
 
-    pub fn memory<S, L>(mut self, config: crate::memory::Config<S, L>) -> Self
+    pub fn memory<S, L>(mut self, config: crate::runtime::agent::memory::Config<S, L>) -> Self
     where
         S: crate::memory::short::Store + 'static,
         L: crate::memory::Memory + 'static,
@@ -170,6 +170,7 @@ where
         Ok(Agent {
             inner,
             state: self.state,
+            subagents: self.subagents,
         })
     }
 }
@@ -179,6 +180,7 @@ where
 pub struct Agent<M> {
     inner: react::Agent<M>,
     state: Arc<std::sync::Mutex<Option<Arc<state::Store>>>>,
+    subagents: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
 impl<M> Agent<M> {
@@ -256,7 +258,35 @@ where
         stream: bool,
         cancellation: Cancellation,
     ) -> Result<Self::Stream, Error> {
-        self.inner.run(input, stream, cancellation).await
+        let store = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone();
+        let selected = if let Some(store) = store {
+            let registered = self
+                .subagents
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .clone();
+            let state = store.load(&cancellation).await?;
+            if let Some(state) = state {
+                let session_id = input
+                    .metadata
+                    .get("session_id")
+                    .and_then(|value| value.as_i64());
+                state.context_for(session_id, &registered)?;
+                let selected = state.subagents();
+                (!selected.is_empty()).then_some(selected)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        self.inner
+            .run_with_subagents(input, stream, cancellation, selected.as_deref())
+            .await
     }
 
     async fn reply(&self, input: Input, cancellation: Cancellation) -> Result<(), Error> {

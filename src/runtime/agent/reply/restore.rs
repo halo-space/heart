@@ -119,7 +119,7 @@ fn reply_match(steps: &[Step], input: &Input) -> Result<bool, Error> {
         {
             return Ok(true);
         }
-        if record.status == "resolved" {
+        if record.status == crate::runtime::agent::node::status::wait::Status::Resolved {
             return Err(Error::new(
                 "CONFLICT",
                 "this question already received all required feedback",
@@ -127,7 +127,9 @@ fn reply_match(steps: &[Step], input: &Input) -> Result<bool, Error> {
         }
         return Ok(false);
     }
-    if record.kind != "approval" || record.status != "resolved" {
+    if record.kind != "approval"
+        || record.status != crate::runtime::agent::node::status::wait::Status::Resolved
+    {
         return Ok(false);
     }
     record.validate()?;
@@ -232,7 +234,7 @@ fn prepare_input(scene: &Value, input: Option<&Input>) -> Result<Option<Restore>
                 );
             }
             let submission = (record.kind == "approval"
-                && record.status == "resolved"
+                && record.status == crate::runtime::agent::node::status::wait::Status::Resolved
                 && record.feedback.as_slice().len() == 1
                 && record.question.metadata.get("chat_id") == scene.get("chat_id")
                 && record
@@ -271,7 +273,9 @@ fn prepare_input(scene: &Value, input: Option<&Input>) -> Result<Option<Restore>
         let unresolved = step
             .waits
             .iter()
-            .filter(|(_, record)| record.status == "waiting")
+            .filter(|(_, record)| {
+                record.status == crate::runtime::agent::node::status::wait::Status::Waiting
+            })
             .collect::<Vec<_>>();
         if step.kind != "tool"
             || !matches!(step.stage.as_deref(), Some("before" | "call" | "after"))
@@ -404,7 +408,7 @@ fn prepare_input(scene: &Value, input: Option<&Input>) -> Result<Option<Restore>
     }))
 }
 
-impl Run {
+impl Handle {
     pub(crate) fn restore_approvals(&self, restore: Restore) -> Vec<wait::Wait> {
         self.0.restoring.store(true, Ordering::Release);
         let mut directory = self.0.questions.lock().expect("question lock poisoned");
@@ -470,9 +474,9 @@ impl Run {
         self.0.restoring.load(Ordering::Acquire)
     }
 
-    /// Transfer only this saved execution's consumers to its actual Run.
+    /// Transfer only this saved execution's consumers to its actual Handle.
     /// No new question, execution or persistence lifecycle is created here.
-    pub(crate) fn restore_consumer(&self, node: &wait::Node, task: &Run) -> Vec<wait::Wait> {
+    pub(crate) fn restore_consumer(&self, node: &wait::Node, task: &Handle) -> Vec<wait::Wait> {
         let Some(consumer) = self
             .0
             .restored_tasks
@@ -587,7 +591,7 @@ impl Run {
 }
 
 pub(crate) async fn consume(
-    run: Option<&Run>,
+    run: Option<&Handle>,
     step: &Step,
     cancellation: &Cancellation,
 ) -> Result<Option<Call>, Error> {
@@ -596,15 +600,15 @@ pub(crate) async fn consume(
     // behind the still-pending input. The caller rechecks the current policy
     // and compares the actual Call, so Deny or changed arguments never inherit it.
     if step.stage.as_deref() == Some("call")
-        && step
-            .waits
-            .values()
-            .any(|wait| wait.kind == "input" && wait.status == "waiting")
+        && step.waits.values().any(|wait| {
+            wait.kind == "input"
+                && wait.status == crate::runtime::agent::node::status::wait::Status::Waiting
+        })
     {
         let mut authorized = false;
         for record in step.waits.values().filter(|wait| wait.kind == "approval") {
             record.validate()?;
-            if record.status != "resolved" {
+            if record.status != crate::runtime::agent::node::status::wait::Status::Resolved {
                 return Err(Error::new(
                     "INVALID_STATE",
                     "Tool input precedes its approval",
@@ -638,10 +642,10 @@ pub(crate) async fn consume(
         }
     }
     if !matches!(step.stage.as_deref(), Some("before" | "call"))
-        || !step
-            .waits
-            .values()
-            .any(|wait| wait.status == "waiting" && wait.kind == "approval")
+        || !step.waits.values().any(|wait| {
+            wait.status == crate::runtime::agent::node::status::wait::Status::Waiting
+                && wait.kind == "approval"
+        })
     {
         return Ok(None);
     }
@@ -699,11 +703,10 @@ mod tests {
             id: "tool-1".into(),
             kind: "tool".into(),
             status: if resolved.is_some() {
-                "running"
+                crate::runtime::agent::node::status::step::Status::Running
             } else {
-                "waiting"
-            }
-            .into(),
+                crate::runtime::agent::node::status::step::Status::Waiting
+            },
             stage: Some("before".into()),
             call_id: Some(call.call_id.clone()),
             call: Some(call),
@@ -747,7 +750,7 @@ mod tests {
             let step = node::Step {
                 id: "tool-1".into(),
                 kind: "tool".into(),
-                status: "waiting".into(),
+                status: crate::runtime::agent::node::status::step::Status::Waiting,
                 stage: Some("before".into()),
                 call_id: Some(call.call_id.clone()),
                 call: Some(call),
@@ -757,7 +760,7 @@ mod tests {
             let child = crate::runtime::agent::State {
                 chat_id: Some(CHAT_ID),
                 r#type: "agent".into(),
-                status: "waiting".into(),
+                status: crate::runtime::agent::status::Status::Waiting,
                 steps: vec![step],
                 waits: vec![wait::Wait {
                     nodes: Vec::new(),
@@ -767,7 +770,7 @@ mod tests {
             };
             let attempt = node::Attempt {
                 idx: 0,
-                status: node::Status::Waiting,
+                status: node::status::Status::Waiting,
                 created_time: None,
                 finished_time: None,
                 usage: None,
@@ -782,7 +785,7 @@ mod tests {
             nodes.insert(
                 node_id.to_owned(),
                 node::State {
-                    status: node::Status::Waiting,
+                    status: node::status::Status::Waiting,
                     execution: Some(node::Execution {
                         exec_id,
                         attempts: vec![attempt],
@@ -805,7 +808,7 @@ mod tests {
         let root = crate::runtime::agent::State {
             chat_id: Some(CHAT_ID),
             r#type: "agent".into(),
-            status: "waiting".into(),
+            status: crate::runtime::agent::status::Status::Waiting,
             nodes,
             waits,
             ..Default::default()
@@ -1004,7 +1007,7 @@ mod tests {
         let step = Step {
             id: "new-tool".into(),
             kind: "tool".into(),
-            status: "running".into(),
+            status: crate::runtime::agent::node::status::step::Status::Running,
             call_id: Some("new-call".into()),
             stage: Some("before".into()),
             call: Some(Call {

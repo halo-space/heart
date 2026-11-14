@@ -25,7 +25,7 @@ pub async fn run_workflow(
             .values()
             .flat_map(|node| node.executions.values())
             .filter(|execution| {
-                execution.status == node::ExecutionStatus::Succeeded
+                execution.status == node::status::execution::Status::Succeeded
                     && execution.to.iter().any(|to| to == graph::END)
             })
             .flat_map(|execution| execution.messages.as_slice().iter().cloned()),

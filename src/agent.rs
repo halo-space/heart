@@ -14,6 +14,10 @@ pub use crate::core::provider;
 pub use crate::runtime::agent::subagent::SubAgent;
 pub use crate::runtime::agent::team;
 pub use crate::runtime::agent::{chat, react};
+#[doc(hidden)]
+pub mod subagent {
+    pub use crate::runtime::agent::subagent::*;
+}
 pub use crate::runtime::trace;
 
 /// Protocol adapters used by the outer HTTP or transport layer.
@@ -41,9 +45,15 @@ pub mod server {
 
 pub use crate::components::message;
 pub use crate::components::{
-    checkpoint, evaluation, event, function, knowledge, mcp, memory, model, permission, plan,
-    prompt, reason, sandbox, skill, workspace,
+    checkpoint, evaluation, event, function, knowledge, mcp, model, permission, plan, prompt,
+    reason, sandbox, skill, workspace,
 };
+
+/// Memory contracts plus the Agent runtime's composition configuration.
+pub mod memory {
+    pub use crate::components::memory::*;
+    pub use crate::runtime::agent::memory::Config;
+}
 
 pub mod compression {
     pub use crate::components::compression::*;
@@ -81,15 +91,59 @@ pub mod workflow {
     pub use crate::runtime::workflow::*;
 }
 
-/// Runtime implementation details needed by low-level integrations.
-///
-/// The crate deliberately exposes them below `halo::agent`; runtime is not a
-/// separate top-level public module. Most applications should use
-/// `agent::chat`, `agent::react`, `agent::workflow`, and the Agent contract.
+/// Serializable Agent execution graph facts for integrations that need to
+/// inspect or persist the runtime projection. Execution ownership remains in
+/// `runtime`; this is the stable `halo::agent` namespace for the public data.
+pub mod graph {
+    pub use crate::runtime::agent::graph::*;
+}
+
+/// Public waiting data and reply helpers used by channel integrations.
+pub mod wait {
+    pub use crate::runtime::agent::wait::*;
+}
+
+/// Hidden runtime scope hooks used by integration tests for nested Agent
+/// recovery. They are not part of the stable application API.
 #[doc(hidden)]
-pub mod runtime {
-    pub mod agent {
-        pub use crate::runtime::agent::{State, graph, node, react, wait};
+pub mod scope {
+    pub use crate::runtime::agent::scope::{capture, restore};
+}
+
+/// Hidden lifecycle helpers used by integration tests that exercise saved
+/// Agent attempt facts through the public crate boundary.
+#[doc(hidden)]
+pub mod lifecycle {
+    pub use crate::runtime::agent::lifecycle::*;
+}
+
+/// Hidden model-step helpers used by integration tests for partial output.
+#[doc(hidden)]
+pub mod model_steps {
+    pub use crate::runtime::agent::model_steps::*;
+}
+
+#[doc(hidden)]
+pub mod access {
+    pub use crate::runtime::agent::access::*;
+}
+
+#[doc(hidden)]
+pub mod hooks {
+    pub use crate::runtime::agent::hooks::*;
+}
+
+#[doc(hidden)]
+pub mod agent_input {
+    pub use crate::components::agent_input::*;
+}
+
+/// Agent-local state data exposed for diagnostics and checkpoint tooling.
+pub mod state {
+    pub use crate::runtime::agent::State;
+    pub use crate::runtime::agent::status::Status;
+    pub mod node {
+        pub use crate::runtime::agent::node::*;
     }
 }
 

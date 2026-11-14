@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn event_consumer_returns_transport_error_and_rejects_missing_complete() {
-        let expected = Error::new("NETWORK_ERROR", "provider stream failed");
+        let expected = Error::new("TRANSPORT", "provider stream failed");
         let events = stream::iter(vec![
             Ok(Event::Delta {
                 message: message("partial"),

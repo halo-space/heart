@@ -7,22 +7,8 @@ use crate::components::message::{Message, Messages};
 use crate::components::model::token::Usage;
 use crate::components::tool::{Call, Evaluation};
 
-/// Runtime state of one logical Agent Plan node.
-///
-/// This is intentionally separate from `workflow::node::State`: Agent plans
-/// have no Pregel step or Workflow Join state.
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Status {
-    #[default]
-    Pending,
-    Ready,
-    Running,
-    Waiting,
-    Succeeded,
-    Failed,
-    Cancelled,
-}
+pub mod status;
+use status::Status;
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Attempt {
@@ -55,8 +41,8 @@ pub struct Attempt {
 pub struct Wait {
     /// Purpose of the feedback, such as approval, user input or external data.
     pub kind: String,
-    /// waiting or resolved; resolved does not imply successful node execution.
-    pub status: String,
+    /// Resolved does not imply successful node execution.
+    pub status: status::wait::Status,
     /// Required contributions, fixed when the wait starts. Missing input uses
     /// the ordinary one-feedback default; serialized scenes retain the value.
     #[serde(default = "Wait::default_count")]
@@ -77,7 +63,7 @@ impl Wait {
     pub fn new(kind: impl Into<String>, question: Message, count: usize) -> Result<Self, Error> {
         let record = Self {
             kind: kind.into(),
-            status: "waiting".into(),
+            status: status::wait::Status::Waiting,
             count,
             question,
             feedback: Messages::default(),
@@ -101,9 +87,9 @@ impl Wait {
             .iter()
             .any(|saved| Self::feedback_match(saved, &feedback))
         {
-            return Ok(self.status == "resolved");
+            return Ok(self.status == status::wait::Status::Resolved);
         }
-        if self.status == "resolved" {
+        if self.status == status::wait::Status::Resolved {
             return Err(Error::new(
                 "CONFLICT",
                 "this question already received all required feedback",
@@ -112,7 +98,7 @@ impl Wait {
         self.feedback.push(feedback);
         let resolved = self.feedback.as_slice().len() == self.count;
         if resolved {
-            self.status = "resolved".into();
+            self.status = status::wait::Status::Resolved;
         }
         Ok(resolved)
     }
@@ -121,13 +107,16 @@ impl Wait {
         if self.kind.trim().is_empty()
             || self.count == 0
             || (self.kind == "approval" && self.count != 1)
-            || !matches!(self.status.as_str(), "waiting" | "resolved")
+            || !matches!(
+                self.status,
+                status::wait::Status::Waiting | status::wait::Status::Resolved
+            )
         {
             return Err(Error::new("INVALID_STATE", "invalid feedback wait"));
         }
         let feedback = self.feedback.as_slice();
         if feedback.len() > self.count
-            || (self.status == "resolved") != (feedback.len() == self.count)
+            || (self.status == status::wait::Status::Resolved) != (feedback.len() == self.count)
             || feedback.iter().enumerate().any(|(idx, message)| {
                 feedback[..idx]
                     .iter()
@@ -159,7 +148,7 @@ impl Wait {
 pub struct Step {
     pub id: String,
     pub kind: String,
-    pub status: String,
+    pub status: status::step::Status,
     #[serde(default)]
     pub from: Vec<String>,
     #[serde(default)]

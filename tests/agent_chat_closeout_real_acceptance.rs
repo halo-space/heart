@@ -24,7 +24,7 @@ use session::Store as _;
 #[ignore = "requires DEEPSEEK_API_KEY and sends a live model request"]
 async fn real_provider_complete_and_usage_are_saved_at_chat_closeout() {
     let memory = memory::Config::new(
-        memory::short::Pair::new(
+        core::memory::short::Pair::new(
             core::memory::short::session::InMemory::new(),
             core::memory::short::chat::InMemory::new(),
         ),

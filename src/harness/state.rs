@@ -121,8 +121,8 @@ impl State {
     /// Prompt, Skill and durable Memory items become contextual instructions.
     /// Subagent items describe reusable members rather than becoming an
     /// unvalidated prompt fragment.
-    pub fn context(&self, session_id: Option<i64>) -> Option<String> {
-        self.context_for(session_id, &[]).ok().flatten()
+    pub fn context(&self, session_id: Option<i64>) -> Result<Option<String>, Error> {
+        self.context_for(session_id, &[])
     }
 
     /// Build context and validate persisted SubAgent descriptions against the
@@ -204,16 +204,17 @@ impl State {
     }
 
     /// Remove an item and record the accepted change.
-    pub fn delete(&mut self, id: &str, mut change: Change) -> bool {
+    pub fn delete(&mut self, id: &str, mut change: Change) -> Result<bool, Error> {
+        validate_change(&change)?;
         let before = self.items.len();
         self.items.retain(|item| item.id != id);
         if self.items.len() == before {
-            return false;
+            return Ok(false);
         }
         self.version = self.version.saturating_add(1);
         change.version = self.version;
         self.changes.push(change);
-        true
+        Ok(true)
     }
 
     /// Validate the state before it is persisted.
@@ -359,10 +360,10 @@ mod tests {
     #[test]
     fn delete_records_only_existing_items() {
         let mut state = State::new();
-        assert!(!state.delete("missing", change("change-1")));
+        assert!(!state.delete("missing", change("change-1")).unwrap());
         assert_eq!(state.version, 0);
         state.upsert(item("prompt-1"), change("change-2")).unwrap();
-        assert!(state.delete("prompt-1", change("change-3")));
+        assert!(state.delete("prompt-1", change("change-3")).unwrap());
         assert_eq!(state.version, 2);
         assert!(state.get("prompt-1").is_none());
         assert_eq!(state.changes.len(), 2);

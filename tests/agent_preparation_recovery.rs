@@ -189,12 +189,12 @@ impl session::Store for Sessions {
     }
 }
 type Memory = memory::Config<
-    memory::short::Pair<Sessions, core::memory::short::chat::InMemory>,
+    core::memory::short::Pair<Sessions, core::memory::short::chat::InMemory>,
     core::memory::InMemory,
 >;
 async fn memory(gate: Gate) -> Memory {
     let memory = Memory::new(
-        memory::short::Pair::new(
+        core::memory::short::Pair::new(
             Sessions {
                 inner: Default::default(),
                 gate,

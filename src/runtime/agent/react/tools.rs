@@ -41,17 +41,20 @@ pub(super) fn continue_step<M: Chat + 'static>(
     let step = current(&mut state.steps, &call.call_id).expect("selected Tool step");
     match step.stage.as_deref() {
         Some("before" | "call" | "after") => {
-            step.status = if step.waits.values().any(|wait| wait.status == "waiting") {
-                "waiting"
+            step.status = if step.waits.values().any(|wait| {
+                wait.status == crate::runtime::agent::node::status::wait::Status::Waiting
+            }) {
+                crate::runtime::agent::node::status::step::Status::Waiting
             } else {
-                "running"
-            }
-            .into();
+                crate::runtime::agent::node::status::step::Status::Running
+            };
             step.error = None;
             Ok(false)
         }
         Some("eval" | "complete") => {
-            if step.stage.as_deref() == Some("complete") && step.status == "failed" {
+            if step.stage.as_deref() == Some("complete")
+                && step.status == crate::runtime::agent::node::status::step::Status::Failed
+            {
                 let error = step
                     .error
                     .clone()
@@ -79,7 +82,7 @@ pub(super) fn continue_step<M: Chat + 'static>(
                         .insert(call.call_id.clone(), evaluation.clone());
                 }
             } else {
-                step.status = "running".into();
+                step.status = crate::runtime::agent::node::status::step::Status::Running;
                 step.error = None;
                 let dispatch = state.dispatch.clone();
                 let cancellation = state.cancellation.clone();

@@ -3,7 +3,8 @@
 use super::*;
 
 #[derive(Debug)]
-pub(crate) struct Failure {
+#[doc(hidden)]
+pub struct Failure {
     pub error: Error,
     pub scene: Option<Value>,
     pub usage: Option<Usage>,
@@ -165,7 +166,7 @@ pub(crate) async fn run(
         );
     let view_input = serde_json::to_value(&input).map_err(|error| {
         failure(
-            Error::new("SERIALIZATION_ERROR", error.to_string()),
+            Error::new("SERIALIZATION", error.to_string()),
             &scope,
             previous.as_ref(),
             None,

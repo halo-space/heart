@@ -89,14 +89,16 @@ impl<M: Middleware + 'static> Hook for adapter::Middleware<M> {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct Hooks(Vec<Arc<dyn Hook>>);
+#[doc(hidden)]
+pub struct Hooks(Vec<Arc<dyn Hook>>);
 
 impl Hooks {
     pub(crate) fn len(&self) -> usize {
         self.0.len()
     }
 
-    pub(crate) fn add<M: Middleware + 'static>(&mut self, middleware: M) {
+    #[doc(hidden)]
+    pub fn add<M: Middleware + 'static>(&mut self, middleware: M) {
         self.0
             .push(Arc::new(adapter::Middleware(Arc::new(middleware))));
     }

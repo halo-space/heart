@@ -6,44 +6,12 @@ use crate::Error;
 use crate::components::message::Messages;
 use crate::components::model::token::Usage;
 
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Status {
-    #[default]
-    Idle,
-    Active,
-    Succeeded,
-    Failed,
-    Cancelled,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ExecutionStatus {
-    #[default]
-    Pending,
-    Running,
-    Waiting,
-    Succeeded,
-    Failed,
-    Cancelled,
-}
-
-#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AttemptStatus {
-    #[default]
-    Running,
-    Waiting,
-    Succeeded,
-    Failed,
-    Cancelled,
-}
+pub mod status;
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct Attempt {
     pub idx: u32,
-    pub status: AttemptStatus,
+    pub status: status::attempt::Status,
     pub created_time: Option<i64>,
     pub finished_time: Option<i64>,
     pub usage: Option<Usage>,
@@ -63,7 +31,7 @@ pub struct Attempt {
 pub struct Execution {
     pub exec_id: i64,
     pub idx: u64,
-    pub status: ExecutionStatus,
+    pub status: status::execution::Status,
     pub attempts: Vec<Attempt>,
     pub messages: Messages,
     pub usage: Option<Usage>,
@@ -78,7 +46,7 @@ pub struct Execution {
 pub struct Step {
     pub id: String,
     pub kind: String,
-    pub status: String,
+    pub status: status::step::Status,
     pub from: Vec<String>,
     pub to: Vec<String>,
     pub call_id: Option<String>,
@@ -97,7 +65,7 @@ pub struct Step {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct StepAttempt {
-    pub status: AttemptStatus,
+    pub status: status::attempt::Status,
     pub created_time: Option<i64>,
     pub finished_time: Option<i64>,
     pub usage: Option<Usage>,
@@ -108,7 +76,7 @@ pub struct StepAttempt {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Wait {
     pub kind: String,
-    pub status: String,
+    pub status: status::wait::Status,
     pub created_time: i64,
     pub resolved_time: Option<i64>,
     pub response: Option<Messages>,
@@ -122,12 +90,12 @@ pub struct ExecutionRef {
 
 #[derive(Clone, Debug, Default, Deserialize, PartialEq, Serialize)]
 pub struct State {
-    pub status: Status,
+    pub status: status::Status,
     pub executions: BTreeMap<i64, Execution>,
 }
 
 impl State {
-    pub fn new(status: Status) -> Self {
+    pub fn new(status: status::Status) -> Self {
         Self {
             status,
             executions: BTreeMap::new(),
@@ -172,7 +140,7 @@ mod tests {
 
     #[test]
     fn preserves_attempt_history_and_rejects_gaps() {
-        let mut state = State::new(Status::Active);
+        let mut state = State::new(status::Status::Active);
         state
             .insert(Execution {
                 exec_id: 1,
@@ -184,7 +152,7 @@ mod tests {
                 1,
                 Attempt {
                     idx: 0,
-                    status: AttemptStatus::Failed,
+                    status: status::attempt::Status::Failed,
                     ..Attempt::default()
                 },
             )
@@ -196,7 +164,7 @@ mod tests {
                     1,
                     Attempt {
                         idx: 2,
-                        status: AttemptStatus::Running,
+                        status: status::attempt::Status::Running,
                         ..Attempt::default()
                     },
                 )
@@ -208,7 +176,7 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_and_non_positive_execution_ids() {
-        let mut state = State::new(Status::Idle);
+        let mut state = State::new(status::Status::Idle);
         assert_eq!(
             state
                 .insert(Execution {

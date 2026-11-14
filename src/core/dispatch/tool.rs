@@ -1,7 +1,7 @@
-//! Adapters for executable Tool, MCP and Workspace capabilities.
+//! Execution assembly for executable Tool, MCP and Workspace capabilities.
 //!
 //! `dispatch` owns composition; this module owns the concrete call lifecycle
-//! boundary for each executable entry.
+//! boundary for each executable capability.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -25,7 +25,7 @@ pub(crate) struct McpServer<S> {
 }
 
 impl<S: Server + 'static> McpServer<S> {
-    pub(crate) fn entries(&self) -> Vec<Arc<dyn Tool>> {
+    pub(crate) fn tools(&self) -> Vec<Arc<dyn Tool>> {
         let server = Arc::clone(&self.server);
         server
             .tools()

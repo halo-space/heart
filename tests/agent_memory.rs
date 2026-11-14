@@ -217,7 +217,7 @@ impl Memory for Long {
     }
 }
 
-type Config = memory::Config<memory::short::Pair<Sessions, Chats>, Long>;
+type Config = memory::Config<agent::core::memory::short::Pair<Sessions, Chats>, Long>;
 fn session() -> session::Session {
     session::Session {
         id: 101,
@@ -235,7 +235,7 @@ fn session() -> session::Session {
 }
 fn config(value: session::Session, state: &State) -> Config {
     memory::Config::new(
-        memory::short::Pair::new(
+        agent::core::memory::short::Pair::new(
             Sessions {
                 value,
                 state: state.clone(),

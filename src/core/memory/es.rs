@@ -11,7 +11,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use elasticsearch::Elasticsearch;
 use serde_json::{Map, Value, json};
 
-use crate::components::memory::short as short_contracts;
 use crate::components::memory::{self, Error, Filter, Item, Request, Type};
 use crate::{Cancellation, cancellation::check};
 
@@ -288,7 +287,7 @@ pub(crate) fn parse_chat_options(
             .ok_or_else(invalid)?;
         filters.push(json!({"term": {field: id}}));
     }
-    let r#type: short_contracts::Type =
+    let r#type: crate::components::memory::short::Type =
         serde_json::from_value(filter.get("type").cloned().ok_or_else(invalid)?)
             .map_err(|_| invalid())?;
     filters.push(json!({"term": {"type": r#type}}));
@@ -413,7 +412,9 @@ fn validate_request(request: &Request, dimension: Option<usize>) -> Result<(), E
     }
 }
 
-fn validate_session(value: &short_contracts::session::Session) -> Result<(), Error> {
+fn validate_session(
+    value: &crate::components::memory::short::session::Session,
+) -> Result<(), Error> {
     if value.id <= 0 || value.tenant_id <= 0 || value.user_id <= 0 {
         Err(Error::new(
             "INVALID_ARGUMENTS",
@@ -424,7 +425,7 @@ fn validate_session(value: &short_contracts::session::Session) -> Result<(), Err
     }
 }
 
-fn validate_chat(value: &short_contracts::chat::Chat) -> Result<(), Error> {
+fn validate_chat(value: &crate::components::memory::short::chat::Chat) -> Result<(), Error> {
     if value.id <= 0
         || value.tenant_id <= 0
         || value.user_id <= 0

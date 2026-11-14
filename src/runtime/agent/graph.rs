@@ -6,7 +6,8 @@ use crate::Error;
 use crate::components::message::Messages;
 use crate::components::model::token::Usage;
 use crate::components::plan::Plan;
-use crate::runtime::agent::node::{self, Status};
+use crate::runtime::agent::node;
+use crate::runtime::agent::node::status::Status;
 
 /// Mutable execution-graph state for one Agent plan version.
 ///

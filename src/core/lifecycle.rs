@@ -10,14 +10,16 @@ use crate::cancellation::cancellable;
 use crate::{Cancellation, Error};
 
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub(crate) enum Phase {
+#[doc(hidden)]
+pub enum Phase {
     Before,
     Call,
     After,
     Complete,
 }
 
-pub(crate) struct Methods<B, C, A, K> {
+#[doc(hidden)]
+pub struct Methods<B, C, A, K> {
     pub before: B,
     pub call: C,
     pub after: A,
@@ -28,7 +30,8 @@ pub(crate) struct Methods<B, C, A, K> {
 /// output types remain native; omitted Hooks are ordinary identity methods.
 /// Commit borrows successful values; the owner copies only what its native
 /// scene needs. A stateless caller need not clone large outputs for a no-op ack.
-pub(crate) async fn advance<I, O, E, B, BF, C, CF, A, AF, K, KF>(
+#[doc(hidden)]
+pub async fn advance<I, O, E, B, BF, C, CF, A, AF, K, KF>(
     from: Phase,
     until: Phase,
     mut input: I,
@@ -95,7 +98,8 @@ where
 
 /// Stop at the authorization/admission boundary while using the same driver.
 /// A restored Call phase skips before and does not send another completion ack.
-pub(crate) async fn prepare<I, E, B, BF, K, KF>(
+#[doc(hidden)]
+pub async fn prepare<I, E, B, BF, K, KF>(
     from: Phase,
     input: I,
     before: B,
@@ -130,7 +134,3 @@ where
 fn check<E: From<Error>>(cancellation: &Cancellation) -> Result<(), E> {
     crate::cancellation::check(cancellation).map_err(Into::into)
 }
-
-#[cfg(test)]
-#[path = "../../tests/unit/lifecycle.rs"]
-mod tests;

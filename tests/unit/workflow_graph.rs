@@ -1,4 +1,3 @@
-use super::*;
 use futures_executor::block_on;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -114,9 +113,9 @@ fn state_usage_is_recomputed_from_attempt_details() {
     let mut state = State::new(1, workflow.definition());
     state.nodes.get_mut("answer").unwrap().executions.insert(
         11,
-        crate::runtime::workflow::node::Execution {
+        halo::agent::workflow::node::Execution {
             exec_id: 11,
-            attempts: vec![crate::runtime::workflow::node::Attempt {
+            attempts: vec![halo::agent::workflow::node::Attempt {
                 usage: Some(Usage {
                     input: Some(12),
                     output: Some(5),
@@ -135,8 +134,8 @@ fn state_usage_is_recomputed_from_attempt_details() {
 
 #[test]
 fn usage_recomputation_preserves_retry_details_without_double_counting_child() {
-    use crate::model::token::{InputDetails, OutputDetails};
-    use crate::runtime::workflow::node::{Attempt, AttemptStatus, Execution};
+    use halo::agent::model::token::{InputDetails, OutputDetails};
+    use halo::agent::workflow::node::{Attempt, Execution};
 
     let workflow = single().compile().unwrap();
     let mut child = State::new(1, workflow.definition());
@@ -155,13 +154,13 @@ fn usage_recomputation_preserves_retry_details_without_double_counting_child() {
             attempts: vec![
                 Attempt {
                     idx: 0,
-                    status: AttemptStatus::Failed,
+                    status: halo::agent::workflow::node::status::attempt::Status::Failed,
                     usage: Some(make_usage(10, "failed")),
                     ..Default::default()
                 },
                 Attempt {
                     idx: 1,
-                    status: AttemptStatus::Succeeded,
+                    status: halo::agent::workflow::node::status::attempt::Status::Succeeded,
                     usage: Some(make_usage(20, "succeeded")),
                     ..Default::default()
                 },
@@ -212,7 +211,7 @@ fn usage_recomputation_preserves_retry_details_without_double_counting_child() {
 fn join_conflicts_with_ordinary_activation() {
     let mut builder = Builder::new("join");
     for id in ["a", "b", "merge"] {
-        builder.add_node(id, crate::node::Echo).unwrap();
+        builder.add_node(id, halo::agent::node::Echo).unwrap();
     }
     builder.add_edge(START, "a").unwrap();
     builder.add_edge(START, "b").unwrap();
@@ -242,7 +241,7 @@ fn state_initializes_start_nodes_and_keeps_pause_facts_on_execution() {
     assert_eq!(state.status, Status::Running);
     assert_eq!(
         state.nodes["answer"].status,
-        crate::runtime::workflow::node::Status::Idle
+        halo::agent::workflow::node::status::Status::Idle
     );
 
     state
@@ -255,7 +254,7 @@ fn state_initializes_start_nodes_and_keeps_pause_facts_on_execution() {
     assert_eq!(state.pause("answer").unwrap().unwrap().wait_id, "wait_001");
     assert_eq!(
         state.nodes["answer"].executions[&1].waits["wait_001"].status,
-        "waiting"
+        halo::agent::workflow::node::status::wait::Status::Waiting
     );
 }
 
@@ -288,7 +287,7 @@ fn state_rejects_pause_for_unknown_node_and_duplicate_node_pause() {
 
 #[test]
 fn resume_only_changes_the_current_attempt_nested_wait() {
-    use crate::runtime::workflow::node::{Attempt, AttemptStatus, Execution, ExecutionStatus};
+    use halo::agent::workflow::node::{Attempt, Execution};
 
     let compiled = single().compile().unwrap();
     let mut state = State::new(1, compiled.definition());
@@ -299,16 +298,16 @@ fn resume_only_changes_the_current_attempt_nested_wait() {
             10,
             Execution {
                 exec_id: 10,
-                status: ExecutionStatus::Waiting,
+                status: halo::agent::workflow::node::status::execution::Status::Waiting,
                 attempts: vec![Attempt {
-                    status: AttemptStatus::Waiting,
+                    status: halo::agent::workflow::node::status::attempt::Status::Waiting,
                     ..Default::default()
                 }],
                 waits: [(
                     "child_wait".into(),
-                    crate::runtime::workflow::node::Wait {
+                    halo::agent::workflow::node::Wait {
                         kind: "external".into(),
-                        status: "waiting".into(),
+                        status: halo::agent::workflow::node::status::wait::Status::Waiting,
                         created_time: 0,
                         resolved_time: None,
                         response: None,
@@ -326,26 +325,26 @@ fn resume_only_changes_the_current_attempt_nested_wait() {
     let mut current = waiting_child();
     let execution = Execution {
         exec_id: 1,
-        status: ExecutionStatus::Waiting,
+        status: halo::agent::workflow::node::status::execution::Status::Waiting,
         attempts: vec![
             Attempt {
                 idx: 0,
-                status: AttemptStatus::Succeeded,
+                status: halo::agent::workflow::node::status::attempt::Status::Succeeded,
                 graph: Some(Box::new(historical.clone())),
                 ..Default::default()
             },
             Attempt {
                 idx: 1,
-                status: AttemptStatus::Waiting,
+                status: halo::agent::workflow::node::status::attempt::Status::Waiting,
                 graph: Some(Box::new(current.clone())),
                 ..Default::default()
             },
         ],
         waits: [(
             "wait_001".into(),
-            crate::runtime::workflow::node::Wait {
+            halo::agent::workflow::node::Wait {
                 kind: "external".into(),
-                status: "waiting".into(),
+                status: halo::agent::workflow::node::status::wait::Status::Waiting,
                 created_time: 0,
                 resolved_time: None,
                 response: None,
@@ -387,7 +386,7 @@ fn resume_only_changes_the_current_attempt_nested_wait() {
     state
         .resume(
             "answer",
-            Messages::new([crate::Message::function(serde_json::json!({
+            Messages::new([halo::agent::Message::function(serde_json::json!({
                 "ok": true
             }))]),
         )
@@ -411,12 +410,12 @@ fn resume_only_changes_the_current_attempt_nested_wait() {
     );
     assert_eq!(
         historical.nodes["answer"].executions[&10].status,
-        ExecutionStatus::Waiting
+        halo::agent::workflow::node::status::execution::Status::Waiting
     );
     assert!(current.waits.is_empty());
     assert_eq!(
         current.nodes["answer"].executions[&10].status,
-        ExecutionStatus::Running
+        halo::agent::workflow::node::status::execution::Status::Running
     );
 }
 
@@ -450,8 +449,8 @@ fn add_graph_node_rejects_recursive_definition() {
 #[test]
 fn state_runs_one_barrier_and_activates_ordinary_successor() {
     let mut builder = Builder::new("barrier");
-    builder.add_node("a", crate::node::Echo).unwrap();
-    builder.add_node("b", crate::node::Echo).unwrap();
+    builder.add_node("a", halo::agent::node::Echo).unwrap();
+    builder.add_node("b", halo::agent::node::Echo).unwrap();
     builder.add_edge(START, "a").unwrap();
     builder.add_edge("a", "b").unwrap();
     builder.add_edge("b", END).unwrap();
@@ -475,7 +474,7 @@ fn state_runs_one_barrier_and_activates_ordinary_successor() {
 fn join_waits_until_all_sources_succeed() {
     let mut builder = Builder::new("join-state");
     for id in ["a", "b", "merge"] {
-        builder.add_node(id, crate::node::Echo).unwrap();
+        builder.add_node(id, halo::agent::node::Echo).unwrap();
     }
     builder.add_edge(START, "a").unwrap();
     builder.add_edge(START, "b").unwrap();
@@ -515,11 +514,11 @@ fn join_waits_until_all_sources_succeed() {
             "merge",
             3,
             vec![
-                crate::runtime::workflow::node::ExecutionRef {
+                halo::agent::workflow::node::ExecutionRef {
                     node_id: "a".into(),
                     exec_id: 1,
                 },
-                crate::runtime::workflow::node::ExecutionRef {
+                halo::agent::workflow::node::ExecutionRef {
                     node_id: "b".into(),
                     exec_id: 2,
                 },
@@ -531,8 +530,8 @@ fn join_waits_until_all_sources_succeed() {
 #[test]
 fn start_batch_is_atomic_when_one_entry_is_invalid() {
     let mut builder = Builder::new("batch-atomic");
-    builder.add_node("a", crate::node::Echo).unwrap();
-    builder.add_node("b", crate::node::Echo).unwrap();
+    builder.add_node("a", halo::agent::node::Echo).unwrap();
+    builder.add_node("b", halo::agent::node::Echo).unwrap();
     builder.add_edge(START, "a").unwrap();
     builder.add_edge(START, "b").unwrap();
     builder.add_edge("a", END).unwrap();

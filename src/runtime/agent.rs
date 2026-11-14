@@ -5,11 +5,15 @@
 //! state, waiting and recovery; applications do not construct a separate
 //! Runtime to call an Agent.
 
-pub(crate) mod access;
+#[doc(hidden)]
+pub mod access;
 pub mod chat;
 pub(crate) mod history;
-pub(crate) mod hooks;
-pub(crate) mod lifecycle;
+#[doc(hidden)]
+pub mod hooks;
+#[doc(hidden)]
+pub mod lifecycle;
+pub mod memory;
 pub mod react;
 pub mod subagent;
 pub mod team;
@@ -17,12 +21,15 @@ pub mod team;
 pub(crate) mod checkpoint;
 pub mod completion;
 pub mod graph;
-pub(crate) mod model_steps;
+#[doc(hidden)]
+pub mod model_steps;
 pub mod node;
 pub mod permission;
 pub mod preparation;
 pub(crate) mod reply;
-pub(crate) mod scope;
+#[doc(hidden)]
+pub mod scope;
+pub mod status;
 pub(crate) mod step;
 pub(crate) mod usage;
 pub mod wait;
@@ -46,7 +53,7 @@ pub struct State {
     pub chat_id: Option<i64>,
     #[serde(rename = "type")]
     pub r#type: String,
-    pub status: String,
+    pub status: status::Status,
     /// Outward delivery mode fixed for this run and restored from Checkpoint.
     pub stream: bool,
     pub usage: Option<Usage>,

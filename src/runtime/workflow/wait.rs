@@ -39,7 +39,8 @@ fn membership(state: &State) -> Result<BTreeSet<Wait>, Error> {
             execution.idx == state.step
                 && matches!(
                     execution.status,
-                    node::ExecutionStatus::Running | node::ExecutionStatus::Waiting
+                    node::status::execution::Status::Running
+                        | node::status::execution::Status::Waiting
                 )
         }) {
             let Some(attempt) = execution.attempts.last() else {
@@ -47,7 +48,7 @@ fn membership(state: &State) -> Result<BTreeSet<Wait>, Error> {
             };
             if !matches!(
                 attempt.status,
-                node::AttemptStatus::Running | node::AttemptStatus::Waiting
+                node::status::attempt::Status::Running | node::status::attempt::Status::Waiting
             ) {
                 continue;
             }
@@ -121,7 +122,8 @@ fn step<'a>(state: &'a State, wait: &Wait) -> Result<&'a Value, Error> {
                 && execution.idx == state.step
                 && matches!(
                     execution.status,
-                    node::ExecutionStatus::Running | node::ExecutionStatus::Waiting
+                    node::status::execution::Status::Running
+                        | node::status::execution::Status::Waiting
                 )
         })
         .ok_or_else(|| invalid("Workflow wait references an inactive execution"))?;
@@ -133,7 +135,7 @@ fn step<'a>(state: &'a State, wait: &Wait) -> Result<&'a Value, Error> {
                 && head.idx.checked_add(1) == Some(execution.attempts.len())
                 && matches!(
                     attempt.status,
-                    node::AttemptStatus::Running | node::AttemptStatus::Waiting
+                    node::status::attempt::Status::Running | node::status::attempt::Status::Waiting
                 )
         })
         .ok_or_else(|| invalid("Workflow wait references a stale Attempt"))?;
@@ -220,7 +222,9 @@ pub(crate) fn ids(state: &State) -> Result<Vec<i64>, Error> {
             let records = step
                 .waits
                 .iter()
-                .filter(|(_, record)| record.status == "waiting")
+                .filter(|(_, record)| {
+                    record.status == crate::runtime::agent::node::status::wait::Status::Waiting
+                })
                 .collect::<Vec<_>>();
             if records.len() != 1 {
                 return Err(invalid("ambiguous Workflow waiting Step"));

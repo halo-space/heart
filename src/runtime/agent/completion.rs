@@ -69,7 +69,7 @@ pub(super) async fn model(
         Ok(message) => {
             saved.message = Some(message);
             saved.stage = Some("committed".into());
-            saved.status = "succeeded".into();
+            saved.status = crate::runtime::agent::node::status::step::Status::Succeeded;
             saved.error = None;
             commit(saved.clone())?;
             model_steps::event(&saved)

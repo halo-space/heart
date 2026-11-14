@@ -1,7 +1,7 @@
 //! Tool lifecycle execution for the internal Dispatch table.
 //!
-//! Catalog assembly and Skill discovery remain in the parent module; this
-//! module only advances a selected entry through validation and lifecycle
+//! Tool assembly and Skill discovery remain in the parent module; this
+//! module only advances a selected tool through validation and lifecycle
 //! phases.
 
 use super::*;
@@ -32,12 +32,12 @@ impl Dispatch {
         call: Call,
         cancellation: &Cancellation,
     ) -> Result<Call, Error> {
-        let entry = self
-            .entries
+        let tool = self
+            .tools
             .iter()
-            .find(|entry| entry.definition().name == call.name)
+            .find(|tool| tool.definition().name == call.name)
             .ok_or_else(|| Error::new("NOT_FOUND", "tool is not registered"))?;
-        crate::cancellation::cancellable(entry.prepare(call, cancellation.clone()), cancellation)
+        crate::cancellation::cancellable(tool.prepare(call, cancellation.clone()), cancellation)
             .await
     }
 
@@ -82,12 +82,12 @@ impl Dispatch {
         call: Call,
         cancellation: &Cancellation,
     ) -> Result<(Call, Message), Error> {
-        let entry = self
-            .entries
+        let tool = self
+            .tools
             .iter()
-            .find(|entry| entry.definition().name == call.name)
+            .find(|tool| tool.definition().name == call.name)
             .ok_or_else(|| Error::new("NOT_FOUND", "tool is not registered"))?;
-        crate::cancellation::cancellable(entry.call(call, cancellation.clone()), cancellation).await
+        crate::cancellation::cancellable(tool.call(call, cancellation.clone()), cancellation).await
     }
 
     pub(crate) async fn finish(
@@ -96,13 +96,13 @@ impl Dispatch {
         message: Message,
         cancellation: &Cancellation,
     ) -> Result<(Call, Message), Error> {
-        let entry = self
-            .entries
+        let tool = self
+            .tools
             .iter()
-            .find(|entry| entry.definition().name == call.name)
+            .find(|tool| tool.definition().name == call.name)
             .ok_or_else(|| Error::new("NOT_FOUND", "tool is not registered"))?;
         crate::cancellation::cancellable(
-            entry.after(call, message, cancellation.clone()),
+            tool.after(call, message, cancellation.clone()),
             cancellation,
         )
         .await
@@ -110,12 +110,12 @@ impl Dispatch {
 
     /// Preflight before optional Agent permission checks; no Tool/MCP hooks.
     pub(crate) fn validate(&self, call: &Call) -> Result<(), Error> {
-        let entry = self
-            .entries
+        let tool = self
+            .tools
             .iter()
-            .find(|entry| entry.definition().name == call.name)
+            .find(|tool| tool.definition().name == call.name)
             .ok_or_else(|| Error::new("NOT_FOUND", "tool is not registered"))?;
-        validate_call(&entry.definition(), call)
+        validate_call(&tool.definition(), call)
     }
 
     pub(crate) async fn evaluate(
@@ -124,13 +124,13 @@ impl Dispatch {
         message: &Message,
         cancellation: &Cancellation,
     ) -> Result<Evaluation, Error> {
-        let entry = self
-            .entries
+        let tool = self
+            .tools
             .iter()
-            .find(|entry| entry.definition().name == call.name)
+            .find(|tool| tool.definition().name == call.name)
             .ok_or_else(|| Error::new("NOT_FOUND", "tool is not registered"))?;
         crate::cancellation::cancellable(
-            entry.evaluate(call.clone(), message.clone(), cancellation.clone()),
+            tool.evaluate(call.clone(), message.clone(), cancellation.clone()),
             cancellation,
         )
         .await
@@ -138,11 +138,11 @@ impl Dispatch {
 
     /// Whether the local/prepared Tool view is empty.
     pub fn is_empty(&self) -> bool {
-        self.entries.is_empty()
+        self.tools.is_empty()
     }
 
     /// Count currently prepared Tools, including the shared Skill reader.
     pub fn len(&self) -> usize {
-        self.entries.len()
+        self.tools.len()
     }
 }

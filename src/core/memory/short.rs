@@ -16,19 +16,51 @@ pub mod es {
 }
 pub mod session;
 
+/// Compose independent Session and Chat backends into one short-memory store.
+/// This helper belongs to Core because it is a concrete implementation, not a
+/// component contract.
+#[derive(Clone)]
+pub struct Pair<S, C> {
+    session: std::sync::Arc<S>,
+    chat: std::sync::Arc<C>,
+}
+
+impl<S, C> Pair<S, C> {
+    pub fn new(session: S, chat: C) -> Self {
+        Self {
+            session: std::sync::Arc::new(session),
+            chat: std::sync::Arc::new(chat),
+        }
+    }
+}
+
+impl<S, C> crate::components::memory::short::Store for Pair<S, C>
+where
+    S: crate::components::memory::short::session::Store,
+    C: crate::components::memory::short::chat::Store,
+{
+    type Session = S;
+    type Chat = C;
+
+    fn session(&self) -> &Self::Session {
+        self.session.as_ref()
+    }
+
+    fn chat(&self) -> &Self::Chat {
+        self.chat.as_ref()
+    }
+}
+
 /// Zero-configuration short-memory store. It owns the Session and Chat
 /// records internally and is passed to `memory::Config` as one backend.
 pub struct InMemory {
-    inner: crate::components::memory::short::Pair<session::InMemory, chat::InMemory>,
+    inner: Pair<session::InMemory, chat::InMemory>,
 }
 
 impl InMemory {
     pub fn new() -> Self {
         Self {
-            inner: crate::components::memory::short::Pair::new(
-                session::InMemory::new(),
-                chat::InMemory::new(),
-            ),
+            inner: Pair::new(session::InMemory::new(), chat::InMemory::new()),
         }
     }
 }

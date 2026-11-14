@@ -17,7 +17,7 @@ type DiscoveryFuture =
 #[derive(Clone)]
 pub(crate) struct SkillSnapshot {
     version: String,
-    entries: Vec<Arc<dyn Skill>>,
+    skills: Vec<Arc<dyn Skill>>,
 }
 
 /// One Skill that can expose its instructions and optional resources.
@@ -61,11 +61,11 @@ impl<S: crate::components::skill::Loader + 'static> Loader for adapter::Loader<S
             if let Some(snapshot) = cache.read().await.as_ref()
                 && snapshot.version == version
             {
-                return Ok(snapshot.entries.clone());
+                return Ok(snapshot.skills.clone());
             }
 
             let definitions = loader.list(&cancellation).await?;
-            let entries: Vec<Arc<dyn Skill>> = definitions
+            let skills: Vec<Arc<dyn Skill>> = definitions
                 .into_iter()
                 .map(|definition| {
                     Arc::new(Loaded {
@@ -76,9 +76,9 @@ impl<S: crate::components::skill::Loader + 'static> Loader for adapter::Loader<S
                 .collect();
             *cache.write().await = Some(SkillSnapshot {
                 version,
-                entries: entries.clone(),
+                skills: skills.clone(),
             });
-            Ok(entries)
+            Ok(skills)
         })
     }
 }

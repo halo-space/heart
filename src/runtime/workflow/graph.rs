@@ -28,7 +28,7 @@ use crate::components::message::Role;
 pub use crate::components::middleware::RetryPolicy;
 use crate::components::model::token::Usage;
 use crate::components::node::{Node, Signal, View};
-use crate::runtime::workflow::node::{AttemptStatus, Step, StepAttempt};
+use crate::runtime::workflow::node::{Step, StepAttempt};
 
 pub const START: &str = "START";
 pub const END: &str = "END";
@@ -36,7 +36,7 @@ pub const END: &str = "END";
 mod adapters;
 mod state;
 
-pub(crate) use adapters::{ErasedAgent, ErasedNode, adapter};
+pub(crate) use adapters::{ErasedAgent, ErasedNode};
 pub(crate) use state::ReplyExecution;
 pub use state::{State, Status, Wait};
 
@@ -256,8 +256,8 @@ impl CompiledWorkflow {
                 .any(|workflow| workflow.contains_definition(definition_id))
     }
 
-    #[allow(dead_code)]
-    pub(crate) fn executor(&self, node_id: &str) -> Option<Arc<dyn ErasedNode>> {
+    #[doc(hidden)]
+    pub fn executor(&self, node_id: &str) -> Option<Arc<dyn ErasedNode>> {
         self.inner.executors.get(node_id).cloned()
     }
 
@@ -684,7 +684,7 @@ impl Builder {
             .insert(node_id.clone(), (input_messages, output_messages));
         self.executors.insert(
             node_id,
-            Arc::new(adapter::Node::<N, I, O, E> {
+            Arc::new(adapters::Node::<N, I, O, E> {
                 node: Arc::new(node),
                 input_schema,
                 output_schema,
@@ -766,7 +766,7 @@ impl Builder {
         self.codecs.insert(node_id.clone(), (false, true));
         self.agents.insert(
             node_id,
-            Arc::new(adapter::Agent {
+            Arc::new(adapters::Agent {
                 agent: Arc::new(agent),
             }),
         );
@@ -869,6 +869,12 @@ impl Builder {
             to: to.into(),
         };
         self.validate_edge(&edge)?;
+        if edge.from.node() == edge.to.node() && edge.from.node().is_some() {
+            return Err(GraphError::new(
+                "INVALID_EDGE",
+                "ordinary edge cannot be a self-loop",
+            ));
+        }
         if self.graph.ordinary_edges.contains(&edge) {
             return Err(GraphError::new("DUPLICATE_EDGE", "duplicate ordinary edge"));
         }
@@ -908,6 +914,12 @@ impl Builder {
         self.require_node(&join.to)?;
         for source in &join.from {
             self.require_node(source)?;
+        }
+        if join.from.iter().any(|source| source == &join.to) {
+            return Err(GraphError::new(
+                "INVALID_JOIN",
+                "Join edge cannot include its target as a source",
+            ));
         }
         if self
             .graph
@@ -963,6 +975,23 @@ impl Builder {
         for target in &relation.to {
             self.require_node(target)?;
         }
+        if relation.to.iter().any(|target| target == &relation.from) {
+            return Err(GraphError::new(
+                "INVALID_CONDITION",
+                "conditional relation cannot target its source",
+            ));
+        }
+        if self
+            .graph
+            .conditional_edges
+            .iter()
+            .any(|existing| existing.from == relation.from)
+        {
+            return Err(GraphError::new(
+                "DUPLICATE_CONDITION",
+                "a node can have only one conditional route",
+            ));
+        }
         if self
             .graph
             .conditional_edges
@@ -991,6 +1020,12 @@ impl Builder {
         };
         self.require_node(&relation.from)?;
         self.require_node(&relation.to)?;
+        if relation.from == relation.to {
+            return Err(GraphError::new(
+                "INVALID_FAN_OUT",
+                "fan-out cannot be a self-loop",
+            ));
+        }
         if self.graph.fan_out_definitions.contains(&relation) {
             return Err(GraphError::new("DUPLICATE_EDGE", "duplicate fan-out edge"));
         }
@@ -1016,6 +1051,17 @@ impl Builder {
         self.require_node(&relation.to)?;
         if relation.from == relation.to {
             return Err(GraphError::new("INVALID_LOOP", "self-loop is not allowed"));
+        }
+        if self
+            .graph
+            .loop_definitions
+            .iter()
+            .any(|existing| existing.from == relation.from)
+        {
+            return Err(GraphError::new(
+                "DUPLICATE_LOOP",
+                "a node can have only one loop condition",
+            ));
         }
         if self.graph.loop_definitions.contains(&relation) {
             return Err(GraphError::new("DUPLICATE_EDGE", "duplicate loop edge"));
@@ -1053,6 +1099,24 @@ impl Builder {
             return Err(GraphError::new(
                 "INVALID_FAILURE_RELATION",
                 "node_failed relation requires exactly one source",
+            ));
+        }
+        if relation.from.iter().collect::<BTreeSet<_>>().len() != relation.from.len()
+            || relation.to.iter().collect::<BTreeSet<_>>().len() != relation.to.len()
+        {
+            return Err(GraphError::new(
+                "INVALID_FAILURE_RELATION",
+                "failure relation sources and targets must be distinct",
+            ));
+        }
+        if relation
+            .from
+            .iter()
+            .any(|source| relation.to.iter().any(|target| source == target))
+        {
+            return Err(GraphError::new(
+                "INVALID_FAILURE_RELATION",
+                "failure relation cannot be a self-loop",
             ));
         }
         for node_id in relation.from.iter().chain(relation.to.iter()) {
@@ -1225,6 +1289,11 @@ impl Builder {
         let mut entries = Vec::new();
         let mut exits = BTreeSet::new();
         let mut adjacency: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
+        let mut dag_adjacency: BTreeMap<&str, BTreeSet<&str>> = self
+            .nodes
+            .keys()
+            .map(|node_id| (node_id.as_str(), BTreeSet::new()))
+            .collect();
         for edge in &self.graph.ordinary_edges {
             match (&edge.from, &edge.to) {
                 (Endpoint::Start, Endpoint::Node(target)) => entries.push(target.as_str()),
@@ -1233,6 +1302,7 @@ impl Builder {
                 }
                 (Endpoint::Node(source), Endpoint::Node(target)) => {
                     adjacency.entry(source).or_default().push(target);
+                    dag_adjacency.entry(source).or_default().insert(target);
                 }
                 _ => return Err(GraphError::new("INVALID_ENDPOINT", "invalid ordinary edge")),
             }
@@ -1246,6 +1316,7 @@ impl Builder {
         for join in &self.graph.join_edges {
             for source in &join.from {
                 adjacency.entry(source).or_default().push(&join.to);
+                dag_adjacency.entry(source).or_default().insert(&join.to);
             }
         }
         for relation in &self.graph.conditional_edges {
@@ -1254,6 +1325,10 @@ impl Builder {
                     .entry(relation.from.as_str())
                     .or_default()
                     .push(target.as_str());
+                dag_adjacency
+                    .entry(relation.from.as_str())
+                    .or_default()
+                    .insert(target.as_str());
             }
         }
         for relation in &self.graph.fan_out_definitions {
@@ -1261,6 +1336,10 @@ impl Builder {
                 .entry(relation.from.as_str())
                 .or_default()
                 .push(relation.to.as_str());
+            dag_adjacency
+                .entry(relation.from.as_str())
+                .or_default()
+                .insert(relation.to.as_str());
         }
         for relation in &self.graph.loop_definitions {
             adjacency
@@ -1275,8 +1354,47 @@ impl Builder {
                         .entry(source.as_str())
                         .or_default()
                         .push(target.as_str());
+                    dag_adjacency
+                        .entry(source.as_str())
+                        .or_default()
+                        .insert(target.as_str());
                 }
             }
+        }
+        let mut incoming = self
+            .nodes
+            .keys()
+            .map(|node_id| (node_id.as_str(), 0_usize))
+            .collect::<BTreeMap<_, _>>();
+        for targets in dag_adjacency.values() {
+            for target in targets {
+                *incoming
+                    .get_mut(target)
+                    .expect("validated graph target must exist") += 1;
+            }
+        }
+        let mut ready = incoming
+            .iter()
+            .filter_map(|(node_id, count)| (*count == 0).then_some(*node_id))
+            .collect::<VecDeque<_>>();
+        let mut visited = 0_usize;
+        while let Some(node_id) = ready.pop_front() {
+            visited += 1;
+            for target in dag_adjacency.get(node_id).into_iter().flatten() {
+                let count = incoming
+                    .get_mut(target)
+                    .expect("validated graph target must exist");
+                *count -= 1;
+                if *count == 0 {
+                    ready.push_back(target);
+                }
+            }
+        }
+        if visited != self.nodes.len() {
+            return Err(GraphError::new(
+                "GRAPH_CYCLE",
+                "workflow contains a cycle outside an explicit loop relation",
+            ));
         }
         let mut reachable = BTreeSet::new();
         let mut queue: VecDeque<&str> = entries.into();
@@ -1422,7 +1540,7 @@ impl Builder {
         });
         let canonical = canonicalize(value);
         let bytes = serde_json::to_vec(&canonical)
-            .map_err(|error| GraphError::new("SERIALIZATION_ERROR", error.to_string()))?;
+            .map_err(|error| GraphError::new("SERIALIZATION", error.to_string()))?;
         Ok(format!("sha256:{:x}", Sha256::digest(bytes)))
     }
 }
@@ -1453,7 +1571,3 @@ fn canonicalize(value: Value) -> Value {
         value => value,
     }
 }
-
-#[cfg(test)]
-#[path = "../../../tests/unit/workflow_graph.rs"]
-mod tests;

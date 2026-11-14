@@ -197,7 +197,7 @@ impl Drop for Ticket {
 async fn resume<L: Memory>(
     jobs: Arc<Jobs>,
     session_id: i64,
-    component: &memory::extraction::Configured,
+    component: &crate::runtime::agent::memory::extraction::Configured,
     store: &L,
     next_id: fn() -> i64,
     cancellation: &Cancellation,
@@ -238,9 +238,9 @@ async fn resume<L: Memory>(
 pub(super) async fn resume_job<L: Memory, P: Progress>(
     job: &mut Job,
     progress: &mut P,
-    component: &memory::extraction::Configured,
+    component: &crate::runtime::agent::memory::extraction::Configured,
     store: &L,
-    vectorizer: Option<memory::Vectorizer>,
+    vectorizer: Option<crate::runtime::agent::memory::Vectorizer>,
     next_id: fn() -> i64,
     cancellation: &Cancellation,
 ) -> Result<(), Error> {
@@ -349,9 +349,9 @@ async fn prepare<L: Memory>(
     user_id: i64,
     from: i64,
     to: i64,
-    component: &memory::extraction::Configured,
+    component: &crate::runtime::agent::memory::extraction::Configured,
     store: &L,
-    vectorizer: Option<&memory::Vectorizer>,
+    vectorizer: Option<&crate::runtime::agent::memory::Vectorizer>,
     trace: &Root,
     next_id: fn() -> i64,
     cancellation: &Cancellation,
@@ -555,7 +555,7 @@ mod tests {
         user_id: i64,
         from: i64,
         to: i64,
-        component: &memory::extraction::Configured,
+        component: &crate::runtime::agent::memory::extraction::Configured,
         store: &L,
         next_id: fn() -> i64,
         cancellation: &Cancellation,
@@ -732,10 +732,14 @@ mod tests {
 
     fn setup(
         extractor: Extractor,
-    ) -> (Arc<Jobs>, memory::extraction::Configured, Arc<AtomicUsize>) {
+    ) -> (
+        Arc<Jobs>,
+        crate::runtime::agent::memory::extraction::Configured,
+        Arc<AtomicUsize>,
+    ) {
         let ids = Arc::new(AtomicUsize::new(1000));
         IDS.with(|counter| *counter.borrow_mut() = ids.clone());
-        let component = memory::extraction::Configured::new(extractor);
+        let component = crate::runtime::agent::memory::extraction::Configured::new(extractor);
         let jobs = Arc::new(Jobs::default());
         let mut message = Message::new(Role::Assistant);
         message.content = vec![
@@ -1019,7 +1023,7 @@ mod tests {
     #[tokio::test]
     async fn invalid_id_fails_without_store_writes() {
         let (jobs, _, _) = setup(Extractor::default());
-        let c = memory::extraction::Configured::new(Extractor::default());
+        let c = crate::runtime::agent::memory::extraction::Configured::new(Extractor::default());
         let store = Store::default();
         assert_eq!(
             resume(jobs, 9, &c, &store, || 0, &Cancellation::new())

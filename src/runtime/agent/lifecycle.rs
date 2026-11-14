@@ -15,7 +15,8 @@ use serde_json::{Map, Value};
 
 /// Close out observed unfinished Model output. Usage is accounted separately
 /// from success: no Complete, Tool dispatch or prompt entry is synthesized.
-pub(super) fn model_unfinished(
+#[doc(hidden)]
+pub fn model_unfinished(
     steps: &mut [Step],
     partial: &Message,
 ) -> Option<crate::model::token::Usage> {
@@ -79,7 +80,7 @@ pub(super) async fn model_prepare(
             request.validate()?;
             saved.request = Some(Box::new(request.clone()));
             saved.stage = Some("call".into());
-            saved.status = "running".into();
+            saved.status = crate::runtime::agent::node::status::step::Status::Running;
             saved.error = None;
             commit(saved)?;
             Ok(request)
@@ -94,8 +95,9 @@ pub(super) async fn model_prepare(
 
 /// Keep component/business failures separate from permission and framework
 /// control failures. Callers retain their own result presentation and State.
+#[doc(hidden)]
 #[derive(Debug)]
-pub(crate) enum Failure {
+pub enum Failure {
     Policy(Error, Box<Call>),
     Hook(Error),
     Tool(Error),
@@ -111,12 +113,13 @@ impl From<Error> for Failure {
 /// successful facts are supplied/acknowledged; this binding owns no State,
 /// storage, slots, retry loop or public Context.
 #[allow(clippy::too_many_arguments)]
-pub(super) async fn tool_prepare<K, KF, P, PF>(
+#[doc(hidden)]
+pub async fn tool_prepare<K, KF, P, PF>(
     dispatch: &Dispatch,
     access: &Access,
     hooks: &Hooks,
     metadata: &Map<String, Value>,
-    interaction: Option<&reply::Run>,
+    interaction: Option<&reply::Handle>,
     id_fn: Option<fn() -> i64>,
     saved: &Step,
     call: &Call,
@@ -202,7 +205,7 @@ async fn authorize<P, PF>(
     access: &Access,
     hooks: &Hooks,
     metadata: &Map<String, Value>,
-    interaction: Option<&reply::Run>,
+    interaction: Option<&reply::Handle>,
     id_fn: Option<fn() -> i64>,
     approval: Option<&Call>,
     call: &Call,
@@ -240,7 +243,7 @@ pub(super) async fn tool_call<K, KF>(
     dispatch: &Dispatch,
     saved: &Step,
     input: Call,
-    interaction: Option<reply::Run>,
+    interaction: Option<reply::Handle>,
     id_fn: Option<fn() -> i64>,
     mut commit: K,
     cancellation: &Cancellation,
@@ -326,11 +329,3 @@ where
     .await?;
     Ok((call, output.expect("complete lifecycle has a result")))
 }
-
-#[cfg(test)]
-#[path = "../../../tests/unit/agent_tool_prepare.rs"]
-mod tests;
-
-#[cfg(test)]
-#[path = "../../../tests/unit/agent_model_partial.rs"]
-mod model_partial_tests;

@@ -4,10 +4,12 @@
 //! after the corresponding component contract is stable.
 pub mod checkpoint;
 pub mod compression;
-pub(crate) mod dispatch;
+#[doc(hidden)]
+pub mod dispatch;
 pub mod document;
 pub mod evaluation;
-pub(crate) mod lifecycle;
+#[doc(hidden)]
+pub mod lifecycle;
 pub mod mcp;
 pub mod memory;
 mod message_transform;

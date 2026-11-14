@@ -33,7 +33,7 @@ pub(crate) fn new_step(steps: &mut Vec<Step>, call: &Call) {
     steps.push(Step {
         id: format!("tool_{}", steps.len()),
         kind: "tool".into(),
-        status: "running".into(),
+        status: crate::runtime::agent::node::status::step::Status::Running,
         call_id: Some(call.call_id.clone()),
         call: Some(call.clone()),
         stage: Some("before".into()),
@@ -64,7 +64,7 @@ pub(crate) fn prepared(steps: &mut [Step], call: &Call) {
     if let Some(step) = current(steps, &call.call_id) {
         step.call = Some(call.clone());
         step.stage = Some("call".into());
-        step.status = "running".into();
+        step.status = crate::runtime::agent::node::status::step::Status::Running;
         step.error = None;
     }
 }
@@ -74,7 +74,7 @@ pub(crate) fn returned(steps: &mut [Step], call: &Call, message: &Message) {
         step.call = Some(call.clone());
         step.message = Some(crate::runtime::observation::original_message(message));
         step.stage = Some("after".into());
-        step.status = "running".into();
+        step.status = crate::runtime::agent::node::status::step::Status::Running;
         step.error = None;
     }
 }
@@ -84,7 +84,7 @@ pub(crate) fn called(steps: &mut [Step], call: &Call, message: &Message) {
         step.call = Some(call.clone());
         step.message = Some(crate::runtime::observation::original_message(message));
         step.stage = Some("eval".into());
-        step.status = "running".into();
+        step.status = crate::runtime::agent::node::status::step::Status::Running;
         step.error = None;
     }
 }
@@ -98,7 +98,7 @@ pub(crate) fn evaluated(steps: &mut [Step], id: &str, evaluation: &ToolEvaluatio
             }
         }
         step.stage = Some("complete".into());
-        step.status = "succeeded".into();
+        step.status = crate::runtime::agent::node::status::step::Status::Succeeded;
         step.error = None;
     }
 }
@@ -106,11 +106,10 @@ pub(crate) fn evaluated(steps: &mut [Step], id: &str, evaluation: &ToolEvaluatio
 pub(crate) fn stopped(steps: &mut [Step], id: &str, error: &Error) {
     if let Some(step) = current(steps, id) {
         step.status = match error.code.as_str() {
-            "WAITING" => "waiting",
-            "CANCELLED" => "cancelled",
-            _ => "failed",
-        }
-        .into();
+            "WAITING" => crate::runtime::agent::node::status::step::Status::Waiting,
+            "CANCELLED" => crate::runtime::agent::node::status::step::Status::Cancelled,
+            _ => crate::runtime::agent::node::status::step::Status::Failed,
+        };
         step.error = (error.code != "WAITING").then(|| error.clone());
     }
 }
@@ -144,7 +143,7 @@ pub(crate) fn cancel_pending(steps: &mut [Step]) {
             )
             && matches!(step.status.as_str(), "running" | "waiting")
     }) {
-        step.status = "cancelled".into();
+        step.status = crate::runtime::agent::node::status::step::Status::Cancelled;
     }
 }
 
@@ -229,8 +228,12 @@ pub(crate) fn resume_calls(
                     && matches!(step.status.as_str(), "running" | "waiting") => {}
             Some("complete")
                 if step.message.is_some()
-                    && ((step.status == "succeeded" && step.eval.is_some())
-                        || (step.status == "failed" && step.error.is_some())) => {}
+                    && ((step.status
+                        == crate::runtime::agent::node::status::step::Status::Succeeded
+                        && step.eval.is_some())
+                        || (step.status
+                            == crate::runtime::agent::node::status::step::Status::Failed
+                            && step.error.is_some())) => {}
             _ => return Err(invalid("inconsistent Tool lifecycle stage")),
         }
         pending.push((indexes[0], call.clone()));

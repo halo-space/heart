@@ -198,14 +198,14 @@ fn ordinary_batch_node_retries_only_failed_items_and_submits_once() {
             assert_eq!(downstream.load(Ordering::SeqCst), 0);
             assert!(execution.messages.is_empty());
             assert!(state.nodes["summary"].executions.is_empty());
-            assert_eq!(execution.status, node::ExecutionStatus::Failed);
+            assert_eq!(execution.status, node::status::execution::Status::Failed);
         } else {
             assert_eq!(
                 result.unwrap().0[0].values["results"],
                 serde_json::json!([300, 100, 200])
             );
             assert_eq!(downstream.load(Ordering::SeqCst), 1);
-            assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+            assert_eq!(execution.status, node::status::execution::Status::Succeeded);
             assert_eq!(execution.attempts[1].idx, 1);
             assert!(execution.error.is_none());
             assert!(cached.lock().unwrap().is_empty());
@@ -322,7 +322,7 @@ fn restoring_full_runtime_reuses_successful_nodes_and_does_not_guess_internal_ba
         let execution = &restored.state().nodes["batch"].executions[&2001];
         assert_eq!(execution.attempts.len(), 1);
         assert_eq!(execution.attempts[0].idx, 0);
-        assert_eq!(execution.status, node::ExecutionStatus::Succeeded);
+        assert_eq!(execution.status, node::status::execution::Status::Succeeded);
         assert_eq!(
             serde_json::to_value(&restored.state().nodes["source"]).unwrap(),
             saved["nodes"]["source"]
@@ -463,7 +463,7 @@ fn failed_batch_checkpoint_is_terminal_and_never_replays_completed_or_failed_nod
         assert_eq!(downstream.load(Ordering::SeqCst), 0);
         let execution = &restored.state().nodes["batch"].executions[&3001];
         assert_eq!(execution.attempts.len(), 2);
-        assert_eq!(execution.status, node::ExecutionStatus::Failed);
+        assert_eq!(execution.status, node::status::execution::Status::Failed);
         assert!(execution.messages.is_empty());
         assert!(restored.state().nodes["summary"].executions.is_empty());
         assert_eq!(
@@ -516,7 +516,7 @@ fn unfinished_batch_restore_preserves_failed_attempt_history_and_remaining_retry
         // Attempt actually started. Recovery is not a new retry allowance.
         let batch = original.state_mut().nodes.get_mut("batch").unwrap();
         let execution = batch.execution_mut(4001).unwrap();
-        execution.attempts[0].status = node::AttemptStatus::Failed;
+        execution.attempts[0].status = node::status::attempt::Status::Failed;
         execution.attempts[0].error = Some(
             Error::new("TIMEOUT", "original failed attempt").with_details("original diagnosis"),
         );
@@ -576,8 +576,11 @@ fn unfinished_batch_restore_preserves_failed_attempt_history_and_remaining_retry
         assert_eq!(execution.attempts.len(), 2);
         assert_eq!(execution.attempts[0], history);
         assert_eq!(execution.attempts[1].idx, 1);
-        assert_eq!(execution.attempts[1].status, node::AttemptStatus::Failed);
-        assert_eq!(execution.status, node::ExecutionStatus::Failed);
+        assert_eq!(
+            execution.attempts[1].status,
+            node::status::attempt::Status::Failed
+        );
+        assert_eq!(execution.status, node::status::execution::Status::Failed);
         assert!(execution.messages.is_empty());
         assert_eq!(execution.usage.as_ref().unwrap().total, Some(10));
         assert_eq!(restored.state().usage.as_ref().unwrap().total, Some(10));

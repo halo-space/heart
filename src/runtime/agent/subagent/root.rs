@@ -5,7 +5,8 @@ use super::*;
 /// Shared live root execution. Only its existing Execution is serialized;
 /// locks and derived queues never become another recovery truth.
 #[derive(Clone, Default)]
-pub(crate) struct Root(Arc<Mutex<Option<crate::runtime::agent::node::Execution>>>);
+#[doc(hidden)]
+pub struct Root(Arc<Mutex<Option<crate::runtime::agent::node::Execution>>>);
 
 impl Root {
     pub(crate) fn cancel_pending(&self) {
@@ -138,7 +139,8 @@ impl Root {
             })
     }
 
-    pub(crate) fn message(&self, steps: &[Step], call: &Call) -> Option<Message> {
+    #[doc(hidden)]
+    pub fn message(&self, steps: &[Step], call: &Call) -> Option<Message> {
         let execution = self.0.lock().ok()?;
         message(&execution.as_ref()?.attempts.last()?.nodes, steps, call)
     }
@@ -183,7 +185,7 @@ impl Root {
 
     pub(crate) fn snapshot(
         &self,
-        status: &str,
+        status: crate::runtime::agent::status::Status,
         usage: Option<Usage>,
         error: Option<Error>,
     ) -> Option<crate::runtime::agent::node::Execution> {
@@ -195,10 +197,10 @@ impl Root {
             .last_mut()
             .expect("validated root Attempt");
         let status = match status {
-            "succeeded" => Status::Succeeded,
-            "failed" => Status::Failed,
-            "stopped" => Status::Cancelled,
-            "waiting" => Status::Waiting,
+            crate::runtime::agent::status::Status::Succeeded => Status::Succeeded,
+            crate::runtime::agent::status::Status::Failed => Status::Failed,
+            crate::runtime::agent::status::Status::Stopped => Status::Cancelled,
+            crate::runtime::agent::status::Status::Waiting => Status::Waiting,
             _ => Status::Running,
         };
         if matches!(
@@ -339,7 +341,7 @@ pub(crate) fn prepare(
     steps.push(Step {
         id: format!("agent_{}", steps.len()),
         kind: "agent".into(),
-        status: "running".into(),
+        status: crate::runtime::agent::node::status::step::Status::Running,
         call_id: Some(call.call_id.clone()),
         call: Some(call.clone()),
         to: vec![node_id],
@@ -433,12 +435,11 @@ pub(crate) fn complete(
         node.current_attempt_mut()?.finished_time = finished_time;
     }
     step.status = match status {
-        Status::Succeeded => "succeeded",
-        Status::Waiting => "waiting",
-        Status::Cancelled => "cancelled",
-        _ => "failed",
-    }
-    .into();
+        Status::Succeeded => crate::runtime::agent::node::status::step::Status::Succeeded,
+        Status::Waiting => crate::runtime::agent::node::status::step::Status::Waiting,
+        Status::Cancelled => crate::runtime::agent::node::status::step::Status::Cancelled,
+        _ => crate::runtime::agent::node::status::step::Status::Failed,
+    };
     step.error = error;
     Ok(())
 }
@@ -570,8 +571,9 @@ pub(crate) fn message(
     }
 }
 
+#[doc(hidden)]
 #[derive(Debug)]
-pub(crate) struct Progress {
+pub struct Progress {
     pub cancelled: bool,
     pub message: Message,
     /// The child Assistant message before Delegate converts it to a Function

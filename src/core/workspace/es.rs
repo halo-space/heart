@@ -56,7 +56,6 @@ pub struct Workspace {
 
 impl Workspace {
     /// Register application Tools on this Server Workspace.
-    #[allow(private_bounds)]
     pub fn tools<I>(mut self, tools: I) -> Self
     where
         I: ToolInputs,
@@ -66,7 +65,6 @@ impl Workspace {
     }
 
     /// Register already connected and discovered MCP servers on this Workspace.
-    #[allow(private_bounds)]
     pub fn mcps<S>(mut self, servers: impl IntoIterator<Item = S>) -> Self
     where
         S: Server + 'static,

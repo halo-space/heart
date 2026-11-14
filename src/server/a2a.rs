@@ -95,6 +95,12 @@ impl Live {
         }
     }
 
+    fn remove(&self, task_id: &str) {
+        if let Ok(mut tasks) = self.tasks.lock() {
+            tasks.remove(task_id);
+        }
+    }
+
     fn subscribe(&self, task_id: &str) -> Result<broadcast::Receiver<StreamResponse>, Error> {
         let tasks = self
             .tasks
@@ -262,7 +268,7 @@ where
         };
         let service = self.clone();
         tokio::spawn(async move {
-            let _ = service.drive(context, input).await;
+            service.background_drive(context, input).await;
         });
         self.store.task(task_id).await
     }
@@ -301,7 +307,7 @@ where
         let task_id = context.task_id.clone();
         let service = self.clone();
         tokio::spawn(async move {
-            let _ = service.drive(context, input).await;
+            service.background_drive(context, input).await;
         });
         self.store.task(&task_id).await
     }
@@ -317,6 +323,29 @@ where
         Ok(())
     }
 
+    async fn background_drive(&self, context: Context, input: Input) {
+        if let Err(error) = self.drive(context.clone(), input).await {
+            let terminal = self
+                .store
+                .task(&context.task_id)
+                .await
+                .map(|task| terminal(&task))
+                .unwrap_or(false);
+            if !terminal {
+                let _ = self.record_error(&context, &error).await;
+            }
+        }
+        if self
+            .store
+            .task(&context.task_id)
+            .await
+            .map(|task| terminal(&task))
+            .unwrap_or(false)
+        {
+            self.live.remove(&context.task_id);
+        }
+    }
+
     /// Start a task stream after `begin` has created its projection.
     pub async fn stream_from(
         &self,
@@ -330,19 +359,8 @@ where
             Err(error) => {
                 self.record_error(&context, &error).await?;
                 let task = self.store.task(&context.task_id).await?;
-                let status = StreamResponse::TaskStatusUpdateEvent(TaskStatusUpdateEvent {
-                    task_id: context.task_id(),
-                    context_id: context.context_id(),
-                    status: TaskStatus {
-                        state: if error.code == "CANCELLED" {
-                            TaskState::Canceled
-                        } else {
-                            TaskState::Failed
-                        },
-                        message: Some(status_message(&error)),
-                    },
-                    metadata: Map::new(),
-                });
+                let status = error_status(&context, &error);
+                self.live.remove(&context.task_id);
                 return Ok(Box::pin(stream::iter([
                     Ok(StreamResponse::Task(task)),
                     Ok(status),
@@ -374,12 +392,16 @@ where
                         // resubscriptions observe canceled/failed instead of
                         // a task stranded in working.
                         error_service.record_error(&error_context, &error).await?;
+                        live.remove(&task_id);
                         return Err(error);
                     }
                 };
                 let _guard = projection.lock().await;
                 store.record(&task_id, response.clone()).await?;
                 live.publish(&task_id, response.clone());
+                if response_terminal(&response) {
+                    live.remove(&task_id);
+                }
                 Ok(response)
             }
         })))
@@ -429,11 +451,16 @@ where
         let task = self.store.task(task_id).await?;
         let receiver = self.live.subscribe(task_id)?;
         let done = terminal(&task);
+        let store = self.store.clone();
+        let task_id = task_id.to_owned();
         Ok(Box::pin(stream::unfold(
-            (Some(task), receiver, done),
-            |(snapshot, mut receiver, done)| async move {
+            (Some(task), receiver, done, store, task_id),
+            |(snapshot, mut receiver, done, store, task_id)| async move {
                 if let Some(task) = snapshot {
-                    return Some((Ok(StreamResponse::Task(task)), (None, receiver, done)));
+                    return Some((
+                        Ok(StreamResponse::Task(task)),
+                        (None, receiver, done, store, task_id),
+                    ));
                 }
                 if done {
                     return None;
@@ -441,15 +468,22 @@ where
                 match receiver.recv().await {
                     Ok(response) => {
                         let done = response_terminal(&response);
-                        Some((Ok(response), (None, receiver, done)))
+                        Some((Ok(response), (None, receiver, done, store, task_id)))
                     }
-                    Err(broadcast::error::RecvError::Lagged(count)) => Some((
-                        Err(Error::new(
-                            "CONFLICT",
-                            format!("A2A subscriber missed {count} task events"),
-                        )),
-                        (None, receiver, false),
-                    )),
+                    Err(broadcast::error::RecvError::Lagged(_count)) => {
+                        match store.task(&task_id).await {
+                            Ok(task) => {
+                                let done = terminal(&task);
+                                Some((
+                                    Ok(StreamResponse::Task(task)),
+                                    (None, receiver, done, store, task_id),
+                                ))
+                            }
+                            Err(error) => {
+                                Some((Err(error), (None, receiver, true, store, task_id)))
+                            }
+                        }
+                    }
                     Err(broadcast::error::RecvError::Closed) => None,
                 }
             },
@@ -487,24 +521,9 @@ where
         .await
     }
 
-    async fn record_error(&self, context: &Context, error: &Error) -> Result<(), Error> {
-        self.record(
-            &context.task_id,
-            StreamResponse::TaskStatusUpdateEvent(TaskStatusUpdateEvent {
-                task_id: context.task_id(),
-                context_id: context.context_id(),
-                status: TaskStatus {
-                    state: if error.code == "CANCELLED" {
-                        TaskState::Canceled
-                    } else {
-                        TaskState::Failed
-                    },
-                    message: Some(status_message(error)),
-                },
-                metadata: Map::new(),
-            }),
-        )
-        .await
+    pub(crate) async fn record_error(&self, context: &Context, error: &Error) -> Result<(), Error> {
+        self.record(&context.task_id, error_status(context, error))
+            .await
     }
 
     async fn record(&self, task_id: &str, response: StreamResponse) -> Result<(), Error> {
@@ -542,6 +561,22 @@ fn status_message(error: &Error) -> Message {
         reference_task_ids: Vec::new(),
         metadata,
     }
+}
+
+pub(crate) fn error_status(context: &Context, error: &Error) -> StreamResponse {
+    StreamResponse::TaskStatusUpdateEvent(TaskStatusUpdateEvent {
+        task_id: context.task_id(),
+        context_id: context.context_id(),
+        status: TaskStatus {
+            state: if error.code == "CANCELLED" {
+                TaskState::Canceled
+            } else {
+                TaskState::Failed
+            },
+            message: Some(status_message(error)),
+        },
+        metadata: Map::new(),
+    })
 }
 
 fn terminal(task: &Task) -> bool {

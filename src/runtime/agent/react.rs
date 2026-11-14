@@ -38,7 +38,8 @@ use crate::runtime::agent::subagent::{Failure as SubAgentFailure, Progress as Su
 use crate::runtime::agent::{State as AgentState, graph};
 use crate::runtime::trace::fastrace::{Root, SpanScope};
 
-mod execution;
+#[doc(hidden)]
+pub mod execution;
 mod tools;
 use super::lifecycle::Failure;
 use execution::TaskProgress;
@@ -47,7 +48,8 @@ type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> +
 type EvaluatorHandle =
     std::sync::Arc<dyn Fn(Input, Messages, Cancellation) -> EvaluationFuture + Send + Sync>;
 type CheckpointSave = Backend;
-type ProgressFuture<M> = Pin<
+#[doc(hidden)]
+pub type ProgressFuture<M> = Pin<
     Box<
         dyn Future<Output = Option<(Option<Result<Event, Error>>, ReActState<M>)>> + Send + 'static,
     >,
@@ -140,7 +142,6 @@ impl<M> Builder<M> {
     }
 
     /// Register application Tools directly on this Agent.
-    #[allow(private_bounds)]
     pub fn tools<I>(mut self, tools: I) -> Self
     where
         I: ToolInputs,
@@ -150,7 +151,6 @@ impl<M> Builder<M> {
     }
 
     /// Register already connected and discovered MCP servers on this Agent.
-    #[allow(private_bounds)]
     pub fn mcps<S>(mut self, servers: impl IntoIterator<Item = S>) -> Self
     where
         S: Server + 'static,
@@ -160,7 +160,6 @@ impl<M> Builder<M> {
     }
 
     /// Register in-process Skills on this Agent.
-    #[allow(private_bounds)]
     pub fn skills<S>(mut self, skills: impl IntoIterator<Item = S>) -> Result<Self, Error>
     where
         S: Skill + 'static,
@@ -214,7 +213,7 @@ impl<M> Builder<M> {
         self
     }
 
-    pub fn memory<S, L>(mut self, config: crate::memory::Config<S, L>) -> Self
+    pub fn memory<S, L>(mut self, config: crate::runtime::agent::memory::Config<S, L>) -> Self
     where
         S: crate::memory::short::Store + 'static,
         L: crate::memory::Memory + 'static,
@@ -309,7 +308,8 @@ pub struct Agent<M> {
     hooks: Hooks,
     access: Access,
     history: History,
-    id_fn: Option<fn() -> i64>,
+    #[doc(hidden)]
+    pub id_fn: Option<fn() -> i64>,
     evaluator: Option<EvaluatorHandle>,
     checkpoint: Option<CheckpointSave>,
     team_mode: bool,
@@ -351,9 +351,27 @@ where
     async fn run(
         &self,
         input: Input,
-        mut stream: bool,
+        stream: bool,
         cancellation: Cancellation,
     ) -> Result<Self::Stream, Error> {
+        self.run_with_subagents(input, stream, cancellation, None)
+            .await
+    }
+}
+
+impl<M> Agent<M>
+where
+    M: Chat + 'static,
+{
+    /// Run with an optional Harness-selected SubAgent subset. The ordinary
+    /// Agent entry point passes `None`, which preserves all configured members.
+    pub(crate) async fn run_with_subagents(
+        &self,
+        input: Input,
+        mut stream: bool,
+        cancellation: Cancellation,
+        selected_subagents: Option<&[String]>,
+    ) -> Result<Pin<Box<dyn Stream<Item = Result<Event, Error>> + Send + 'static>>, Error> {
         if cancellation.is_cancelled() {
             return Err(Error::new("CANCELLED", "react agent run cancelled"));
         }
@@ -507,6 +525,18 @@ where
             .as_ref()
             .map(|state| state.input.metadata.clone())
             .unwrap_or_else(|| original.metadata.clone());
+        let subagents = selected_subagents.map_or_else(
+            || self.subagents.clone(),
+            |selected| {
+                std::sync::Arc::new(
+                    self.subagents
+                        .iter()
+                        .filter(|subagent| selected.iter().any(|name| name == subagent.name()))
+                        .cloned()
+                        .collect(),
+                )
+            },
+        );
         let mut state = ReActState {
             completion: None,
             restored_output: None,
@@ -514,18 +544,19 @@ where
             preparation,
             _interaction_owner: interaction
                 .as_ref()
-                .map(crate::runtime::agent::reply::Run::owner),
+                .map(crate::runtime::agent::reply::Handle::owner),
             interaction,
             waits: Vec::new(),
             stream,
             model: std::sync::Arc::clone(&self.model),
             dispatch: std::sync::Arc::new(dispatch),
-            subagents: self.subagents.clone(),
+            subagents,
             handoff_targets: self.handoff_targets.clone(),
             team_mode: self.team_mode,
             max_iters: self.max_iters,
             max_concurrency: self.max_concurrency,
             cancellation,
+            cancellation_waiter: None,
             task_base: messages.clone(),
             messages,
             hooks: self.hooks.clone(),
@@ -671,13 +702,6 @@ where
     }
 }
 
-mod runner;
-pub(crate) use runner::*;
-
-#[cfg(test)]
-#[path = "../../../tests/unit/agent_progress.rs"]
-mod progress_tests;
-
-#[cfg(test)]
-#[path = "../../../tests/unit/agent_react.rs"]
-mod tests;
+#[doc(hidden)]
+pub mod runner;
+pub use runner::*;

@@ -35,38 +35,3 @@ pub trait Store: Send + Sync {
     fn session(&self) -> &Self::Session;
     fn chat(&self) -> &Self::Chat;
 }
-
-/// Small adapter for composing independent Session and Chat implementations.
-/// Backends may use this adapter, but application code should normally use a
-/// backend's own `short::...::new` constructor.
-#[derive(Clone)]
-pub struct Pair<S, C> {
-    session: std::sync::Arc<S>,
-    chat: std::sync::Arc<C>,
-}
-
-impl<S, C> Pair<S, C> {
-    pub fn new(session: S, chat: C) -> Self {
-        Self {
-            session: std::sync::Arc::new(session),
-            chat: std::sync::Arc::new(chat),
-        }
-    }
-}
-
-impl<S, C> Store for Pair<S, C>
-where
-    S: session::Store,
-    C: chat::Store,
-{
-    type Session = S;
-    type Chat = C;
-
-    fn session(&self) -> &Self::Session {
-        self.session.as_ref()
-    }
-
-    fn chat(&self) -> &Self::Chat {
-        self.chat.as_ref()
-    }
-}

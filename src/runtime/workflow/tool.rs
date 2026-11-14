@@ -5,7 +5,8 @@ use std::sync::{Arc, Mutex};
 use futures_util::future::join_all;
 use serde_json::{Map, Value};
 
-use super::node::{Attempt, AttemptStatus, Step, StepAttempt};
+use super::node::status::{attempt, step};
+use super::node::{Attempt, Step, StepAttempt};
 use crate::Cancellation;
 use crate::Error;
 use crate::components::message::{Message, Messages, Role};
@@ -20,13 +21,14 @@ type Facts = Arc<Mutex<Attempt>>;
 
 type ToolFuture = Pin<Box<dyn Future<Output = Result<Message, Error>> + Send + 'static>>;
 
-/// Private recovery fact used only between the Workflow Runtime and ToolNode.
+/// Recovery facts used only between the Workflow Runtime and ToolNode.
 /// It is not a second public Tool result and is never emitted as a Message.
 #[derive(Debug)]
-pub(crate) struct RecoveryError {
-    pub(crate) completed: Messages,
-    pub(crate) steps: Vec<Step>,
-    pub(crate) error: Error,
+#[doc(hidden)]
+pub struct RecoveryError {
+    pub completed: Messages,
+    pub steps: Vec<Step>,
+    pub error: Error,
 }
 
 trait Tool: Send + Sync {
@@ -73,15 +75,14 @@ where
                     step.call = Some(call.clone());
                     step.message = message.cloned();
                     step.status = if phase == Phase::Complete {
-                        "succeeded"
+                        step::Status::Succeeded
                     } else {
-                        "running"
-                    }
-                    .into();
+                        step::Status::Running
+                    };
                     step.error = None;
                     if phase == Phase::Call {
                         step.attempts.push(StepAttempt {
-                            status: AttemptStatus::Running,
+                            status: attempt::Status::Running,
                             created_time: None,
                             finished_time: None,
                             usage: None,
@@ -89,7 +90,7 @@ where
                             error: None,
                         });
                     } else if let Some(attempt) = step.attempts.last_mut() {
-                        attempt.status = AttemptStatus::Succeeded;
+                        attempt.status = attempt::Status::Succeeded;
                         attempt.error = None;
                     }
                     acknowledge(facts.clone(), step.clone())
@@ -101,19 +102,18 @@ where
                 Ok((call, message)) => Ok(success_message(&call, message)),
                 Err(error) => {
                     step.status = match error.code.as_str() {
-                        "WAITING" => "waiting",
-                        "CANCELLED" => "cancelled",
-                        _ => "failed",
-                    }
-                    .into();
+                        "WAITING" => step::Status::Waiting,
+                        "CANCELLED" => step::Status::Cancelled,
+                        _ => step::Status::Failed,
+                    };
                     step.error = Some(error.clone());
                     if step.stage.as_deref() == Some("call")
                         && let Some(attempt) = step.attempts.last_mut()
                     {
                         attempt.status = match error.code.as_str() {
-                            "WAITING" => AttemptStatus::Waiting,
-                            "CANCELLED" => AttemptStatus::Cancelled,
-                            _ => AttemptStatus::Failed,
+                            "WAITING" => attempt::Status::Waiting,
+                            "CANCELLED" => attempt::Status::Cancelled,
+                            _ => attempt::Status::Failed,
                         };
                         attempt.error = Some(error.clone());
                     }
@@ -187,8 +187,8 @@ impl ToolNode {
 
     fn validate_tools(&self) -> Result<(), Error> {
         let mut names = std::collections::BTreeSet::new();
-        for entry in &self.tools {
-            let definition = entry.definition();
+        for tool in &self.tools {
+            let definition = tool.definition();
             definition.validate()?;
             if !names.insert(definition.name.clone()) {
                 return Err(Error::new(
@@ -210,8 +210,8 @@ impl ToolNode {
     fn find_tool(&self, name: &str) -> Result<&dyn Tool, Error> {
         self.tools
             .iter()
-            .find(|entry| entry.definition().name == name)
-            .map(|entry| entry.as_ref())
+            .find(|tool| tool.definition().name == name)
+            .map(|tool| tool.as_ref())
             .ok_or_else(|| Error::new("NOT_FOUND", "tool is not registered").with_details(name))
     }
 
@@ -235,22 +235,22 @@ impl ToolNode {
             .unwrap_or_else(|| Step {
                 id: call.call_id.clone(),
                 kind: "tool".into(),
-                status: "running".into(),
+                status: step::Status::Running,
                 call_id: Some(call.call_id.clone()),
                 stage: Some("before".into()),
                 call: Some(call),
                 ..Default::default()
             });
-        step.status = "running".into();
+        step.status = step::Status::Running;
         step.error = None;
         if step.stage.as_deref() == Some("call") {
             if step
                 .attempts
                 .last()
-                .is_some_and(|attempt| attempt.status == AttemptStatus::Failed)
+                .is_some_and(|attempt| attempt.status == attempt::Status::Failed)
             {
                 step.attempts.push(StepAttempt {
-                    status: AttemptStatus::Running,
+                    status: attempt::Status::Running,
                     created_time: None,
                     finished_time: None,
                     usage: None,
@@ -258,7 +258,7 @@ impl ToolNode {
                     error: None,
                 });
             } else if let Some(attempt) = step.attempts.last_mut() {
-                attempt.status = AttemptStatus::Running;
+                attempt.status = attempt::Status::Running;
                 attempt.error = None;
             }
         }
@@ -453,9 +453,10 @@ impl ToolNode {
         Ok(calls)
     }
 
-    /// Private Runtime entry: successful call messages from a prior Attempt
+    /// Private Runtime fact: successful call messages from a prior Attempt
     /// are reused by call_id, while failed or missing calls are executed.
-    pub(crate) async fn call_with_recovery(
+    #[doc(hidden)]
+    pub async fn call_with_recovery(
         &self,
         input: Messages,
         cancellation: Cancellation,
@@ -520,14 +521,15 @@ fn validate_facts(calls: &[Call], attempt: &Attempt) -> Result<(), Error> {
                 && step
                     .attempts
                     .last()
-                    .is_none_or(|attempt| attempt.status != AttemptStatus::Succeeded))
+                    .is_none_or(|attempt| attempt.status != attempt::Status::Succeeded))
             || (phase == Phase::Before && !step.attempts.is_empty())
-            || (phase == Phase::Complete && (step.status != "succeeded" || step.error.is_some()))
+            || (phase == Phase::Complete
+                && (step.status != step::Status::Succeeded || step.error.is_some()))
             || !matches!(
                 step.status.as_str(),
                 "running" | "waiting" | "failed" | "cancelled" | "succeeded"
             )
-            || (phase != Phase::Complete && step.status == "succeeded")
+            || (phase != Phase::Complete && step.status == step::Status::Succeeded)
         {
             return Err(invalid_facts());
         }

@@ -161,7 +161,7 @@ async fn workflow_runs_embedded_agent_with_real_model() {
         .expect("Workflow should persist the Agent execution");
     assert_eq!(
         execution.status,
-        halo::agent::workflow::node::ExecutionStatus::Succeeded
+        halo::agent::workflow::node::status::execution::Status::Succeeded
     );
     assert!(execution.attempts[0].usage.is_some());
     println!("LIVE_WORKFLOW_AGENT_OUTPUT={final_text}");
@@ -249,7 +249,7 @@ async fn workflow_runs_embedded_static_team_with_real_model() {
     );
     assert_eq!(
         runtime.state().nodes["team"].status,
-        halo::agent::workflow::node::Status::Succeeded
+        halo::agent::workflow::node::status::Status::Succeeded
     );
 }
 

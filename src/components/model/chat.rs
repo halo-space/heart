@@ -134,7 +134,8 @@ impl Request {
 
 /// A Provider chooses its concrete stream type. The public contract remains
 /// the associated stream and `Result<Event, model::Error>` items.
-pub(crate) fn estimate_input_tokens(request: &Request) -> u64 {
+#[doc(hidden)]
+pub fn estimate_input_tokens(request: &Request) -> u64 {
     let message_bytes: usize = request
         .messages
         .as_slice()
@@ -179,7 +180,8 @@ pub(crate) fn estimate_input_tokens(request: &Request) -> u64 {
 /// complete conversation groups, then removes the oldest removable groups.
 /// Tool results stay attached to their preceding group so trimming cannot
 /// create an orphaned tool result.
-pub(crate) fn fit_request(request: Request, context_limit: Option<u64>) -> Result<Request, Error> {
+#[doc(hidden)]
+pub fn fit_request(request: Request, context_limit: Option<u64>) -> Result<Request, Error> {
     let Some(context_limit) = context_limit.filter(|limit| *limit > 0) else {
         return Ok(request);
     };

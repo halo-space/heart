@@ -3,7 +3,7 @@
 //! looking up names.
 use super::*;
 use crate::components::model::content::part::object as part_data;
-use crate::runtime::agent::{graph::Start, node::Status};
+use crate::runtime::agent::{graph::Start, node::status::Status};
 
 struct Task<M: Chat> {
     node_id: String,
@@ -43,7 +43,8 @@ impl Active {
     }
 }
 
-pub(crate) struct TaskProgress<M: Chat> {
+#[doc(hidden)]
+pub struct TaskProgress<M: Chat> {
     task: Box<Task<M>>,
     result: Option<Result<Event, Error>>,
 }
@@ -289,7 +290,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 preparation: None,
                 _interaction_owner: interaction
                     .as_ref()
-                    .map(crate::runtime::agent::reply::Run::owner),
+                    .map(crate::runtime::agent::reply::Handle::owner),
                 interaction,
                 waits,
                 stream: state.stream,
@@ -301,6 +302,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
                 max_iters: state.max_iters,
                 max_concurrency: state.max_concurrency,
                 cancellation: state.cancellation.clone(),
+                cancellation_waiter: None,
                 task_base: messages.clone(),
                 messages,
                 iteration: state.iteration.clone(),
@@ -391,9 +393,9 @@ pub(super) fn commit<M: Chat + 'static>(
         && let Some(id) = message.metadata.get("reply_id").and_then(Value::as_i64)
     {
         question = task.state.steps.iter().any(|step| {
-            step.waits
-                .get(&id)
-                .is_some_and(|record| record.status == "waiting")
+            step.waits.get(&id).is_some_and(|record| {
+                record.status == crate::runtime::agent::node::status::wait::Status::Waiting
+            })
         });
         for node in task.state.child_nodes.values() {
             if let Some(scene) = node
@@ -668,7 +670,7 @@ pub(super) fn waiting_on_feedback<M: Chat>(state: &ReActState<M>) -> bool {
     // behind a suspended call are not executing and cannot retain admission.
     !state.waits.is_empty()
         && !state.steps.iter().any(|step| {
-            step.status == "running"
+            step.status == crate::runtime::agent::node::status::step::Status::Running
                 && !(step.kind == "agent"
                     && state
                         .interaction

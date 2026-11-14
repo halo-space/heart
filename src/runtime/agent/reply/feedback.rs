@@ -23,7 +23,7 @@ pub(super) struct Saved {
 /// Poll-local owner information used by `ask`; it is never serialized.
 #[derive(Clone)]
 struct Current {
-    run: Option<Run>,
+    run: Option<Handle>,
     call: Call,
     saved: Step,
     id_fn: Option<fn() -> i64>,
@@ -51,7 +51,7 @@ pub(super) async fn acquire_slot(cancellation: &Cancellation) -> Result<(), Erro
 
 /// Poll-local ownership, not a public ToolContext or serialized call frame.
 pub(crate) async fn during<F: Future>(
-    run: Option<Run>,
+    run: Option<Handle>,
     call: Call,
     saved: Step,
     id_fn: Option<fn() -> i64>,
@@ -160,7 +160,7 @@ pub(crate) async fn ask(
         }
         let (_, previous) = *matching[0];
         previous.validate()?;
-        if previous.status == "resolved" {
+        if previous.status == crate::runtime::agent::node::status::wait::Status::Resolved {
             return Ok(previous.feedback.clone());
         }
         return Err(Error::new(
@@ -196,7 +196,7 @@ fn question_match(left: &Wait, right: &Wait) -> bool {
 }
 
 async fn collect(
-    run: &Run,
+    run: &Handle,
     call: &Call,
     id: i64,
     mut record: Wait,
@@ -384,7 +384,7 @@ pub(super) fn apply(
     change: Change,
     steps: &mut [Step],
     waits: &mut Vec<wait::Wait>,
-    owner: &Run,
+    owner: &Handle,
 ) -> Result<Option<Event>, Error> {
     match change {
         Change::Collect {
@@ -396,7 +396,9 @@ pub(super) fn apply(
         } => {
             let result = (|| {
                 record.validate()?;
-                if record.kind != "input" || record.status != "waiting" {
+                if record.kind != "input"
+                    || record.status != crate::runtime::agent::node::status::wait::Status::Waiting
+                {
                     return Err(Error::new(
                         "INVALID_STATE",
                         "invalid ordinary feedback wait",
@@ -423,7 +425,7 @@ pub(super) fn apply(
                 let question = record.question.clone();
                 step.call = Some(call);
                 step.waits.entry(id).or_insert(*record);
-                step.status = "waiting".into();
+                step.status = crate::runtime::agent::node::status::step::Status::Waiting;
                 let position = wait::Wait {
                     nodes: vec![],
                     step: step.id.clone(),
@@ -480,8 +482,10 @@ pub(super) fn apply(
                     })?;
                 let complete = record.reply(crate::components::agent_input::user_message(input))?;
                 if complete {
-                    if !step.waits.values().any(|record| record.status == "waiting") {
-                        step.status = "running".into();
+                    if !step.waits.values().any(|record| {
+                        record.status == crate::runtime::agent::node::status::wait::Status::Waiting
+                    }) {
+                        step.status = crate::runtime::agent::node::status::step::Status::Running;
                         waits.retain(|position| {
                             !position.nodes.is_empty() || position.step != step.id
                         });
@@ -504,7 +508,7 @@ pub(super) fn apply(
     }
 }
 
-impl Run {
+impl Handle {
     /// A planned task must first commit its resolved Step into the outer native
     /// scene. Only then may another task's feedback advance the shared FIFO.
     pub(crate) fn commit_feedback(&self, steps: &[Step]) {
@@ -514,9 +518,11 @@ impl Run {
         let mut order = self.0.order.lock().expect("question order lock poisoned");
         if order.front().is_some_and(|id| {
             steps.iter().any(|step| {
-                step.waits
-                    .get(id)
-                    .is_some_and(|record| record.kind == "input" && record.status == "resolved")
+                step.waits.get(id).is_some_and(|record| {
+                    record.kind == "input"
+                        && record.status
+                            == crate::runtime::agent::node::status::wait::Status::Resolved
+                })
             })
         }) {
             order.pop_front();

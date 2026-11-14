@@ -29,7 +29,10 @@ impl Backend {
         Self {
             save: Arc::new(move |id, state, cancellation| {
                 let checkpoint = writer.clone();
-                Box::pin(async move { checkpoint.save(id, state, &cancellation).await })
+                Box::pin(async move {
+                    checkpoint.validate_state(&state)?;
+                    checkpoint.save(id, state, &cancellation).await
+                })
             }),
             load: Arc::new(move |id, cancellation| {
                 let checkpoint = checkpoint.clone();

@@ -235,19 +235,26 @@ where
             };
             let (sender, receiver) = tokio::sync::mpsc::unbounded_channel::<StreamResponse>();
             let background = service.clone();
+            let error_context = context.clone();
             tokio::spawn(async move {
-                let Ok(events) = background.stream_from(context, input).await else {
-                    return;
-                };
-                futures_util::pin_mut!(events);
-                while let Some(item) = events.next().await {
-                    match item {
-                        Ok(response) => {
-                            if sender.send(response).is_err() {
-                                break;
+                match background.stream_from(context, input).await {
+                    Ok(events) => {
+                        futures_util::pin_mut!(events);
+                        while let Some(item) = events.next().await {
+                            match item {
+                                Ok(response) => {
+                                    if sender.send(response).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(_) => break,
                             }
                         }
-                        Err(_) => break,
+                    }
+                    Err(error) => {
+                        let _ = background.record_error(&error_context, &error).await;
+                        let _ =
+                            sender.send(crate::server::a2a::error_status(&error_context, &error));
                     }
                 }
             });

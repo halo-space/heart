@@ -342,8 +342,8 @@ pub(crate) fn validate(scene: &Value) -> Result<bool, Error> {
         let facts = scene_step(scene, &wait.nodes, &wait.step)?;
         covered.push(facts);
         let step: Step = serde_json::from_value(facts.clone())
-            .map_err(|_| invalid("waiting locator has invalid Step facts"))?;
-        if step.status != "waiting" {
+            .map_err(|_| invalid("invalid Agent Step waiting record"))?;
+        if step.status != crate::runtime::agent::node::status::step::Status::Waiting {
             return Err(invalid("waiting locator Step is not waiting"));
         }
         let mut unresolved = false;
@@ -351,7 +351,7 @@ pub(crate) fn validate(scene: &Value) -> Result<bool, Error> {
             if record.validate().is_err() {
                 return Err(invalid("invalid Agent Step waiting record"));
             }
-            if record.status == "waiting" {
+            if record.status == crate::runtime::agent::node::status::wait::Status::Waiting {
                 unresolved = true;
                 if !replies.insert(reply_id) {
                     return Err(invalid("Agent waiting reply identity is ambiguous"));
@@ -402,11 +402,11 @@ mod tests {
         let child = crate::runtime::agent::State {
             chat_id: Some(1001),
             r#type: "agent".into(),
-            status: "waiting".into(),
+            status: crate::runtime::agent::status::Status::Waiting,
             steps: vec![node::Step {
                 id: "collect".into(),
                 kind: "tool".into(),
-                status: "waiting".into(),
+                status: crate::runtime::agent::node::status::step::Status::Waiting,
                 waits: BTreeMap::from([(reply_id, record)]),
                 ..Default::default()
             }],
@@ -414,7 +414,7 @@ mod tests {
         };
         let attempt = node::Attempt {
             idx: 0,
-            status: node::Status::Waiting,
+            status: node::status::Status::Waiting,
             created_time: None,
             finished_time: None,
             usage: None,
@@ -427,7 +427,7 @@ mod tests {
             error: None,
         };
         let reviewer = node::State {
-            status: node::Status::Waiting,
+            status: node::status::Status::Waiting,
             execution: Some(node::Execution {
                 exec_id: 77,
                 attempts: vec![attempt],
@@ -440,7 +440,7 @@ mod tests {
         let root = crate::runtime::agent::State {
             chat_id: Some(1001),
             r#type: "agent".into(),
-            status: "waiting".into(),
+            status: crate::runtime::agent::status::Status::Waiting,
             nodes: BTreeMap::from([("reviewer".into(), reviewer)]),
             waits: vec![Wait {
                 nodes: vec![Node {

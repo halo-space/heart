@@ -45,7 +45,7 @@ trait HistoryBackend: Send + Sync {
     fn save(&self, value: chat::Chat, state: Option<Value>) -> SaveFuture;
 }
 
-struct MemoryBackend<S, L>(Arc<memory::Config<S, L>>);
+struct MemoryBackend<S, L>(Arc<crate::runtime::agent::memory::Config<S, L>>);
 
 impl<S, L> HistoryBackend for MemoryBackend<S, L>
 where
@@ -187,7 +187,7 @@ impl History {
         }
         Ok(())
     }
-    pub(crate) fn set<S, L>(&mut self, config: memory::Config<S, L>)
+    pub(crate) fn set<S, L>(&mut self, config: crate::runtime::agent::memory::Config<S, L>)
     where
         S: short::Store + 'static,
         L: Memory + 'static,
@@ -419,7 +419,7 @@ impl Identity {
 }
 
 async fn load<S, L>(
-    config: Arc<memory::Config<S, L>>,
+    config: Arc<crate::runtime::agent::memory::Config<S, L>>,
     metadata: Map<String, Value>,
     hooks: Hooks,
     cancellation: &Cancellation,
@@ -580,7 +580,7 @@ where
 }
 
 fn compression_window<S, L>(
-    config: &memory::Config<S, L>,
+    config: &crate::runtime::agent::memory::Config<S, L>,
     mut pairs: Vec<(i64, Message, Message, u64)>,
 ) -> Vec<(i64, Message, Message, u64)>
 where

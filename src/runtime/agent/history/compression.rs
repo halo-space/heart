@@ -10,7 +10,7 @@ use std::{
 use crate::{
     Cancellation, Error, Message, Messages,
     memory::{
-        self, Memory,
+        Memory,
         short::{self, session},
     },
     message::Role,
@@ -62,7 +62,7 @@ pub(super) fn tokens(usage: Option<&Usage>) -> u64 {
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn start<S, L>(
-    config: Arc<memory::Config<S, L>>,
+    config: Arc<crate::runtime::agent::memory::Config<S, L>>,
     snapshot: session::Session,
     input: Vec<Message>,
     endpoints: Option<(i64, i64)>,
@@ -371,6 +371,7 @@ mod tests {
     use tokio::sync::Semaphore;
 
     use super::*;
+    use crate::memory;
     use crate::memory::short::{chat, chat::Store as _, session};
     use crate::{
         agent::{Input, Payload},
@@ -380,8 +381,8 @@ mod tests {
         runtime::agent::hooks::Hooks,
     };
 
-    type WithSession<S> = memory::Config<
-        memory::short::Pair<S, core::memory::short::chat::InMemory>,
+    type WithSession<S> = crate::runtime::agent::memory::Config<
+        core::memory::short::Pair<S, core::memory::short::chat::InMemory>,
         core::memory::InMemory,
     >;
     type Config = WithSession<core::memory::short::session::InMemory>;
@@ -584,7 +585,7 @@ mod tests {
 
     async fn config() -> Config {
         let config = Config::new(
-            memory::short::Pair::new(
+            core::memory::short::Pair::new(
                 core::memory::short::session::InMemory::new(),
                 core::memory::short::chat::InMemory::new(),
             ),
@@ -712,7 +713,7 @@ mod tests {
     }
 
     async fn run_with_hooks<S, L>(
-        config: memory::Config<S, L>,
+        config: crate::runtime::agent::memory::Config<S, L>,
         id: i64,
         session_id: i64,
         hooks: Hooks,
@@ -725,7 +726,7 @@ mod tests {
     }
 
     async fn run_with_hooks_and_cancellation<S, L>(
-        config: memory::Config<S, L>,
+        config: crate::runtime::agent::memory::Config<S, L>,
         id: i64,
         session_id: i64,
         hooks: Hooks,
@@ -744,7 +745,11 @@ mod tests {
         Messages::new(messages)
     }
 
-    async fn run<S, L>(config: memory::Config<S, L>, id: i64, session_id: i64) -> Messages
+    async fn run<S, L>(
+        config: crate::runtime::agent::memory::Config<S, L>,
+        id: i64,
+        session_id: i64,
+    ) -> Messages
     where
         S: memory::short::Store + 'static,
         L: memory::Memory + 'static,
@@ -920,8 +925,8 @@ mod tests {
         for malformed in [false, true] {
             let compressor = Compressor::new(Some(100));
             let extractor = LongExtractor::default();
-            let config = memory::Config::new(
-                memory::short::Pair::new(
+            let config = crate::runtime::agent::memory::Config::new(
+                core::memory::short::Pair::new(
                     LostAckSession {
                         inner: core::memory::short::session::InMemory::new(),
                         fail: std::sync::atomic::AtomicBool::new(true),

@@ -118,7 +118,7 @@ impl Tool for AskForApproval {
                 r#type: "text".into(),
                 data: json!({"value":question}).as_object().unwrap().clone(),
             });
-        let feedback = halo::agent::runtime::agent::wait::ask(prompt, 1, cancellation).await?;
+        let feedback = halo::agent::wait::ask(prompt, 1, cancellation).await?;
         Ok(Message::function(json!({"user_feedback": feedback.0})))
     }
 }
@@ -153,7 +153,7 @@ impl Tool for CountedApproval {
                 r#type: "text".into(),
                 data: json!({"value": question}).as_object().unwrap().clone(),
             });
-        let feedback = halo::agent::runtime::agent::wait::ask(prompt, 1, cancellation).await?;
+        let feedback = halo::agent::wait::ask(prompt, 1, cancellation).await?;
         self.0.fetch_add(1, Ordering::SeqCst);
         Ok(Message::function(json!({"user_feedback": feedback.0})))
     }

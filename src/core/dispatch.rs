@@ -1,7 +1,7 @@
 //! Internal assembly for the Agent's Tool, MCP, Skill and Workspace views.
 //!
 //! The concrete adapters are split by responsibility: `dispatch::tool` owns
-//! executable Tool/MCP/Workspace entries, while `skill::load` and
+//! executable Tool/MCP/Workspace tools, while `skill::load` and
 //! `skill::reader` own Skill discovery and instruction reading. This module
 //! only combines them.
 
@@ -27,15 +27,15 @@ use crate::workspace::Workspace;
 /// This type is an implementation detail. It is never the public way to
 /// configure an Agent or Workspace. Public callers mount each concrete kind
 /// with `.tools(...)`, `.mcps(...)` and `.skills(...)`; this table only keeps
-/// their entries together while an Agent runs. One shared `skill`
+/// their tools together while an Agent runs. One shared `skill`
 /// Tool can return a selected Skill's full instructions; the other Tools and
 /// MCP servers remain independently defined and executable. Cloning the table
-/// shares configured entries and Workspace-owned Skill loader caches; it does not
+/// shares configured tools and Workspace-owned Skill loader caches; it does not
 /// copy or materialize files.
 #[derive(Clone)]
 #[doc(hidden)]
 pub struct Dispatch {
-    entries: Vec<Arc<dyn tool::Tool>>,
+    tools: Vec<Arc<dyn tool::Tool>>,
     mcp_catalog: Vec<crate::mcp::Definition>,
     skills: Vec<Arc<dyn load::Skill>>,
     skill_loaders: Vec<Arc<dyn load::Loader>>,
@@ -44,10 +44,9 @@ pub struct Dispatch {
 }
 
 /// Internal inputs accepted by the public Agent/Workspace `.tools(...)`
-/// methods. The public entry point is plural
+/// methods. The public tool point is plural
 /// even when one concrete Tool is registered; this keeps the assembly API
 /// consistent for one or many Tools.
-#[doc(hidden)]
 pub trait ToolInputs {
     fn append_to(self, dispatch: &mut Dispatch);
 }
@@ -57,7 +56,7 @@ where
     T: Tool + 'static,
 {
     fn append_to(self, dispatch: &mut Dispatch) {
-        dispatch.entries.push(Arc::new(tool::adapter::Tool {
+        dispatch.tools.push(Arc::new(tool::adapter::Tool {
             tool: Arc::new(self),
         }));
     }
@@ -69,7 +68,7 @@ where
 {
     fn append_to(self, dispatch: &mut Dispatch) {
         for tool in self {
-            dispatch.entries.push(Arc::new(tool::adapter::Tool {
+            dispatch.tools.push(Arc::new(tool::adapter::Tool {
                 tool: Arc::new(tool),
             }));
         }
@@ -82,7 +81,7 @@ where
 {
     fn append_to(self, dispatch: &mut Dispatch) {
         for tool in self {
-            dispatch.entries.push(Arc::new(tool::adapter::Tool {
+            dispatch.tools.push(Arc::new(tool::adapter::Tool {
                 tool: Arc::new(tool),
             }));
         }
@@ -98,7 +97,7 @@ impl Default for Dispatch {
 impl Dispatch {
     pub fn new() -> Self {
         Self {
-            entries: Vec::new(),
+            tools: Vec::new(),
             mcp_catalog: Vec::new(),
             skills: Vec::new(),
             skill_loaders: Vec::new(),
@@ -115,7 +114,7 @@ impl Dispatch {
         W: Workspace + 'static,
     {
         let workspace: Arc<dyn Workspace> = Arc::new(workspace);
-        let entries = workspace
+        let tools = workspace
             .tool()
             .into_iter()
             .map(|definition| {
@@ -126,7 +125,7 @@ impl Dispatch {
             })
             .collect();
         Self {
-            entries,
+            tools,
             mcp_catalog: workspace.mcp(),
             skills: Vec::new(),
             skill_loaders: Vec::new(),
@@ -146,13 +145,13 @@ impl Dispatch {
             ));
         }
         self = self.append(other);
-        self.validate_names(&self.entries)?;
+        self.validate_names(&self.tools)?;
         self.validate_skill_names()?;
         Ok(self)
     }
 
     pub(crate) fn append(mut self, other: Self) -> Self {
-        self.entries.extend(other.entries);
+        self.tools.extend(other.tools);
         self.mcp_catalog.extend(other.mcp_catalog);
         self.skills.extend(other.skills);
         self.skill_loaders.extend(other.skill_loaders);
@@ -181,11 +180,11 @@ impl Dispatch {
         S: Server + 'static,
     {
         for server in servers {
-            let entry = tool::McpServer {
+            let tool = tool::McpServer {
                 server: Arc::new(server),
             };
-            self.mcp_catalog.push(entry.server.definition().clone());
-            self.entries.extend(entry.entries());
+            self.mcp_catalog.push(tool.server.definition().clone());
+            self.tools.extend(tool.tools());
         }
         self
     }
@@ -241,7 +240,7 @@ impl Dispatch {
             );
         }
         let view = Self {
-            entries: base.entries.clone(),
+            tools: base.tools.clone(),
             mcp_catalog: base.mcp_catalog.clone(),
             skills,
             skill_loaders: Vec::new(),
@@ -265,7 +264,7 @@ impl Dispatch {
             }) as Arc<dyn load::Skill>
         }));
         Ok(Self {
-            entries: self.entries.clone(),
+            tools: self.tools.clone(),
             mcp_catalog: self.mcp_catalog.clone(),
             skills,
             skill_loaders: self.skill_loaders.clone(),
@@ -300,9 +299,9 @@ impl Dispatch {
         })
     }
 
-    fn validate_names(&self, entries: &[Arc<dyn tool::Tool>]) -> Result<(), Error> {
+    fn validate_names(&self, tools: &[Arc<dyn tool::Tool>]) -> Result<(), Error> {
         let mut names = BTreeSet::new();
-        for name in entries.iter().map(|entry| entry.definition().name) {
+        for name in tools.iter().map(|tool| tool.definition().name) {
             if !names.insert(name) {
                 return Err(Error::new(
                     "INVALID_ARGUMENTS",
@@ -347,15 +346,15 @@ impl Dispatch {
             .await?
             .with_discovered_skills(cancellation)
             .await?;
-        let mut entries = discovered.entries.clone();
-        for entry in &entries {
-            let definition = entry.definition();
+        let mut tools = discovered.tools.clone();
+        for tool in &tools {
+            let definition = tool.definition();
             definition.validate()?;
         }
-        discovered.validate_names(&entries)?;
+        discovered.validate_names(&tools)?;
         let skill_reader = !discovered.skills.is_empty();
         if skill_reader && !discovered.skill_reader {
-            entries.push(Arc::new(tool::adapter::Tool {
+            tools.push(Arc::new(tool::adapter::Tool {
                 tool: Arc::new(reader::Reader::new(discovered.skills.clone())),
             }));
         }
@@ -363,7 +362,7 @@ impl Dispatch {
             return Err(Error::new("CANCELLED", "tool discovery cancelled"));
         }
         Ok(Self {
-            entries,
+            tools,
             mcp_catalog: discovered.mcp_catalog,
             skills: discovered.skills,
             skill_loaders: Vec::new(),
@@ -377,17 +376,14 @@ impl Dispatch {
     /// sources are still loaded when an Agent obtains its private prepared
     /// view.
     pub(crate) fn tool_catalog(&self) -> Vec<ToolDefinition> {
-        self.entries
-            .iter()
-            .map(|entry| entry.definition())
-            .collect()
+        self.tools.iter().map(|tool| tool.definition()).collect()
     }
 
     /// Prepared Agent tool catalog; not inferred from a generated Plan.
     pub(crate) fn names(&self) -> BTreeSet<String> {
-        self.entries
+        self.tools
             .iter()
-            .map(|entry| entry.definition().name)
+            .map(|tool| tool.definition().name)
             .collect()
     }
 

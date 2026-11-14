@@ -1,9 +1,9 @@
-use crate::runtime::agent::lifecycle::model_unfinished;
-use crate::runtime::agent::{
+use halo::agent::lifecycle::model_unfinished;
+use halo::agent::{
     model_steps,
-    node::{Status, Step},
+    state::node::{Step, status::Status},
 };
-use crate::{
+use halo::agent::{
     Error, Message,
     message::Role,
     model::{chat::Request, content::part::Part},
@@ -18,7 +18,7 @@ fn active_model_steps() -> Vec<Step> {
     model_steps::input(
         &mut steps,
         Request {
-            messages: crate::Messages::new([user]),
+            messages: halo::agent::Messages::new([user]),
             stream: true,
             ..Default::default()
         },
@@ -50,7 +50,10 @@ fn unfinished_output_is_retained_only_on_the_actual_attempt() {
 
     let step = &steps[0];
     let attempt = &step.attempts[0];
-    assert_eq!(step.status, "cancelled");
+    assert_eq!(
+        step.status,
+        halo::agent::state::node::status::step::Status::Cancelled
+    );
     assert!(
         step.message.is_none(),
         "partial data is not a successful result"
@@ -83,7 +86,7 @@ fn provider_usage_is_retained_and_runtime_metadata_does_not_change_estimates() {
 
     let mut provider_steps = active_model_steps();
     let mut provider_partial = observed_partial();
-    provider_partial.usage = Some(crate::model::token::Usage {
+    provider_partial.usage = Some(halo::agent::model::token::Usage {
         input: Some(31),
         output: Some(12),
         total: Some(43),

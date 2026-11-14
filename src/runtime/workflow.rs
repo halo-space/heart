@@ -76,10 +76,11 @@ pub struct Runtime {
 }
 
 #[derive(Clone)]
-pub(crate) struct RecoveryReply {
-    response: Messages,
-    input: Input,
-    path: Vec<graph::ReplyExecution>,
+#[doc(hidden)]
+pub struct RecoveryReply {
+    pub response: Messages,
+    pub input: Input,
+    pub path: Vec<graph::ReplyExecution>,
 }
 
 /// Moves the one execution into its original stream and returns it on drop.
@@ -108,6 +109,11 @@ impl Drop for ExecutionOwner<'_> {
             )
             && engine.state.mark_waiting()
         {
+            // Dropping a live stream is an explicit loss of the consumer, not
+            // a second cancellation state. Keep the resumable execution and
+            // expose it as the existing paused/waiting state so the next
+            // checkpoint or reply can continue from the same State without
+            // re-running completed work.
             engine.state.status = Status::Paused;
         }
         *self.home.lock().expect("Workflow execution lock poisoned") = self.engine.take();
@@ -115,8 +121,12 @@ impl Drop for ExecutionOwner<'_> {
 }
 
 impl Runtime {
-    #[cfg(test)]
-    async fn execute(
+    /// Execute one workflow while supplying deterministic execution IDs.
+    ///
+    /// This is hidden from the stable application API and exists for
+    /// integration-level runtime verification outside the library crate.
+    #[doc(hidden)]
+    pub async fn execute(
         &mut self,
         initial: Messages,
         ids: Arc<dyn Fn() -> i64 + Send + Sync>,
@@ -163,7 +173,10 @@ impl Runtime {
         self.engine_mut().max_concurrency = max_concurrency;
         Ok(self)
     }
-    pub fn memory<S, L>(mut self, config: crate::memory::Config<S, L>) -> Result<Self, Error>
+    pub fn memory<S, L>(
+        mut self,
+        config: crate::runtime::agent::memory::Config<S, L>,
+    ) -> Result<Self, Error>
     where
         S: crate::memory::short::Store + 'static,
         L: crate::memory::Memory + 'static,
@@ -181,7 +194,10 @@ impl Runtime {
         let checkpoint = Arc::new(checkpoint);
         self.engine_mut().checkpoint = Some(Arc::new(move |id, state, cancellation| {
             let checkpoint = checkpoint.clone();
-            Box::pin(async move { checkpoint.save(id, state, &cancellation).await })
+            Box::pin(async move {
+                checkpoint.validate_state(&state)?;
+                checkpoint.save(id, state, &cancellation).await
+            })
         }));
         self
     }
@@ -196,18 +212,25 @@ impl Runtime {
     pub fn state(&mut self) -> &State {
         &self.engine_mut().state
     }
+    /// Low-level mutable access retained for in-crate orchestration and
+    /// recovery tests. Application code should use `run`, `reply` and
+    /// `snapshot` so the Runtime remains the single state owner.
+    #[doc(hidden)]
     pub fn state_mut(&mut self) -> &mut State {
         &mut self.engine_mut().state
     }
+    #[doc(hidden)]
     pub fn ready_nodes(&mut self) -> Vec<String> {
         self.engine_mut().ready_nodes()
     }
+    #[doc(hidden)]
     pub fn start_batch(
         &mut self,
         executions: Vec<(String, i64, Vec<ExecutionRef>)>,
     ) -> Result<(), Error> {
         self.engine_mut().start_batch(executions)
     }
+    #[doc(hidden)]
     pub fn complete(
         &mut self,
         node_id: &str,
@@ -217,9 +240,11 @@ impl Runtime {
     ) -> Result<(), Error> {
         self.engine_mut().complete(node_id, exec_id, messages, to)
     }
+    #[doc(hidden)]
     pub fn fail(&mut self, node_id: &str, exec_id: i64, error: Error) -> Result<(), Error> {
         self.engine_mut().fail(node_id, exec_id, error)
     }
+    #[doc(hidden)]
     pub fn cancel(&mut self, node_id: &str, exec_id: i64) -> Result<(), Error> {
         self.engine_mut().cancel(node_id, exec_id)
     }
@@ -230,6 +255,7 @@ impl Runtime {
     pub fn resume(&mut self, node_id: &str, response: Messages) -> Result<(), Error> {
         self.engine_mut().resume(node_id, response)
     }
+    #[doc(hidden)]
     pub fn advance_step(&mut self) -> bool {
         self.engine_mut().advance_step()
     }
@@ -248,6 +274,7 @@ impl Runtime {
     ) -> Result<(), Error> {
         let state = self.snapshot()?;
         let id = state["chat_id"].as_i64().expect("Workflow identity");
+        checkpoint.validate_state(&state)?;
         checkpoint.save(id, state, cancellation).await
     }
     /// Submit to the actual feedback Step. Outputs stay on the original run stream.
@@ -332,16 +359,9 @@ impl Runtime {
     }
 }
 
-mod execution;
+#[doc(hidden)]
+pub mod execution;
 use execution::Engine;
-#[cfg(test)]
-pub(super) use execution::{Outcome, Target, invoke_with_retry};
+#[doc(hidden)]
+pub use execution::{Outcome, Target, invoke_with_retry};
 pub(super) use execution::{attempt_question, messages_to_agent_input};
-
-#[cfg(test)]
-#[path = "../../tests/unit/workflow_progress.rs"]
-mod progress_tests;
-
-#[cfg(test)]
-#[path = "../../tests/unit/workflow_runtime.rs"]
-mod tests;

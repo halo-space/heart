@@ -11,15 +11,13 @@ use halo::agent::{Cancellation, Message, Messages};
 use halo::{
     agent::checkpoint::Checkpoint as _,
     agent::core,
+    agent::graph::{Graph, State as PlanState},
     agent::message::Role,
     agent::model::Error as ModelError,
     agent::model::chat::{Chat, Request},
     agent::plan::Plan,
     agent::provider::deepseek::DeepSeek,
-    agent::runtime::agent::{
-        State,
-        graph::{Graph, State as PlanState},
-    },
+    agent::state::State,
     agent::{self, Agent, Input},
 };
 use serde_json::json;
@@ -64,7 +62,7 @@ async fn one_external_reply_must_not_be_broadcast_to_multiple_waiting_nodes() {
     let mut snapshot = serde_json::to_value(State {
         chat_id: Some(501),
         r#type: "agent".into(),
-        status: "waiting".into(),
+        status: halo::agent::state::Status::Waiting,
         graph: Some(PlanState {
             plan: graph.plan.clone(),
         }),

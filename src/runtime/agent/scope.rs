@@ -10,7 +10,7 @@ pub(crate) struct Scope {
     restore: Arc<Mutex<Option<Value>>>,
     latest: Arc<Mutex<Option<Arc<Value>>>>,
     id_fn: Option<fn() -> i64>,
-    interaction: Option<crate::runtime::agent::reply::Run>,
+    interaction: Option<crate::runtime::agent::reply::Handle>,
     feedback: bool,
 }
 
@@ -35,7 +35,7 @@ impl Scope {
     }
     pub(crate) fn with_interaction(
         mut self,
-        interaction: Option<crate::runtime::agent::reply::Run>,
+        interaction: Option<crate::runtime::agent::reply::Handle>,
     ) -> Self {
         self.interaction = interaction;
         self
@@ -71,7 +71,8 @@ where
     CURRENT.scope(scope, future).await
 }
 
-pub(crate) fn restore() -> Option<Value> {
+#[doc(hidden)]
+pub fn restore() -> Option<Value> {
     CURRENT.try_with(Scope::take_restore).ok().flatten()
 }
 
@@ -80,7 +81,7 @@ pub(crate) fn id_fn() -> Option<fn() -> i64> {
     CURRENT.try_with(|scope| scope.id_fn).ok().flatten()
 }
 
-pub(crate) fn interaction() -> Option<crate::runtime::agent::reply::Run> {
+pub(crate) fn interaction() -> Option<crate::runtime::agent::reply::Handle> {
     CURRENT
         .try_with(|scope| scope.interaction.clone())
         .ok()
@@ -98,6 +99,7 @@ pub(crate) fn active() -> bool {
     CURRENT.try_with(|_| ()).is_ok()
 }
 
-pub(crate) fn capture(state: Value) -> bool {
+#[doc(hidden)]
+pub fn capture(state: Value) -> bool {
     CURRENT.try_with(|scope| scope.capture(state)).is_ok()
 }

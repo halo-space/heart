@@ -10,12 +10,12 @@ use std::sync::{
 };
 use std::task::{Context, Poll};
 
-use super::runner::execute_subagent;
+use halo::agent::chat::runner::execute_subagent;
 use super::*;
-use crate::components::agent::Agent as _;
-use crate::components::event::Event;
-use crate::components::message::Role;
-use crate::components::tool::{Call, Tool, ToolDefinition};
+use halo::agent::Agent as _;
+use halo::agent::event::Event;
+use halo::agent::message::Role;
+use halo::agent::tool::{Call, Tool, ToolDefinition};
 use futures_core::Stream;
 use futures_executor::block_on;
 use serde_json::json;
@@ -43,13 +43,13 @@ struct CountingSubAgent {
     calls: Arc<std::sync::atomic::AtomicUsize>,
 }
 
-impl crate::components::agent::Agent for WaitingSubAgent {
+impl halo::agent::Agent for WaitingSubAgent {
     async fn reply(
         &self,
-        _: crate::components::agent::Input,
-        _: crate::Cancellation,
-    ) -> Result<(), crate::Error> {
-        Err(crate::Error::new(
+        _: halo::agent::Input,
+        _: halo::agent::Cancellation,
+    ) -> Result<(), halo::agent::Error> {
+        Err(halo::agent::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))
@@ -62,8 +62,8 @@ impl crate::components::agent::Agent for WaitingSubAgent {
         _stream: bool,
         _cancellation: Cancellation,
     ) -> Result<Self::Stream, Error> {
-        if crate::runtime::agent::scope::restore().is_none() {
-            assert!(crate::runtime::agent::scope::capture(json!({
+        if halo::agent::scope::restore().is_none() {
+            assert!(halo::agent::scope::capture(json!({
                 "owner": "chat-child"
             })));
             return Err(Error::new("WAITING", "child is waiting for approval"));
@@ -71,7 +71,7 @@ impl crate::components::agent::Agent for WaitingSubAgent {
         let mut message = Message::new(Role::Assistant);
         message.content.push(Part {
             r#type: "text".into(),
-            data: part_data(json!({"value": "child approved"})),
+            data: halo::agent::model::content::part::object(json!({"value": "child approved"})),
         });
         Ok(futures_util::stream::iter(vec![Ok(Event::Complete {
             message,
@@ -81,13 +81,13 @@ impl crate::components::agent::Agent for WaitingSubAgent {
     }
 }
 
-impl crate::components::agent::Agent for CountingSubAgent {
+impl halo::agent::Agent for CountingSubAgent {
     async fn reply(
         &self,
-        _: crate::components::agent::Input,
-        _: crate::Cancellation,
-    ) -> Result<(), crate::Error> {
-        Err(crate::Error::new(
+        _: halo::agent::Input,
+        _: halo::agent::Cancellation,
+    ) -> Result<(), halo::agent::Error> {
+        Err(halo::agent::Error::new(
             "NOT_FOUND",
             "fixture has no live feedback consumer",
         ))
@@ -104,7 +104,7 @@ impl crate::components::agent::Agent for CountingSubAgent {
         let mut message = Message::new(Role::Assistant);
         message.content.push(Part {
             r#type: "text".into(),
-            data: part_data(json!({"value": "done child"})),
+            data: halo::agent::model::content::part::object(json!({"value": "done child"})),
         });
         Ok(futures_util::stream::iter(vec![Ok(Event::Complete {
             message,
@@ -130,12 +130,12 @@ fn builder_uses_the_frozen_defaults_and_maps_payload_parts() {
     let config = builder();
     assert_eq!(config.max_concurrency, 100);
 
-    let message = user_message(Input {
+    let message = halo::agent::agent_input::user_message(Input {
         metadata: Map::from_iter([
             (String::from("chat_id"), json!(101)),
             (String::from("language"), json!("zh")),
         ]),
-        payload: vec![crate::components::agent::Payload {
+        payload: vec![halo::agent::Payload {
             r#type: "text".into(),
             data: json!("hello"),
             mime_type: Some("text/plain".into()),
@@ -200,12 +200,12 @@ fn stream_item_errors_and_normal_completion_are_terminal_once() {
 
 #[test]
 fn cancelled_run_does_not_invoke_provider() {
-    let provider = crate::core::provider::vllm::Vllm::builder()
+    let provider = halo::agent::core::provider::vllm::Vllm::builder()
         .api_key("compile-only")
         .build()
         .expect("construct provider without sending a request");
     let chat = provider
-        .chat(crate::model::chat::Config::new("compile-only"))
+        .chat(halo::agent::model::chat::Config::new("compile-only"))
         .expect("construct real Provider Chat");
     let agent = builder().model(chat).build().expect("agent build");
     let cancellation = Cancellation::new();
@@ -449,7 +449,7 @@ fn context_limit_keeps_summary_and_newest_message() {
         let mut message = Message::new(role);
         message.content.push(Part {
             r#type: "text".into(),
-            data: part_data(json!({"value": value})),
+            data: halo::agent::model::content::part::object(json!({"value": value})),
         });
         message
     }
@@ -489,7 +489,7 @@ fn context_limit_reports_when_pinned_messages_do_not_fit() {
     let mut system = Message::new(Role::System);
     system.content.push(Part {
         r#type: "text".into(),
-        data: part_data(json!({"value": "a long system instruction"})),
+        data: halo::agent::model::content::part::object(json!({"value": "a long system instruction"})),
     });
     let request = Request {
         messages: Messages::new([system]),

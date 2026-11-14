@@ -6,7 +6,8 @@ use super::*;
 /// one event or native scene update, then waits for the parent to take it. No producer task, persisted
 /// queue, replay protocol or second public stream is created.
 #[derive(Clone, Default)]
-pub(crate) struct Relay(Arc<RelayState>);
+#[doc(hidden)]
+pub struct Relay(Arc<RelayState>);
 
 #[derive(Default)]
 struct RelayState {
@@ -51,7 +52,8 @@ impl Relay {
 /// release another backpressured handoff; arbitrary non-cooperating streams
 /// cannot keep the owner alive merely by emitting more text.
 #[inline(never)]
-pub(crate) fn cancel_ready<T>(
+#[doc(hidden)]
+pub fn cancel_ready<T>(
     cx: &mut Context<'_>,
     relay: &Relay,
     mut poll: impl FnMut(&mut Context<'_>) -> Poll<Option<T>>,
@@ -109,15 +111,17 @@ fn drain_ready<T>(
     Ok((completed, events))
 }
 
-pub(crate) struct Observer {
+#[doc(hidden)]
+pub struct Observer {
     pub(crate) relay: Relay,
     pub(crate) chat_id: Option<i64>,
     pub(crate) source: (String, i64),
-    pub(crate) interaction: Option<crate::runtime::agent::reply::Run>,
+    pub(crate) interaction: Option<crate::runtime::agent::reply::Handle>,
     pub(crate) suppress_terminal: bool,
 }
 
-pub(crate) struct Observation {
+#[doc(hidden)]
+pub struct Observation {
     pub event: Option<Event>,
     pub feedback: bool,
     pub source: (String, i64),
@@ -129,7 +133,7 @@ pub(crate) struct Observation {
 impl Observation {
     pub(crate) fn commit_feedback(
         &self,
-        owner: Option<&crate::runtime::agent::reply::Run>,
+        owner: Option<&crate::runtime::agent::reply::Handle>,
     ) -> Result<(), Error> {
         if let (Some(owner), Some(scene)) = (owner, &self.scene) {
             owner.commit_scene_feedback(scene)?;
@@ -163,7 +167,7 @@ impl Observation {
 impl Observer {
     pub(crate) fn with_interaction(
         mut self,
-        interaction: Option<crate::runtime::agent::reply::Run>,
+        interaction: Option<crate::runtime::agent::reply::Handle>,
     ) -> Self {
         self.interaction = interaction;
         self

@@ -7,6 +7,20 @@
 
 use super::*;
 
+mod checkpoint;
+mod tools;
+
+use checkpoint::{checkpoint_future, checkpoint_state, waiting_checkpoint_state};
+pub(crate) use checkpoint::{
+    checkpoint_identity_matches, checkpoint_messages, checkpoint_pending_subagents,
+    checkpoint_query, checkpoint_steps, is_waiting_snapshot,
+};
+use tools::decode_call;
+#[doc(hidden)]
+pub use tools::execute_subagent;
+#[doc(hidden)]
+pub use tools::execute_tool_batch;
+
 pub(crate) type CompletionFuture =
     Pin<Box<dyn Future<Output = Result<Event, Error>> + Send + 'static>>;
 pub(crate) type CheckpointFuture =
@@ -27,20 +41,21 @@ pub(crate) type EvaluationFuture =
     Pin<Box<dyn Future<Output = Result<Evaluation, Error>> + Send + 'static>>;
 pub(crate) type CheckpointSave = Backend;
 
-pub(crate) struct ToolBatchConfig {
-    pub(super) interaction: Option<crate::runtime::agent::reply::Run>,
-    pub(super) relay: Option<crate::runtime::agent::subagent::Relay>,
-    pub(super) steps: Arc<Mutex<Vec<Step>>>,
-    pub(super) dispatch: Arc<Dispatch>,
-    pub(super) subagents: Vec<SubAgent>,
-    pub(super) access: Access,
-    pub(super) hooks: Hooks,
-    pub(super) metadata: Map<String, Value>,
-    pub(super) cancellation: Cancellation,
-    pub(super) max_concurrency: usize,
-    pub(super) root: Root,
-    pub(super) id_fn: Option<fn() -> i64>,
-    pub(super) trace: TraceRoot,
+#[doc(hidden)]
+pub struct ToolBatchConfig {
+    pub interaction: Option<crate::runtime::agent::reply::Handle>,
+    pub relay: Option<crate::runtime::agent::subagent::Relay>,
+    pub steps: Arc<Mutex<Vec<Step>>>,
+    pub dispatch: Arc<Dispatch>,
+    pub subagents: Vec<SubAgent>,
+    pub access: Access,
+    pub hooks: Hooks,
+    pub metadata: Map<String, Value>,
+    pub cancellation: Cancellation,
+    pub max_concurrency: usize,
+    pub root: Root,
+    pub id_fn: Option<fn() -> i64>,
+    pub trace: TraceRoot,
 }
 
 // Private per-call dependencies; not a public Tool context or saved state.
@@ -51,14 +66,14 @@ struct ToolExecution {
     metadata: Map<String, Value>,
     cancellation: Cancellation,
     steps: Arc<Mutex<Vec<Step>>>,
-    interaction: Option<crate::runtime::agent::reply::Run>,
+    interaction: Option<crate::runtime::agent::reply::Handle>,
     id_fn: Option<fn() -> i64>,
     trace: TraceRoot,
 }
 
 pub(crate) struct EventsConfig<S> {
     pub(super) completion: Option<crate::runtime::agent::completion::State>,
-    pub(super) interaction: Option<crate::runtime::agent::reply::Run>,
+    pub(super) interaction: Option<crate::runtime::agent::reply::Handle>,
     pub(super) steps: Arc<Mutex<Vec<Step>>>,
     pub(super) provider_factory: ProviderFactory<S>,
     pub(super) dispatch: Option<Dispatch>,
@@ -84,9 +99,10 @@ pub(crate) struct PendingSubAgent {
 }
 
 #[derive(Debug)]
-pub(crate) struct ToolBatchFailure {
-    pub(super) error: Error,
-    pub(super) usage: Option<crate::model::token::Usage>,
+#[doc(hidden)]
+pub struct ToolBatchFailure {
+    pub error: Error,
+    pub usage: Option<crate::model::token::Usage>,
 }
 
 /// The concrete stream returned by this Chat Agent. Its items remain the
@@ -95,7 +111,7 @@ pub struct Events<S> {
     pub(super) completion: Arc<Mutex<Option<crate::runtime::agent::completion::State>>>,
     pub(super) preparation: Option<crate::runtime::agent::preparation::State>,
     pub(super) _interaction_owner: Option<crate::runtime::agent::reply::Owner>,
-    pub(super) interaction: Option<crate::runtime::agent::reply::Run>,
+    pub(super) interaction: Option<crate::runtime::agent::reply::Handle>,
     pub(super) waits: Vec<crate::runtime::agent::wait::Wait>,
     pub(super) questions: VecDeque<Event>,
     pub(super) stream: bool,
@@ -104,6 +120,7 @@ pub struct Events<S> {
     pub(super) provider: Option<Pin<Box<S>>>,
     pub(super) provider_factory: Option<ProviderFactory<S>>,
     pub(super) cancellation: Cancellation,
+    pub(super) cancellation_waiter: Option<crate::cancellation::Registration>,
     pub(super) partial: Message,
     pub(super) input_tokens: u64,
     pub(super) pending_input_tokens: Arc<AtomicU64>,
@@ -147,13 +164,8 @@ impl<S> std::fmt::Debug for Events<S> {
 }
 
 impl<S> Events<S> {
-    #[cfg(test)]
-    pub(super) fn new(
-        provider: S,
-        cancellation: Cancellation,
-        input_tokens: u64,
-        hooks: Hooks,
-    ) -> Self {
+    #[doc(hidden)]
+    pub fn new(provider: S, cancellation: Cancellation, input_tokens: u64, hooks: Hooks) -> Self {
         Self::new_with_trace(
             provider,
             cancellation,
@@ -198,6 +210,7 @@ impl<S> Events<S> {
             provider: None,
             provider_factory: None,
             cancellation,
+            cancellation_waiter: None,
             partial: Message::new(Role::Assistant),
             input_tokens: 0,
             pending_input_tokens: Arc::new(AtomicU64::new(0)),
@@ -237,7 +250,7 @@ impl<S> Events<S> {
         self._interaction_owner = config
             .interaction
             .as_ref()
-            .map(crate::runtime::agent::reply::Run::owner);
+            .map(crate::runtime::agent::reply::Handle::owner);
         self.interaction = config.interaction;
         self.steps = config.steps;
         self.provider_factory = Some(config.provider_factory);
@@ -632,7 +645,11 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
             return Poll::Ready(None);
         }
         if !this.closing {
-            this.cancellation.register(cx.waker());
+            if let Some(waiter) = &this.cancellation_waiter {
+                waiter.update(cx.waker());
+            } else {
+                this.cancellation_waiter = Some(this.cancellation.register(cx.waker()));
+            }
         }
         if this.cancellation.is_cancelled() && !this.closing {
             let events = match this.cancel_children(cx) {
@@ -776,7 +793,8 @@ impl<S: Stream<Item = Result<Event, Error>> + 'static> Events<S> {
                                     .expect("Tool steps lock poisoned")
                                     .iter()
                                     .any(|step| {
-                                        step.status == "running"
+                                        step.status
+                                            == crate::runtime::agent::node::status::step::Status::Running
                                             && !(step.kind == "agent" && run.children_blocked())
                                     })
                             {
@@ -1153,712 +1171,6 @@ pub(crate) async fn prepare_model(
     .await
 }
 
-pub(crate) async fn execute_tool_batch(
-    config: ToolBatchConfig,
-    calls: Vec<Call>,
-) -> Result<ToolBatch, Box<ToolBatchFailure>> {
-    let ToolBatchConfig {
-        interaction,
-        relay,
-        steps,
-        dispatch,
-        subagents,
-        access,
-        hooks,
-        metadata,
-        cancellation,
-        max_concurrency,
-        root,
-        id_fn,
-        trace,
-    } = config;
-    let task_count = calls.len().max(1);
-    let slots = Arc::new(tokio::sync::Semaphore::new(max_concurrency.max(1)));
-    let tasks = calls.into_iter().enumerate().map(|(index, call)| {
-        let slots = slots.clone();
-        let dispatch = Arc::clone(&dispatch);
-        let steps = steps.clone();
-        let interaction = interaction.clone();
-        let subagents = subagents.clone();
-        let access = access.clone();
-        let hooks = hooks.clone();
-        let metadata = metadata.clone();
-        let cancellation = cancellation.clone();
-        let root = root.clone();
-        let relay = relay.clone();
-        let trace = trace.clone();
-        async move {
-            let slot = crate::runtime::agent::reply::Slot::waiting(slots, Default::default());
-            if let Err(error) = slot.acquire(&cancellation).await {
-                return (
-                    index,
-                    call,
-                    Err(Box::new(ToolBatchFailure { error, usage: None })),
-                );
-            }
-            crate::runtime::agent::reply::feedback::with_slot(slot.clone(), async move {
-                let result = if call.name == "agent_spawn" && !subagents.is_empty() {
-                    if let Some(run) = &interaction
-                        && let Err(error) = run.continue_execution(&cancellation).await
-                    {
-                        return (
-                            index,
-                            call,
-                            Err(Box::new(ToolBatchFailure { error, usage: None })),
-                        );
-                    }
-                    if let Some(message) =
-                        root.message(&steps.lock().expect("Tool steps lock poisoned"), &call)
-                    {
-                        return (index, call, Ok((vec![message], None)));
-                    }
-                    let prepared = root.prepare(
-                        &mut steps.lock().expect("Tool steps lock poisoned"),
-                        &call,
-                        id_fn,
-                    );
-                    let restore = match prepared {
-                        Ok(restore) => restore,
-                        Err(error) => {
-                            return (
-                                index,
-                                call,
-                                Err(Box::new(ToolBatchFailure { error, usage: None })),
-                            );
-                        }
-                    };
-                    let observer = if let Some(relay) = relay {
-                        let source =
-                            root.source(&steps.lock().expect("Tool steps lock poisoned"), &call);
-                        match source {
-                            Ok(source) => {
-                                let child =
-                                    interaction.as_ref().map(|run| run.branch(slot.clone()));
-                                if let (Some(parent), Some(child)) = (&interaction, &child) {
-                                    parent.restore_consumer(&source, child);
-                                }
-                                Some(
-                                    relay
-                                        .observer(
-                                            metadata.get("chat_id").and_then(Value::as_i64),
-                                            source,
-                                        )
-                                        .with_interaction(child),
-                                )
-                            }
-                            Err(error) => {
-                                return (
-                                    index,
-                                    call,
-                                    Err(Box::new(ToolBatchFailure { error, usage: None })),
-                                );
-                            }
-                        }
-                    } else {
-                        None
-                    };
-                    let progress = execute_subagent(
-                        subagents,
-                        metadata,
-                        call.clone(),
-                        restore,
-                        cancellation,
-                        id_fn,
-                        observer,
-                    )
-                    .await;
-                    let message = match &progress {
-                        Ok(progress) => Some(progress.message.clone()),
-                        Err(failure)
-                            if matches!(failure.error.code.as_str(), "WAITING" | "CANCELLED") =>
-                        {
-                            None
-                        }
-                        Err(failure) => Some(subagent_error_message(&call, &failure.error)),
-                    };
-                    let completed = root.complete(
-                        &mut steps.lock().expect("Tool steps lock poisoned"),
-                        &call,
-                        &progress,
-                        message,
-                    );
-                    if let Err(error) = completed {
-                        return (
-                            index,
-                            call,
-                            Err(Box::new(ToolBatchFailure { error, usage: None })),
-                        );
-                    }
-                    match progress {
-                        Ok(progress) => Ok((vec![progress.message], progress.usage)),
-                        Err(failure) if failure.error.code == "CANCELLED" => {
-                            Err(Box::new(ToolBatchFailure {
-                                error: failure.error,
-                                usage: failure.usage,
-                            }))
-                        }
-                        Err(failure) if failure.error.code == "WAITING" => {
-                            Err(Box::new(ToolBatchFailure {
-                                error: failure.error,
-                                usage: failure.usage,
-                            }))
-                        }
-                        Err(failure) => Ok((
-                            vec![subagent_error_message(&call, &failure.error)],
-                            failure.usage,
-                        )),
-                    }
-                } else {
-                    execute_tool(
-                        ToolExecution {
-                            dispatch,
-                            access,
-                            hooks,
-                            metadata,
-                            cancellation,
-                            steps,
-                            interaction,
-                            id_fn,
-                            trace,
-                        },
-                        call.clone(),
-                    )
-                    .await
-                    .map(|messages| (messages, None))
-                    .map_err(|error| Box::new(ToolBatchFailure { error, usage: None }))
-                };
-                (index, call, result)
-            })
-            .await
-        }
-    });
-    let mut results = futures_util::stream::iter(tasks)
-        .buffer_unordered(task_count)
-        .collect::<Vec<_>>()
-        .await
-        .into_iter()
-        .collect::<Vec<_>>();
-    results.sort_by_key(|(index, _, _)| *index);
-    let mut failures = Vec::new();
-    let mut messages = Vec::new();
-    let mut usage = None;
-    for (index, _call, result) in results {
-        match result {
-            Ok((batch, child_usage)) => {
-                usage = crate::model::token::merge(usage, child_usage);
-                messages.extend(batch);
-            }
-            Err(mut failure) => {
-                usage = crate::model::token::merge(usage, failure.usage.take());
-                failures.push((index, failure));
-            }
-        }
-    }
-    if let Some((_, failure)) = failures.into_iter().min_by_key(|(index, _)| *index) {
-        return Err(Box::new(ToolBatchFailure {
-            error: failure.error,
-            usage,
-        }));
-    }
-    Ok((messages, usage))
-}
-
-pub(crate) async fn execute_subagent(
-    subagents: Vec<SubAgent>,
-    parent: Map<String, Value>,
-    call: Call,
-    restore: Option<Value>,
-    cancellation: Cancellation,
-    id_fn: Option<fn() -> i64>,
-    observer: Option<crate::runtime::agent::subagent::Observer>,
-) -> Result<SubAgentProgress, Box<SubAgentFailure>> {
-    let name = call
-        .arguments
-        .get("name")
-        .and_then(Value::as_str)
-        .filter(|name| !name.trim().is_empty())
-        .ok_or_else(|| {
-            SubAgentFailure::new(Error::new(
-                "INVALID_ARGUMENTS",
-                "agent_spawn name is missing",
-            ))
-        })?;
-    let input = call.arguments.get("input").cloned().ok_or_else(|| {
-        SubAgentFailure::new(Error::new(
-            "INVALID_ARGUMENTS",
-            "agent_spawn input is missing",
-        ))
-    })?;
-    let mut input: Input = serde_json::from_value(input).map_err(|_| {
-        SubAgentFailure::new(Error::new(
-            "INVALID_ARGUMENTS",
-            "agent_spawn input must be agent::Input",
-        ))
-    })?;
-    crate::runtime::agent::subagent::inherit_identity(&mut input, &parent)
-        .map_err(SubAgentFailure::new)?;
-    let depth = parent.get("depth").and_then(Value::as_u64).unwrap_or(1);
-    if depth >= 2 {
-        return Err(SubAgentFailure::new(Error::new(
-            "INVALID_ARGUMENTS",
-            "SubAgent depth limit is 2",
-        )));
-    }
-    input
-        .metadata
-        .insert("depth".into(), Value::from(depth + 1));
-    let subagent = subagents
-        .iter()
-        .find(|subagent| subagent.has_name(name))
-        .ok_or_else(|| {
-            SubAgentFailure::new(Error::new(
-                "NOT_FOUND",
-                "agent_spawn target is not registered",
-            ))
-        })?;
-    crate::runtime::agent::subagent::run(
-        subagent,
-        input,
-        &call,
-        restore,
-        cancellation,
-        id_fn,
-        observer,
-    )
-    .await
-}
-
-fn subagent_error_message(call: &Call, error: &Error) -> Message {
-    let error_value = json!({
-        "code": error.code,
-        "message": error.message,
-        "details": error.details,
-    });
-    Message {
-        role: Role::Tool,
-        content: vec![Part {
-            r#type: "text".into(),
-            data: part_data(json!({"value": error_value.to_string()})),
-        }],
-        values: Map::from_iter([
-            (String::from("error"), error_value),
-            (String::from("call_id"), Value::String(call.call_id.clone())),
-            (String::from("name"), Value::String(call.name.clone())),
-        ]),
-        metadata: Map::new(),
-        usage: None,
-    }
-}
-
-fn checkpoint_state(
-    messages: &Messages,
-    usage: Option<crate::model::token::Usage>,
-    scene: (
-        Option<&Input>,
-        Option<&crate::runtime::agent::preparation::State>,
-        Option<&crate::runtime::agent::completion::State>,
-    ),
-    result: &Result<Event, Error>,
-    root: &Root,
-    steps: &[Step],
-    stream: bool,
-) -> Value {
-    let (input, preparation, completion) = scene;
-    let status = match result {
-        Ok(Event::Complete {
-            finish_reason: Some(reason),
-            ..
-        }) if reason == "cancelled" => "stopped",
-        Ok(Event::Complete { .. }) => "succeeded",
-        Err(error) if error.code == "CANCELLED" => "stopped",
-        Err(error) if error.code == "WAITING" => "waiting",
-        Err(_) => "failed",
-        Ok(Event::Delta { .. }) => "running",
-    };
-    let mut state = json!({
-        "chat_id": input.and_then(|input| input.metadata.get("chat_id")).and_then(Value::as_i64),
-        "type": "agent",
-        "status": status,
-        "stream": stream,
-        "messages": messages,
-        "usage": usage,
-        "query": input,
-        "metadata": input.map(|input| input.metadata.clone()),
-        "execution": root.snapshot(status, usage.clone(), result.as_ref().err().cloned()),
-        "steps": steps,
-        "waits": [],
-    });
-    if let Some(preparation) = preparation {
-        state["preparation"] =
-            serde_json::to_value(preparation).expect("preparation serialization");
-    }
-    crate::runtime::agent::checkpoint::record_result(&mut state, result);
-    if let Some(completion) = completion {
-        state["completion"] = serde_json::to_value(completion).expect("completion serialization");
-    }
-    state
-}
-
-fn waiting_checkpoint_state(
-    messages: &Messages,
-    usage: Option<crate::model::token::Usage>,
-    scene: (
-        Option<&Input>,
-        Option<&crate::runtime::agent::preparation::State>,
-        Option<&crate::runtime::agent::completion::State>,
-    ),
-    root: &Root,
-    steps: &[Step],
-    stream: bool,
-) -> Value {
-    let mut state = checkpoint_state(
-        messages,
-        usage.clone(),
-        scene,
-        &Ok(Event::Delta {
-            message: Message::new(Role::Assistant),
-        }),
-        root,
-        steps,
-        stream,
-    );
-    state["status"] = Value::String("waiting".into());
-    state["execution"] = serde_json::to_value(root.snapshot("waiting", usage, None))
-        .expect("serializable root execution");
-    state
-}
-
-fn checkpoint_future(
-    checkpoint: Option<CheckpointSave>,
-    checkpoint_id: Option<i64>,
-    state: Value,
-) -> CheckpointFuture {
-    Box::pin(async move {
-        if crate::runtime::agent::scope::capture(state.clone()) {
-            Ok(())
-        } else if let (Some(checkpoint), Some(id)) = (checkpoint, checkpoint_id) {
-            checkpoint.save(id, state, Cancellation::new()).await
-        } else {
-            Ok(())
-        }
-    })
-}
-
-pub(crate) fn checkpoint_pending_subagents(
-    snapshot: &Value,
-) -> Result<std::collections::BTreeMap<String, PendingSubAgent>, Error> {
-    let root = Root::restore(snapshot)?;
-    let mut messages = checkpoint_messages(snapshot)?;
-    let steps = checkpoint_steps(snapshot)?;
-    Ok(root
-        .resume_calls(&steps, &mut messages)?
-        .into_iter()
-        .map(|(index, call)| (call.call_id.clone(), PendingSubAgent { index, call }))
-        .collect())
-}
-
-pub(crate) fn checkpoint_messages(snapshot: &Value) -> Result<Messages, Error> {
-    serde_json::from_value(snapshot["messages"].clone())
-        .map_err(|_| Error::new("INVALID_STATE", "checkpoint has invalid Agent messages"))
-}
-
-pub(crate) fn checkpoint_steps(snapshot: &Value) -> Result<Vec<Step>, Error> {
-    snapshot
-        .get("steps")
-        .cloned()
-        .map(serde_json::from_value)
-        .transpose()
-        .map_err(|_| Error::new("INVALID_STATE", "checkpoint has invalid Tool steps"))
-        .map(|steps| steps.unwrap_or_default())
-}
-
-pub(crate) fn checkpoint_query(snapshot: &Value) -> Result<Input, Error> {
-    serde_json::from_value(snapshot["query"].clone()).map_err(|_| {
-        Error::new(
-            "INVALID_STATE",
-            "checkpoint has invalid original Agent input",
-        )
-    })
-}
-
-pub(crate) fn is_waiting_snapshot(snapshot: &Value) -> bool {
-    matches!(
-        snapshot.get("status").and_then(Value::as_str),
-        Some("running" | "waiting" | "paused")
-    )
-}
-
-pub(crate) fn checkpoint_identity_matches(snapshot: &Value, metadata: &Map<String, Value>) -> bool {
-    crate::runtime::agent::checkpoint::identity_matches(snapshot, metadata)
-}
-
-async fn execute_tool(execution: ToolExecution, call: Call) -> Result<Vec<Message>, Error> {
-    let ToolExecution {
-        dispatch,
-        access,
-        hooks,
-        metadata,
-        cancellation,
-        steps,
-        interaction,
-        id_fn,
-        trace,
-    } = execution;
-    let tool_span = trace.child("agent.tool");
-    tool_span.property("tool", call.name.clone());
-    tool_span.property_json("tool.call", &call);
-    if cancellation.is_cancelled() {
-        return Err(Error::new("CANCELLED", "tool call cancelled"));
-    }
-    let saved = {
-        let mut steps = steps.lock().expect("Tool steps lock poisoned");
-        if step::current(&mut steps, &call.call_id).is_none() {
-            step::new_step(&mut steps, &call);
-        }
-        step::current(&mut steps, &call.call_id)
-            .expect("selected Tool step")
-            .clone()
-    };
-    if saved.stage.as_deref() == Some("complete") {
-        return step_messages(&call, &saved);
-    }
-    let mut control_failed = false;
-    let result = async {
-        let effective = Box::pin(crate::runtime::agent::lifecycle::tool_prepare(
-            &dispatch,
-            &access,
-            &hooks,
-            &metadata,
-            interaction.as_ref(),
-            id_fn,
-            &saved,
-            &call,
-            |effective| {
-                let steps = &steps;
-                let interaction = &interaction;
-                let cancellation = &cancellation;
-                async move {
-                    retain_tool_stage(steps, interaction.as_ref(), &effective, None, cancellation)
-                        .await
-                }
-            },
-            |permission| {
-                let steps = &steps;
-                let interaction = &interaction;
-                let cancellation = &cancellation;
-                async move {
-                    let call = permission.call()?;
-                    if let Some(run) = interaction {
-                        run.permission_stage(call, permission, cancellation).await
-                    } else {
-                        let mut steps = steps.lock().expect("Tool steps lock");
-                        let owner = step::current(&mut steps, &call.call_id).ok_or_else(|| {
-                            Error::new("INVALID_STATE", "permission owner missing")
-                        })?;
-                        owner.permission = Some(Box::new(permission));
-                        Ok(())
-                    }
-                }
-            },
-            &cancellation,
-        ))
-        .await
-        .map_err(|failure| match failure {
-            crate::runtime::agent::lifecycle::Failure::Policy(error, _)
-            | crate::runtime::agent::lifecycle::Failure::Tool(error) => error,
-            crate::runtime::agent::lifecycle::Failure::Hook(error) => {
-                control_failed = true;
-                error
-            }
-        })?;
-        if matches!(saved.stage.as_deref(), Some("before" | "call"))
-            && let Some(run) = &interaction
-        {
-            run.continue_execution(&cancellation)
-                .await
-                .inspect_err(|_| {
-                    control_failed = true;
-                })?;
-        }
-        crate::runtime::agent::lifecycle::tool_call(
-            &dispatch,
-            &saved,
-            effective,
-            interaction.clone(),
-            id_fn,
-            |effective, business| {
-                let steps = &steps;
-                let interaction = &interaction;
-                let cancellation = &cancellation;
-                async move {
-                    retain_tool_stage(
-                        steps,
-                        interaction.as_ref(),
-                        &effective,
-                        Some(&business),
-                        cancellation,
-                    )
-                    .await
-                }
-            },
-            &cancellation,
-        )
-        .await
-    }
-    .await;
-    let (effective_call, business) = match result {
-        Ok(result) => result,
-        Err(error) => {
-            tool_span.property_json("tool.error", &error);
-            let mut steps = steps.lock().expect("Tool steps lock poisoned");
-            step::stopped(&mut steps, &call.call_id, &error);
-            if control_failed || matches!(error.code.as_str(), "CANCELLED" | "WAITING") {
-                return Err(error);
-            }
-            let message = tool_error_message(&call, error);
-            step::failed_message(&mut steps, &call.call_id, &message);
-            return Ok(vec![message]);
-        }
-    };
-    tool_span.property_json("tool.result", &business);
-    step::called(
-        &mut steps.lock().expect("Tool steps lock poisoned"),
-        &effective_call,
-        &business,
-    );
-    let evaluation = match dispatch
-        .evaluate(&effective_call, &business, &cancellation)
-        .await
-    {
-        Ok(evaluation) => evaluation,
-        Err(error) => {
-            step::stopped(
-                &mut steps.lock().expect("Tool steps lock poisoned"),
-                &call.call_id,
-                &error,
-            );
-            return Err(error);
-        }
-    };
-    let mut steps = steps.lock().expect("Tool steps lock poisoned");
-    step::evaluated(&mut steps, &call.call_id, &evaluation);
-    step_messages(
-        &call,
-        step::current(&mut steps, &call.call_id).expect("completed Tool step"),
-    )
-}
-
-async fn retain_tool_stage(
-    steps: &Arc<Mutex<Vec<Step>>>,
-    interaction: Option<&crate::runtime::agent::reply::Run>,
-    call: &Call,
-    message: Option<&Message>,
-    cancellation: &Cancellation,
-) -> Result<(), Error> {
-    if let Some(run) = interaction {
-        run.tool_stage(call.clone(), message.cloned(), cancellation)
-            .await
-    } else {
-        let mut steps = steps.lock().expect("Tool steps lock poisoned");
-        if let Some(message) = message {
-            step::returned(&mut steps, call, message);
-        } else {
-            step::prepared(&mut steps, call);
-        }
-        Ok(())
-    }
-}
-
-fn step_messages(call: &Call, step: &Step) -> Result<Vec<Message>, Error> {
-    if step.status == "failed" {
-        let error = step
-            .error
-            .clone()
-            .ok_or_else(|| Error::new("INVALID_STATE", "failed Tool step has no error"))?;
-        return Ok(vec![tool_error_message(call, error)]);
-    }
-    let business = step
-        .message
-        .clone()
-        .ok_or_else(|| Error::new("INVALID_STATE", "Tool step lost its business result"))?;
-    let mut messages = vec![tool_success_message(call, business)];
-    if let Some(evaluation) = &step.eval
-        && !evaluation.passed
-        && let Some(feedback) = &evaluation.feedback
-    {
-        messages.extend(feedback.0.iter().cloned());
-    }
-    Ok(messages)
-}
-
-fn decode_call(part: &Part) -> Result<Call, Error> {
-    let call_id = part
-        .data
-        .get("call_id")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "tool call_id is missing"))?;
-    let name = part
-        .data
-        .get("name")
-        .and_then(Value::as_str)
-        .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "tool name is missing"))?;
-    let arguments = match part.data.get("arguments") {
-        Some(Value::Object(arguments)) => arguments.clone(),
-        Some(Value::String(raw)) => serde_json::from_str(raw).map_err(|error| {
-            Error::new("INVALID_ARGUMENTS", "tool arguments are not a JSON object")
-                .with_details(format!("raw_arguments={raw}; {error}"))
-        })?,
-        Some(_) => {
-            return Err(Error::new(
-                "INVALID_ARGUMENTS",
-                "tool arguments must be a JSON object",
-            ));
-        }
-        None => Map::new(),
-    };
-    Ok(Call {
-        call_id: call_id.to_owned(),
-        name: name.to_owned(),
-        arguments,
-    })
-}
-
-fn tool_success_message(call: &Call, mut message: Message) -> Message {
-    crate::runtime::observation::clear_source(&mut message);
-    message
-        .metadata
-        .insert("call_id".into(), Value::String(call.call_id.clone()));
-    message
-        .metadata
-        .insert("name".into(), Value::String(call.name.clone()));
-    message
-}
-
-fn tool_error_message(call: &Call, error: Error) -> Message {
-    let error_value = json!({
-        "code": error.code,
-        "message": error.message,
-        "details": error.details,
-    });
-    let value = serde_json::to_string(&error_value).unwrap_or_else(|_| error_value.to_string());
-    Message {
-        role: Role::Tool,
-        content: vec![Part {
-            r#type: "text".into(),
-            data: part_data(json!({"value": value})),
-        }],
-        values: Map::from_iter([
-            ("error".into(), error_value),
-            ("call_id".into(), Value::String(call.call_id.clone())),
-            ("name".into(), Value::String(call.name.clone())),
-        ]),
-        metadata: Map::new(),
-        usage: None,
-    }
-}
-
 pub(crate) fn checkpoint_id(metadata: &Map<String, Value>) -> Result<i64, Error> {
     let id = metadata
         .get("chat_id")
@@ -1868,7 +1180,8 @@ pub(crate) fn checkpoint_id(metadata: &Map<String, Value>) -> Result<i64, Error>
     Ok(id)
 }
 
-pub(crate) fn initial_messages(
+#[doc(hidden)]
+pub fn initial_messages(
     input: Input,
     system_prompt: Option<&str>,
     history: Vec<Message>,
