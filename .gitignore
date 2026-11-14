@@ -12,6 +12,14 @@
 !/tests/
 !/tests/**
 
+# 设计资料只在本地维护，严禁进入 Git 提交；公开仓库只保留使用手册。
+/design/
+/DOCUMENTS.md
+/IMPLEMENTATION_STATUS.md
+/issue.md
+/docs/DOCUMENT.en.md
+/docs/DOCUMENT.zh-CN.md
+
 # 构建产物、编辑器和系统生成文件不属于源码或测试夹具。
 **/target/
 **/.DS_Store

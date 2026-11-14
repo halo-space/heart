@@ -126,7 +126,7 @@ pub(crate) fn identity_matches(state: &Value, metadata: &Map<String, Value>) -> 
 /// without invoking a model, Tool, hooks, Memory writeback or an evaluator.
 pub(crate) fn terminal(state: &Value) -> Result<Option<Result<Event, Error>>, Error> {
     match state["status"].as_str() {
-        Some("succeeded" | "stopped") => {
+        Some("succeeded" | "cancelled") => {
             let message = serde_json::from_value(state["final_message"].clone())
                 .map_err(|_| invalid("terminal checkpoint has no valid final message"))?;
             let usage = serde_json::from_value(state["final_usage"].clone())

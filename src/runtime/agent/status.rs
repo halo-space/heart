@@ -9,6 +9,5 @@ pub enum Status {
     Waiting,
     Succeeded,
     Failed,
-    Stopped,
-    Paused,
+    Cancelled,
 }

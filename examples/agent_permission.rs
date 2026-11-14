@@ -1,72 +1,67 @@
-//! Deterministic local model/tool example; no network, credentials or
-//! externally-created Runtime is required.
-use std::sync::{
-    LazyLock,
-    atomic::{AtomicUsize, Ordering},
-};
-
-use futures_util::{StreamExt, stream};
-use halo::agent::{Cancellation, Error, Message};
-use halo::{
-    agent::core,
-    agent::event::Event,
-    agent::message::Role,
-    agent::model::{
-        chat::{Chat, Request},
-        content::part::Part,
-    },
-    agent::permission::{Behavior, Decision, Request as PermissionRequest},
-    agent::tool::{Call, Tool, ToolDefinition},
-    agent::{self, Agent, Input},
-};
+//! Real DeepSeek Agent + Tool + Permission example.
+//!
+//! The model, tool selection and permission path are live. Provider settings
+//! are loaded from the ignored `.env` file.
+use futures_util::StreamExt;
+use halo::agent::model::chat;
+use halo::agent::permission::{Behavior, Decision, Request as PermissionRequest};
+use halo::agent::provider::deepseek::DeepSeek;
+use halo::agent::tool::{Call, Tool, ToolDefinition};
+use halo::agent::{self, Agent, Cancellation, Error, Input, Message, Payload};
 use serde_json::json;
+use std::sync::LazyLock;
 
 struct Lookup;
+
 impl Tool for Lookup {
     fn definition(&self) -> &ToolDefinition {
         static DEFINITION: LazyLock<ToolDefinition> = LazyLock::new(|| ToolDefinition {
-            name: "lookup".into(),
-            description: "example lookup".into(),
-            parameters: serde_json::from_value(json!({"type":"object","properties":{}})).unwrap(),
+            name: "lookup_weather".into(),
+            description: "查询指定城市的天气。".into(),
+            parameters: serde_json::from_value(json!({
+                "type":"object",
+                "properties":{"city":{"type":"string"}},
+                "required":["city"],
+                "additionalProperties":false
+            }))
+            .expect("static tool schema is valid"),
         });
         &DEFINITION
     }
-    async fn call(&self, _: &Call, _: &Cancellation) -> Result<Message, Error> {
-        Ok(Message::function(json!({"temperature":22})))
-    }
-}
 
-struct Model(AtomicUsize);
-impl Chat for Model {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-    async fn stream(&self, _: Request) -> Result<Self::Stream, Error> {
-        let mut message = Message::new(Role::Assistant);
-        if self.0.fetch_add(1, Ordering::SeqCst) == 0 {
-            message.content.push(Part {
-                r#type: "tool_call".into(),
-                data: json!({"call_id":"c1","name":"lookup","arguments":{}})
-                    .as_object()
-                    .unwrap()
-                    .clone(),
-            });
-        } else {
-            message
-                .values
-                .insert("answer".into(), json!("lookup completed"));
-        }
-        Ok(stream::iter(vec![Ok(Event::Complete {
-            message,
-            usage: None,
-            finish_reason: Some("stop".into()),
-        })]))
+    async fn call(&self, call: &Call, _: &Cancellation) -> Result<Message, Error> {
+        let city = call
+            .arguments
+            .get("city")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("北京");
+        Ok(Message::function(json!({
+            "city": city,
+            "weather": "晴朗",
+            "temperature_c": 22
+        })))
     }
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let policy = core::permission::Permission::new(
+    dotenvy::dotenv().ok();
+    let provider =
+        DeepSeek::builder()
+            .base_url(
+                std::env::var("DEEPSEEK_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.deepseek.com".into()),
+            )
+            .api_key(std::env::var("DEEPSEEK_API_KEY").map_err(|_| {
+                Error::new("AUTHENTICATION", "DEEPSEEK_API_KEY is required in .env")
+            })?)
+            .build()?;
+    let chat = provider.chat(chat::Config::new(
+        std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-flash".into()),
+    ))?;
+    let policy = halo::agent::core::permission::Permission::new(
         |request: PermissionRequest, _: Cancellation| async move {
-            if request.action == "call" && request.resource == "lookup" {
+            if request.action == "call" && request.resource == "lookup_weather" {
                 Ok(Decision {
                     behavior: Behavior::Allow,
                     reason: None,
@@ -80,44 +75,22 @@ async fn main() -> Result<(), Error> {
         },
     );
     let agent = agent::react()
-        .model(Model(AtomicUsize::new(0)))
+        .model(chat)
+        .system_prompt("需要天气信息时必须调用 lookup_weather 工具，然后根据工具结果回答。")
         .tools(Lookup)
         .permission(policy)
         .build()?;
-    let mut events = agent
-        .run(Input::default(), true, Cancellation::new())
-        .await?;
+    let input = Input {
+        payload: vec![Payload {
+            r#type: "text".into(),
+            data: json!({"value":"北京今天天气怎么样？"}),
+            mime_type: None,
+        }],
+        ..Default::default()
+    };
+    let mut events = agent.run(input, true, Cancellation::new()).await?;
     while let Some(event) = events.next().await {
-        match event? {
-            Event::Delta { message } => {
-                let parts = message
-                    .content
-                    .iter()
-                    .map(|part| part.r#type.as_str())
-                    .collect::<Vec<_>>();
-                println!("delta role={:?} parts={parts:?}", message.role);
-            }
-            Event::Complete {
-                message,
-                finish_reason,
-                ..
-            } => {
-                let parts = message
-                    .content
-                    .iter()
-                    .map(|part| part.r#type.as_str())
-                    .collect::<Vec<_>>();
-                let tools = message
-                    .content
-                    .iter()
-                    .filter_map(|part| part.data.get("name").and_then(|value| value.as_str()))
-                    .collect::<Vec<_>>();
-                println!(
-                    "complete role={:?} parts={parts:?} tools={tools:?} values={:?} finish={finish_reason:?}",
-                    message.role, message.values
-                );
-            }
-        }
+        println!("{:?}", event?);
     }
     Ok(())
 }

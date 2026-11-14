@@ -76,8 +76,7 @@ pub struct Runtime {
 }
 
 #[derive(Clone)]
-#[doc(hidden)]
-pub struct RecoveryReply {
+pub(crate) struct RecoveryReply {
     pub response: Messages,
     pub input: Input,
     pub path: Vec<graph::ReplyExecution>,
@@ -359,9 +358,12 @@ impl Runtime {
     }
 }
 
-#[doc(hidden)]
-pub mod execution;
+pub(crate) mod execution;
 use execution::Engine;
-#[doc(hidden)]
-pub use execution::{Outcome, Target, invoke_with_retry};
+#[cfg(test)]
+pub(crate) use execution::{Outcome, Target, invoke_with_retry};
 pub(super) use execution::{attempt_question, messages_to_agent_input};
+
+#[cfg(test)]
+#[path = "../../tests/unit/embedded/src_runtime_workflow_runtime_tests.rs"]
+mod tests;

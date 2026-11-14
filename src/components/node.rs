@@ -9,6 +9,23 @@ use crate::Cancellation;
 pub(crate) mod input;
 pub(crate) mod schema;
 
+/// Public status projection shared by Node and Agent views.
+///
+/// Runtime-specific state machines stay private to their owning Runtime; this
+/// enum is only the stable local status vocabulary visible to a component.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Status {
+    #[default]
+    Pending,
+    Ready,
+    Running,
+    Waiting,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Wait {
     pub wait_id: String,
@@ -33,7 +50,7 @@ pub struct View {
     pub node_id: String,
     pub exec_id: Option<i64>,
     pub attempt_idx: Option<u32>,
-    pub status: String,
+    pub status: Status,
     pub input: Value,
     #[serde(default)]
     pub sources: BTreeMap<String, Value>,
@@ -53,7 +70,7 @@ impl View {
     pub fn agent(node_id: impl Into<String>, input: Value, state: Option<Value>) -> Self {
         let mut view = Self {
             node_id: node_id.into(),
-            status: "running".into(),
+            status: Status::Running,
             input,
             ..Self::default()
         };
@@ -93,9 +110,9 @@ impl View {
                 .unwrap_or_default();
             view.status = state
                 .get("status")
-                .and_then(Value::as_str)
-                .unwrap_or("running")
-                .into();
+                .cloned()
+                .and_then(|value| serde_json::from_value(value).ok())
+                .unwrap_or(Status::Running);
         }
         view
     }

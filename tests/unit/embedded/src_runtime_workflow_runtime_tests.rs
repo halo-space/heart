@@ -16,5 +16,5 @@ use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 mod unit {
     use super::*;
-    include!("unit/workflow_runtime.rs");
+    include!("../workflow_runtime.rs");
 }

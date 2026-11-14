@@ -226,23 +226,23 @@ impl From<Docker> for Dispatch {
 }
 
 impl Docker {
-    /// Internal Tool catalog used to implement the Workspace contract.
-    pub(super) fn tool_catalog(&self) -> Vec<crate::tool::ToolDefinition> {
-        Dispatch::from(self.clone()).tool_catalog()
+    /// Internal Tool list used to implement the Workspace contract.
+    pub(super) fn tool_list(&self) -> Vec<crate::tool::ToolDefinition> {
+        Dispatch::from(self.clone()).tool_list()
     }
 
-    pub(super) fn mcp_catalog(&self) -> Vec<crate::mcp::Definition> {
-        Dispatch::from(self.clone()).mcp_catalog()
+    pub(super) fn mcp_list(&self) -> Vec<crate::mcp::Definition> {
+        Dispatch::from(self.clone()).mcp_list()
     }
 
-    async fn skill_catalog(
+    async fn skill_list(
         &self,
         cancellation: &Cancellation,
     ) -> Result<Vec<crate::skill::Definition>, Error> {
         Ok(Dispatch::from(self.clone())
             .with_discovered_skills(cancellation)
             .await?
-            .skill_catalog())
+            .skill_list())
     }
 
     /// Execute one configured or built-in Workspace Tool.
@@ -263,15 +263,15 @@ impl crate::workspace::Workspace for Docker {
     }
 
     fn tool(&self) -> Vec<crate::tool::ToolDefinition> {
-        self.tool_catalog()
+        self.tool_list()
     }
 
     fn mcp(&self) -> Vec<crate::mcp::Definition> {
-        self.mcp_catalog()
+        self.mcp_list()
     }
 
     fn skill<'a>(&'a self, cancellation: &'a Cancellation) -> crate::workspace::SkillFuture<'a> {
-        Box::pin(async move { self.skill_catalog(cancellation).await })
+        Box::pin(async move { self.skill_list(cancellation).await })
     }
 
     fn execute<'a>(

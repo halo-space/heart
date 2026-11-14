@@ -136,13 +136,9 @@ impl Dispatch {
         .await
     }
 
-    /// Whether the local/prepared Tool view is empty.
-    pub fn is_empty(&self) -> bool {
-        self.tools.is_empty()
-    }
-
     /// Count currently prepared Tools, including the shared Skill reader.
-    pub fn len(&self) -> usize {
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
         self.tools.len()
     }
 }

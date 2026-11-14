@@ -108,7 +108,10 @@ impl Agent for InspectAgent {
             ("node_id".into(), view.node_id.clone().into()),
             ("exec_id".into(), view.exec_id.into()),
             ("attempt_idx".into(), view.attempt_idx.into()),
-            ("status".into(), view.status.clone().into()),
+            (
+                "status".into(),
+                serde_json::to_value(view.status).expect("view status serializes"),
+            ),
         ]);
         async move {
             Ok(stream::iter(vec![Ok(halo::agent::event::Event::Complete {
@@ -214,8 +217,8 @@ impl Agent for WaitingAgent {
         _stream: bool,
         _cancellation: Cancellation,
     ) -> Result<Self::Stream, Error> {
-        if halo::agent::scope::restore().is_none() {
-            halo::agent::scope::capture(serde_json::json!({
+        if crate::runtime::agent::scope::restore().is_none() {
+            crate::runtime::agent::scope::capture(serde_json::json!({
                 "type": "agent",
                 "status": "waiting",
                 "wait_id": "approval"
@@ -256,7 +259,7 @@ impl Agent for RestoringAgent {
         _stream: bool,
         _cancellation: Cancellation,
     ) -> Result<Self::Stream, Error> {
-        let value = if halo::agent::scope::restore().is_some() {
+        let value = if crate::runtime::agent::scope::restore().is_some() {
             "restored_scene"
         } else {
             "fresh"

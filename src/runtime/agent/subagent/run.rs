@@ -60,7 +60,7 @@ fn additional_usage(
         && previous.is_some_and(|previous| {
             matches!(
                 previous["status"].as_str(),
-                Some("succeeded" | "failed" | "stopped")
+                Some("succeeded" | "failed" | "cancelled")
             )
         })
     {
@@ -256,7 +256,7 @@ pub(crate) async fn run(
                     };
                     let message = if changed
                         && scene.as_ref().is_some_and(|scene| {
-                            matches!(scene["status"].as_str(), Some("succeeded" | "stopped"))
+                            matches!(scene["status"].as_str(), Some("succeeded" | "cancelled"))
                         }) {
                         final_message
                             .clone()

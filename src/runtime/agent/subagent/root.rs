@@ -199,7 +199,7 @@ impl Root {
         let status = match status {
             crate::runtime::agent::status::Status::Succeeded => Status::Succeeded,
             crate::runtime::agent::status::Status::Failed => Status::Failed,
-            crate::runtime::agent::status::Status::Stopped => Status::Cancelled,
+            crate::runtime::agent::status::Status::Cancelled => Status::Cancelled,
             crate::runtime::agent::status::Status::Waiting => Status::Waiting,
             _ => Status::Running,
         };
@@ -380,7 +380,7 @@ pub(crate) fn complete(
             if progress
                 .scene
                 .as_ref()
-                .is_some_and(|scene| scene["status"] == "stopped")
+                .is_some_and(|scene| scene["status"] == "cancelled")
                 || progress.cancelled
             {
                 Status::Cancelled
@@ -650,7 +650,7 @@ pub(crate) fn observe(
             "running" => Some(Status::Running),
             "succeeded" => Some(Status::Succeeded),
             "failed" => Some(Status::Failed),
-            "stopped" => Some(Status::Cancelled),
+            "cancelled" => Some(Status::Cancelled),
             "waiting" => Some(Status::Waiting),
             _ => None,
         })

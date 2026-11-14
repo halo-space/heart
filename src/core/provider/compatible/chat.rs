@@ -294,7 +294,13 @@ pub(super) fn encode_message(kind: Kind, message: &Message) -> Result<Value, Err
     for part in &message.content {
         match part.r#type.as_str() {
             "text" => content.push(json!({"type": "text", "text": part_value(part)?})),
-            "think" if kind == Kind::DeepSeek && message.role == Role::Assistant => {
+            // OpenAI-compatible deployments may return DeepSeek-style
+            // reasoning content even when the compatible adapter is selected.
+            // Keep the shared `think` history usable for both adapters.
+            "think"
+                if matches!(kind, Kind::DeepSeek | Kind::Vllm)
+                    && message.role == Role::Assistant =>
+            {
                 think.push_str(part_value(part)?)
             }
             "refusal" if message.role == Role::Assistant => refusal.push_str(part_value(part)?),

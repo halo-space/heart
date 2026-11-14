@@ -5,30 +5,25 @@
 //! state, waiting and recovery; applications do not construct a separate
 //! Runtime to call an Agent.
 
-#[doc(hidden)]
-pub mod access;
+pub(crate) mod access;
 pub mod chat;
 pub(crate) mod history;
-#[doc(hidden)]
-pub mod hooks;
-#[doc(hidden)]
-pub mod lifecycle;
+pub(crate) mod hooks;
+pub(crate) mod lifecycle;
 pub mod memory;
 pub mod react;
-pub mod subagent;
+pub(crate) mod subagent;
 pub mod team;
 
 pub(crate) mod checkpoint;
 pub mod completion;
 pub mod graph;
-#[doc(hidden)]
-pub mod model_steps;
+pub(crate) mod model_steps;
 pub mod node;
 pub mod permission;
 pub mod preparation;
 pub(crate) mod reply;
-#[doc(hidden)]
-pub mod scope;
+pub(crate) mod scope;
 pub mod status;
 pub(crate) mod step;
 pub(crate) mod usage;

@@ -1,39 +1,18 @@
-//! Offline example: no network, secrets, Runtime or persistence.
+//! Real DeepSeek Planner + application Evaluator example.
+//!
+//! The Planner uses the configured remote model. The Evaluator remains an
+//! application callback and is shown with a sample result after planning.
 
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
     agent::core,
     agent::evaluation::{Evaluation, Evaluator as _},
-    agent::event::Event,
-    agent::message::Role,
-    agent::model::chat::{Chat, Request},
+    agent::model::chat::Request,
     agent::plan::Planner as _,
+    agent::provider::deepseek::DeepSeek,
     agent::{Input, Payload},
 };
 use serde_json::json;
-
-struct Model;
-impl Chat for Model {
-    type Stream = futures_util::stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-
-    async fn stream(&self, _request: Request) -> Result<Self::Stream, Error> {
-        let mut message = Message::new(Role::Assistant);
-        message.values = serde_json::from_value(json!({
-            "version": 1,
-            "nodes": {
-                "research": {"name": "search", "objective": "查询天气"},
-                "answer": {"name": "summarize", "objective": "整理查询结果"}
-            },
-            "edges": [{"from": "research", "to": "answer"}]
-        }))
-        .unwrap();
-        Ok(futures_util::stream::iter(vec![Ok(Event::Complete {
-            message,
-            usage: None,
-            finish_reason: Some("stop".into()),
-        })]))
-    }
-}
 
 // Application business logic directly implements the shared evaluation contract.
 async fn check_answer(
@@ -50,32 +29,45 @@ async fn check_answer(
     })
 }
 
-fn main() -> Result<(), Error> {
-    futures_executor::block_on(async {
-        let cancellation = Cancellation::new();
-        let input = Input {
-            payload: vec![Payload {
-                r#type: "text".into(),
-                data: json!({"value": "北京天气怎么样？"}),
-                mime_type: None,
-            }],
-            ..Default::default()
-        };
-        let planner = core::plan::Planner::new(Model, Request::default())?;
-        let plan = planner.plan(&input, None, None, &cancellation).await?;
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&plan)
-                .map_err(|error| Error::new("INVALID_RESPONSE", error.to_string()))?
-        );
+#[tokio::main]
+async fn main() -> Result<(), Error> {
+    dotenvy::dotenv().ok();
+    let cancellation = Cancellation::new();
+    let input = Input {
+        payload: vec![Payload {
+            r#type: "text".into(),
+            data: json!({"value": "北京天气怎么样？"}),
+            mime_type: None,
+        }],
+        ..Default::default()
+    };
+    let provider =
+        DeepSeek::builder()
+            .base_url(
+                std::env::var("DEEPSEEK_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.deepseek.com".into()),
+            )
+            .api_key(std::env::var("DEEPSEEK_API_KEY").map_err(|_| {
+                Error::new("AUTHENTICATION", "DEEPSEEK_API_KEY is required in .env")
+            })?)
+            .build()?;
+    let chat = provider.chat(halo::agent::model::chat::Config::new(
+        std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-flash".into()),
+    ))?;
+    let planner = core::plan::Planner::new(chat, Request::default())?;
+    let plan = planner.plan(&input, None, None, &cancellation).await?;
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&plan)
+            .map_err(|error| Error::new("INVALID_RESPONSE", error.to_string()))?
+    );
 
-        // This example does not execute the graph or invent a Runtime result.
-        // A caller supplies its own final result for independent evaluation.
-        let result = Messages::new([Message::function(json!({"weather": "晴"}))]);
-        let evaluation = check_answer
-            .evaluate(&input, &result, &cancellation)
-            .await?;
-        println!("passed={}", evaluation.passed);
-        Ok::<_, Error>(())
-    })
+    // The plan is real model output. The result shown here is the kind of
+    // application-owned message that a later execution stage evaluates.
+    let result = Messages::new([Message::function(json!({"weather": "晴"}))]);
+    let evaluation = check_answer
+        .evaluate(&input, &result, &cancellation)
+        .await?;
+    println!("passed={}", evaluation.passed);
+    Ok(())
 }

@@ -1,35 +1,23 @@
-//! Run with a local deterministic model, no network, credentials or Runtime.
-use futures_util::{StreamExt, stream};
-use halo::agent::{Cancellation, Error, Message};
-use halo::{
-    agent::event::Event,
-    agent::message::Role,
-    agent::middleware::Middleware,
-    agent::model::chat::{Chat, Request},
-    agent::{self, Agent, Input, Payload},
-};
+//! Real DeepSeek Agent + Middleware example.
+//!
+//! The provider configuration is loaded from the ignored `.env` file. The
+//! middleware changes the model request and annotates the final message; the
+//! model response itself is produced by the configured remote provider.
+use futures_util::StreamExt;
+use halo::agent::middleware::Middleware;
+use halo::agent::model::chat;
+use halo::agent::provider::deepseek::DeepSeek;
+use halo::agent::{self, Agent, Cancellation, Error, Input, Payload};
 use serde_json::{Value, json};
 
-struct Answer;
-impl Chat for Answer {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-    async fn stream(&self, _: Request) -> Result<Self::Stream, Error> {
-        let mut message = Message::new(Role::Assistant);
-        message.values.insert("answer".into(), json!("hello"));
-        Ok(stream::iter(vec![Ok(Event::Complete {
-            message,
-            usage: None,
-            finish_reason: Some("stop".into()),
-        })]))
-    }
-}
-
 struct MarkAnswer;
+
 impl Middleware for MarkAnswer {
     async fn before_model(&self, request: &mut Value, _: &Cancellation) -> Result<(), Error> {
         request["temperature"] = json!(0.2);
         Ok(())
     }
+
     async fn after_execute(&self, message: &mut Value, _: &Cancellation) -> Result<(), Error> {
         message["values"]["checked"] = json!(true);
         Ok(())
@@ -38,12 +26,30 @@ impl Middleware for MarkAnswer {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let agent = agent::chat().model(Answer).middleware(MarkAnswer).build()?;
+    dotenvy::dotenv().ok();
+    let provider =
+        DeepSeek::builder()
+            .base_url(
+                std::env::var("DEEPSEEK_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.deepseek.com".into()),
+            )
+            .api_key(std::env::var("DEEPSEEK_API_KEY").map_err(|_| {
+                Error::new("AUTHENTICATION", "DEEPSEEK_API_KEY is required in .env")
+            })?)
+            .build()?;
+    let chat = provider.chat(chat::Config::new(
+        std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-flash".into()),
+    ))?;
+    let agent = agent::chat()
+        .model(chat)
+        .system_prompt("你是一个简洁的助手。回答后不要调用工具。")
+        .middleware(MarkAnswer)
+        .build()?;
     let input = Input {
         metadata: Default::default(),
         payload: vec![Payload {
             r#type: "text".into(),
-            data: json!({"value":"hello"}),
+            data: json!({"value":"请用一句话介绍 Rust 的所有权模型。"}),
             mime_type: None,
         }],
     };

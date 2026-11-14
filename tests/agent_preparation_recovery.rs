@@ -413,7 +413,7 @@ async fn preparation_failures_and_cancellation_close_the_original_chat_and_check
                 assert_eq!(
                     saved["status"],
                     if stop == Stop::Cancel {
-                        "stopped"
+                        "cancelled"
                     } else {
                         "failed"
                     }

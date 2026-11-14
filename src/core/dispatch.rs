@@ -6,6 +6,7 @@
 //! only combines them.
 
 mod call;
+mod inputs;
 mod tool;
 
 use std::collections::BTreeSet;
@@ -18,9 +19,12 @@ use crate::components::agent::Error;
 use crate::components::mcp::Server;
 use crate::components::message::Message;
 use crate::components::skill::{Definition as SkillDefinition, Loader, Skill};
-use crate::components::tool::{Call, Evaluation, Tool, ToolDefinition, validate_call};
+#[cfg(test)]
+use crate::components::tool::Tool;
+use crate::components::tool::{Call, Evaluation, ToolDefinition, validate_call};
 use crate::core::skill::{load, reader};
 use crate::workspace::Workspace;
+pub(crate) use inputs::ToolInputs;
 
 /// Internal dispatch table for heterogeneous Tools, MCP servers and Skills.
 ///
@@ -33,59 +37,13 @@ use crate::workspace::Workspace;
 /// shares configured tools and Workspace-owned Skill loader caches; it does not
 /// copy or materialize files.
 #[derive(Clone)]
-#[doc(hidden)]
 pub struct Dispatch {
     tools: Vec<Arc<dyn tool::Tool>>,
-    mcp_catalog: Vec<crate::mcp::Definition>,
+    mcp_list: Vec<crate::mcp::Definition>,
     skills: Vec<Arc<dyn load::Skill>>,
     skill_loaders: Vec<Arc<dyn load::Loader>>,
     skill_reader: bool,
     workspace: Option<Arc<dyn Workspace>>,
-}
-
-/// Internal inputs accepted by the public Agent/Workspace `.tools(...)`
-/// methods. The public tool point is plural
-/// even when one concrete Tool is registered; this keeps the assembly API
-/// consistent for one or many Tools.
-pub trait ToolInputs {
-    fn append_to(self, dispatch: &mut Dispatch);
-}
-
-impl<T> ToolInputs for T
-where
-    T: Tool + 'static,
-{
-    fn append_to(self, dispatch: &mut Dispatch) {
-        dispatch.tools.push(Arc::new(tool::adapter::Tool {
-            tool: Arc::new(self),
-        }));
-    }
-}
-
-impl<T, const N: usize> ToolInputs for [T; N]
-where
-    T: Tool + 'static,
-{
-    fn append_to(self, dispatch: &mut Dispatch) {
-        for tool in self {
-            dispatch.tools.push(Arc::new(tool::adapter::Tool {
-                tool: Arc::new(tool),
-            }));
-        }
-    }
-}
-
-impl<T> ToolInputs for Vec<T>
-where
-    T: Tool + 'static,
-{
-    fn append_to(self, dispatch: &mut Dispatch) {
-        for tool in self {
-            dispatch.tools.push(Arc::new(tool::adapter::Tool {
-                tool: Arc::new(tool),
-            }));
-        }
-    }
 }
 
 impl Default for Dispatch {
@@ -98,7 +56,7 @@ impl Dispatch {
     pub fn new() -> Self {
         Self {
             tools: Vec::new(),
-            mcp_catalog: Vec::new(),
+            mcp_list: Vec::new(),
             skills: Vec::new(),
             skill_loaders: Vec::new(),
             skill_reader: false,
@@ -126,7 +84,7 @@ impl Dispatch {
             .collect();
         Self {
             tools,
-            mcp_catalog: workspace.mcp(),
+            mcp_list: workspace.mcp(),
             skills: Vec::new(),
             skill_loaders: Vec::new(),
             skill_reader: false,
@@ -152,7 +110,7 @@ impl Dispatch {
 
     pub(crate) fn append(mut self, other: Self) -> Self {
         self.tools.extend(other.tools);
-        self.mcp_catalog.extend(other.mcp_catalog);
+        self.mcp_list.extend(other.mcp_list);
         self.skills.extend(other.skills);
         self.skill_loaders.extend(other.skill_loaders);
         self.skill_reader |= other.skill_reader;
@@ -183,14 +141,14 @@ impl Dispatch {
             let tool = tool::McpServer {
                 server: Arc::new(server),
             };
-            self.mcp_catalog.push(tool.server.definition().clone());
+            self.mcp_list.push(tool.server.definition().clone());
             self.tools.extend(tool.tools());
         }
         self
     }
 
     /// Add Skills without executing them. Repeated calls may add different
-    /// concrete types. Skill names are unique within the Skill catalog and do
+    /// concrete types. Skill names are unique within the Skill list and do
     /// not share the Tool namespace; `skill` is reserved for the shared reader.
     pub fn skills<S>(mut self, skills: impl IntoIterator<Item = S>) -> Result<Self, Error>
     where
@@ -241,7 +199,7 @@ impl Dispatch {
         }
         let view = Self {
             tools: base.tools.clone(),
-            mcp_catalog: base.mcp_catalog.clone(),
+            mcp_list: base.mcp_list.clone(),
             skills,
             skill_loaders: Vec::new(),
             skill_reader: base.skill_reader,
@@ -265,7 +223,7 @@ impl Dispatch {
         }));
         Ok(Self {
             tools: self.tools.clone(),
-            mcp_catalog: self.mcp_catalog.clone(),
+            mcp_list: self.mcp_list.clone(),
             skills,
             skill_loaders: self.skill_loaders.clone(),
             skill_reader: self.skill_reader,
@@ -273,29 +231,29 @@ impl Dispatch {
         })
     }
 
-    /// Add the Skill catalog to the Agent system prompt. Tool and MCP schemas
+    /// Add the Skill list to the Agent system prompt. Tool and MCP schemas
     /// are passed separately through the model's ordinary `tools` parameter.
     pub(crate) fn system_prompt(&self, prompt: Option<String>) -> Option<String> {
         if self.skills.is_empty() {
             return prompt;
         }
-        let mut catalog = String::from(
+        let mut skill_text = String::from(
             "Available Skills are instruction sets. Read a Skill with the `skill` tool when its description is relevant, then follow its instructions using the available Tools and MCP servers. A Skill does not execute those tools.\n<skills>\n",
         );
         for skill in &self.skills {
             let definition = skill.definition();
-            catalog.push_str("<skill><name>");
-            catalog.push_str(&escape_prompt_text(&definition.name));
-            catalog.push_str("</name><description>");
-            catalog.push_str(&escape_prompt_text(
+            skill_text.push_str("<skill><name>");
+            skill_text.push_str(&escape_prompt_text(&definition.name));
+            skill_text.push_str("</name><description>");
+            skill_text.push_str(&escape_prompt_text(
                 definition.description.as_deref().unwrap_or(""),
             ));
-            catalog.push_str("</description></skill>\n");
+            skill_text.push_str("</description></skill>\n");
         }
-        catalog.push_str("</skills>");
+        skill_text.push_str("</skills>");
         Some(match prompt {
-            Some(prompt) if !prompt.is_empty() => format!("{prompt}\n\n{catalog}"),
-            _ => catalog,
+            Some(prompt) if !prompt.is_empty() => format!("{prompt}\n\n{skill_text}"),
+            _ => skill_text,
         })
     }
 
@@ -363,7 +321,7 @@ impl Dispatch {
         }
         Ok(Self {
             tools,
-            mcp_catalog: discovered.mcp_catalog,
+            mcp_list: discovered.mcp_list,
             skills: discovered.skills,
             skill_loaders: Vec::new(),
             skill_reader,
@@ -375,11 +333,11 @@ impl Dispatch {
     /// definitions are available as soon as the server is attached; Skill
     /// sources are still loaded when an Agent obtains its private prepared
     /// view.
-    pub(crate) fn tool_catalog(&self) -> Vec<ToolDefinition> {
+    pub(crate) fn tool_list(&self) -> Vec<ToolDefinition> {
         self.tools.iter().map(|tool| tool.definition()).collect()
     }
 
-    /// Prepared Agent tool catalog; not inferred from a generated Plan.
+    /// Prepared Agent tool list; not inferred from a generated Plan.
     pub(crate) fn names(&self) -> BTreeSet<String> {
         self.tools
             .iter()
@@ -387,15 +345,15 @@ impl Dispatch {
             .collect()
     }
 
-    pub(crate) fn skill_catalog(&self) -> Vec<SkillDefinition> {
+    pub(crate) fn skill_list(&self) -> Vec<SkillDefinition> {
         self.skills
             .iter()
             .map(|skill| skill.definition().clone())
             .collect()
     }
 
-    pub(crate) fn mcp_catalog(&self) -> Vec<crate::mcp::Definition> {
-        self.mcp_catalog.clone()
+    pub(crate) fn mcp_list(&self) -> Vec<crate::mcp::Definition> {
+        self.mcp_list.clone()
     }
 }
 
@@ -409,199 +367,5 @@ fn escape_prompt_text(value: &str) -> String {
 }
 
 #[cfg(test)]
-mod tests {
-    use std::sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    };
-
-    use futures_executor::block_on;
-    use serde_json::{Map, json};
-
-    use super::*;
-    use crate::components::message::Role;
-
-    struct Weather {
-        definition: ToolDefinition,
-        called: Arc<AtomicBool>,
-    }
-
-    impl Tool for Weather {
-        fn definition(&self) -> &ToolDefinition {
-            &self.definition
-        }
-
-        async fn call(&self, _call: &Call, _cancellation: &Cancellation) -> Result<Message, Error> {
-            self.called.store(true, Ordering::SeqCst);
-            Ok(Message {
-                role: Role::Tool,
-                content: Vec::new(),
-                values: Map::from_iter([(String::from("temperature"), json!(22))]),
-                metadata: Map::new(),
-                usage: None,
-            })
-        }
-    }
-
-    fn weather(called: Arc<AtomicBool>) -> Weather {
-        Weather {
-            definition: ToolDefinition {
-                name: "weather".into(),
-                description: "weather lookup".into(),
-                parameters: serde_json::from_value(json!({
-                    "type": "object",
-                    "properties": {}
-                }))
-                .unwrap(),
-            },
-            called,
-        }
-    }
-
-    #[test]
-    fn dispatch_exports_definitions_and_executes_by_name() {
-        let called = Arc::new(AtomicBool::new(false));
-        let dispatch = Dispatch::new().tools(weather(called.clone()));
-        assert_eq!(dispatch.len(), 1);
-        assert_eq!(dispatch.tool_catalog()[0].name, "weather");
-        let (message, evaluation) = block_on(dispatch.execute(
-            Call {
-                call_id: "call_1".into(),
-                name: "weather".into(),
-                arguments: Map::new(),
-            },
-            &Cancellation::new(),
-        ))
-        .unwrap();
-        assert!(called.load(Ordering::SeqCst));
-        assert_eq!(message.values["temperature"], 22);
-        assert!(evaluation.passed);
-    }
-
-    #[test]
-    fn dispatch_rejects_unknown_tools_without_invoking_registered_tools() {
-        let called = Arc::new(AtomicBool::new(false));
-        let dispatch = Dispatch::new().tools(weather(called.clone()));
-        let error = block_on(dispatch.execute(
-            Call {
-                call_id: "call_1".into(),
-                name: "unknown".into(),
-                arguments: Map::new(),
-            },
-            &Cancellation::new(),
-        ))
-        .unwrap_err();
-        assert_eq!(error.code, "NOT_FOUND");
-        assert!(!called.load(Ordering::SeqCst));
-    }
-
-    #[test]
-    fn prepared_view_exposes_tools_and_skills_together() {
-        let skill = crate::core::skill::Skill::new(
-            SkillDefinition {
-                name: "research".into(),
-                description: Some("Research a topic and cite sources.".into()),
-                ..Default::default()
-            },
-            "Use sources.".into(),
-        )
-        .unwrap();
-        let dispatch = Dispatch::new()
-            .tools(weather(Arc::new(AtomicBool::new(false))))
-            .skills(vec![skill])
-            .unwrap();
-        let cancellation = Cancellation::new();
-        let prepared = block_on(dispatch.prepared(&cancellation)).unwrap();
-        let definitions = prepared.tool_catalog();
-        assert_eq!(definitions.len(), 2);
-        assert_eq!(definitions[0].name, "weather");
-        assert_eq!(definitions[1].name, load::READER_NAME);
-        let prompt = prepared.system_prompt(None).unwrap();
-        assert!(prompt.contains("research"));
-        assert!(prompt.contains("Research a topic and cite sources."));
-
-        let (call, output) = block_on(prepared.call(
-            Call {
-                call_id: "call_skill".into(),
-                name: load::READER_NAME.into(),
-                arguments: Map::from_iter([("skill".into(), json!("research"))]),
-            },
-            &cancellation,
-        ))
-        .unwrap();
-        assert_eq!(call.name, load::READER_NAME);
-        assert_eq!(output.values["instructions"], "Use sources.");
-
-        // Preparing an already prepared view remains idempotent.
-        let prepared_again = block_on(prepared.prepared(&cancellation)).unwrap();
-        assert_eq!(prepared_again.tool_catalog().len(), 2);
-    }
-
-    struct RetryingEval {
-        definition: ToolDefinition,
-        calls: Arc<std::sync::atomic::AtomicUsize>,
-        evaluations: Arc<std::sync::atomic::AtomicUsize>,
-    }
-
-    impl Tool for RetryingEval {
-        fn definition(&self) -> &ToolDefinition {
-            &self.definition
-        }
-        async fn before(&self, call: &mut Call, _cancellation: &Cancellation) -> Result<(), Error> {
-            call.arguments.insert("city".into(), json!("Beijing"));
-            Ok(())
-        }
-        async fn call(&self, _call: &Call, _cancellation: &Cancellation) -> Result<Message, Error> {
-            self.calls.fetch_add(1, Ordering::SeqCst);
-            Ok(Message::function(json!({"temperature": 22})))
-        }
-        async fn eval(
-            &self,
-            call: &Call,
-            message: &Message,
-            _cancellation: &Cancellation,
-        ) -> Result<Evaluation, Error> {
-            assert_eq!(call.arguments["city"], "Beijing");
-            assert_eq!(message.values["temperature"], 22);
-            if self.evaluations.fetch_add(1, Ordering::SeqCst) == 0 {
-                Err(Error::new("TIMEOUT", "evaluation transport failed"))
-            } else {
-                Ok(Evaluation::failed(crate::Messages::new([
-                    Message::function(json!({"feedback": "too warm"})),
-                ])))
-            }
-        }
-    }
-
-    #[test]
-    fn caller_can_retry_only_eval_using_the_retained_call_and_result() {
-        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let evaluations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let dispatch = Dispatch::new().tools(RetryingEval {
-            definition: weather(Arc::new(AtomicBool::new(false))).definition,
-            calls: calls.clone(),
-            evaluations: evaluations.clone(),
-        });
-        let cancellation = Cancellation::new();
-        let (call, message) = block_on(dispatch.call(
-            Call {
-                call_id: "call_1".into(),
-                name: "weather".into(),
-                arguments: Map::new(),
-            },
-            &cancellation,
-        ))
-        .unwrap();
-        assert_eq!(
-            block_on(dispatch.evaluate(&call, &message, &cancellation))
-                .unwrap_err()
-                .code,
-            "TIMEOUT"
-        );
-        let result = block_on(dispatch.evaluate(&call, &message, &cancellation)).unwrap();
-        assert!(!result.passed);
-        assert!(result.feedback.is_some());
-        assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(evaluations.load(Ordering::SeqCst), 2);
-    }
-}
+#[path = "../../tests/unit/embedded/src_core_dispatch_tests.rs"]
+mod tests;

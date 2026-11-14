@@ -49,15 +49,6 @@ impl Cancellation {
         self.state.cancelled.load(Ordering::Acquire)
     }
 
-    #[cfg(test)]
-    fn waiter_count(&self) -> usize {
-        self.state
-            .waiters
-            .lock()
-            .expect("cancel lock poisoned")
-            .len()
-    }
-
     /// Register a stream poller so cancellation wakes it even if its provider
     /// stream has no new item. Rechecking under the lock avoids a lost wake-up.
     pub(crate) fn register(&self, waker: &Waker) -> Registration {
@@ -173,29 +164,5 @@ pub(crate) async fn cancellable<T, E: From<Error>>(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::Cancellation;
-    use std::task::Waker;
-
-    #[test]
-    fn cancellation_is_shared_within_a_run_but_isolated_between_runs() {
-        let first_run = Cancellation::new();
-        let first_run_child = first_run.clone();
-        let second_run = Cancellation::new();
-
-        first_run.cancel();
-
-        assert!(first_run_child.is_cancelled());
-        assert!(!second_run.is_cancelled());
-    }
-
-    #[test]
-    fn a_finished_waiter_is_removed_from_the_cancellation_scope() {
-        let cancellation = Cancellation::new();
-        let waker = Waker::noop();
-        let waiter = cancellation.register(waker);
-        assert_eq!(cancellation.waiter_count(), 1);
-        drop(waiter);
-        assert_eq!(cancellation.waiter_count(), 0);
-    }
-}
+#[path = "../tests/unit/embedded/src_cancellation_tests.rs"]
+mod tests;

@@ -14,10 +14,6 @@ pub use crate::core::provider;
 pub use crate::runtime::agent::subagent::SubAgent;
 pub use crate::runtime::agent::team;
 pub use crate::runtime::agent::{chat, react};
-#[doc(hidden)]
-pub mod subagent {
-    pub use crate::runtime::agent::subagent::*;
-}
 pub use crate::runtime::trace;
 
 /// Protocol adapters used by the outer HTTP or transport layer.
@@ -101,41 +97,6 @@ pub mod graph {
 /// Public waiting data and reply helpers used by channel integrations.
 pub mod wait {
     pub use crate::runtime::agent::wait::*;
-}
-
-/// Hidden runtime scope hooks used by integration tests for nested Agent
-/// recovery. They are not part of the stable application API.
-#[doc(hidden)]
-pub mod scope {
-    pub use crate::runtime::agent::scope::{capture, restore};
-}
-
-/// Hidden lifecycle helpers used by integration tests that exercise saved
-/// Agent attempt facts through the public crate boundary.
-#[doc(hidden)]
-pub mod lifecycle {
-    pub use crate::runtime::agent::lifecycle::*;
-}
-
-/// Hidden model-step helpers used by integration tests for partial output.
-#[doc(hidden)]
-pub mod model_steps {
-    pub use crate::runtime::agent::model_steps::*;
-}
-
-#[doc(hidden)]
-pub mod access {
-    pub use crate::runtime::agent::access::*;
-}
-
-#[doc(hidden)]
-pub mod hooks {
-    pub use crate::runtime::agent::hooks::*;
-}
-
-#[doc(hidden)]
-pub mod agent_input {
-    pub use crate::components::agent_input::*;
 }
 
 /// Agent-local state data exposed for diagnostics and checkpoint tooling.

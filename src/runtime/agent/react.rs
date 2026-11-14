@@ -38,8 +38,7 @@ use crate::runtime::agent::subagent::{Failure as SubAgentFailure, Progress as Su
 use crate::runtime::agent::{State as AgentState, graph};
 use crate::runtime::trace::fastrace::{Root, SpanScope};
 
-#[doc(hidden)]
-pub mod execution;
+pub(crate) mod execution;
 mod tools;
 use super::lifecycle::Failure;
 use execution::TaskProgress;
@@ -48,8 +47,7 @@ type EvaluationFuture = Pin<Box<dyn Future<Output = Result<Evaluation, Error>> +
 type EvaluatorHandle =
     std::sync::Arc<dyn Fn(Input, Messages, Cancellation) -> EvaluationFuture + Send + Sync>;
 type CheckpointSave = Backend;
-#[doc(hidden)]
-pub type ProgressFuture<M> = Pin<
+pub(crate) type ProgressFuture<M> = Pin<
     Box<
         dyn Future<Output = Option<(Option<Result<Event, Error>>, ReActState<M>)>> + Send + 'static,
     >,
@@ -702,6 +700,5 @@ where
     }
 }
 
-#[doc(hidden)]
-pub mod runner;
-pub use runner::*;
+pub(crate) mod runner;
+pub(crate) use runner::*;

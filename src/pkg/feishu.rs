@@ -6,6 +6,3 @@ pub(crate) use larksuite_oapi_sdk_rs::{
     events::im::{MessageSender, P2MessageReceiveV1},
     ws::WsClient,
 };
-
-#[cfg(test)]
-pub(crate) use larksuite_oapi_sdk_rs::events::im::Message;

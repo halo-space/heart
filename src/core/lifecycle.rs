@@ -134,3 +134,7 @@ where
 fn check<E: From<Error>>(cancellation: &Cancellation) -> Result<(), E> {
     crate::cancellation::check(cancellation).map_err(Into::into)
 }
+
+#[cfg(test)]
+#[path = "../../tests/unit/embedded/src_core_lifecycle_tests.rs"]
+mod tests;

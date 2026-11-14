@@ -705,7 +705,9 @@ cargo clippy --lib --all-features -- -D warnings
 
 ### 15.2 真实服务验证
 
-需要模型、MCP、ES 或 Sandbox 的测试只从环境变量读取配置；不要把 Mock 响应当作真实验收。示例：
+需要模型、MCP、ES 或 Sandbox 的测试只从环境变量读取配置；不要把 Mock 响应当作真实验收。
+仓库中的真实模型示例会自动读取根目录下被 Git 忽略的 `.env`，也可以在启动前手动导出
+同名变量。示例：
 
 ```bash
 DEEPSEEK_API_KEY=... \
@@ -727,7 +729,7 @@ cargo run --example agent_live_tool
 | 能力 | 必需环境或资源 | 覆盖测试 |
 | --- | --- | --- |
 | DeepSeek | `DEEPSEEK_API_KEY`；可选 `DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL` | Agent、Workflow、Memory、A2A |
-| VLLM/OpenAI-compatible | `HEART_VLLM_BASE_URL`、`HEART_VLLM_API_KEY`、`HEART_VLLM_MODEL` | Provider、Chat/ReAct、Team、Workflow |
+| VLLM/OpenAI-compatible | 独立 VLLM 示例使用 `HEART_VLLM_BASE_URL`、`HEART_VLLM_API_KEY`、`HEART_VLLM_MODEL`；统一真实验收使用 DeepSeek 配置 | Provider、Chat/ReAct、Team、Workflow |
 | Zhipu Embedding | `HEART_EMBED_API_KEY`；可选 `HEART_EMBED_BASE_URL`、`HEART_EMBED_MODEL` | 向量 Memory、Semantic Chunker |
 | OpenAI Embedding | `OPENAI_API_KEY`；可选 `OPENAI_BASE_URL`、`OPENAI_MODEL` | OpenAI Embedding |
 | Gemini TTS/多模态 | `GEMINI_API_KEY`；多模态另需真实 `GEMINI_TEST_IMAGE_DATA_URL` | TTS、多模态 |

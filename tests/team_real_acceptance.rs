@@ -883,14 +883,11 @@ async fn real_team_handoff_cancellation_closes_run_and_preserves_member_state() 
         .expect("cancelled Handoff checkpoint");
     assert!(matches!(
         saved["status"].as_str(),
-        Some("stopped" | "failed")
+        Some("cancelled" | "failed")
     ));
     let child = saved["execution"]["attempts"][0]["nodes"]
         .as_object()
         .and_then(|nodes| nodes.values().next())
         .expect("cancelled member node");
-    assert!(matches!(
-        child["status"].as_str(),
-        Some("stopped" | "cancelled")
-    ));
+    assert!(matches!(child["status"].as_str(), Some("cancelled")));
 }

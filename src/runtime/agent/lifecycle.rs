@@ -329,3 +329,11 @@ where
     .await?;
     Ok((call, output.expect("complete lifecycle has a result")))
 }
+
+#[cfg(test)]
+#[path = "../../../tests/unit/embedded/src_runtime_agent_tool_prepare_tests.rs"]
+mod tool_prepare_tests;
+
+#[cfg(test)]
+#[path = "../../../tests/unit/embedded/src_runtime_agent_model_partial_tests.rs"]
+mod model_partial_tests;

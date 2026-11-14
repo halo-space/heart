@@ -20,9 +20,9 @@ pub(super) fn checkpoint_state(
         Ok(Event::Complete {
             finish_reason: Some(reason),
             ..
-        }) if reason == "cancelled" => crate::runtime::agent::status::Status::Stopped,
+        }) if reason == "cancelled" => crate::runtime::agent::status::Status::Cancelled,
         Ok(Event::Complete { .. }) => crate::runtime::agent::status::Status::Succeeded,
-        Err(error) if error.code == "CANCELLED" => crate::runtime::agent::status::Status::Stopped,
+        Err(error) if error.code == "CANCELLED" => crate::runtime::agent::status::Status::Cancelled,
         Err(error) if error.code == "WAITING" => crate::runtime::agent::status::Status::Waiting,
         Err(_) => crate::runtime::agent::status::Status::Failed,
         Ok(Event::Delta { .. }) => crate::runtime::agent::status::Status::Running,

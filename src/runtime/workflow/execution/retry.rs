@@ -100,7 +100,7 @@ pub(super) fn cancelled_observations(state: &graph::State) -> Vec<crate::event::
 // Checkpoint; keeping it alongside the retry inputs makes recovery explicit.
 #[allow(clippy::too_many_arguments)]
 #[doc(hidden)]
-pub fn invoke_with_retry(
+pub(crate) fn invoke_with_retry(
     target: Target,
     input: Value,
     view: View,
@@ -148,7 +148,7 @@ pub fn invoke_with_retry(
             let idx = attempt_start.saturating_add(offset);
             let mut current_view = view.clone();
             current_view.attempt_idx = Some(idx);
-            current_view.status = "running".into();
+            current_view.status = crate::components::node::Status::Running;
             if !attempts.is_empty() {
                 current_view.attempts = attempts
                     .iter()

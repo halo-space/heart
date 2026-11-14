@@ -62,6 +62,27 @@ fn server_does_not_depend_on_harness() {
 }
 
 #[test]
+fn workflow_uses_only_the_agent_embedding_surface() {
+    let workflow = source("src/runtime/workflow");
+    for forbidden in [
+        "crate::runtime::agent::chat",
+        "crate::runtime::agent::react",
+        "crate::runtime::agent::graph",
+        "crate::runtime::agent::history",
+        "crate::runtime::agent::memory",
+        "crate::runtime::agent::model_steps",
+        "crate::runtime::agent::completion",
+        "crate::runtime::agent::lifecycle",
+        "crate::runtime::agent::subagent",
+    ] {
+        assert!(
+            !workflow.contains(forbidden),
+            "Workflow must not depend on Agent execution internals: {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn sandbox_implementation_lives_in_core() {
     let manifest = Path::new(env!("CARGO_MANIFEST_DIR"));
     assert!(manifest.join("src/core/sandbox/local.rs").is_file());

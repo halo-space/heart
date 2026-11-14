@@ -242,13 +242,13 @@ fn validate_subagents(subagents: &[SubAgent]) -> Result<(), Error> {
     Ok(())
 }
 
-#[doc(hidden)]
-pub mod runner;
+pub(crate) mod runner;
 #[doc(hidden)]
 pub use crate::components::model::chat::{estimate_input_tokens, fit_request};
+pub use runner::Events;
 pub(crate) use runner::{
-    CheckpointSave, EvaluatorHandle, Events, EventsConfig, ProviderFactory, ToolBatchConfig,
-    checkpoint_id, checkpoint_identity_matches, checkpoint_messages, checkpoint_pending_subagents,
+    CheckpointSave, EvaluatorHandle, EventsConfig, ProviderFactory, ToolBatchConfig, checkpoint_id,
+    checkpoint_identity_matches, checkpoint_messages, checkpoint_pending_subagents,
     checkpoint_query, checkpoint_steps, estimate_output_tokens, execute_tool_batch,
     initial_messages, is_waiting_snapshot, prepare_model,
 };
@@ -524,7 +524,7 @@ where
             }
             let tool_definitions = dispatch
                 .as_ref()
-                .map(Dispatch::tool_catalog)
+                .map(Dispatch::tool_list)
                 .unwrap_or_default();
             let mut tool_definitions = tool_definitions;
             if !self.subagents.is_empty() {
@@ -753,3 +753,6 @@ where
         }
     }
 }
+#[cfg(test)]
+#[path = "../../../tests/unit/embedded/src_runtime_agent_chat_tests.rs"]
+mod tests;

@@ -256,7 +256,7 @@ async fn real_stream_cancellation_closes_with_the_received_partial_message() {
         .load(chat_id, &Cancellation::new())
         .await
         .expect("the cancelled real run must have a saved Checkpoint");
-    assert_eq!(saved["status"], "stopped");
+    assert_eq!(saved["status"], "cancelled");
     let model_step = saved["steps"]
         .as_array()
         .unwrap()

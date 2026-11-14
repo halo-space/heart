@@ -10,7 +10,7 @@ use std::sync::{
 };
 use std::task::{Context, Poll};
 
-use halo::agent::chat::runner::execute_subagent;
+use crate::runtime::agent::chat::runner::execute_subagent;
 use super::*;
 use halo::agent::Agent as _;
 use halo::agent::event::Event;
@@ -62,8 +62,8 @@ impl halo::agent::Agent for WaitingSubAgent {
         _stream: bool,
         _cancellation: Cancellation,
     ) -> Result<Self::Stream, Error> {
-        if halo::agent::scope::restore().is_none() {
-            assert!(halo::agent::scope::capture(json!({
+        if crate::runtime::agent::scope::restore().is_none() {
+            assert!(crate::runtime::agent::scope::capture(json!({
                 "owner": "chat-child"
             })));
             return Err(Error::new("WAITING", "child is waiting for approval"));
@@ -130,7 +130,7 @@ fn builder_uses_the_frozen_defaults_and_maps_payload_parts() {
     let config = builder();
     assert_eq!(config.max_concurrency, 100);
 
-    let message = halo::agent::agent_input::user_message(Input {
+    let message = crate::components::agent_input::user_message(Input {
         metadata: Map::from_iter([
             (String::from("chat_id"), json!(101)),
             (String::from("language"), json!("zh")),

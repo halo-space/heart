@@ -88,15 +88,6 @@ pub mod __tool {
     pub use serde_json;
 }
 
-// Compile the attribute in the defining library too, not only downstream
-// examples. This is a test-only assertion, with no node or runtime created.
 #[cfg(test)]
-const _: () = {
-    #[crate::node]
-    async fn macro_internal_contract(
-        input: crate::Messages,
-        _: crate::Cancellation,
-    ) -> Result<crate::Messages, crate::Error> {
-        Ok(input)
-    }
-};
+#[path = "../tests/unit/embedded/src_lib_tests.rs"]
+mod tests;

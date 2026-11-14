@@ -33,13 +33,26 @@ cargo add halo-agent
 
 ```bash
 cargo check --offline --examples
-cargo run --offline --example agent_middleware
 cargo run --offline --example workflow_events
 ```
 
-上面的离线示例用于快速验证 Agent/Workflow 契约，不需要网络和模型密钥。要调用真实模型，请使用 OpenAI-compatible Provider 示例：
+`workflow_events` 是不需要外部服务的契约示例。需要真实模型的 Agent 示例会自动读取仓库根目录
+被 Git 忽略的 `.env`，例如：
 
-需要模型或外部服务的示例只从环境变量读取地址和密钥，不把 Secret 写入源码。VLLM 示例使用 OpenAI-compatible `/v1/chat/completions` 接口：
+```dotenv
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_API_KEY=...
+DEEPSEEK_MODEL=deepseek-flash
+```
+
+```bash
+cargo run --example agent_middleware
+cargo run --example agent_permission
+cargo run --example agent_memory
+cargo run --example planning_evaluation
+```
+
+其他模型或外部服务的示例同样只从环境变量读取地址和密钥，不把 Secret 写入源码。VLLM 示例使用 OpenAI-compatible `/v1/chat/completions` 接口：
 
 ```bash
 HEART_VLLM_BASE_URL=https://example.invalid/v1 \

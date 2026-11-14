@@ -1,18 +1,15 @@
-//! Offline Agent + short history + explicitly selected long memory.
-use futures_util::{StreamExt, stream};
+//! Real DeepSeek Agent + short history + explicitly selected long memory.
+use futures_util::StreamExt;
 use halo::agent::{Cancellation, Error, Message};
 use halo::{
     agent::core,
-    agent::event::Event,
     agent::memory::{
         self, Memory,
         short::{self, chat, session},
     },
     agent::message::Role,
-    agent::model::{
-        chat::{Chat, Request},
-        content::part::Part,
-    },
+    agent::model::content::part::Part,
+    agent::provider::deepseek::DeepSeek,
     agent::{self, Agent, Input, Payload},
 };
 use serde_json::{Map, json};
@@ -20,35 +17,9 @@ use serde_json::{Map, json};
 use chat::Store as _;
 use session::Store as _;
 
-struct Model;
-impl Chat for Model {
-    type Stream = stream::Iter<std::vec::IntoIter<Result<Event, Error>>>;
-    async fn stream(&self, request: Request) -> Result<Self::Stream, Error> {
-        for message in request.messages.as_slice() {
-            for part in &message.content {
-                if let Some(value) = part.data.get("value").and_then(serde_json::Value::as_str) {
-                    println!("{:?}: {value}", message.role);
-                }
-            }
-        }
-        let mut message = Message::new(Role::Assistant);
-        message.content.push(Part {
-            r#type: "text".into(),
-            data: json!({"value":"天气晴朗，适合规划露营。"})
-                .as_object()
-                .unwrap()
-                .clone(),
-        });
-        Ok(stream::iter(vec![Ok(Event::Complete {
-            message,
-            usage: None,
-            finish_reason: Some("stop".into()),
-        })]))
-    }
-}
-
 #[tokio::main]
 async fn main() -> Result<(), Error> {
+    dotenvy::dotenv().ok();
     // Each backend initializes its own internal storage. The composition step
     // only combines the already-created short and long capabilities.
     let short = core::memory::short::InMemory::new();
@@ -130,7 +101,24 @@ async fn main() -> Result<(), Error> {
         )
         .await?;
 
-    let agent = agent::chat().model(Model).memory(memory.clone()).build()?;
+    let provider =
+        DeepSeek::builder()
+            .base_url(
+                std::env::var("DEEPSEEK_BASE_URL")
+                    .unwrap_or_else(|_| "https://api.deepseek.com".into()),
+            )
+            .api_key(std::env::var("DEEPSEEK_API_KEY").map_err(|_| {
+                Error::new("AUTHENTICATION", "DEEPSEEK_API_KEY is required in .env")
+            })?)
+            .build()?;
+    let chat_model = provider.chat(halo::agent::model::chat::Config::new(
+        std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-flash".into()),
+    ))?;
+    let agent = agent::chat()
+        .model(chat_model)
+        .system_prompt("结合短期历史和长期记忆回答用户问题。")
+        .memory(memory.clone())
+        .build()?;
     let input = Input {
         metadata: json!({"tenant_id":1,"user_id":2,"agent_id":3,"session_id":101,"chat_id":202})
             .as_object()

@@ -17,9 +17,9 @@ pub(crate) use checkpoint::{
 };
 use tools::decode_call;
 #[doc(hidden)]
-pub use tools::execute_subagent;
-#[doc(hidden)]
-pub use tools::execute_tool_batch;
+#[cfg(test)]
+pub(crate) use tools::execute_subagent;
+pub(crate) use tools::execute_tool_batch;
 
 pub(crate) type CompletionFuture =
     Pin<Box<dyn Future<Output = Result<Event, Error>> + Send + 'static>>;

@@ -41,7 +41,7 @@ pub(crate) trait Loader: Send + Sync {
     fn discover(&self, cancellation: Cancellation) -> DiscoveryFuture;
 }
 
-/// Adapts one concrete `skill::Loader` and keeps its versioned catalog cache.
+/// Adapts one concrete `skill::Loader` and keeps its versioned list cache.
 pub(crate) mod adapter {
     use std::sync::Arc;
     use tokio::sync::RwLock;
@@ -83,7 +83,7 @@ impl<S: crate::components::skill::Loader + 'static> Loader for adapter::Loader<S
     }
 }
 
-/// A catalog definition whose body is read from its Loader by name.
+/// A Skill definition whose body is read from its Loader by name.
 struct Loaded<S> {
     loader: Arc<S>,
     definition: SkillDefinition,
