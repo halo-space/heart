@@ -373,7 +373,7 @@ async fn real_workflow_agent_waits_for_approval_then_resumes_the_live_tool_step(
     let worker = agent::react()
         .model(model)
         .system_prompt(
-            "必须调用 current_time 获取真实 Unix 时间戳。等待用户批准后才能执行工具；最终回答只能使用工具返回的时间戳。",
+            "第一步必须直接发起一次 current_time 工具调用，arguments 必须为空对象，不要先输出解释文字。该工具需要用户批准，批准前不能执行；批准后只使用工具返回的真实 Unix 时间戳回答。",
         )
         .tools(ApprovalClock(Arc::clone(&calls)))
         .permission(AskForApproval)

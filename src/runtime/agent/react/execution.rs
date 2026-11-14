@@ -667,19 +667,26 @@ pub(super) fn cancel_active<M: Chat>(state: &mut ReActState<M>) {
 pub(super) fn waiting_on_feedback<M: Chat>(state: &ReActState<M>) -> bool {
     // Selection creates Steps for the whole Tool batch. Calls still queued
     // behind a suspended call are not executing and cannot retain admission.
-    !state.waits.is_empty()
-        && !state.steps.iter().any(|step| {
-            step.status == crate::runtime::agent::node::status::step::Status::Running
-                && !(step.kind == "agent"
-                    && state
-                        .interaction
-                        .as_ref()
-                        .is_some_and(|run| run.children_blocked()))
-                && !state
-                    .pending_calls
-                    .iter()
-                    .any(|(_, call)| step.call_id.as_deref() == Some(call.call_id.as_str()))
-        })
+    let child_waiting = state
+        .child_nodes
+        .values()
+        .any(|node| node.status == Status::Waiting);
+    let nested_waiting = state.root.waiting();
+    nested_waiting
+        || child_waiting
+        || (!state.waits.is_empty()
+            && !state.steps.iter().any(|step| {
+                step.status == crate::runtime::agent::node::status::step::Status::Running
+                    && !(step.kind == "agent"
+                        && state
+                            .interaction
+                            .as_ref()
+                            .is_some_and(|run| run.children_blocked()))
+                    && !state
+                        .pending_calls
+                        .iter()
+                        .any(|(_, call)| step.call_id.as_deref() == Some(call.call_id.as_str()))
+            }))
 }
 
 pub(super) fn usage<M: Chat>(state: &ReActState<M>) -> Option<crate::model::token::Usage> {

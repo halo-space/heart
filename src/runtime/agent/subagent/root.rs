@@ -43,6 +43,23 @@ impl Root {
             })
             .unwrap_or(0)
     }
+
+    /// Whether any nested execution is waiting, including waits that are not
+    /// user feedback yet. The parent checkpoint must preserve this scene as
+    /// waiting so a nested Agent is not reported as a completed parent run.
+    pub(crate) fn waiting(&self) -> bool {
+        self.0
+            .lock()
+            .expect("root execution lock poisoned")
+            .as_ref()
+            .and_then(|execution| execution.attempts.last())
+            .is_some_and(|attempt| {
+                attempt
+                    .nodes
+                    .values()
+                    .any(|node| node.status == Status::Waiting)
+            })
+    }
     pub(crate) fn restore(snapshot: &Value) -> Result<Self, Error> {
         let execution: Option<crate::runtime::agent::node::Execution> = snapshot
             .get("execution")

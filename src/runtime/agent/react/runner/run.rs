@@ -36,7 +36,15 @@ pub(crate) fn next_react_progress<M: Chat + 'static>(state: ReActState<M>) -> Pr
         if !state.done
             && matches!(&result, Ok(Event::Complete { .. }))
             && state.checkpoint.is_some()
-            && let Err(error) = save_checkpoint(&state, checkpoint_snapshot(&state, &result)).await
+            && let Err(error) = save_checkpoint(
+                &state,
+                if execution::waiting_on_feedback(&state) {
+                    waiting_snapshot(&state)
+                } else {
+                    checkpoint_snapshot(&state, &result)
+                },
+            )
+            .await
         {
             state.done = true;
             return Some((Some(Err(error)), state));
@@ -95,10 +103,10 @@ pub(crate) fn next_react_progress<M: Chat + 'static>(state: ReActState<M>) -> Pr
             && matches!(&result, Ok(Event::Complete { .. }))
             && crate::runtime::agent::scope::active()
         {
-            crate::runtime::agent::scope::capture(if state.waits.is_empty() {
-                running_snapshot(&state)
-            } else {
+            crate::runtime::agent::scope::capture(if execution::waiting_on_feedback(&state) {
                 waiting_snapshot(&state)
+            } else {
+                running_snapshot(&state)
             });
         }
         Some((Some(result), state))
@@ -519,10 +527,10 @@ pub(crate) async fn next_react_event_inner<M: Chat + 'static>(
                                     || crate::runtime::agent::scope::active())
                                 && let Err(error) = save_checkpoint(
                                     &state,
-                                    if state.waits.is_empty() {
-                                        running_snapshot(&state)
-                                    } else {
+                                    if execution::waiting_on_feedback(&state) {
                                         waiting_snapshot(&state)
+                                    } else {
+                                        running_snapshot(&state)
                                     },
                                 )
                                 .await
@@ -583,10 +591,10 @@ pub(crate) async fn next_react_event_inner<M: Chat + 'static>(
                     if question || observation.event.is_none() || observation.feedback {
                         if let Err(error) = save_checkpoint(
                             &state,
-                            if state.waits.is_empty() {
-                                running_snapshot(&state)
-                            } else {
+                            if execution::waiting_on_feedback(&state) {
                                 waiting_snapshot(&state)
+                            } else {
+                                running_snapshot(&state)
                             },
                         )
                         .await
@@ -1165,10 +1173,10 @@ pub(crate) async fn next_react_event_inner<M: Chat + 'static>(
                         if save
                             && let Err(error) = save_checkpoint(
                                 &state,
-                                if state.waits.is_empty() {
-                                    running_snapshot(&state)
-                                } else {
+                                if execution::waiting_on_feedback(&state) {
                                     waiting_snapshot(&state)
+                                } else {
+                                    running_snapshot(&state)
                                 },
                             )
                             .await

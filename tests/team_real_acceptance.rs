@@ -182,7 +182,7 @@ async fn real_team_member_failure_returns_to_leader_context() {
             agent::react()
                 .model(chat(&provider).expect("leader model"))
                 .system_prompt(
-                    "你是 Team Leader。必须且只调用一次 team_assign，把完整 agent::Input 任务交给 reviewer。成员可能失败；无论结果如何，都只用一句话报告成员执行结果，不要再次分配任务。",
+                    "你是 Team Leader。禁止调用 plan。必须且只调用一次 team_assign，把完整 agent::Input 任务交给 reviewer。成员可能失败；无论结果如何，都只用一句话报告成员执行结果，不要再次分配任务。",
                 ),
         )
         .member(
@@ -193,8 +193,10 @@ async fn real_team_member_failure_returns_to_leader_context() {
         .with_id_fn(next_id)
         .build()
         .expect("build Team");
+    let mut run_input = input();
+    run_input.payload[0].data = json!({"value":"请让 reviewer 执行一次审查。"});
     let events = team
-        .run(input(), true, Cancellation::new())
+        .run(run_input, true, Cancellation::new())
         .await
         .expect("start Team");
     let tail = tokio::time::timeout(std::time::Duration::from_secs(90), async {
@@ -282,7 +284,7 @@ async fn real_team_planner_task_assigns_member_and_reuses_agent_graph() {
             agent::react()
                 .model(chat(&provider).expect("leader model"))
                 .system_prompt(
-                    "你是 Team Leader。这个任务必须先调用 plan 创建一个单节点计划。计划任务执行时，必须调用 team_assign 把完整 agent::Input 交给 researcher。等待成员完成后，再输出一句汇总。不要在计划外直接调用 team_assign。",
+                    "你是 Team Leader。这个任务必须先调用 plan 创建一个单节点计划：只能有一个节点 task，nodes 只能包含 task，edges 必须是空数组，不得创建任何其他节点或环路。计划任务执行时，必须调用 team_assign 把完整 agent::Input 交给 researcher。等待成员完成后，再输出一句汇总。不要在计划外直接调用 team_assign。",
                 ),
         )
         .member(
@@ -293,8 +295,12 @@ async fn real_team_planner_task_assigns_member_and_reuses_agent_graph() {
         .with_id_fn(next_id)
         .build()
         .expect("build Team");
+    let mut plan_input = input();
+    plan_input.payload[0].data = json!({
+        "value": "请让 researcher 只回复 RESEARCH_OK。"
+    });
     let events = team
-        .run(input(), true, Cancellation::new())
+        .run(plan_input, true, Cancellation::new())
         .await
         .expect("start planned Team");
     let tail = tokio::time::timeout(std::time::Duration::from_secs(120), async {
@@ -497,7 +503,7 @@ async fn real_team_serializes_same_member_tasks_and_runs_other_members_concurren
             agent::react()
                 .model(chat(&provider).expect("leader model"))
                 .system_prompt(
-                    "你是 Team Leader。必须在同一次模型响应中调用 team_assign 三次：前两次 member 必须是 researcher，第三次 member 必须是 coder。每个 input 必须是完整 agent::Input，payload 只有一个 text。等待三次都完成后再汇总，不能漏掉任何一次。",
+                    "你是 Team Leader。禁止调用 plan。必须在同一次模型响应中调用 team_assign 三次：前两次 member 必须是 researcher，第三次 member 必须是 coder。每个 input 必须是完整 agent::Input，payload 只有一个 text。等待三次都完成后再汇总，不能漏掉任何一次。",
                 ),
         )
         .member(SubAgent::new("researcher", researcher).unwrap())
@@ -507,8 +513,11 @@ async fn real_team_serializes_same_member_tasks_and_runs_other_members_concurren
         .build()
         .expect("build Team");
 
+    let mut run_input = input();
+    run_input.payload[0].data =
+        json!({"value":"请 researcher 做两次独立研究，再让 coder 做一次编码。"});
     let mut events = team
-        .run(input(), true, Cancellation::new())
+        .run(run_input, true, Cancellation::new())
         .await
         .expect("start Team");
     let mut member_execs = 0usize;
