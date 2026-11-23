@@ -41,7 +41,9 @@ impl Engine {
         let status = match result {
             Err(error) if error.code == "WAITING" => return Ok(()),
             Ok(_) => crate::memory::short::chat::Status::Completed,
-            Err(error) if error.code == "CANCELLED" => crate::memory::short::chat::Status::Stopped,
+            Err(error) if error.code == "CANCELLED" => {
+                crate::memory::short::chat::Status::Cancelled
+            }
             Err(_) => crate::memory::short::chat::Status::Failed,
         };
         run.settle(self.state.usage.clone());

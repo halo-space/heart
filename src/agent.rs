@@ -5,7 +5,7 @@
 //! consumed by those implementations.
 
 pub use crate::cancellation::Cancellation;
-pub use crate::components::agent::{Agent, Error, Input, Payload};
+pub use crate::components::agent::{Agent, Error, Input, Payload, Status, View};
 pub use crate::components::message::{Message, Messages};
 /// Concrete model providers are part of the Agent-facing implementation
 /// namespace. The provider implementations themselves remain under `core`;
@@ -87,11 +87,11 @@ pub mod workflow {
     pub use crate::runtime::workflow::*;
 }
 
-/// Serializable Agent execution graph facts for integrations that need to
-/// inspect or persist the runtime projection. Execution ownership remains in
-/// `runtime`; this is the stable `halo::agent` namespace for the public data.
+/// Serializable static graph facts for integrations that need to inspect or
+/// persist the Agent projection. Mutable execution ownership remains inside
+/// `runtime::agent`.
 pub mod graph {
-    pub use crate::runtime::agent::graph::*;
+    pub use crate::runtime::agent::graph::{History, State};
 }
 
 /// Public waiting data and reply helpers used by channel integrations.

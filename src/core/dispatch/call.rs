@@ -13,18 +13,23 @@ impl Dispatch {
         cancellation: &Cancellation,
     ) -> Result<(Message, Evaluation), Error> {
         let prepared = self.prepared(cancellation).await?;
-        let (call, message) = prepared.call(call, cancellation).await?;
+        let call = prepared.prepare_call(call, cancellation).await?;
+        let (call, message) = prepared.invoke(call, cancellation).await?;
+        let (call, message) = prepared.finish(call, message, cancellation).await?;
         let evaluation = prepared.evaluate(&call, &message, cancellation).await?;
         Ok((message, evaluation))
     }
 
+    /// Run validation, before and call for the internal direct-dispatch tests
+    /// and callers that intentionally stop before the after hook.
+    #[cfg(test)]
     pub(crate) async fn call(
         &self,
         call: Call,
         cancellation: &Cancellation,
     ) -> Result<(Call, Message), Error> {
-        self.advance_call(crate::core::lifecycle::Phase::Before, call, cancellation)
-            .await
+        let call = self.prepare_call(call, cancellation).await?;
+        self.invoke(call, cancellation).await
     }
 
     pub(crate) async fn prepare_call(
@@ -39,40 +44,6 @@ impl Dispatch {
             .ok_or_else(|| Error::new("NOT_FOUND", "tool is not registered"))?;
         crate::cancellation::cancellable(tool.prepare(call, cancellation.clone()), cancellation)
             .await
-    }
-
-    async fn advance_call(
-        &self,
-        phase: crate::core::lifecycle::Phase,
-        call: Call,
-        cancellation: &Cancellation,
-    ) -> Result<(Call, Message), Error> {
-        use crate::core::lifecycle::{Methods, Phase, advance};
-        let (call, message) = advance(
-            phase,
-            Phase::Complete,
-            call,
-            None,
-            Methods {
-                before: |call| self.prepare_call(call, cancellation),
-                call: |call| async {
-                    self.invoke(call, cancellation)
-                        .await
-                        .map(|(_, message)| message)
-                },
-                after: |call, message| async {
-                    self.finish(call, message, cancellation)
-                        .await
-                        .map(|(_, message)| message)
-                },
-                // Standalone tool calls have no Runtime owner.
-                // They do not persist recovery facts or attempt stage retries.
-                commit: |_: Phase, _: &Call, _: Option<&Message>| async { Ok(()) },
-            },
-            cancellation,
-        )
-        .await?;
-        Ok((call, message.expect("completed Tool call has a result")))
     }
 
     // Native Agent Steps retain each successful boundary before entering the

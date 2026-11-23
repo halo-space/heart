@@ -17,7 +17,7 @@ pub mod team;
 
 pub(crate) mod checkpoint;
 pub mod completion;
-pub mod graph;
+pub(crate) mod graph;
 pub(crate) mod model_steps;
 pub mod node;
 pub mod permission;

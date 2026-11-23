@@ -1,5 +1,4 @@
 use halo::agent::{self, Agent, Cancellation, Input};
-use halo::agent::{graph::Graph, state::node::status::Status};
 
 fn configured_chat() -> halo::agent::provider::vllm::chat::Chat {
     let provider = halo::agent::provider::vllm::Vllm::builder()
@@ -30,7 +29,7 @@ fn react_and_configured_tools_are_agent_assembly_not_runtime_kinds() {
 }
 
 #[test]
-fn runtime_graph_keeps_execution_state_and_its_existing_json_shape() {
+fn agent_graph_projection_keeps_the_static_plan_json_shape() {
     use halo::agent::plan::{Plan, PlanNode};
     let mut plan = Plan::new(1).unwrap();
     plan.add(
@@ -43,13 +42,13 @@ fn runtime_graph_keeps_execution_state_and_its_existing_json_shape() {
         vec![],
     )
     .unwrap();
-    let graph = Graph::new(plan).unwrap();
-    assert_eq!(graph.state("a").unwrap().status, Status::Ready);
+    let graph = halo::agent::graph::State { plan };
     let json = serde_json::to_value(&graph).unwrap();
     assert_eq!(json["plan"]["nodes"]["a"]["name"], "search");
-    assert_eq!(json["nodes"]["a"]["status"], "ready");
-    assert_eq!(json["nodes"]["a"]["execution"], serde_json::Value::Null);
-    assert_eq!(serde_json::from_value::<Graph>(json).unwrap(), graph);
+    assert_eq!(
+        serde_json::from_value::<halo::agent::graph::State>(json).unwrap(),
+        graph
+    );
 }
 
 #[test]

@@ -233,6 +233,12 @@ impl Plan {
         from: Vec<String>,
         to: Vec<String>,
     ) -> Result<(), Error> {
+        // `update` changes one logical node while preserving its complete
+        // downstream closure. Removing a successor is a graph deletion and
+        // must go through `delete`, which intentionally cascades. Keeping
+        // this check here prevents a partial update from leaving an old
+        // descendant detached with stale execution semantics.
+        let old_downstream = downstream(self, node_id)?;
         let mut candidate = self.clone();
         if node.node_id != node_id || !candidate.nodes.contains_key(node_id) {
             return Err(Error::new("NOT_FOUND", "plan node to update was not found"));
@@ -250,6 +256,14 @@ impl Plan {
             to: target,
         }));
         candidate.validate()?;
+
+        let new_downstream = downstream(&candidate, node_id)?;
+        if old_downstream.difference(&new_downstream).next().is_some() {
+            return Err(Error::new(
+                "INVALID_ARGUMENTS",
+                "plan update must preserve the complete downstream closure",
+            ));
+        }
         *self = candidate;
         Ok(())
     }
@@ -259,15 +273,7 @@ impl Plan {
             return Err(Error::new("NOT_FOUND", "plan node to delete was not found"));
         }
         let mut candidate = self.clone();
-        let mut descendants = BTreeSet::from([node_id.to_owned()]);
-        let mut queue = VecDeque::from([node_id.to_owned()]);
-        while let Some(current) = queue.pop_front() {
-            for edge in &candidate.edges {
-                if edge.from == current && descendants.insert(edge.to.clone()) {
-                    queue.push_back(edge.to.clone());
-                }
-            }
-        }
+        let descendants = downstream(&candidate, node_id)?;
         candidate.nodes.retain(|key, _| !descendants.contains(key));
         candidate
             .edges
@@ -276,6 +282,28 @@ impl Plan {
         *self = candidate;
         Ok(())
     }
+}
+
+/// Return a node and every reachable successor in the plan's directed graph.
+/// The result is used by both update and delete so their closure semantics
+/// stay identical.
+fn downstream(plan: &Plan, node_id: &str) -> Result<BTreeSet<String>, Error> {
+    if !plan.nodes.contains_key(node_id) {
+        return Err(Error::new(
+            "NOT_FOUND",
+            "plan node to traverse was not found",
+        ));
+    }
+    let mut descendants = BTreeSet::from([node_id.to_owned()]);
+    let mut queue = VecDeque::from([node_id.to_owned()]);
+    while let Some(current) = queue.pop_front() {
+        for edge in &plan.edges {
+            if edge.from == current && descendants.insert(edge.to.clone()) {
+                queue.push_back(edge.to.clone());
+            }
+        }
+    }
+    Ok(descendants)
 }
 
 /// Return one complete logical DAG from the original Agent input, optional

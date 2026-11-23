@@ -1,4 +1,4 @@
-use heart::{Cancellation, Error};
+use heart::agent::{Cancellation, Error};
 use serde::{Deserialize, Serialize};
 use schemars::JsonSchema;
 

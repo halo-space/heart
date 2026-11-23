@@ -1,6 +1,6 @@
 //! A plain async Rust function adapted to Heart's existing Tool contract.
 
-use halo::Cancellation;
+use halo::agent::Cancellation;
 use halo::agent::{Error, tool::Call};
 use serde_json::json;
 

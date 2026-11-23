@@ -253,7 +253,7 @@ fn expand_tool(
     } else {
         quote! {
             let output = #root::__tool::serde_json::to_value(output).map_err(|error| {
-                #root::Error::new("SERIALIZATION", "tool output could not be serialized")
+                #root::agent::Error::new("SERIALIZATION", "tool output could not be serialized")
                     .with_details(error.to_string())
             })?;
             #root::agent::Message::function(output)
@@ -309,13 +309,13 @@ fn expand_tool(
             async fn call(
                 &self,
                 call: &#root::agent::tool::Call,
-                cancellation: &#root::Cancellation,
-            ) -> ::std::result::Result<#root::agent::Message, #root::Error> {
+                cancellation: &#root::agent::Cancellation,
+            ) -> ::std::result::Result<#root::agent::Message, #root::agent::Error> {
                 let parsed: #args_type = #root::__tool::serde_json::from_value(
                     #root::__tool::serde_json::Value::Object(call.arguments.clone()),
                 )
                 .map_err(|error| {
-                    #root::Error::new("INVALID_ARGUMENTS", "tool arguments could not be decoded")
+                    #root::agent::Error::new("INVALID_ARGUMENTS", "tool arguments could not be decoded")
                         .with_details(error.to_string())
                 })?;
                 #call
@@ -668,7 +668,7 @@ fn expand_impl(
     Ok(quote!(
         #implementation
         impl #root::agent::node::Node<#input, #output, #error> for #ty {
-            async fn call(&self, input: #input, cancellation: &#root::Cancellation)
+            async fn call(&self, input: #input, cancellation: &#root::agent::Cancellation)
                 -> ::std::result::Result<#root::agent::node::Signal<#output>, #error>
             { #result }
         }

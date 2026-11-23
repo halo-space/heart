@@ -340,7 +340,7 @@ Available provider implementations include DeepSeek, VLLM/OpenAI-compatible, Ope
 For a plain async Rust function, `#[halo::tool]` generates an adapter for the existing Tool contract:
 
 ```rust
-use halo::Cancellation;
+use halo::agent::Cancellation;
 use halo::agent::Error;
 
 #[halo::tool(description = "Look up the weather for a city")]
@@ -410,7 +410,7 @@ let agent = halo::harness::builder()
 
 let item = halo::harness::state::Item { /* ... */ };
 let change = halo::harness::state::Change { /* ... */ };
-agent.refine(item, change, &halo::Cancellation::new()).await?;
+agent.refine(item, change, &halo::agent::Cancellation::new()).await?;
 ```
 
 Each accepted refinement creates one new version and keeps the previous JSON

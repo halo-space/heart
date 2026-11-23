@@ -116,6 +116,15 @@ fn content_uses_the_canonical_nested_part_path() {
 }
 
 #[test]
+fn part_object_preserves_objects_and_wraps_scalar_values() {
+    let object = halo::agent::model::content::part::object(json!({"value": "ok"}));
+    assert_eq!(object["value"], "ok");
+
+    let scalar = halo::agent::model::content::part::object(json!("ok"));
+    assert_eq!(scalar["value"], "ok");
+}
+
+#[test]
 fn integration_components_are_implementable_without_runtime_state() {
     struct Skill;
     impl halo::agent::skill::Skill for Skill {

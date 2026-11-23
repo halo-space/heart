@@ -7,17 +7,15 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+use crate::runtime::agent::graph::{Graph, Start};
 use futures_executor::block_on;
 use futures_util::{StreamExt, poll, stream::FuturesUnordered};
 use halo::agent::{Cancellation, Error, Message, Messages};
 use halo::{
     agent::function::Function,
     agent::plan::Plan,
+    agent::state::node::status::Status,
     agent::tool::{self, Call, Tool, ToolDefinition},
-    agent::{
-        graph::{Graph, Start},
-        state::node::status::Status,
-    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;

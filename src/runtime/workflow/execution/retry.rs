@@ -4,6 +4,8 @@
 
 use super::subgraph::{SubgraphScenes, retry_graph_state, run_subgraph};
 use super::*;
+use crate::Cancellation;
+use std::time::Duration;
 
 pub(super) fn committed_tool_facts(execution: &node::Execution) -> node::Attempt {
     let mut committed = std::collections::BTreeMap::new();
@@ -94,6 +96,30 @@ pub(super) fn cancelled_observations(state: &graph::State) -> Vec<crate::event::
         }
     }
     events
+}
+
+async fn wait_retry(
+    policy: &crate::middleware::RetryPolicy,
+    idx: u32,
+    cancellation: &Cancellation,
+) -> Result<(), Error> {
+    crate::cancellation::check(cancellation)?;
+    let cap = policy.delay(idx).as_millis() as u64;
+    let min = policy.min_delay_ms.min(cap);
+    let delay = rand::random_range(min..=cap);
+    if delay > 0 {
+        tokio::runtime::Handle::try_current()
+            .map_err(|_| Error::new("UNAVAILABLE", "retry backoff requires a Tokio runtime"))?;
+        crate::cancellation::cancellable(
+            async {
+                tokio::time::sleep(Duration::from_millis(delay)).await;
+                Ok(())
+            },
+            cancellation,
+        )
+        .await?;
+    }
+    crate::cancellation::check(cancellation)
 }
 
 // The final argument is the already committed ToolNode context restored from
@@ -488,9 +514,7 @@ pub(crate) fn invoke_with_retry(
                             graph: None,
                         };
                     }
-                    if let Err(error) =
-                        crate::core::middleware::wait(&retry_policy, idx, &cancellation).await
-                    {
+                    if let Err(error) = wait_retry(&retry_policy, idx, &cancellation).await {
                         // Waiting does not constitute a new actual Attempt. Keep
                         // the original failed Attempt and report run cancellation
                         // or a timer setup error separately.

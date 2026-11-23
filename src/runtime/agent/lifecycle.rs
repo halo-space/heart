@@ -2,8 +2,8 @@
 //! a copy of the actual owner facts, not a new store or component Context.
 use std::future::Future;
 
-use crate::core::lifecycle::{Methods, Phase, advance};
 use crate::runtime::agent::{node::Step, reply};
+use crate::runtime::lifecycle::{Methods, Phase, advance};
 use crate::{Cancellation, Error, Message, tool::Call};
 
 use super::{
@@ -166,7 +166,7 @@ where
         cancellation,
     )
     .await?;
-    let effective = crate::core::lifecycle::prepare(
+    let effective = crate::runtime::lifecycle::prepare(
         phase,
         call.clone(),
         |call| async {

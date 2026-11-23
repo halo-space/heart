@@ -431,3 +431,7 @@ impl Handle {
 #[cfg(test)]
 #[path = "../../../tests/unit/embedded/src_runtime_agent_reply_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../../tests/unit/embedded/src_runtime_agent_external_reply_tests.rs"]
+mod external_reply_tests;

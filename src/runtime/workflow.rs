@@ -41,7 +41,7 @@ pub mod builder {
     }
 
     pub fn from_dsl(
-        document: crate::core::workflow::dsl::Document,
+        document: crate::runtime::workflow::dsl::Document,
     ) -> Result<Builder, super::GraphError> {
         Builder::from_dsl(document)
     }
@@ -52,6 +52,8 @@ pub mod builder {
 pub mod dsl {
     pub use crate::core::workflow::dsl::*;
 }
+
+pub(crate) use crate::core::workflow::code::Code;
 
 type CheckpointSave = Arc<
     dyn Fn(
@@ -124,8 +126,8 @@ impl Runtime {
     ///
     /// This is hidden from the stable application API and exists for
     /// integration-level runtime verification outside the library crate.
-    #[doc(hidden)]
-    pub async fn execute(
+    #[cfg(test)]
+    pub(crate) async fn execute(
         &mut self,
         initial: Messages,
         ids: Arc<dyn Fn() -> i64 + Send + Sync>,
@@ -211,26 +213,24 @@ impl Runtime {
     pub fn state(&mut self) -> &State {
         &self.engine_mut().state
     }
-    /// Low-level mutable access retained for in-crate orchestration and
-    /// recovery tests. Application code should use `run`, `reply` and
-    /// `snapshot` so the Runtime remains the single state owner.
-    #[doc(hidden)]
-    pub fn state_mut(&mut self) -> &mut State {
+    /// Low-level mutable access for in-crate orchestration and recovery tests.
+    #[cfg(test)]
+    pub(crate) fn state_mut(&mut self) -> &mut State {
         &mut self.engine_mut().state
     }
-    #[doc(hidden)]
-    pub fn ready_nodes(&mut self) -> Vec<String> {
+    #[cfg(test)]
+    pub(crate) fn ready_nodes(&mut self) -> Vec<String> {
         self.engine_mut().ready_nodes()
     }
-    #[doc(hidden)]
-    pub fn start_batch(
+    #[cfg(test)]
+    pub(crate) fn start_batch(
         &mut self,
         executions: Vec<(String, i64, Vec<ExecutionRef>)>,
     ) -> Result<(), Error> {
         self.engine_mut().start_batch(executions)
     }
-    #[doc(hidden)]
-    pub fn complete(
+    #[cfg(test)]
+    pub(crate) fn complete(
         &mut self,
         node_id: &str,
         exec_id: i64,
@@ -239,23 +239,15 @@ impl Runtime {
     ) -> Result<(), Error> {
         self.engine_mut().complete(node_id, exec_id, messages, to)
     }
-    #[doc(hidden)]
-    pub fn fail(&mut self, node_id: &str, exec_id: i64, error: Error) -> Result<(), Error> {
-        self.engine_mut().fail(node_id, exec_id, error)
-    }
-    #[doc(hidden)]
-    pub fn cancel(&mut self, node_id: &str, exec_id: i64) -> Result<(), Error> {
-        self.engine_mut().cancel(node_id, exec_id)
-    }
     /// Internal state transition used by the runtime after a `reply`.
     ///
     /// Applications submit external feedback through [`Runtime::reply`].
-    #[doc(hidden)]
-    pub fn resume(&mut self, node_id: &str, response: Messages) -> Result<(), Error> {
+    #[cfg(test)]
+    pub(crate) fn resume(&mut self, node_id: &str, response: Messages) -> Result<(), Error> {
         self.engine_mut().resume(node_id, response)
     }
-    #[doc(hidden)]
-    pub fn advance_step(&mut self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn advance_step(&mut self) -> bool {
         self.engine_mut().advance_step()
     }
     pub fn snapshot(&self) -> Result<Value, Error> {
@@ -367,3 +359,23 @@ pub(super) use execution::{attempt_question, messages_to_agent_input};
 #[cfg(test)]
 #[path = "../../tests/unit/embedded/src_runtime_workflow_runtime_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../tests/support/workflow.rs"]
+mod workflow_support;
+
+#[cfg(test)]
+#[path = "../../tests/unit/embedded/src_runtime_workflow_batch_tests.rs"]
+mod batch_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/embedded/src_runtime_agent_preparation_recovery_tests.rs"]
+mod agent_preparation_recovery_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/embedded/src_runtime_lifecycle_ownership_tests.rs"]
+mod lifecycle_ownership_tests;
+
+#[cfg(test)]
+#[path = "../../tests/unit/embedded/src_runtime_workflow_graph_retry_tests.rs"]
+mod graph_retry_tests;

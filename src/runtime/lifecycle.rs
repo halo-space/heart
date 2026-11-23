@@ -136,5 +136,5 @@ fn check<E: From<Error>>(cancellation: &Cancellation) -> Result<(), E> {
 }
 
 #[cfg(test)]
-#[path = "../../tests/unit/embedded/src_core_lifecycle_tests.rs"]
+#[path = "../../tests/unit/embedded/src_runtime_lifecycle_tests.rs"]
 mod tests;

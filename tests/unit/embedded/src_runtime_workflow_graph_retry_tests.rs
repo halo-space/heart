@@ -1,6 +1,4 @@
-#[path = "support/workflow.rs"]
-mod workflow_support;
-use workflow_support::run_workflow;
+use super::workflow_support::run_workflow;
 
 use std::sync::{
     Arc,

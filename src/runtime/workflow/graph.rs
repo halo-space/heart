@@ -293,7 +293,7 @@ pub type GraphError = Error;
 pub struct Builder {
     definition_id: String,
     max_nodes: usize,
-    dsl_nodes: BTreeMap<String, crate::core::workflow::dsl::Node>,
+    dsl_nodes: BTreeMap<String, crate::runtime::workflow::dsl::Node>,
     nodes: BTreeMap<String, NodeDefinition>,
     codecs: BTreeMap<String, (bool, bool)>,
     executors: BTreeMap<String, Arc<dyn ErasedNode>>,
@@ -332,7 +332,7 @@ impl Builder {
     /// Agents, Tools and child Workflows are bound explicitly through the
     /// `bind_*` methods below; no name lookup table or dynamic registry is
     /// created.
-    pub fn from_dsl(document: crate::core::workflow::dsl::Document) -> Result<Self, GraphError> {
+    pub fn from_dsl(document: crate::runtime::workflow::dsl::Document) -> Result<Self, GraphError> {
         document
             .validate()
             .map_err(|error| GraphError::new(&error.code, error.message))?;
@@ -462,7 +462,7 @@ impl Builder {
         let node_id = node_id.into();
         self.require_dsl_type(&node_id, "function")?;
         let declaration = self.dsl_node(&node_id)?;
-        let code = crate::core::workflow::code::Code::from_dsl(sandbox, declaration)
+        let code = crate::runtime::workflow::Code::from_dsl(sandbox, declaration)
             .map_err(|error| GraphError::new(&error.code, error.message))?;
         self.add_node_with_schema(
             node_id,
@@ -1196,7 +1196,7 @@ impl Builder {
             .ok_or_else(|| GraphError::new("UNKNOWN_NODE", format!("unknown node: {node_id}")))
     }
 
-    fn dsl_node(&self, node_id: &str) -> Result<&crate::core::workflow::dsl::Node, GraphError> {
+    fn dsl_node(&self, node_id: &str) -> Result<&crate::runtime::workflow::dsl::Node, GraphError> {
         self.dsl_nodes.get(node_id).ok_or_else(|| {
             GraphError::new(
                 "UNKNOWN_NODE",

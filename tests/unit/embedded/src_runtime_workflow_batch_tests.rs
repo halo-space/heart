@@ -1,8 +1,7 @@
 //! Generic batch semantics without special Node kinds or candidate executions.
 //! The Node owns its private successful-item cache; Runtime owns the one
 //! execution, retry Attempts and all-or-nothing downstream submission.
-#[path = "support/workflow.rs"]
-mod workflow_support;
+use super::workflow_support::run_workflow;
 use futures_executor::block_on;
 use futures_util::{StreamExt, stream};
 use halo::agent::workflow::{
@@ -17,7 +16,6 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicI64, AtomicUsize, Ordering},
 };
-use workflow_support::run_workflow;
 
 #[derive(Clone, Deserialize, Serialize, JsonSchema)]
 struct Tasks {

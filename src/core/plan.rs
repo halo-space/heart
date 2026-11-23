@@ -25,7 +25,7 @@ pub struct Planner<C> {
 
 // Harness uses the same Planner request/decoder while forwarding each model
 // Event, rather than using the single-result convenience method and losing it.
-pub(crate) fn stream_request(
+pub fn stream_request(
     query: &Input,
     current_plan: Option<&Plan>,
     feedback: Option<&Messages>,
@@ -59,7 +59,7 @@ fn input(
     ]))
 }
 
-pub(crate) fn decode_plan(message: &Message) -> Result<Plan, Error> {
+pub fn decode_plan(message: &Message) -> Result<Plan, Error> {
     let plan: Plan = super::structured::decode(message)?;
     plan.validate()?;
     Ok(plan)

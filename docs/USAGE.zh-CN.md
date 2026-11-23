@@ -536,7 +536,7 @@ Tool 必须提供稳定 `ToolDefinition` 和异步 `call`；参数 Schema 根必
 如果工具只是一个普通的异步 Rust 函数，可以使用 `#[halo::tool]` 生成现有 Tool 契约的包装器：
 
 ```rust
-use halo::Cancellation;
+use halo::agent::Cancellation;
 use halo::agent::Error;
 
 #[halo::tool(description = "查询指定城市天气")]
@@ -663,7 +663,7 @@ let agent = halo::harness::builder()
 
 let item = halo::harness::state::Item { /* ... */ };
 let change = halo::harness::state::Change { /* ... */ };
-agent.refine(item, change, &halo::Cancellation::new()).await?;
+agent.refine(item, change, &halo::agent::Cancellation::new()).await?;
 ```
 
 每次接受的 Refinement 都会生成一个新版本，旧 JSON 快照保留在 Workspace 中。模型适配器

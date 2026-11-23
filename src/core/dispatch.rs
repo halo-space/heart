@@ -1,9 +1,10 @@
-//! Internal assembly for the Agent's Tool, MCP, Skill and Workspace views.
+//! Core assembly for the Agent's Tool, MCP, Skill and Workspace views.
 //!
 //! The concrete adapters are split by responsibility: `dispatch::tool` owns
 //! executable Tool/MCP/Workspace tools, while `skill::load` and
 //! `skill::reader` own Skill discovery and instruction reading. This module
-//! only combines them.
+//! only combines them. Runtime consumes this concrete Core entry point, while
+//! application code normally uses the Agent and Workspace builders above it.
 
 mod call;
 mod inputs;
@@ -24,14 +25,13 @@ use crate::components::tool::Tool;
 use crate::components::tool::{Call, Evaluation, ToolDefinition, validate_call};
 use crate::core::skill::{load, reader};
 use crate::workspace::Workspace;
-pub(crate) use inputs::ToolInputs;
+pub use inputs::ToolInputs;
 
-/// Internal dispatch table for heterogeneous Tools, MCP servers and Skills.
+/// Core dispatch table for heterogeneous Tools, MCP servers and Skills.
 ///
-/// This type is an implementation detail. It is never the public way to
-/// configure an Agent or Workspace. Public callers mount each concrete kind
-/// with `.tools(...)`, `.mcps(...)` and `.skills(...)`; this table only keeps
-/// their tools together while an Agent runs. One shared `skill`
+/// It is not the application-level Agent or Workspace builder. Public callers
+/// mount each concrete kind with `.tools(...)`, `.mcps(...)` and `.skills(...)`;
+/// this table keeps their tools together while an Agent runs. One shared `skill`
 /// Tool can return a selected Skill's full instructions; the other Tools and
 /// MCP servers remain independently defined and executable. Cloning the table
 /// shares configured tools and Workspace-owned Skill loader caches; it does not

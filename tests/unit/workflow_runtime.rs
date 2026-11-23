@@ -1022,7 +1022,7 @@ fn workflow_memory_closes_failed_and_cancelled_runs_with_state() {
         ),
         (
             "cancel",
-            halo::agent::memory::short::chat::Status::Stopped,
+            halo::agent::memory::short::chat::Status::Cancelled,
             "cancelled",
         ),
     ] {

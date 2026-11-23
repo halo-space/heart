@@ -307,7 +307,8 @@ impl Engine {
         self.state.ready_nodes(self.definition())
     }
 
-    pub fn start_batch(
+    #[cfg(test)]
+    pub(crate) fn start_batch(
         &mut self,
         executions: Vec<(String, i64, Vec<ExecutionRef>)>,
     ) -> Result<(), Error> {
@@ -315,7 +316,8 @@ impl Engine {
         self.state.start_batch(&definition, executions)
     }
 
-    pub fn complete(
+    #[cfg(test)]
+    pub(crate) fn complete(
         &mut self,
         node_id: &str,
         exec_id: i64,
@@ -328,22 +330,11 @@ impl Engine {
         Ok(())
     }
 
-    pub fn fail(&mut self, node_id: &str, exec_id: i64, error: Error) -> Result<(), Error> {
-        self.state.fail_execution(node_id, exec_id, error)?;
-        self.state.recompute_usage();
-        Ok(())
-    }
-
-    pub fn cancel(&mut self, node_id: &str, exec_id: i64) -> Result<(), Error> {
-        self.state.cancel_execution(node_id, exec_id)?;
-        self.state.recompute_usage();
-        Ok(())
-    }
-
     /// Submits the external response for an active wait. The next `run` call
     /// resumes the same execution and Attempt; it does not allocate a new
     /// `exec_id`.
-    pub fn resume(&mut self, node_id: &str, response: Messages) -> Result<(), Error> {
+    #[cfg(test)]
+    pub(crate) fn resume(&mut self, node_id: &str, response: Messages) -> Result<(), Error> {
         self.state.resume(node_id, response)
     }
 
@@ -447,7 +438,8 @@ impl Engine {
         Ok(())
     }
 
-    pub fn advance_step(&mut self) -> bool {
+    #[cfg(test)]
+    pub(crate) fn advance_step(&mut self) -> bool {
         self.state.advance_step()
     }
 

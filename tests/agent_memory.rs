@@ -685,7 +685,7 @@ fn running_failed_stopped_incomplete_and_current_chats_are_not_replayed() {
     for (index, status) in [
         chat::Status::Running,
         chat::Status::Failed,
-        chat::Status::Stopped,
+        chat::Status::Cancelled,
     ]
     .into_iter()
     .enumerate()

@@ -3,8 +3,7 @@ use crate::runtime::agent::node::status::Status;
 use crate::runtime::agent::node::{State, Step};
 use crate::{
     Cancellation, Error, Message,
-    components::agent::{Agent, Input},
-    components::node::View,
+    components::agent::{Agent, Input, View},
     event::Event,
     message::Role,
     model::token::{InputDetails, OutputDetails, Usage},

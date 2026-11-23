@@ -7,11 +7,12 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
+use crate::runtime::agent::graph::Graph;
 use halo::agent::{Cancellation, Message, Messages};
 use halo::{
     agent::checkpoint::Checkpoint as _,
     agent::core,
-    agent::graph::{Graph, State as PlanState},
+    agent::graph::State as PlanState,
     agent::message::Role,
     agent::model::Error as ModelError,
     agent::model::chat::{Chat, Request},

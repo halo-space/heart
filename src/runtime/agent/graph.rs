@@ -14,7 +14,7 @@ use crate::runtime::agent::node::status::Status;
 /// The graph only tracks logical node state and dependency activation. It does
 /// not own a Planner, Evaluator, concurrency executor, Memory, or Checkpoint.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
-pub struct Graph {
+pub(crate) struct Graph {
     pub plan: Plan,
     pub nodes: BTreeMap<String, node::State>,
     pub history: Vec<History>,
@@ -23,7 +23,7 @@ pub struct Graph {
 /// Static plan snapshot embedded in the canonical Agent State.
 ///
 /// This is deliberately named by its module rather than exported as a second
-/// graph-state type.  The mutable [`Graph`] above owns execution facts;
+/// graph-state type. The mutable runtime graph above owns execution facts;
 /// `graph::State` only preserves the static plan in the Agent checkpoint JSON.
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct State {
@@ -43,7 +43,8 @@ pub struct Start {
 }
 
 impl Graph {
-    pub fn new(plan: Plan) -> Result<Self, Error> {
+    #[cfg(test)]
+    pub(crate) fn new(plan: Plan) -> Result<Self, Error> {
         plan.validate_structure()?;
         Self::initialize(plan)
     }
@@ -140,17 +141,18 @@ impl Graph {
         Ok(())
     }
 
-    pub fn history(&self) -> &[History] {
+    #[cfg(test)]
+    pub(crate) fn history(&self) -> &[History] {
         &self.history
     }
 
-    pub fn state(&self, node_id: &str) -> Result<&node::State, Error> {
+    pub(crate) fn state(&self, node_id: &str) -> Result<&node::State, Error> {
         self.nodes
             .get(node_id)
             .ok_or_else(|| Error::new("NOT_FOUND", "execution graph node was not found"))
     }
 
-    pub fn state_mut(&mut self, node_id: &str) -> Result<&mut node::State, Error> {
+    pub(crate) fn state_mut(&mut self, node_id: &str) -> Result<&mut node::State, Error> {
         self.nodes
             .get_mut(node_id)
             .ok_or_else(|| Error::new("NOT_FOUND", "execution graph node was not found"))
@@ -159,7 +161,7 @@ impl Graph {
     /// Return the direct source node IDs for a logical node. The order is
     /// deterministic, but callers should use the IDs rather than positional
     /// order to read source data.
-    pub fn predecessors(&self, node_id: &str) -> Result<Vec<String>, Error> {
+    pub(crate) fn predecessors(&self, node_id: &str) -> Result<Vec<String>, Error> {
         self.state(node_id)?;
         Ok(self
             .plan
@@ -173,7 +175,10 @@ impl Graph {
     /// Read each directly connected predecessor's committed Messages without
     /// synthesizing a merged collection. A node can read this only after all
     /// its sources have successfully committed.
-    pub fn source_messages(&self, node_id: &str) -> Result<BTreeMap<String, Messages>, Error> {
+    pub(crate) fn source_messages(
+        &self,
+        node_id: &str,
+    ) -> Result<BTreeMap<String, Messages>, Error> {
         let predecessors = self.predecessors(node_id)?;
         let mut messages = BTreeMap::new();
         for source in predecessors {
@@ -208,7 +213,7 @@ impl Graph {
         Ok(messages)
     }
 
-    pub fn ready_nodes(&self) -> Vec<String> {
+    pub(crate) fn ready_nodes(&self) -> Vec<String> {
         self.nodes
             .iter()
             .filter(|(_, state)| state.status == Status::Ready)
@@ -218,7 +223,7 @@ impl Graph {
 
     /// Recompute dependency activation without introducing a global step or
     /// barrier. Every newly eligible node enters `ready` together.
-    pub fn activate_ready(&mut self) -> Result<Vec<String>, Error> {
+    pub(crate) fn activate_ready(&mut self) -> Result<Vec<String>, Error> {
         let candidates: Vec<String> = self
             .nodes
             .iter()
@@ -234,7 +239,8 @@ impl Graph {
         Ok(candidates)
     }
 
-    pub fn start(&mut self, node_id: &str, exec_id: i64) -> Result<(), Error> {
+    #[cfg(test)]
+    pub(crate) fn start(&mut self, node_id: &str, exec_id: i64) -> Result<(), Error> {
         self.validate_start(node_id)?;
         if self.execution_ids().contains(&exec_id) {
             return Err(Error::new(
@@ -248,7 +254,7 @@ impl Graph {
 
     /// Atomically claim one executable batch. The caller supplies execution
     /// identities; this method only enforces readiness and concurrency.
-    pub fn start_batch(
+    pub(crate) fn start_batch(
         &mut self,
         max_concurrency: usize,
         starts: &[Start],
@@ -299,7 +305,7 @@ impl Graph {
         Ok(starts.iter().map(|start| start.node_id.clone()).collect())
     }
 
-    pub fn wait(&mut self, node_id: &str) -> Result<(), Error> {
+    pub(crate) fn wait(&mut self, node_id: &str) -> Result<(), Error> {
         self.ensure_attempt(node_id)?;
         self.transition(node_id, Status::Waiting)?;
         self.state_mut(node_id)?
@@ -309,7 +315,7 @@ impl Graph {
     /// Internal transition used after the waiting reply has been accepted.
     /// External callers submit feedback through the Agent `reply` entry point.
     #[doc(hidden)]
-    pub fn resume(&mut self, node_id: &str) -> Result<(), Error> {
+    pub(crate) fn resume(&mut self, node_id: &str) -> Result<(), Error> {
         self.ensure_attempt(node_id)?;
         self.transition(node_id, Status::Running)?;
         self.state_mut(node_id)?
@@ -317,22 +323,24 @@ impl Graph {
             .map(|attempt| attempt.status = Status::Running)
     }
 
-    pub fn cancel(&mut self, node_id: &str) -> Result<(), Error> {
+    pub(crate) fn cancel(&mut self, node_id: &str) -> Result<(), Error> {
         self.ensure_attempt(node_id)?;
         self.transition(node_id, Status::Cancelled)?;
         self.state_mut(node_id)?
             .set_attempt_result(Status::Cancelled, None, None)
     }
 
-    pub fn fail(&mut self, node_id: &str) -> Result<(), Error> {
+    #[cfg(test)]
+    pub(crate) fn fail(&mut self, node_id: &str) -> Result<(), Error> {
         self.fail_with_usage(node_id, None, None)
     }
 
-    pub fn fail_with(&mut self, node_id: &str, error: Option<Error>) -> Result<(), Error> {
+    #[cfg(test)]
+    pub(crate) fn fail_with(&mut self, node_id: &str, error: Option<Error>) -> Result<(), Error> {
         self.fail_with_usage(node_id, error, None)
     }
 
-    pub fn fail_with_usage(
+    pub(crate) fn fail_with_usage(
         &mut self,
         node_id: &str,
         error: Option<Error>,
@@ -346,7 +354,8 @@ impl Graph {
 
     /// Retry the current logical execution with a new Attempt. The caller is
     /// responsible for deciding whether retry policy permits this operation.
-    pub fn retry(&mut self, node_id: &str) -> Result<(), Error> {
+    #[cfg(test)]
+    pub(crate) fn retry(&mut self, node_id: &str) -> Result<(), Error> {
         let state = self.state_mut(node_id)?;
         if state.status != Status::Failed {
             return Err(Error::new(
@@ -359,7 +368,7 @@ impl Graph {
         Ok(())
     }
 
-    pub fn succeed(
+    pub(crate) fn succeed(
         &mut self,
         node_id: &str,
         messages: Messages,
@@ -391,7 +400,7 @@ impl Graph {
     /// Agent plans complete only when all leaves succeeded and no node remains
     /// active or unactivated. A failed branch therefore cannot be mistaken for
     /// successful completion.
-    pub fn is_complete(&self) -> bool {
+    pub(crate) fn is_complete(&self) -> bool {
         let leaves = self
             .plan
             .nodes
@@ -501,3 +510,7 @@ impl Graph {
 #[cfg(test)]
 #[path = "../../../tests/unit/embedded/src_runtime_agent_graph_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "../../../tests/unit/embedded/src_runtime_agent_plan_execution_tests.rs"]
+mod plan_execution_tests;

@@ -19,7 +19,7 @@ pub(crate) use components::compression;
 pub(crate) mod document {
     pub use crate::components::document::*;
 }
-pub use components::error::Error;
+pub(crate) use components::error::Error;
 pub(crate) use components::event;
 pub mod harness;
 pub(crate) use components::mcp;
@@ -34,7 +34,7 @@ pub(crate) mod node {
     #[allow(unused_imports)]
     pub use crate::core::node::Echo;
 }
-pub use cancellation::Cancellation;
+pub(crate) use cancellation::Cancellation;
 pub(crate) use components::permission;
 pub(crate) use components::reason;
 pub(crate) use components::sandbox;

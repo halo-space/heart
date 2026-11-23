@@ -56,6 +56,14 @@ fn runtime_does_not_depend_on_outer_service_layers() {
 }
 
 #[test]
+fn runtime_uses_only_stable_core_entrypoints() {
+    let source = source("src/runtime");
+    assert!(!source.contains("crate::core::lifecycle"));
+    assert!(!source.contains("crate::core::tool::"));
+    assert!(!source.contains("crate::core::dispatch::call"));
+}
+
+#[test]
 fn server_does_not_depend_on_harness() {
     let source = source("src/server");
     assert!(!source.contains("crate::harness"));

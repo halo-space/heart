@@ -27,7 +27,7 @@ pub enum Status {
     Running,
     Completed,
     Failed,
-    Stopped,
+    Cancelled,
 }
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]

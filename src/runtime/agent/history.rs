@@ -135,7 +135,7 @@ where
     fn save(&self, value: chat::Chat, state: Option<Value>) -> SaveFuture {
         let config = self.0.clone();
         Box::pin(async move {
-            // Cancellation of execution must not cancel its final Stopped write.
+            // Cancellation of execution must not cancel its final closeout write.
             // Backend I/O deadlines remain the backend's responsibility.
             let mut value = value;
             value.state = state;
@@ -305,7 +305,7 @@ impl Execute {
                 ..
             }) => (
                 if finish_reason.as_deref() == Some("cancelled") {
-                    chat::Status::Stopped
+                    chat::Status::Cancelled
                 } else {
                     chat::Status::Completed
                 },
@@ -314,7 +314,7 @@ impl Execute {
             Err(error) if error.code == "WAITING" => (chat::Status::Running, None),
             Err(error) => (
                 if error.code == "CANCELLED" {
-                    chat::Status::Stopped
+                    chat::Status::Cancelled
                 } else {
                     chat::Status::Failed
                 },
@@ -330,7 +330,7 @@ impl Execute {
         if let (Some(entry), Some(mut record)) = (&self.history.0, self.record.clone()) {
             let terminal_status = matches!(
                 &status,
-                chat::Status::Completed | chat::Status::Failed | chat::Status::Stopped
+                chat::Status::Completed | chat::Status::Failed | chat::Status::Cancelled
             );
             record.graph = graph;
             record.status = status;

@@ -2,7 +2,6 @@ use std::collections::BTreeMap;
 
 use futures_util::StreamExt;
 use halo::{
-    Cancellation,
     agent::core::sandbox::{Config, Local},
     agent::core::workflow::code::{Code, Object},
     agent::node::{Node, Signal},
@@ -11,7 +10,7 @@ use halo::{
         Builder, Runtime,
         graph::{END, FieldSource, InputBinding, NodeAttrs, START, Schema},
     },
-    agent::{Message, Messages},
+    agent::{Cancellation, Message, Messages},
 };
 use serde_json::{Value, json};
 

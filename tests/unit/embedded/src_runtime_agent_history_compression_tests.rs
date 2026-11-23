@@ -843,7 +843,7 @@ async fn failed_and_stopped_chats_do_not_enter_compression() {
     let compressor = Compressor::new(Some(1));
     let config = config().await.with_compression(compressor.clone());
     seed(&config, 201, 101, chat::Status::Failed, Some(usage(100))).await;
-    seed(&config, 202, 101, chat::Status::Stopped, Some(usage(100))).await;
+    seed(&config, 202, 101, chat::Status::Cancelled, Some(usage(100))).await;
     run(config.clone(), 301, 101).await;
     idle(&config, 101).await;
     assert_eq!(compressor.calls.load(Ordering::SeqCst), 0);

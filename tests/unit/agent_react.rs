@@ -75,6 +75,69 @@ fn delete_removes_the_node_and_all_successors() {
 }
 
 #[test]
+fn update_preserves_the_complete_downstream_closure() {
+    let mut plan = Plan::new(1).unwrap();
+    plan.add(node("a", "search"), vec![], vec![]).unwrap();
+    plan.add(node("b", "summarize"), vec!["a".into()], vec![])
+        .unwrap();
+    plan.add(node("c", "review"), vec!["a".into()], vec![])
+        .unwrap();
+    plan.add(
+        node("d", "publish"),
+        vec!["b".into(), "c".into()],
+        vec![],
+    )
+    .unwrap();
+
+    let mut updated = node("a", "search_again");
+    updated.objective = "search with the revised objective".into();
+    plan.update("a", updated, vec![], vec!["b".into(), "c".into()])
+        .unwrap();
+
+    assert_eq!(plan.nodes.len(), 4);
+    assert!(plan.edges.contains(&Edge {
+        from: "a".into(),
+        to: "b".into()
+    }));
+    assert!(plan.edges.contains(&Edge {
+        from: "a".into(),
+        to: "c".into()
+    }));
+    assert!(plan.edges.contains(&Edge {
+        from: "b".into(),
+        to: "d".into()
+    }));
+    assert!(plan.edges.contains(&Edge {
+        from: "c".into(),
+        to: "d".into()
+    }));
+}
+
+#[test]
+fn update_rejects_a_detached_downstream_closure_atomically() {
+    let mut plan = Plan::new(1).unwrap();
+    plan.add(node("a", "search"), vec![], vec![]).unwrap();
+    plan.add(node("b", "summarize"), vec!["a".into()], vec![])
+        .unwrap();
+    plan.add(node("c", "review"), vec!["a".into()], vec![])
+        .unwrap();
+    plan.add(
+        node("d", "publish"),
+        vec!["b".into(), "c".into()],
+        vec![],
+    )
+        .unwrap();
+    let before = plan.clone();
+
+    let error = plan
+        .update("a", node("a", "revised"), vec![], vec!["b".into()])
+        .unwrap_err();
+
+    assert_eq!(error.code, "INVALID_ARGUMENTS");
+    assert_eq!(plan, before);
+}
+
+#[test]
 fn validation_rejects_cycle_and_unknown_edges() {
     let mut plan = Plan::new(1).unwrap();
     plan.add(node("a", "search"), vec![], vec![]).unwrap();

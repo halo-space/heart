@@ -6,15 +6,17 @@ use serde_json::{Map, Value};
 pub mod part {
     use super::*;
 
-    /// Convert a JSON object literal into the canonical Part data map.
-    /// Non-object values are rejected at the construction boundary instead of
-    /// leaking a second scalar representation into Message content.
+    /// Convert JSON into the canonical Part data map.
+    ///
+    /// Message content keeps its stable object-shaped `data` contract. Scalar
+    /// input is represented by the same `value` member used by `Message` and
+    /// Agent input instead of panicking at a public construction boundary.
     #[doc(hidden)]
     pub fn object(value: Value) -> Map<String, Value> {
-        value
-            .as_object()
-            .cloned()
-            .expect("Part data must be a JSON object")
+        match value {
+            Value::Object(object) => object,
+            value => Map::from_iter([(String::from("value"), value)]),
+        }
     }
 
     #[derive(Clone, Debug, Deserialize, PartialEq, Serialize, JsonSchema)]

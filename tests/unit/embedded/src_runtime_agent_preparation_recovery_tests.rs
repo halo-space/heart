@@ -426,7 +426,7 @@ async fn preparation_failures_and_cancellation_close_the_original_chat_and_check
                 assert_eq!(
                     chat.status,
                     if stop == Stop::Cancel {
-                        chat::Status::Stopped
+                        chat::Status::Cancelled
                     } else {
                         chat::Status::Failed
                     }

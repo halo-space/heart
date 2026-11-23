@@ -162,8 +162,8 @@ impl Hooks {
             } else {
                 offset
             };
-            value = Box::pin(crate::core::lifecycle::prepare(
-                crate::core::lifecycle::Phase::Before,
+            value = Box::pin(crate::runtime::lifecycle::prepare(
+                crate::runtime::lifecycle::Phase::Before,
                 value,
                 |value| async {
                     let value = serde_json::to_value(value).map_err(|_| {

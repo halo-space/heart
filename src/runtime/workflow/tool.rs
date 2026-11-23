@@ -12,8 +12,8 @@ use crate::Error;
 use crate::components::message::{Message, Messages, Role};
 use crate::components::model::content::part::Part;
 use crate::components::node::{Node, Signal};
-use crate::components::tool::{Call, ToolDefinition};
-use crate::core::lifecycle::Phase;
+use crate::components::tool::{Call, Tool as ComponentTool, ToolDefinition, prepare_call};
+use crate::runtime::lifecycle::{Methods, Phase, advance};
 
 // Working facts for this invocation only; every acknowledged change is handed
 // back to the actual Runtime Attempt through its existing relay.
@@ -29,6 +29,41 @@ pub struct RecoveryError {
     pub completed: Messages,
     pub steps: Vec<Step>,
     pub error: Error,
+}
+
+/// Advance one component Tool from its saved phase while acknowledging each
+/// successful boundary to the owning Workflow Attempt.
+async fn call_from<T, K, KF>(
+    tool: &T,
+    phase: Phase,
+    call: Call,
+    message: Option<Message>,
+    commit: K,
+    cancellation: &Cancellation,
+) -> Result<(Call, Message), Error>
+where
+    T: ComponentTool,
+    K: FnMut(Phase, &Call, Option<&Message>) -> KF,
+    KF: Future<Output = Result<(), Error>>,
+{
+    let (call, message) = advance(
+        phase,
+        Phase::Complete,
+        call,
+        message,
+        Methods {
+            before: |call| prepare_call(tool, call, cancellation),
+            call: |call: Call| async move { tool.call(&call, cancellation).await },
+            after: |call: Call, mut message: Message| async move {
+                tool.after(&call, &mut message, cancellation).await?;
+                Ok(message)
+            },
+            commit,
+        },
+        cancellation,
+    )
+    .await?;
+    Ok((call, message.expect("completed Tool call has a result")))
 }
 
 trait Tool: Send + Sync {
@@ -57,7 +92,7 @@ where
         Box::pin(async move {
             let phase = phase(&step)?;
             let call = step.call.clone().expect("validated Tool Call");
-            let result = crate::core::tool::call_from(
+            let result = call_from(
                 tool.as_ref(),
                 phase,
                 call,

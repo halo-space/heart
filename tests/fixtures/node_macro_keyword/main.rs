@@ -1,6 +1,6 @@
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
-use r#type::{Cancellation, Error};
+use r#type::agent::{Cancellation, Error};
 
 #[derive(Deserialize, JsonSchema)]
 struct Input {

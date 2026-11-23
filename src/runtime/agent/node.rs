@@ -269,6 +269,7 @@ impl State {
             .ok_or_else(|| Error::new("INVALID_STATE", "agent node has no current attempt"))
     }
 
+    #[cfg(test)]
     pub(crate) fn add_attempt(&mut self) -> Result<(), Error> {
         let execution = self
             .execution
