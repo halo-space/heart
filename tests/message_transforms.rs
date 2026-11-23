@@ -15,6 +15,7 @@ fn message(role: Role, value: &str) -> Message {
         .push(halo::agent::model::content::part::Part {
             r#type: "text".into(),
             data: serde_json::from_value(json!({"value":value})).unwrap(),
+            mime_type: None,
         });
     message
 }

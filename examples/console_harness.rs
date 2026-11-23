@@ -172,7 +172,6 @@ async fn main() -> Result<(), Error> {
         .create(
             session::Session {
                 id: 9_500_001,
-                tenant_id: 9_500_000,
                 user_id: 9_500_003,
                 r#type: short::Type::Agent,
                 title: Some("Heart Harness console".into()),

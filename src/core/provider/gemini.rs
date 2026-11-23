@@ -402,6 +402,7 @@ fn output_part(value: &Value, _kind: OutputKind) -> Option<Part> {
         "text" => Some(Part {
             r#type: "text".into(),
             data: object(json!({"value": value.get("text")?})),
+            mime_type: None,
         }),
         "audio" | "image" | "video" | "file" => {
             let data = value.get("data")?.as_str()?;
@@ -427,6 +428,7 @@ fn delta_part(value: Option<&Value>, _kind: OutputKind) -> Option<Part> {
         "text" => Some(Part {
             r#type: "text".into(),
             data: object(json!({"value": value.get("text")?})),
+            mime_type: None,
         }),
         "audio" | "image" | "video" | "file" => {
             let data = value.get("data")?.as_str()?;
@@ -447,10 +449,9 @@ fn media_part(kind: &str, data: &str, mime: &str) -> Part {
             "source": {
                 "kind": "base64",
                 "value": format!("data:{mime};base64,{data}"),
-                "mime_type": mime,
             },
-            "mime_type": mime,
         })),
+        mime_type: Some(mime.to_owned()),
     }
 }
 
@@ -524,10 +525,11 @@ fn part_to_input(part: &Part) -> Result<Value, Error> {
                 .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "media source is required"))?;
             let kind = source.get("kind").and_then(Value::as_str).unwrap_or("");
             let value = source.get("value").and_then(Value::as_str).unwrap_or("");
-            let mime = source
-                .get("mime_type")
-                .or_else(|| part.data.get("mime_type"))
-                .and_then(Value::as_str)
+            let mime = part
+                .mime_type
+                .as_deref()
+                .or_else(|| source.get("mime_type").and_then(Value::as_str))
+                .or_else(|| part.data.get("mime_type").and_then(Value::as_str))
                 .unwrap_or("application/octet-stream");
             if value.trim().is_empty() {
                 return Err(Error::new(
@@ -588,7 +590,12 @@ fn tts_body(config: &model::tts::Config, request: &model::tts::Request) -> Resul
     body["generation_config"] = json!({
         "speech_config": [{"voice": request.voice.as_deref().unwrap_or("Kore")}]
     });
-    body["stream"] = Value::Bool(request.stream);
+    // The Interactions API defaults to unary responses. Only send `stream`
+    // when the caller explicitly requests SSE, matching the documented REST
+    // shape and avoiding an unnecessary false-valued field for TTS.
+    if request.stream {
+        body["stream"] = Value::Bool(true);
+    }
     Ok(body)
 }
 

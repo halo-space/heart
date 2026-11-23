@@ -389,6 +389,7 @@ pub(super) fn tool_message(value: Value) -> Message {
     message.content.push(Part {
         r#type: "text".into(),
         data: part_data(json!({ "value": text })),
+        mime_type: None,
     });
     message.values = value.as_object().cloned().unwrap_or_else(Map::new);
     message

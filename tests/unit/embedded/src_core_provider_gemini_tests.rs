@@ -22,6 +22,7 @@ fn media_input_preserves_nested_source_contract() {
                 "mime_type": "image/png"
             }
         })),
+        mime_type: None,
     };
     let value = part_to_input(&part).unwrap();
     assert_eq!(value["type"], "image");
@@ -35,6 +36,7 @@ fn tts_body_uses_gemini_interactions_audio_shape() {
     message.content.push(Part {
         r#type: "text".into(),
         data: object(json!({"value": "你好"})),
+        mime_type: None,
     });
     let request = model::tts::Request {
         messages: Messages::new([message]),
@@ -59,6 +61,7 @@ fn multimodal_body_preserves_image_url_input() {
     message.content.push(Part {
         r#type: "text".into(),
         data: object(json!({"value": "描述图片"})),
+        mime_type: None,
     });
     message.content.push(Part {
         r#type: "image".into(),
@@ -69,6 +72,7 @@ fn multimodal_body_preserves_image_url_input() {
                 "mime_type": "image/png"
             }
         })),
+        mime_type: None,
     });
     let request = model::multimodal::Request {
         messages: Messages::new([message]),

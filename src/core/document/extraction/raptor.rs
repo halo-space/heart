@@ -162,6 +162,7 @@ where
                         .push(crate::components::model::content::part::Part {
                             r#type: "text".into(),
                             data: crate::components::model::content::part::object(serde_json::json!({"value": format!("Summarize these documents: {prompt}")})),
+                            mime_type: None,
                         });
                 let response =
                     complete_message(&self.chat, Messages::new([input]), cancellation).await?;

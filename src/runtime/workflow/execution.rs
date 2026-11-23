@@ -361,7 +361,7 @@ impl Engine {
         }
         if let Some(initial) = &self.state.initial {
             let saved = messages_to_agent_input(initial).metadata;
-            for key in ["tenant_id", "user_id", "agent_id", "session_id"] {
+            for key in ["user_id", "agent_id", "session_id"] {
                 if saved.contains_key(key) && input.metadata.get(key) != saved.get(key) {
                     return Err(Error::new(
                         "CONFLICT",

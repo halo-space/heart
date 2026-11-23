@@ -11,22 +11,26 @@ fn short_memory_stores_keep_their_own_crud_boundaries() {
     let cancellation = Cancellation::new();
 
     let sessions = super::session::InMemory::new();
-    let session = block_on(sessions.create(
-        session::Session {
-            id: 101,
-            tenant_id: 1,
-            user_id: 2,
-            r#type: Type::Agent,
-            title: Some("Weather".into()),
-            summary: Some("recent context".into()),
-            usage: None,
-            status: session::Status::Active,
-            metadata: BTreeMap::new().into_iter().collect(),
-            created_time: 0,
-            updated_time: 0,
-        },
-        &cancellation,
-    ))
+    let session = block_on(
+        sessions.create(
+            session::Session {
+                id: 101,
+                user_id: 2,
+                r#type: Type::Agent,
+                title: Some("Weather".into()),
+                summary: Some("recent context".into()),
+                usage: None,
+                status: session::Status::Active,
+                metadata: serde_json::json!({"tenant_id": 1})
+                    .as_object()
+                    .unwrap()
+                    .clone(),
+                created_time: 0,
+                updated_time: 0,
+            },
+            &cancellation,
+        ),
+    )
     .expect("session create");
     assert!(session.created_time > 0);
     assert_eq!(
@@ -35,6 +39,13 @@ fn short_memory_stores_keep_their_own_crud_boundaries() {
             .title
             .as_deref(),
         Some("Weather")
+    );
+    assert_eq!(
+        block_on(sessions.read(101, &cancellation))
+            .expect("session read")
+            .metadata
+            .get("tenant_id"),
+        Some(&serde_json::json!(1))
     );
     let mut changed_type = session.clone();
     changed_type.r#type = Type::Workflow;
@@ -49,7 +60,6 @@ fn short_memory_stores_keep_their_own_crud_boundaries() {
     let chat = block_on(chats.create(
         chat::Chat {
             id: 201,
-            tenant_id: 1,
             user_id: 2,
             agent_id: 3,
             session_id: 101,

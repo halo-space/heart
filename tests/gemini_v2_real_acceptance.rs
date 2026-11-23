@@ -29,6 +29,7 @@ fn text_message(text: &str) -> Message {
     message.content.push(Part {
         r#type: "text".into(),
         data: Map::from_iter([(String::from("value"), json!(text))]),
+        mime_type: None,
     });
     message
 }
@@ -56,6 +57,7 @@ fn image_message(data_url: String) -> Result<Message, Error> {
                 "mime_type": mime_type
             }),
         )]),
+        mime_type: Some(mime_type),
     });
     Ok(message)
 }

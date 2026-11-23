@@ -13,10 +13,12 @@ async fn adapts_text_reasoning_and_run_lifecycle() {
     delta.content.push(Part {
         r#type: "think".into(),
         data: json!({"value": "先判断"}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     delta.content.push(Part {
         r#type: "text".into(),
         data: json!({"value": "北京晴天"}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     let events = futures_util::stream::iter(vec![Ok(HeartEvent::Delta { message: delta })]);
     let output = adapt(events, Context::new("session-1", "chat-1"))
@@ -45,6 +47,7 @@ async fn maps_tool_call_and_result_without_internal_wrapper() {
         .as_object()
         .unwrap()
         .clone(),
+        mime_type: None,
     });
     let mut result = Message::new(Role::Function);
     result.metadata.insert("call_id".into(), json!("call-1"));
@@ -82,6 +85,7 @@ async fn reuses_message_id_and_does_not_repeat_complete_text() {
         message.content.push(Part {
             r#type: "text".into(),
             data: json!({"value": value}).as_object().unwrap().clone(),
+            mime_type: None,
         });
         message
     }
@@ -161,6 +165,7 @@ async fn maps_waiting_to_interrupt_outcome() {
     question.content.push(Part {
         r#type: "text".into(),
         data: json!({"value": "请确认"}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     let events = futures_util::stream::iter(vec![
         Ok(HeartEvent::Complete {

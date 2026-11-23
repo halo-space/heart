@@ -34,6 +34,7 @@ async fn main() -> Result<(), halo::agent::model::Error> {
     message.content.push(Part {
         r#type: "text".into(),
         data: json!({"value": "你好"}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     let mut events = chat
         .stream(chat::Request {

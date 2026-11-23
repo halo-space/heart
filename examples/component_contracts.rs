@@ -27,6 +27,7 @@ async fn main() -> Result<(), Error> {
     question.content.push(Part {
         r#type: "text".into(),
         data: Map::from_iter([(String::from("value"), json!("问题：{question}"))]),
+        mime_type: None,
     });
     let rendered = Template::new()
         .message(question)
@@ -53,6 +54,7 @@ async fn main() -> Result<(), Error> {
     spoken.content.push(Part {
         r#type: "text".into(),
         data: Map::from_iter([(String::from("value"), json!("请朗读这段文字"))]),
+        mime_type: None,
     });
     tts::Request {
         messages: Messages::new([spoken.clone()]),
@@ -68,6 +70,7 @@ async fn main() -> Result<(), Error> {
     vision.content.push(Part {
         r#type: "text".into(),
         data: Map::from_iter([(String::from("value"), json!("描述这张图片"))]),
+        mime_type: None,
     });
     vision.content.push(Part {
         r#type: "image".into(),
@@ -75,6 +78,7 @@ async fn main() -> Result<(), Error> {
             String::from("source"),
             json!({"kind":"url", "value":"https://example.invalid/image.png", "mime_type":"image/png"}),
         )]),
+        mime_type: Some("image/png".into()),
     });
     multimodal::Request {
         messages: Messages::new([vision]),
@@ -104,6 +108,7 @@ async fn main() -> Result<(), Error> {
     complete.content.push(Part {
         r#type: "text".into(),
         data: Map::from_iter([(String::from("value"), json!("组件示例完成"))]),
+        mime_type: None,
     });
     let event = Event::Complete {
         message: complete,

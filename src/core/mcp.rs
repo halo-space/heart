@@ -116,6 +116,7 @@ impl crate::components::mcp::Server for Server {
                 message.content.push(Part {
                     r#type: "text".into(),
                     data: part_data(json!({"value": text})),
+                    mime_type: None,
                 });
             } else {
                 return Err(Error::new(

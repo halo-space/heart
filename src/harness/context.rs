@@ -79,6 +79,7 @@ where
                 context_message.content.push(Part {
                     r#type: "text".into(),
                     data: object(serde_json::json!({"value": context})),
+                    mime_type: None,
                 });
                 insert_context(&mut request.messages, context_message);
             }

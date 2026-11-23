@@ -280,12 +280,14 @@ fn setup(
         Part {
             r#type: "text".into(),
             data: crate::components::model::content::part::object(json!({"value":"answer"})),
+            mime_type: None,
         },
         Part {
             r#type: "think".into(),
             data: crate::components::model::content::part::object(
                 json!({"value":"private thinking"}),
             ),
+            mime_type: None,
         },
     ];
     message.values.insert("private".into(), json!(1));

@@ -19,6 +19,7 @@ fn task_messages(mut messages: Messages, input: Message) -> Messages {
     instruction.content.push(Part {
         r#type: "text".into(),
         data: part_data(json!({"value": "Complete only the current planned task objective using the original query and its committed source results. Choose tools and arguments yourself when needed. Return this task's result, not the final answer for unrelated tasks."})),
+        mime_type: None,
     });
     if let Some(system) = messages
         .0
@@ -128,6 +129,7 @@ pub(super) fn fill_ready<M: Chat + 'static>(state: &mut ReActState<M>) -> Result
         message.content.push(Part {
             r#type: "text".into(),
             data: part_data(json!({"value": data.to_string()})),
+            mime_type: None,
         });
         message.values = serde_json::from_value(data).expect("task object");
         let exec_id = if *resumed {
@@ -716,6 +718,7 @@ pub(super) fn finalize<M: Chat>(state: &mut ReActState<M>) -> Result<(), Error> 
     message.content.push(Part {
         r#type: "text".into(),
         data: part_data(json!({"value": data.to_string()})),
+        mime_type: None,
     });
     message.values = serde_json::from_value(data).expect("results object");
     state.messages.push(message);

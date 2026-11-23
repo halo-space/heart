@@ -138,6 +138,7 @@ impl Tool for AskForApproval {
             .push(halo::agent::model::content::part::Part {
                 r#type: "text".into(),
                 data: json!({"value": question}).as_object().unwrap().clone(),
+                mime_type: None,
             });
         let feedback = halo::agent::wait::ask(prompt, count as usize, cancellation).await?;
         Ok(Message::function(json!({"user_feedback": feedback.0})))
@@ -205,6 +206,27 @@ fn request(id: i64, method: &str, params: Value) -> Value {
     })
 }
 
+async fn wait_for_server(client: &Client, endpoint: &str) -> Result<(), Error> {
+    for _ in 0..50 {
+        match client
+            .post(endpoint)
+            .json(&request(0, "tasks/get", json!({"id": "readiness-probe"})))
+            .send()
+            .await
+        {
+            Ok(_) => return Ok(()),
+            Err(error) if error.is_connect() || error.is_request() => {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+            Err(error) => return Err(Error::new("TRANSPORT", error.to_string())),
+        }
+    }
+    Err(Error::new(
+        "TIMEOUT",
+        "A2A test server did not become ready",
+    ))
+}
+
 fn message(session_id: i64, chat_id: i64, message_id: &str) -> Value {
     json!({
         "message": {
@@ -245,7 +267,9 @@ async fn start() -> Result<(String, tokio::task::JoinHandle<()>), Error> {
             .await
             .expect("A2A test server");
     });
-    Ok((format!("http://{address}/a2a"), task))
+    let endpoint = format!("http://{address}/a2a");
+    wait_for_server(&Client::new(), &endpoint).await?;
+    Ok((endpoint, task))
 }
 
 async fn wait_for_completion(
@@ -428,6 +452,7 @@ async fn real_http_cancel_and_resubscribe_preserve_terminal_task() -> Result<(),
     });
     let endpoint = format!("http://{address}/a2a");
     let client = Client::new();
+    wait_for_server(&client, &endpoint).await?;
     let response = client
         .post(&endpoint)
         .json(&request(
@@ -488,6 +513,7 @@ async fn real_http_duplicate_reply_is_idempotent_while_waiting() -> Result<(), E
     });
     let endpoint = format!("http://{address}/a2a");
     let client = Client::new();
+    wait_for_server(&client, &endpoint).await?;
     let response = client
         .post(&endpoint)
         .json(&request(

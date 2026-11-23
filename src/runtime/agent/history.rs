@@ -74,7 +74,6 @@ where
             let metadata = input.metadata.clone();
             let request = chat::Chat {
                 id: id.chat_id,
-                tenant_id: id.tenant_id,
                 user_id: id.user_id,
                 agent_id: id.agent_id,
                 session_id: id.session_id,
@@ -176,7 +175,7 @@ impl History {
     }
     pub(crate) fn check_identity(&self, original: &Input, modified: &Input) -> Result<(), Error> {
         if self.0.is_some() {
-            for field in ["tenant_id", "user_id", "agent_id", "session_id", "chat_id"] {
+            for field in ["user_id", "agent_id", "session_id", "chat_id"] {
                 if modified.metadata.get(field) != original.metadata.get(field) {
                     return Err(Error::new(
                         "INVALID_ARGUMENTS",
@@ -381,7 +380,6 @@ fn now_ms() -> i64 {
 }
 
 struct Identity {
-    tenant_id: i64,
     user_id: i64,
     agent_id: i64,
     session_id: i64,
@@ -401,7 +399,6 @@ impl Identity {
                 })
         };
         Ok(Self {
-            tenant_id: id("tenant_id")?,
             user_id: id("user_id")?,
             agent_id: id("agent_id")?,
             session_id: id("session_id")?,
@@ -410,8 +407,7 @@ impl Identity {
     }
 
     fn matches(&self, value: &chat::Chat, owner: &short::Type) -> bool {
-        value.tenant_id == self.tenant_id
-            && value.user_id == self.user_id
+        value.user_id == self.user_id
             && value.agent_id == self.agent_id
             && value.session_id == self.session_id
             && &value.r#type == owner
@@ -435,7 +431,6 @@ where
     )
     .await?;
     if session.id != identity.session_id
-        || session.tenant_id != identity.tenant_id
         || session.user_id != identity.user_id
         || session.r#type != short::Type::Agent
     {
@@ -445,7 +440,7 @@ where
         ));
     }
     let options = json!({"filter": {
-        "tenant_id":identity.tenant_id,"user_id":identity.user_id,"agent_id":identity.agent_id,
+        "user_id":identity.user_id,"agent_id":identity.agent_id,
         "session_id":identity.session_id,"type":"agent"
     },"sort":{"field":"created_time","order":"asc"}})
     .as_object()
@@ -666,6 +661,7 @@ fn context(label: &str, content: &str, metadata: Map<String, Value>) -> Message 
         data: crate::components::model::content::part::object(
             json!({"value":format!("[{label}]\n{content}")}),
         ),
+        mime_type: None,
     });
     message.metadata = metadata;
     crate::runtime::observation::clear_source(&mut message);

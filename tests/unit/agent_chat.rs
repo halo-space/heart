@@ -72,6 +72,7 @@ impl halo::agent::Agent for WaitingSubAgent {
         message.content.push(Part {
             r#type: "text".into(),
             data: halo::agent::model::content::part::object(json!({"value": "child approved"})),
+            mime_type: None,
         });
         Ok(futures_util::stream::iter(vec![Ok(Event::Complete {
             message,
@@ -105,6 +106,7 @@ impl halo::agent::Agent for CountingSubAgent {
         message.content.push(Part {
             r#type: "text".into(),
             data: halo::agent::model::content::part::object(json!({"value": "done child"})),
+            mime_type: None,
         });
         Ok(futures_util::stream::iter(vec![Ok(Event::Complete {
             message,
@@ -145,7 +147,7 @@ fn builder_uses_the_frozen_defaults_and_maps_payload_parts() {
     assert_eq!(message.metadata["language"], "zh");
     assert_eq!(message.content[0].r#type, "text");
     assert_eq!(message.content[0].data["value"], "hello");
-    assert_eq!(message.content[0].data["mime_type"], "text/plain");
+    assert_eq!(message.content[0].mime_type.as_deref(), Some("text/plain"));
 }
 
 #[test]
@@ -450,6 +452,7 @@ fn context_limit_keeps_summary_and_newest_message() {
         message.content.push(Part {
             r#type: "text".into(),
             data: halo::agent::model::content::part::object(json!({"value": value})),
+            mime_type: None,
         });
         message
     }
@@ -490,6 +493,7 @@ fn context_limit_reports_when_pinned_messages_do_not_fit() {
     system.content.push(Part {
         r#type: "text".into(),
         data: halo::agent::model::content::part::object(json!({"value": "a long system instruction"})),
+        mime_type: None,
     });
     let request = Request {
         messages: Messages::new([system]),

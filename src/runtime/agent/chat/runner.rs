@@ -1192,6 +1192,7 @@ pub fn initial_messages(
         message.content.push(Part {
             r#type: "text".into(),
             data: part_data(serde_json::json!({ "value": prompt })),
+            mime_type: None,
         });
         messages.push(message);
     }

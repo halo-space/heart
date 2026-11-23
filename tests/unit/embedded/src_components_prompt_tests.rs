@@ -10,6 +10,7 @@ fn message(text: &str) -> Message {
         content: vec![Part {
             r#type: "text".into(),
             data: crate::components::model::content::part::object(json!({"value": text})),
+            mime_type: None,
         }],
         values: Map::new(),
         metadata: Map::new(),
@@ -54,6 +55,7 @@ fn rejects_missing_and_non_scalar_variables_without_mutating_template() {
             data: crate::components::model::content::part::object(
                 json!({"value": ["not", "text"]}),
             ),
+            mime_type: None,
         }],
         values: Map::new(),
         metadata: Map::new(),

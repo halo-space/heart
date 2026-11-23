@@ -26,6 +26,7 @@ fn feedback(approved: bool) -> Message {
                 .as_object()
                 .unwrap()
                 .clone(),
+            mime_type: None,
         });
     message
 }

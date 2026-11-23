@@ -62,6 +62,7 @@ fn text(value: impl Into<String>) -> halo::agent::Message {
         .push(halo::agent::model::content::part::Part {
             r#type: "text".into(),
             data: json!({"value": value.into()}).as_object().unwrap().clone(),
+            mime_type: None,
         });
     message
 }
@@ -208,7 +209,6 @@ async fn persisted_memory_scene_recovers_in_a_fresh_process() {
     .unwrap();
     let session = session::Session {
         id: session_id,
-        tenant_id: 1,
         user_id: 2,
         r#type: short::Type::Agent,
         title: Some("I09 recovery".into()),

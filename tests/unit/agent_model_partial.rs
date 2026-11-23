@@ -31,6 +31,7 @@ fn observed_partial() -> Message {
     message.content.push(Part {
         r#type: "text".into(),
         data: serde_json::from_value(json!({"value":"received so far"})).unwrap(),
+        mime_type: None,
     });
     message
 }

@@ -39,6 +39,7 @@ async fn configured_vllm_returns_a_real_assistant_message_and_usage() {
             .as_object()
             .unwrap()
             .clone(),
+        mime_type: None,
     });
     let events = model
         .stream(chat::Request {

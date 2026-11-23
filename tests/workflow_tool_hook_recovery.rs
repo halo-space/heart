@@ -133,7 +133,7 @@ impl Tool for Lookup {
 fn input(owners: &[&str]) -> Messages {
     let mut message = Message::new(Role::Assistant);
     for (idx, owner) in owners.iter().enumerate() {
-        message.content.push(Part{r#type:"tool_call".into(),data:json!({"call_id":format!("call_{idx}"),"name":"lookup","arguments":{"owner":owner,"n":1}}).as_object().unwrap().clone()});
+        message.content.push(Part{r#type:"tool_call".into(),data:json!({"call_id":format!("call_{idx}"),"name":"lookup","arguments":{"owner":owner,"n":1}}).as_object().unwrap().clone(),mime_type:None});
     }
     Messages::new([message])
 }

@@ -35,7 +35,6 @@ async fn real_provider_complete_and_usage_are_saved_at_chat_closeout() {
         .create(
             session::Session {
                 id: 10,
-                tenant_id: 1,
                 user_id: 2,
                 r#type: memory::short::Type::Agent,
                 title: None,

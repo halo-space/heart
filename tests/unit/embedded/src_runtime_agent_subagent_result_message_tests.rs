@@ -18,10 +18,12 @@ fn child_private_think_is_not_forwarded_as_a_function_result() {
                 .as_object()
                 .unwrap()
                 .clone(),
+            mime_type: None,
         },
         crate::model::content::part::Part {
             r#type: "text".into(),
             data: json!({"value":"child result"}).as_object().unwrap().clone(),
+            mime_type: None,
         },
     ]);
 

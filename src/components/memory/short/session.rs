@@ -16,7 +16,6 @@ pub enum Status {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct Session {
     pub id: i64,
-    pub tenant_id: i64,
     pub user_id: i64,
     pub r#type: Type,
     pub title: Option<String>,
@@ -24,6 +23,8 @@ pub struct Session {
     pub usage: Option<Usage>,
     pub status: Status,
     /// Summary coverage markers (`from`/`to`) and application extensions.
+    /// Application ownership dimensions such as `tenant_id` belong here when
+    /// needed, rather than in the framework-owned Session fields.
     /// Harness reserves `memory` for unfinished background processing. Preserve
     /// it on unrelated updates; it is not Runtime/Checkpoint state.
     pub metadata: Map<String, Value>,

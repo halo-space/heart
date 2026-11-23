@@ -290,6 +290,7 @@ fn subagent_error_message(call: &Call, error: &Error) -> Message {
         content: vec![Part {
             r#type: "text".into(),
             data: part_data(json!({"value": error_value.to_string()})),
+            mime_type: None,
         }],
         values: Map::from_iter([
             (String::from("error"), error_value),
@@ -560,6 +561,7 @@ pub(super) fn tool_error_message(call: &Call, error: Error) -> Message {
         content: vec![Part {
             r#type: "text".into(),
             data: part_data(json!({"value": value})),
+            mime_type: None,
         }],
         values: Map::from_iter([
             ("error".into(), error_value),

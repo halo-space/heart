@@ -20,6 +20,7 @@ fn message(role: Role, text: &str) -> Message {
     message.content.push(Part {
         r#type: "text".into(),
         data: json!({"value": text}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     message
 }

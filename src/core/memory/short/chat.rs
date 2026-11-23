@@ -67,8 +67,7 @@ impl chat::Store for InMemory {
         let old = records
             .get(&value.id)
             .ok_or_else(|| Error::new("NOT_FOUND", "chat not found"))?;
-        if old.tenant_id != value.tenant_id
-            || old.user_id != value.user_id
+        if old.user_id != value.user_id
             || old.agent_id != value.agent_id
             || old.session_id != value.session_id
             || old.r#type != value.r#type
@@ -131,7 +130,6 @@ impl chat::Store for InMemory {
 }
 
 struct Query {
-    tenant_id: i64,
     user_id: i64,
     agent_id: i64,
     session_id: i64,
@@ -161,7 +159,7 @@ impl Query {
         if filter.keys().any(|key| {
             !matches!(
                 key.as_str(),
-                "tenant_id" | "user_id" | "agent_id" | "session_id" | "type" | "created_time"
+                "user_id" | "agent_id" | "session_id" | "type" | "created_time"
             )
         }) {
             return Err(invalid());
@@ -232,7 +230,6 @@ impl Query {
             Some(_) => return Err(invalid()),
         };
         Ok(Self {
-            tenant_id: id("tenant_id")?,
             user_id: id("user_id")?,
             agent_id: id("agent_id")?,
             session_id: id("session_id")?,
@@ -246,8 +243,7 @@ impl Query {
     }
 
     fn matches(&self, record: &chat::Chat) -> bool {
-        record.tenant_id == self.tenant_id
-            && record.user_id == self.user_id
+        record.user_id == self.user_id
             && record.agent_id == self.agent_id
             && record.session_id == self.session_id
             && record.r#type == self.r#type
@@ -257,7 +253,7 @@ impl Query {
 }
 
 fn validate(value: &chat::Chat) -> Result<(), Error> {
-    if value.id <= 0 || value.tenant_id <= 0 || value.user_id <= 0 {
+    if value.id <= 0 || value.user_id <= 0 {
         return Err(Error::new(
             "INVALID_ARGUMENTS",
             "chat identifiers must be positive",

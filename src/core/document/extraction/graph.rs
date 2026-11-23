@@ -150,6 +150,7 @@ where
         input.content.push(crate::components::model::content::part::Part {
                 r#type: "text".into(),
                 data: crate::components::model::content::part::object(serde_json::json!({"value": format!("Extract the graph from these documents using the declared entity and relation types. Return only a JSON object with entities and relations arrays. Entity shape: {{\"id\": string, \"type\": string, \"name\": string, \"attrs\": object, \"evidence\": [{{\"content\": string, \"method\": \"text\"}}]}}. Relation shape: {{\"from\": entity id, \"to\": entity id, \"kind\": relation type, \"attrs\": object, \"evidence\": [{{\"content\": string, \"method\": \"text\"}}]}}. Evidence must always be an array of objects, never a string; use an empty array if no exact source quotation is available. Do not invent evidence or identifiers absent from the source. Input: {payload}")})),
+                mime_type: None,
             });
         let message = complete_request(
             &self.chat,

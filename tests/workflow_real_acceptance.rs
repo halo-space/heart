@@ -125,6 +125,7 @@ async fn workflow_runs_embedded_agent_with_real_model() {
             .as_object()
             .unwrap()
             .clone(),
+        mime_type: None,
     });
     let mut events = runtime
         .run(
@@ -197,7 +198,7 @@ async fn workflow_runs_embedded_static_team_with_real_model() {
             agent::react()
                 .model(model())
                 .system_prompt(
-                    "你是 Team Leader。必须且只调用一次 team_assign，把完整 agent::Input 任务交给 researcher。成员完成后只回复一句汇总。",
+                    "你是 Team Leader。必须且只调用一次 team_assign，把完整 agent::Input 任务交给 researcher。team_assign 的参数必须是合法 JSON 对象，严格包含 name 和 input 两个字段，input 必须包含 metadata 对象与 payload 数组。不要在 JSON 中加入注释、XML、字符串类型标签或额外文本。成员完成后只回复一句汇总。",
                 ),
         )
         .member(
@@ -223,6 +224,7 @@ async fn workflow_runs_embedded_static_team_with_real_model() {
             .as_object()
             .unwrap()
             .clone(),
+        mime_type: None,
     });
     let mut events = runtime
         .run(
@@ -299,6 +301,7 @@ async fn workflow_forwards_a_real_partial_complete_after_cancellation() {
             .as_object()
             .unwrap()
             .clone(),
+        mime_type: None,
     });
     let cancellation = Cancellation::new();
     let mut events = runtime
@@ -402,6 +405,7 @@ async fn real_workflow_agent_waits_for_approval_then_resumes_the_live_tool_step(
             .as_object()
             .unwrap()
             .clone(),
+        mime_type: None,
     });
     let mut events = runtime
         .run(
@@ -441,6 +445,7 @@ async fn real_workflow_agent_waits_for_approval_then_resumes_the_live_tool_step(
             .as_object()
             .unwrap()
             .clone(),
+        mime_type: None,
     });
     runtime
         .reply(Messages::new([approval]), Cancellation::new())

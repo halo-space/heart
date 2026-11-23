@@ -36,6 +36,7 @@ fn text(role: Role, value: &str) -> Message {
     message.content.push(Part {
         r#type: "text".into(),
         data: json!({"value":value}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     message
 }
@@ -801,6 +802,7 @@ fn native_tool_batch_observes_saved_successes_once_without_error_messages() {
                         .as_object()
                         .unwrap()
                         .clone(),
+                    mime_type: None,
                 });
             }
             let mut runtime = Runtime::new(1010, builder.compile().unwrap()).unwrap();

@@ -94,10 +94,7 @@ impl session::Store for InMemory {
         let old = records
             .get(&value.id)
             .ok_or_else(|| Error::new("NOT_FOUND", "session not found"))?;
-        if old.tenant_id != value.tenant_id
-            || old.user_id != value.user_id
-            || old.r#type != value.r#type
-        {
+        if old.user_id != value.user_id || old.r#type != value.r#type {
             return Err(Error::new(
                 "INVALID_ARGUMENTS",
                 "session ownership and type cannot change",
@@ -129,7 +126,7 @@ impl session::Store for InMemory {
 }
 
 fn validate(value: &session::Session) -> Result<(), Error> {
-    if value.id <= 0 || value.tenant_id <= 0 || value.user_id <= 0 {
+    if value.id <= 0 || value.user_id <= 0 {
         return Err(Error::new(
             "INVALID_ARGUMENTS",
             "session identifiers must be positive",

@@ -235,6 +235,7 @@ pub(crate) fn subagent_error_message(call: &Call, error: &Error) -> Message {
         content: vec![Part {
             r#type: "text".into(),
             data: part_data(json!({"value": error_value.to_string()})),
+            mime_type: None,
         }],
         values: Map::from_iter([
             (String::from("error"), error_value),

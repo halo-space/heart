@@ -14,16 +14,14 @@ pub fn user_message(input: Input) -> Message {
         .payload
         .into_iter()
         .map(|payload| {
-            let mut data = match payload.data {
+            let data = match payload.data {
                 Value::Object(object) => object,
                 value => Map::from_iter([(String::from("value"), value)]),
             };
-            if let Some(mime_type) = payload.mime_type {
-                data.insert("mime_type".into(), Value::String(mime_type));
-            }
             Part {
                 r#type: payload.r#type,
                 data,
+                mime_type: payload.mime_type,
             }
         })
         .collect();

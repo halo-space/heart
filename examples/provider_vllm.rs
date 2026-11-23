@@ -42,6 +42,7 @@ async fn main() -> Result<(), halo::agent::model::Error> {
             .as_object()
             .unwrap()
             .clone(),
+        mime_type: None,
     });
     let mut events = chat
         .stream(chat::Request {

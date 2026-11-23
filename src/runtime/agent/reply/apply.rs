@@ -123,7 +123,7 @@ impl Hub {
             .and_then(Weak::upgrade)
             .filter(|run| !run.closed.load(Ordering::Acquire))
             .ok_or_else(|| Error::new("NOT_FOUND", "no live Agent run for this reply"))?;
-        for key in ["tenant_id", "user_id", "agent_id", "session_id", "chat_id"] {
+        for key in ["user_id", "agent_id", "session_id", "chat_id"] {
             if run
                 .metadata
                 .get(key)

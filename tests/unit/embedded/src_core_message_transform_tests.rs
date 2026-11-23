@@ -14,6 +14,7 @@ fn message(value: &str) -> Message {
     message.content.push(Part {
         r#type: "text".into(),
         data: crate::components::model::content::part::object(json!({"value":value})),
+        mime_type: None,
     });
     message
 }

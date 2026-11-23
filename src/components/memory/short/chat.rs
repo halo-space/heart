@@ -17,6 +17,8 @@ pub struct Payload {
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Request {
+    /// Application context and extensions. Tenant or other deployment-owned
+    /// ownership dimensions are preserved here without framework semantics.
     pub metadata: Map<String, Value>,
     pub payload: Vec<Payload>,
 }
@@ -33,7 +35,6 @@ pub enum Status {
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct Chat {
     pub id: i64,
-    pub tenant_id: i64,
     pub user_id: i64,
     pub agent_id: i64,
     pub session_id: i64,
@@ -45,6 +46,8 @@ pub struct Chat {
     pub graph: Option<Value>,
     /// Complete Agent/Workflow state captured at closeout.
     pub state: Option<Value>,
+    /// Application context and extensions. Tenant or other deployment-owned
+    /// ownership dimensions are preserved here without framework semantics.
     pub metadata: Map<String, Value>,
     pub started_time: Option<i64>,
     pub completed_time: Option<i64>,

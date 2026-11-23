@@ -152,6 +152,7 @@ fn input() -> Messages {
             .as_object()
             .unwrap()
             .clone(),
+        mime_type: None,
     });
     Messages::new([message])
 }
@@ -306,6 +307,7 @@ async fn absent_hooks_pass_through_direct_tool_mounted_capabilities_and_workflow
             .as_object()
             .unwrap()
             .clone(),
+        mime_type: None,
     });
     let Signal::Complete(messages) = ToolNode::new(tool)
         .call(Messages::new([selection]), &c)

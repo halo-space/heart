@@ -28,6 +28,7 @@ fn evaluation(passed: bool) -> Evaluation {
         message.content.push(Part {
             r#type: "text".into(),
             data: serde_json::from_value(json!({"value":"需要补充来源"})).unwrap(),
+            mime_type: None,
         });
         Messages::new([message])
     });

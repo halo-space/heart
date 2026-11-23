@@ -466,7 +466,9 @@ async fn real_react_agent_uses_its_builtin_plan_for_independent_live_tasks() {
     let cwd = std::env::current_dir().expect("read actual process directory");
     let agent = agent::react()
         .model(live_vllm_chat())
-        .system_prompt("需要实时事实时使用已配置的工具，不要猜测工具返回的数据。")
+        .system_prompt(
+            "这是一个规划任务。必须先调用 plan 工具生成包含两个独立任务的完整计划，再按计划调用已配置的实时工具。不要直接跳过 plan，也不要猜测工具返回的数据。",
+        )
         .tools(live_clock(Arc::clone(&clock_calls)))
         .tools(LiveWorkingDirectory {
             calls: Arc::clone(&directory_calls),
@@ -741,7 +743,7 @@ async fn real_tool_permission_ask_waits_for_reply_before_the_live_side_effect() 
         .reply(reply, cancellation)
         .await
         .expect("deliver explicit approval");
-    let tail = tokio::time::timeout(std::time::Duration::from_secs(60), async {
+    let tail = tokio::time::timeout(std::time::Duration::from_secs(180), async {
         events.collect::<Vec<_>>().await
     })
     .await

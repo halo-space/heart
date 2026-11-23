@@ -45,6 +45,7 @@ fn valid_waiting_state() -> Value {
             .as_object()
             .unwrap()
             .clone(),
+        mime_type: None,
     });
     question.metadata.insert("chat_id".into(), json!(1001));
     question.metadata.insert("reply_id".into(), json!(5001));

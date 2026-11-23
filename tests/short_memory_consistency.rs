@@ -17,14 +17,16 @@ use session::Store as _;
 fn session(id: i64) -> session::Session {
     session::Session {
         id,
-        tenant_id: 1,
         user_id: 2,
         r#type: Type::Agent,
         title: Some("Weather".into()),
         summary: None,
         usage: None,
         status: session::Status::Active,
-        metadata: json!({"custom":true}).as_object().unwrap().clone(),
+        metadata: json!({"custom":true,"tenant_id":1})
+            .as_object()
+            .unwrap()
+            .clone(),
         created_time: 0,
         updated_time: 0,
     }
@@ -33,7 +35,6 @@ fn session(id: i64) -> session::Session {
 fn chat() -> chat::Chat {
     chat::Chat {
         id: 201,
-        tenant_id: 1,
         user_id: 2,
         agent_id: 3,
         session_id: 101,
@@ -51,7 +52,7 @@ fn chat() -> chat::Chat {
         usage: None,
         graph: None,
         state: None,
-        metadata: Default::default(),
+        metadata: json!({"tenant_id": 1}).as_object().unwrap().clone(),
         started_time: None,
         completed_time: None,
         created_time: 0,
@@ -168,8 +169,14 @@ fn chat_state_contains_complete_workflow_snapshot_at_closeout() {
     value.completed_time = Some(100);
     let value = block_on(store.update(value, &cancellation)).unwrap();
     assert_eq!(block_on(store.read(201, &cancellation)).unwrap(), value);
-    let options =
-        json!({"filter":{"tenant_id":1,"user_id":2,"agent_id":3,"session_id":101,"type":"agent"}});
+    assert_eq!(
+        block_on(store.read(201, &cancellation))
+            .unwrap()
+            .metadata
+            .get("tenant_id"),
+        Some(&json!(1))
+    );
+    let options = json!({"filter":{"user_id":2,"agent_id":3,"session_id":101,"type":"agent"}});
     assert_eq!(
         block_on(store.list(options.as_object().unwrap().clone(), &cancellation)).unwrap(),
         vec![value]

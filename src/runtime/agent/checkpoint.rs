@@ -106,7 +106,7 @@ pub(crate) fn identity_matches(state: &Value, metadata: &Map<String, Value>) -> 
         state.get("metadata"),
         state.get("query").and_then(|query| query.get("metadata")),
     ];
-    ["tenant_id", "user_id", "agent_id", "session_id", "chat_id"]
+    ["user_id", "agent_id", "session_id", "chat_id"]
         .into_iter()
         .all(|key| {
             owners.iter().all(|owner| {

@@ -279,7 +279,7 @@ pub(crate) fn parse_chat_options(
         .and_then(Value::as_object)
         .ok_or_else(invalid)?;
     let mut filters = Vec::new();
-    for field in ["tenant_id", "user_id", "agent_id", "session_id"] {
+    for field in ["user_id", "agent_id", "session_id"] {
         let id = filter
             .get(field)
             .and_then(Value::as_i64)
@@ -312,7 +312,7 @@ pub(crate) fn parse_chat_options(
     if filter.keys().any(|key| {
         !matches!(
             key.as_str(),
-            "tenant_id" | "user_id" | "agent_id" | "session_id" | "type" | "created_time"
+            "user_id" | "agent_id" | "session_id" | "type" | "created_time"
         )
     }) {
         return Err(invalid());
@@ -415,7 +415,7 @@ fn validate_request(request: &Request, dimension: Option<usize>) -> Result<(), E
 fn validate_session(
     value: &crate::components::memory::short::session::Session,
 ) -> Result<(), Error> {
-    if value.id <= 0 || value.tenant_id <= 0 || value.user_id <= 0 {
+    if value.id <= 0 || value.user_id <= 0 {
         Err(Error::new(
             "INVALID_ARGUMENTS",
             "session identifiers must be positive",
@@ -426,12 +426,7 @@ fn validate_session(
 }
 
 fn validate_chat(value: &crate::components::memory::short::chat::Chat) -> Result<(), Error> {
-    if value.id <= 0
-        || value.tenant_id <= 0
-        || value.user_id <= 0
-        || value.agent_id <= 0
-        || value.session_id <= 0
-    {
+    if value.id <= 0 || value.user_id <= 0 || value.agent_id <= 0 || value.session_id <= 0 {
         Err(Error::new(
             "INVALID_ARGUMENTS",
             "chat identifiers must be positive",

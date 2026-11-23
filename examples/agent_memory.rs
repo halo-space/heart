@@ -31,7 +31,6 @@ async fn main() -> Result<(), Error> {
         .create(
             session::Session {
                 id: 101,
-                tenant_id: 1,
                 user_id: 2,
                 r#type: short::Type::Agent,
                 title: Some("天气与露营".into()),
@@ -49,13 +48,13 @@ async fn main() -> Result<(), Error> {
     answer.content.push(Part {
         r#type: "text".into(),
         data: json!({"value":"北京今天晴。"}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     memory
         .chat()
         .create(
             chat::Chat {
                 id: 201,
-                tenant_id: 1,
                 user_id: 2,
                 agent_id: 3,
                 session_id: 101,

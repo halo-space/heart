@@ -183,11 +183,7 @@ pub(crate) fn messages_to_agent_input(messages: &Messages) -> Input {
         .map(|part| Payload {
             r#type: part.r#type.clone(),
             data: serde_json::Value::Object(part.data.clone()),
-            mime_type: part
-                .data
-                .get("mime_type")
-                .and_then(Value::as_str)
-                .map(str::to_owned),
+            mime_type: part.mime_type.clone(),
         })
         .collect();
     Input {

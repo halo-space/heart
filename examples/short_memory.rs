@@ -16,7 +16,6 @@ async fn main() -> Result<(), Error> {
         .create(
             session::Session {
                 id: 101,
-                tenant_id: 1,
                 user_id: 2,
                 r#type: Type::Agent,
                 title: Some("天气与露营".into()),

@@ -20,6 +20,7 @@ fn assistant_text(value: &str) -> Message {
     message.content.push(Part {
         r#type: "text".into(),
         data: object(json!({"value": value})),
+        mime_type: None,
     });
     message
 }

@@ -208,7 +208,6 @@ async fn memory(gate: Gate) -> Memory {
         .create(
             session::Session {
                 id: 4,
-                tenant_id: 1,
                 user_id: 2,
                 r#type: memory::short::Type::Agent,
                 title: None,
@@ -701,6 +700,7 @@ fn workflow_input() -> Messages {
                 .as_object()
                 .unwrap()
                 .clone(),
+            mime_type: None,
         });
     Messages::new([message])
 }

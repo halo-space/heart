@@ -22,6 +22,7 @@ fn message_keeps_values_metadata_and_usage_as_siblings() {
     message.content.push(Part {
         r#type: "text".into(),
         data: json!({"value": "ok"}).as_object().unwrap().clone(),
+        mime_type: None,
     });
 
     assert_eq!(message.role, Role::Function);
@@ -112,6 +113,7 @@ fn content_uses_the_canonical_nested_part_path() {
     let _part = halo::agent::model::content::part::Part {
         r#type: "text".into(),
         data: json!({"value": "ok"}).as_object().unwrap().clone(),
+        mime_type: None,
     };
 }
 
@@ -122,6 +124,21 @@ fn part_object_preserves_objects_and_wraps_scalar_values() {
 
     let scalar = halo::agent::model::content::part::object(json!("ok"));
     assert_eq!(scalar["value"], "ok");
+}
+
+#[test]
+fn part_serializes_media_type_beside_object_data() {
+    let part = halo::agent::model::content::part::Part {
+        r#type: "image".into(),
+        data: json!({"source": {"kind": "url", "value": "https://example.invalid/a.png"}})
+            .as_object()
+            .unwrap()
+            .clone(),
+        mime_type: Some("image/png".into()),
+    };
+    let encoded = serde_json::to_value(part).unwrap();
+    assert_eq!(encoded["mime_type"], "image/png");
+    assert!(encoded["data"].get("mime_type").is_none());
 }
 
 #[test]

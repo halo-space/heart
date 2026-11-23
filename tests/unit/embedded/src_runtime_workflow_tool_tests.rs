@@ -60,6 +60,7 @@ fn request_calls<const N: usize>(calls: [(&str, &str, Value); N]) -> Messages {
                 "name": name,
                 "arguments": arguments,
             })),
+            mime_type: None,
         }));
     Messages::new([assistant])
 }

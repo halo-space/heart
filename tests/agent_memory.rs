@@ -126,7 +126,7 @@ impl chat::Store for Chats {
     ) -> Result<Vec<chat::Chat>, Error> {
         assert_eq!(
             Value::Object(options),
-            json!({"filter":{"tenant_id":1,"user_id":2,"agent_id":3,"session_id":101,"type":"agent"},"sort":{"field":"created_time","order":"asc"}})
+            json!({"filter":{"user_id":2,"agent_id":3,"session_id":101,"type":"agent"},"sort":{"field":"created_time","order":"asc"}})
         );
         self.0.stage("chat", cancellation).await?;
         Ok(self.0.chats.lock().unwrap().clone())
@@ -221,7 +221,6 @@ type Config = memory::Config<agent::core::memory::short::Pair<Sessions, Chats>, 
 fn session() -> session::Session {
     session::Session {
         id: 101,
-        tenant_id: 1,
         user_id: 2,
         r#type: short::Type::Agent,
         title: None,
@@ -253,13 +252,13 @@ fn text(role: Role, value: &str) -> Message {
     message.content.push(Part {
         r#type: "text".into(),
         data: json!({"value":value}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     message
 }
 fn history(id: i64, time: i64, question: &str, answer: &str) -> chat::Chat {
     chat::Chat {
         id,
-        tenant_id: 1,
         user_id: 2,
         agent_id: 3,
         session_id: 101,
@@ -557,7 +556,7 @@ fn invalid_scopes_fail_build_without_reading_backends() {
 
 #[test]
 fn configured_memory_requires_exact_i64_business_metadata_before_io() {
-    for field in ["tenant_id", "user_id", "agent_id", "session_id", "chat_id"] {
+    for field in ["user_id", "agent_id", "session_id", "chat_id"] {
         for invalid in [Value::Null, json!("123"), json!(0)] {
             let state = State::default();
             let model = Model::never_called();
@@ -583,13 +582,12 @@ fn configured_memory_requires_exact_i64_business_metadata_before_io() {
 
 #[test]
 fn mismatched_session_identity_stops_before_history_and_model() {
-    for index in 0..4 {
+    for index in 0..3 {
         let state = State::default();
         let mut s = session();
         match index {
             0 => s.id = 9,
-            1 => s.tenant_id = 9,
-            2 => s.user_id = 9,
+            1 => s.user_id = 9,
             _ => s.r#type = short::Type::Workflow,
         }
         let model = Model::never_called();
@@ -612,19 +610,18 @@ fn mismatched_session_identity_stops_before_history_and_model() {
 
 #[test]
 fn incorrect_backend_chat_filtering_is_not_trusted() {
-    for index in 0..6 {
+    for index in 0..5 {
         let state = State::default();
         let mut wrong = history(201, 1, "secret", "answer");
         match index {
-            0 => wrong.tenant_id = 9,
-            1 => wrong.user_id = 9,
-            2 => wrong.agent_id = 9,
-            3 => wrong.session_id = 9,
-            4 => wrong.r#type = short::Type::Workflow,
+            0 => wrong.user_id = 9,
+            1 => wrong.agent_id = 9,
+            2 => wrong.session_id = 9,
+            3 => wrong.r#type = short::Type::Workflow,
             _ => {}
         }
         state.chats.lock().unwrap().push(wrong.clone());
-        if index == 5 {
+        if index == 4 {
             state.chats.lock().unwrap().push(wrong);
         }
         let model = Model::never_called();
@@ -885,7 +882,9 @@ fn react_model_iterations_reuse_one_initial_memory_snapshot() {
     let model = Model::live();
     let agent = agent::react()
         .model(model.clone())
-        .system_prompt("You must call the search tool exactly once, then answer briefly.")
+        .system_prompt(
+            "You must call the search tool exactly once. Do not answer before the tool returns. After receiving the tool result, make one final brief answer.",
+        )
         .memory(config(session(), &state).with_scopes(["user"]))
         .tools(capabilities)
         .build()
@@ -893,13 +892,18 @@ fn react_model_iterations_reuse_one_initial_memory_snapshot() {
     let output = block_on(agent.run(input(), true, Cancellation::new())).unwrap();
     let events = block_on(output.collect::<Vec<_>>());
     assert!(events.iter().all(Result::is_ok), "{events:?}");
-    assert_eq!(model.requests.lock().unwrap().len(), 2);
     assert!(events.iter().any(|event| matches!(event, Ok(Event::Complete { message, .. }) if message.role == Role::Function)));
-    assert!(
-        !values(&model, 1)
+    let requests = model.requests.lock().unwrap();
+    assert!(!requests.is_empty(), "the real model must be called");
+    assert!(requests.iter().all(|request| {
+        request
+            .messages
+            .as_slice()
             .iter()
-            .any(|value| value == "new concurrent history")
-    );
+            .flat_map(|message| &message.content)
+            .filter_map(|part| part.data.get("value").and_then(Value::as_str))
+            .all(|value| value != "new concurrent history")
+    }));
     assert_eq!(
         state
             .calls

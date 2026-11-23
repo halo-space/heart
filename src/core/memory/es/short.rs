@@ -126,10 +126,7 @@ impl crate::components::memory::short::session::Store for Session {
             .get::<crate::components::memory::short::session::Session>(value.id)
             .await?
             .ok_or_else(|| Error::new("NOT_FOUND", "session not found"))?;
-        if current.source.tenant_id != value.tenant_id
-            || current.source.user_id != value.user_id
-            || current.source.r#type != value.r#type
-        {
+        if current.source.user_id != value.user_id || current.source.r#type != value.r#type {
             return Err(Error::new(
                 "INVALID_ARGUMENTS",
                 "session ownership and type cannot change",
@@ -201,8 +198,7 @@ impl crate::components::memory::short::chat::Store for Chat {
             .get::<crate::components::memory::short::chat::Chat>(value.id)
             .await?
             .ok_or_else(|| Error::new("NOT_FOUND", "chat not found"))?;
-        if current.source.tenant_id != value.tenant_id
-            || current.source.user_id != value.user_id
+        if current.source.user_id != value.user_id
             || current.source.agent_id != value.agent_id
             || current.source.session_id != value.session_id
             || current.source.r#type != value.r#type

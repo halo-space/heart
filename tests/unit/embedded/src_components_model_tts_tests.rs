@@ -11,6 +11,7 @@ fn request_requires_text_and_valid_speed() {
             message.content.push(Part {
                 r#type: "text".into(),
                 data: object(json!({"value":"hello"})),
+                mime_type: None,
             });
             message
         }]),

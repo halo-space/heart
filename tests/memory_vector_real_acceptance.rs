@@ -32,6 +32,7 @@ fn text(role: Role, value: &str) -> Message {
     message.content.push(model::content::part::Part {
         r#type: "text".into(),
         data: json!({"value": value}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     message
 }
@@ -158,7 +159,6 @@ async fn real_long_memory_writeback_prepares_and_stores_vector() -> Result<(), E
         .create(
             session::Session {
                 id: 8_300_001,
-                tenant_id: 1,
                 user_id: 8_300_002,
                 r#type: short::Type::Agent,
                 title: None,
@@ -177,7 +177,6 @@ async fn real_long_memory_writeback_prepares_and_stores_vector() -> Result<(), E
         .create(
             chat::Chat {
                 id: 8_300_003,
-                tenant_id: 1,
                 user_id: 8_300_002,
                 agent_id: 8_300_004,
                 session_id: 8_300_001,

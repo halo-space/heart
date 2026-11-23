@@ -25,6 +25,7 @@ fn direct_tool_messages_do_not_acquire_a_tool_result_envelope() {
     error.content.push(Part {
         r#type: "text".into(),
         data: part_data(json!({"value": "city is missing"})),
+        mime_type: None,
     });
     assert_eq!(
         encode_message(Kind::DeepSeek, &error).unwrap()["content"],
@@ -47,6 +48,7 @@ fn image_uses_nested_source_detail_and_does_not_invent_id_resolution() {
         data: part_data(
             json!({"source":{"kind":"url","value":"https://example.com/image.png","detail":"low"}}),
         ),
+        mime_type: None,
     });
     let wire = encode_message(Kind::OpenAI, &message).unwrap();
     assert_eq!(wire["content"][0]["image_url"]["detail"], "low");
@@ -263,10 +265,12 @@ fn named_tool_choice_and_deepseek_reasoning_history_are_translated() {
         Part {
             r#type: "think".into(),
             data: part_data(json!({"value":"先查数据"})),
+            mime_type: None,
         },
         Part {
             r#type: "tool_call".into(),
             data: part_data(json!({"call_id":"c","name":"weather","arguments":{"city":"北京"}})),
+            mime_type: None,
         },
     ];
     let wire = encode_message(Kind::DeepSeek, &history).unwrap();

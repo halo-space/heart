@@ -77,6 +77,7 @@ impl Tool for AskForApproval {
             .push(halo::agent::model::content::part::Part {
                 r#type: "text".into(),
                 data: json!({"value":question}).as_object().unwrap().clone(),
+                mime_type: None,
             });
         let count = call.arguments["count"]
             .as_u64()

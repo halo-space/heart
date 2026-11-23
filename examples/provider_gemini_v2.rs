@@ -23,6 +23,7 @@ fn text_message(text: &str) -> Message {
     message.content.push(Part {
         r#type: "text".into(),
         data: Map::from_iter([(String::from("value"), json!(text))]),
+        mime_type: None,
     });
     message
 }
@@ -39,6 +40,7 @@ fn image_message(prompt: &str, source_kind: &str, source_value: &str, mime_type:
                 "mime_type": mime_type
             }),
         )]),
+        mime_type: Some(mime_type.into()),
     });
     message
 }

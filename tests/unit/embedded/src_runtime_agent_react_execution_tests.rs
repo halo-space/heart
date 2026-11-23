@@ -6,6 +6,7 @@ fn planned_task_instruction_is_merged_into_the_existing_system_message() {
     system.content.push(Part {
         r#type: "text".into(),
         data: part_data(json!({"value": "parent instructions"})),
+        mime_type: None,
     });
     let user = Message::new(Role::User);
     let input = Message::new(Role::User);

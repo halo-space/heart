@@ -38,7 +38,7 @@ impl State {
                 self.stage,
                 Stage::Start | Stage::Execute | Stage::BeforePrompt | Stage::AfterPrompt
             ) && self.idx != 0)
-            || ["tenant_id", "user_id", "agent_id", "session_id", "chat_id"]
+            || ["user_id", "agent_id", "session_id", "chat_id"]
                 .into_iter()
                 .any(|key| self.input.metadata.get(key) != query.metadata.get(key))
         {

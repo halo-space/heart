@@ -38,6 +38,7 @@ fn text(role: Role, value: &str) -> Message {
     message.content.push(Part {
         r#type: "text".into(),
         data: crate::components::model::content::part::object(json!({"value":value})),
+        mime_type: None,
     });
     message
 }
@@ -57,6 +58,7 @@ fn tool_call(call_id: &str) -> Message {
             "name": "search",
             "arguments": {}
         })),
+        mime_type: None,
     });
     message
 }
@@ -71,6 +73,7 @@ fn tool_result(call_id: &str) -> Message {
         data: crate::components::model::content::part::object(json!({
             "value": "result"
         })),
+        mime_type: None,
     });
     message
 }
@@ -238,7 +241,6 @@ async fn add_session<S: session::Store>(config: &WithSession<S>, id: i64) {
         .create(
             session::Session {
                 id,
-                tenant_id: 1,
                 user_id: 2,
                 r#type: memory::short::Type::Agent,
                 title: Some("keep title".into()),
@@ -286,7 +288,6 @@ async fn seed_with_text<S: session::Store>(
         .create(
             chat::Chat {
                 id,
-                tenant_id: 1,
                 user_id: 2,
                 agent_id: 3,
                 session_id,
@@ -1026,6 +1027,7 @@ fn summary_extracts_text_and_hides_think() {
             data: crate::components::model::content::part::object(
                 json!({"value":"private thinking"}),
             ),
+            mime_type: None,
         },
     );
     result.0[0]

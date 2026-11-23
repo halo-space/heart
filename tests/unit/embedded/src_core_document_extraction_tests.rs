@@ -122,15 +122,18 @@ fn graph_decodes_complete_text_and_ignores_think_content() {
     response.content.push(model::content::part::Part {
         r#type: "think".into(),
         data: crate::components::model::content::part::object(json!({"value": "not JSON"})),
+        mime_type: None,
     });
     // A complete text response can contain more than one text part.
     response.content.push(model::content::part::Part {
         r#type: "text".into(),
         data: crate::components::model::content::part::object(json!({"value": &text[..1]})),
+        mime_type: None,
     });
     response.content.push(model::content::part::Part {
         r#type: "text".into(),
         data: crate::components::model::content::part::object(json!({"value": &text[1..]})),
+        mime_type: None,
     });
     let entity_types = [EntityType {
         name: "person".into(),
@@ -148,6 +151,7 @@ fn graph_decodes_complete_text_and_ignores_think_content() {
         response.content.push(model::content::part::Part {
             r#type: "text".into(),
             data: crate::components::model::content::part::object(json!({"value": text})),
+            mime_type: None,
         });
         assert_eq!(
             decode_output(&response, &entity_types, &[])

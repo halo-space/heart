@@ -458,7 +458,6 @@ async fn local_workspace_returns_owned_data_and_physically_deletes_records() {
 fn chat(id: i64, session_id: i64) -> chat::Chat {
     chat::Chat {
         id,
-        tenant_id: 1,
         user_id: 2,
         agent_id: 3,
         session_id,
@@ -477,7 +476,7 @@ fn chat(id: i64, session_id: i64) -> chat::Chat {
     }
 }
 fn options() -> Map<String, Value> {
-    json!({"filter":{"tenant_id":1,"user_id":2,"agent_id":3,"session_id":10,"type":"agent"}})
+    json!({"filter":{"user_id":2,"agent_id":3,"session_id":10,"type":"agent"}})
         .as_object()
         .unwrap()
         .clone()
@@ -487,7 +486,7 @@ fn options() -> Map<String, Value> {
 fn history_requires_explicit_ownership_and_validates_options() {
     let store = core::memory::short::chat::InMemory::new();
     let cancel = Cancellation::new();
-    for field in ["tenant_id", "user_id", "agent_id", "session_id", "type"] {
+    for field in ["user_id", "agent_id", "session_id", "type"] {
         let mut option = options();
         option
             .get_mut("filter")

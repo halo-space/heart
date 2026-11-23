@@ -16,6 +16,7 @@ pub(super) fn text(role: Role, value: String) -> Message {
     message.content.push(Part {
         r#type: "text".into(),
         data: part_data(json!({"value": value})),
+        mime_type: None,
     });
     message
 }

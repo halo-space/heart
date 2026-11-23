@@ -176,6 +176,7 @@ fn workflow_tool_input() -> Messages {
                 "name": "first",
                 "arguments": {}
             })),
+            mime_type: None,
         },
         halo::agent::model::content::part::Part {
             r#type: "tool_call".into(),
@@ -184,6 +185,7 @@ fn workflow_tool_input() -> Messages {
                 "name": "second",
                 "arguments": {}
             })),
+            mime_type: None,
         },
     ];
     Messages::new([assistant])
@@ -231,6 +233,7 @@ impl Agent for WaitingAgent {
             data: halo::agent::model::content::part::object(
                 serde_json::json!({"value": "approved"}),
             ),
+            mime_type: None,
         });
         Ok(stream::iter(vec![Ok(halo::agent::event::Event::Complete {
             message,
@@ -270,6 +273,7 @@ impl Agent for RestoringAgent {
             data: halo::agent::model::content::part::object(
                 serde_json::json!({"value": value}),
             ),
+            mime_type: None,
         });
         Ok(stream::iter(vec![Ok(halo::agent::event::Event::Complete {
             message,
@@ -318,6 +322,7 @@ impl Agent for MeteredAgent {
             data: halo::agent::model::content::part::object(
                 serde_json::json!({"value":"answer"}),
             ),
+            mime_type: None,
         });
         message.usage = Some(usage.clone());
         let mut events = vec![Ok(halo::agent::event::Event::Complete {
@@ -337,6 +342,7 @@ fn user_input() -> Messages {
     message.content.push(halo::agent::model::content::part::Part {
         r#type: "text".into(),
         data: halo::agent::model::content::part::object(serde_json::json!({"value":"hello"})),
+        mime_type: None,
     });
     Messages::new([message])
 }
@@ -373,7 +379,6 @@ fn workflow_memory() -> WorkflowMemoryConfig {
     block_on(config.session().create(
         halo::agent::memory::short::session::Session {
             id: 4,
-            tenant_id: 1,
             user_id: 2,
             r#type: halo::agent::memory::short::Type::Workflow,
             title: None,
@@ -558,6 +563,7 @@ impl Agent for FakeAgent {
                 data: halo::agent::model::content::part::object(
                     serde_json::json!({"value": "agent result"}),
                 ),
+                mime_type: None,
             });
             message
         };
@@ -626,6 +632,7 @@ fn run_executes_agent_node_and_preserves_agent_steps() {
         data: halo::agent::model::content::part::object(
             serde_json::json!({"value": "hello"}),
         ),
+        mime_type: None,
     });
     let ids = Arc::new(|| 3100);
     let result =
@@ -653,6 +660,7 @@ fn agent_node_keeps_each_complete_as_a_step_and_commits_last_assistant() {
         data: halo::agent::model::content::part::object(
             serde_json::json!({"value": "hello"}),
         ),
+        mime_type: None,
     });
     let result = block_on(runtime.execute(
         Messages::new([input]),
@@ -682,6 +690,7 @@ fn cancelled_agent_does_not_activate_end() {
         data: halo::agent::model::content::part::object(
             serde_json::json!({"value": "hello"}),
         ),
+        mime_type: None,
     });
     let _ = block_on(runtime.execute(
         Messages::new([input]),
@@ -711,6 +720,7 @@ fn failed_agent_is_recorded_without_successful_outgoing_relations() {
         data: halo::agent::model::content::part::object(
             serde_json::json!({"value": "hello"}),
         ),
+        mime_type: None,
     });
     let _ = block_on(runtime.execute(
         Messages::new([input]),
@@ -1484,6 +1494,7 @@ fn resolved_wait_reuses_the_same_execution_id_and_attempt() {
             data: halo::agent::model::content::part::object(
                 serde_json::json!({"value":"request"}),
             ),
+            mime_type: None,
         });
     let initial = Messages::new([request]);
     let ids = Arc::new(AtomicI64::new(700));
@@ -1504,6 +1515,7 @@ fn resolved_wait_reuses_the_same_execution_id_and_attempt() {
             data: halo::agent::model::content::part::object(
                 serde_json::json!({"value":"approved"}),
             ),
+            mime_type: None,
         });
     let approved = Messages::new([approved]);
     runtime.resume("approval", approved.clone()).unwrap();
@@ -1516,6 +1528,7 @@ fn resolved_wait_reuses_the_same_execution_id_and_attempt() {
             data: halo::agent::model::content::part::object(
                 serde_json::json!({"value":"changed"}),
             ),
+            mime_type: None,
         });
     assert_eq!(
         runtime
@@ -2021,6 +2034,7 @@ fn tool_checkpoint_recovers_in_a_fresh_process_without_replaying_successes() {
             data: halo::agent::model::content::part::object(serde_json::json!({
                 "call_id": "call_c", "name": "third", "arguments": {}
             })),
+            mime_type: None,
         });
         let partial = block_on(tools.call_with_recovery(
             input.clone(),

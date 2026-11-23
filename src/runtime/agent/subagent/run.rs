@@ -25,7 +25,7 @@ pub(crate) fn inherit_identity(
     input: &mut Input,
     parent: &serde_json::Map<String, Value>,
 ) -> Result<(), Error> {
-    for key in ["chat_id", "session_id", "user_id", "tenant_id"] {
+    for key in ["chat_id", "session_id", "user_id"] {
         if let Some(value) = parent.get(key) {
             if input
                 .metadata

@@ -14,6 +14,7 @@ async fn starts_task_and_finishes_after_the_source_ends() {
     message.content.push(Part {
         r#type: "text".into(),
         data: json!({"value": "北京晴天"}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     let source = futures_util::stream::iter(vec![Ok(HeartEvent::Complete {
         message,
@@ -66,6 +67,7 @@ async fn continues_after_waiting_when_the_live_run_resumes() {
     message.content.push(Part {
         r#type: "text".into(),
         data: json!({"value": "已恢复"}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     let source = futures_util::stream::iter(vec![
         Err(Error::new("WAITING", "需要审批")),
@@ -119,6 +121,7 @@ async fn maps_cancelled_complete_to_canceled_instead_of_completed() {
             .as_object()
             .unwrap()
             .clone(),
+        mime_type: None,
     });
     let source = futures_util::stream::iter(vec![Ok(HeartEvent::Complete {
         message,
@@ -158,6 +161,7 @@ async fn preserves_tool_call_as_structured_a2a_data() {
         .as_object()
         .unwrap()
         .clone(),
+        mime_type: None,
     });
     let source = futures_util::stream::iter(vec![Ok(HeartEvent::Complete {
         message,
@@ -184,6 +188,7 @@ async fn maps_reply_id_complete_to_input_required() {
     message.content.push(Part {
         r#type: "text".into(),
         data: json!({"value": "请批准"}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     let source = futures_util::stream::once(async move {
         Ok(HeartEvent::Complete {
@@ -258,6 +263,7 @@ async fn keeps_delta_and_complete_in_one_artifact_without_message_id() {
     delta.content.push(Part {
         r#type: "text".into(),
         data: json!({"value": "北京"}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     let mut complete = Message::new(Role::Assistant);
     complete.content.push(Part {
@@ -266,6 +272,7 @@ async fn keeps_delta_and_complete_in_one_artifact_without_message_id() {
             .as_object()
             .unwrap()
             .clone(),
+        mime_type: None,
     });
     let output = adapt(
         futures_util::stream::iter(vec![
@@ -298,10 +305,12 @@ async fn does_not_expose_think_parts_to_a2a() {
     message.content.push(Part {
         r#type: "think".into(),
         data: json!({"value": "内部思考"}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     message.content.push(Part {
         r#type: "text".into(),
         data: json!({"value": "公开答案"}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     let source = futures_util::stream::iter(vec![Ok(HeartEvent::Complete {
         message,
@@ -326,6 +335,7 @@ async fn rejects_unknown_heart_content_types() {
     message.content.push(Part {
         r#type: "audio".into(),
         data: json!({"value": "unsupported"}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     let source = futures_util::stream::iter(vec![Ok(HeartEvent::Delta { message })]);
 

@@ -453,6 +453,7 @@ impl Accumulator {
             self.message.content.push(Part {
                 r#type: kind.into(),
                 data: part_data(json!({"value": text})),
+                mime_type: None,
             });
         }
     }
@@ -529,6 +530,7 @@ impl Accumulator {
                     observation.content.push(Part {
                         r#type: kind.into(),
                         data: part_data(json!({"value": text})),
+                        mime_type: None,
                     });
                 }
             }
@@ -596,6 +598,7 @@ impl Accumulator {
                     data: part_data(
                         json!({"call_id": entry.id, "name": entry.name, "arguments": entry.arguments}),
                     ),
+                    mime_type: None,
                 };
                 let position = *entry.position.get_or_insert_with(|| {
                     self.message.content.push(part.clone());
@@ -603,7 +606,7 @@ impl Accumulator {
                 });
                 self.message.content[position] = part;
                 if !entry.id.is_empty() && !entry.name.is_empty() {
-                    observation.content.push(Part { r#type: "tool_call".into(), data: part_data(json!({"call_id": entry.id, "name": entry.name, "arguments": arguments})) });
+                    observation.content.push(Part { r#type: "tool_call".into(), data: part_data(json!({"call_id": entry.id, "name": entry.name, "arguments": arguments})), mime_type: None });
                 }
             }
         }

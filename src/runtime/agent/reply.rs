@@ -372,7 +372,7 @@ impl Handle {
         let mut question = Message::new(Role::Assistant);
         question.content.push(Part { r#type: "text".into(), data: serde_json::json!({
             "value": format!("{reason}\nTool: {}\nArguments: {}", call.name, serde_json::to_string(&call.arguments).expect("Call serialization"))
-        }).as_object().expect("object").clone() });
+        }).as_object().expect("object").clone(), mime_type: None });
         question.metadata.insert("chat_id".into(), chat_id.into());
         question.metadata.insert("reply_id".into(), id.into());
         let (ack, presented) = oneshot::channel();

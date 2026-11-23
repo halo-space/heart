@@ -32,6 +32,7 @@ fn message(role: Role, value: &str) -> Message {
     message.content.push(Part {
         r#type: "text".into(),
         data: json!({"value":value}).as_object().unwrap().clone(),
+        mime_type: None,
     });
     message
 }
