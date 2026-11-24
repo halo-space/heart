@@ -9,6 +9,9 @@ use halo::agent::{
 use serde_json::{Value, json};
 
 fn active_model_steps() -> Vec<Step> {
+    let mut system = Message::new(Role::System);
+    system.values
+        .insert("text".into(), json!("You are a test assistant."));
     let mut user = Message::new(Role::User);
     user.values
         .insert("text".into(), json!("explain the observed output"));
@@ -16,7 +19,7 @@ fn active_model_steps() -> Vec<Step> {
     model_steps::input(
         &mut steps,
         Request {
-            messages: halo::agent::Messages::new([user]),
+            messages: halo::agent::Messages::new([system, user]),
             stream: true,
             ..Default::default()
         },

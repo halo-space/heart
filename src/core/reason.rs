@@ -13,7 +13,7 @@ pub struct Reasoner<C> {
 
 impl<C: Chat> Reasoner<C> {
     pub fn new(chat: C, request: Request) -> Result<Self, Error> {
-        request.validate()?;
+        request.validate_fields()?;
         Ok(Self { chat, request })
     }
 }

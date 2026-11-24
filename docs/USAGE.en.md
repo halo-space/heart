@@ -335,6 +335,8 @@ let provider = halo::agent::provider::vllm::Vllm::new(config)?;
 let chat = provider.chat(halo::agent::model::chat::Config::new("model"))?;
 ```
 
+Before dispatch, a Chat request must contain a leading `system` message and at least one non-empty `user` message. Later `assistant`, `tool`, and `function` messages may follow. Agents use a default system instruction when no custom prompt is configured. Direct Provider calls must supply both roles themselves.
+
 Available provider implementations include DeepSeek, VLLM/OpenAI-compatible, OpenAI, Gemini, and Zhipu. Tool definitions must have an object-root parameter schema. `before` may validate or fill arguments; `after` may mutate the result Message; `eval` may return business feedback.
 
 For a plain async Rust function, `#[halo::tool]` generates an adapter for the existing Tool contract:

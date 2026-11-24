@@ -22,15 +22,21 @@ pub(super) fn text(role: Role, value: String) -> Message {
 }
 
 pub(super) fn prepare(mut request: Request, instruction: &str) -> Result<Request, Error> {
-    request.validate()?;
+    request.validate_fields()?;
     // Preserve explicit model options and caller-supplied JSON Schema.
     request
         .response_format
         .get_or_insert(ResponseFormat::JsonObject);
+    let prefix = request
+        .messages
+        .as_slice()
+        .iter()
+        .take_while(|message| message.role == Role::System)
+        .count();
     request
         .messages
         .0
-        .push(text(Role::System, instruction.to_owned()));
+        .insert(prefix, text(Role::System, instruction.to_owned()));
     Ok(request)
 }
 

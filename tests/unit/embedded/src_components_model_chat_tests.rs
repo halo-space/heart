@@ -9,9 +9,26 @@ fn tool(name: &str) -> ToolDefinition {
     }
 }
 
+fn messages() -> Messages {
+    let mut system = Message::new(Role::System);
+    system.content.push(Part {
+        r#type: "text".into(),
+        data: serde_json::from_value(json!({"value":"You are a test assistant."})).unwrap(),
+        mime_type: None,
+    });
+    let mut user = Message::new(Role::User);
+    user.content.push(Part {
+        r#type: "text".into(),
+        data: serde_json::from_value(json!({"value":"Run the test."})).unwrap(),
+        mime_type: None,
+    });
+    Messages::new([system, user])
+}
+
 #[test]
 fn request_validates_tool_choice_and_response_format() {
     let mut request = Request {
+        messages: messages(),
         tools: vec![tool("weather")],
         tool_choice: Some(ToolChoice::Named {
             name: "weather".into(),
@@ -27,6 +44,26 @@ fn request_validates_tool_choice_and_response_format() {
     request.tool_choice = Some(ToolChoice::Named {
         name: "missing".into(),
     });
+    assert_eq!(request.validate().unwrap_err().code, "INVALID_ARGUMENTS");
+}
+
+#[test]
+fn request_requires_system_and_user_messages_for_model_dispatch() {
+    let mut request = Request {
+        messages: Messages::new([Message::new(Role::User)]),
+        ..Request::default()
+    };
+    assert_eq!(request.validate().unwrap_err().code, "INVALID_ARGUMENTS");
+
+    request.messages = Messages::new([Message::new(Role::System)]);
+    assert_eq!(request.validate().unwrap_err().code, "INVALID_ARGUMENTS");
+
+    request.messages = messages();
+    assert!(request.validate().is_ok());
+
+    let mut late_system = messages();
+    late_system.push(Message::new(Role::System));
+    request.messages = late_system;
     assert_eq!(request.validate().unwrap_err().code, "INVALID_ARGUMENTS");
 }
 

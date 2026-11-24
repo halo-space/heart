@@ -3,8 +3,9 @@
 use super::{Document, Error, complete_request};
 use crate::Cancellation;
 pub use crate::components::document::graph_types::{Evidence, Method};
-use crate::components::message::{Message, Messages};
+use crate::components::message::{Message, Messages, Role};
 use crate::components::model::chat::Chat;
+use crate::core::structured::text;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, BTreeSet};
@@ -146,16 +147,15 @@ where
             "entity_types": self.entity_types.iter().map(|item| serde_json::json!({"name": item.name, "description": item.description})).collect::<Vec<_>>(),
             "relation_types": self.relation_types.iter().map(|item| serde_json::json!({"name": item.name, "description": item.description, "from": item.from, "to": item.to})).collect::<Vec<_>>(),
         });
-        let mut input = Message::new(crate::components::message::Role::User);
-        input.content.push(crate::components::model::content::part::Part {
-                r#type: "text".into(),
-                data: crate::components::model::content::part::object(serde_json::json!({"value": format!("Extract the graph from these documents using the declared entity and relation types. Return only a JSON object with entities and relations arrays. Entity shape: {{\"id\": string, \"type\": string, \"name\": string, \"attrs\": object, \"evidence\": [{{\"content\": string, \"method\": \"text\"}}]}}. Relation shape: {{\"from\": entity id, \"to\": entity id, \"kind\": relation type, \"attrs\": object, \"evidence\": [{{\"content\": string, \"method\": \"text\"}}]}}. Evidence must always be an array of objects, never a string; use an empty array if no exact source quotation is available. Do not invent evidence or identifiers absent from the source. Input: {payload}")})),
-                mime_type: None,
-            });
+        let system = text(
+            Role::System,
+            r#"Extract the graph from these documents using the declared entity and relation types. Return only a JSON object with entities and relations arrays. Entity shape: {"id": string, "type": string, "name": string, "attrs": object, "evidence": [{"content": string, "method": "text"}]}. Relation shape: {"from": entity id, "to": entity id, "kind": relation type, "attrs": object, "evidence": [{"content": string, "method": "text"}]}. Evidence must always be an array of objects, never a string; use an empty array if no exact source quotation is available. Do not invent evidence or identifiers absent from the source."#.into(),
+        );
+        let input = text(Role::User, payload.to_string());
         let message = complete_request(
             &self.chat,
             crate::model::chat::Request {
-                messages: Messages::new([input]),
+                messages: Messages::new([system, input]),
                 stream: true,
                 response_format: Some(crate::model::chat::ResponseFormat::JsonObject),
                 ..crate::model::chat::Request::default()

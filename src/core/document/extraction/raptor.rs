@@ -3,8 +3,9 @@
 use super::{Document, Error, await_model, complete_message, message_text};
 use crate::Cancellation;
 use crate::components::document::Relation;
-use crate::components::message::{Message, Messages};
+use crate::components::message::{Messages, Role};
 use crate::components::model::{chat::Chat, embed::Embed};
+use crate::core::structured::text;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
@@ -156,16 +157,11 @@ where
                         .collect::<Vec<_>>(),
                 )
                 .map_err(|error| Error::new("INVALID_ARGUMENTS", error.to_string()))?;
-                let mut input = Message::new(crate::components::message::Role::User);
-                input
-                        .content
-                        .push(crate::components::model::content::part::Part {
-                            r#type: "text".into(),
-                            data: crate::components::model::content::part::object(serde_json::json!({"value": format!("Summarize these documents: {prompt}")})),
-                            mime_type: None,
-                        });
-                let response =
-                    complete_message(&self.chat, Messages::new([input]), cancellation).await?;
+                let messages = Messages::new([
+                    text(Role::System, "Summarize the supplied documents.".into()),
+                    text(Role::User, prompt),
+                ]);
+                let response = complete_message(&self.chat, messages, cancellation).await?;
                 let summary = message_text(&response, "summary")
                     .filter(|text| !text.trim().is_empty())
                     .ok_or_else(|| Error::new("INVALID_RESPONSE", "summary is missing"))?;

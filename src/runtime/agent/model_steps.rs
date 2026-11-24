@@ -182,7 +182,7 @@ pub fn validate(steps: &[Step], count: usize) -> Result<(), Error> {
             step.request
                 .as_ref()
                 .expect("Model request")
-                .validate()
+                .validate_fields()
                 .map_err(|_| invalid())?;
             active += 1;
             continue;
@@ -214,7 +214,7 @@ pub fn validate(steps: &[Step], count: usize) -> Result<(), Error> {
         step.request
             .as_ref()
             .expect("validated request")
-            .validate()
+            .validate_fields()
             .map_err(|_| invalid())?;
         if step.stage.as_deref() == Some("after") {
             active += 1;

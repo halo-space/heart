@@ -1187,15 +1187,19 @@ pub fn initial_messages(
     history: Vec<Message>,
 ) -> Messages {
     let mut messages = Vec::new();
-    if let Some(prompt) = system_prompt {
-        let mut message = Message::new(Role::System);
-        message.content.push(Part {
-            r#type: "text".into(),
-            data: part_data(serde_json::json!({ "value": prompt })),
-            mime_type: None,
-        });
-        messages.push(message);
-    }
+    // Every model request starts with a system instruction. A builder may
+    // omit a custom prompt, but the provider-facing Chat contract still
+    // requires a system/user pair.
+    let prompt = system_prompt
+        .filter(|prompt| !prompt.trim().is_empty())
+        .unwrap_or("You are a helpful assistant.");
+    let mut message = Message::new(Role::System);
+    message.content.push(Part {
+        r#type: "text".into(),
+        data: part_data(serde_json::json!({ "value": prompt })),
+        mime_type: None,
+    });
+    messages.push(message);
     messages.extend(history);
     messages.push(user_message(input));
     Messages::new(messages)

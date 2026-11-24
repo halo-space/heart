@@ -303,6 +303,8 @@ let request = model::chat::Request {
 
 模型公共参数放在 Request；供应商差异参数放在 `model::chat::Config.options` 或 Request 的 `options`。Provider 初始化参数（地址、密钥、超时）与单次调用参数分开。
 
+模型请求发送前必须包含首位 `system` 消息和至少一条有实际内容的 `user` 消息。后续可以继续包含 `assistant`、`tool` 和 `function` 消息。Agent 未配置系统提示词时会使用默认系统提示词，直接调用 Provider 时需要由调用方提供这两个角色。
+
 ---
 
 ## Checkpoint 和恢复

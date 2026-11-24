@@ -33,6 +33,15 @@ async fn main() -> Result<(), halo::agent::model::Error> {
         )])),
     )?;
 
+    let mut system = Message::new(Role::System);
+    system.content.push(Part {
+        r#type: "text".into(),
+        data: json!({"value": "You are a helpful assistant."})
+            .as_object()
+            .unwrap()
+            .clone(),
+        mime_type: None,
+    });
     let mut user = Message::new(Role::User);
     user.content.push(Part {
         r#type: "text".into(),
@@ -44,7 +53,7 @@ async fn main() -> Result<(), halo::agent::model::Error> {
     });
     let mut events = chat
         .stream(chat::Request {
-            messages: Messages::new([user]),
+            messages: Messages::new([system, user]),
             stream: true,
             max_tokens: Some(128),
             ..Default::default()

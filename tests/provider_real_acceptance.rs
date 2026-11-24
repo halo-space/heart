@@ -32,6 +32,15 @@ async fn configured_vllm_returns_a_real_assistant_message_and_usage() {
         )
         .expect("construct Chat model");
 
+    let mut system = Message::new(Role::System);
+    system.content.push(Part {
+        r#type: "text".into(),
+        data: json!({"value": "You are a helpful assistant."})
+            .as_object()
+            .unwrap()
+            .clone(),
+        mime_type: None,
+    });
     let mut user = Message::new(Role::User);
     user.content.push(Part {
         r#type: "text".into(),
@@ -43,7 +52,7 @@ async fn configured_vllm_returns_a_real_assistant_message_and_usage() {
     });
     let events = model
         .stream(chat::Request {
-            messages: Messages::new([user]),
+            messages: Messages::new([system, user]),
             stream: true,
             max_tokens: Some(128),
             ..Default::default()

@@ -95,9 +95,6 @@ pub(super) fn encode_request(
     request: &Request,
 ) -> Result<Value, Error> {
     request.validate()?;
-    if request.messages.is_empty() {
-        return Err(Error::new("INVALID_ARGUMENTS", "chat messages are empty"));
-    }
     if request
         .temperature
         .is_some_and(|value| !value.is_finite() || !(0.0..=2.0).contains(&value))
@@ -170,14 +167,7 @@ pub(super) fn encode_request(
     body.insert("model".into(), config.model_name.clone().into());
     body.insert(
         "messages".into(),
-        Value::Array(
-            request
-                .messages
-                .as_slice()
-                .iter()
-                .map(|message| encode_message(kind, message))
-                .collect::<Result<_, _>>()?,
-        ),
+        Value::Array(encode_messages(kind, request.messages.as_slice())?),
     );
     body.insert("stream".into(), request.stream.into());
     if request.stream {
@@ -236,6 +226,36 @@ fn part_value(part: &Part) -> Result<&str, Error> {
         .get("value")
         .and_then(Value::as_str)
         .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "content part requires a text value"))
+}
+
+fn encode_messages(kind: Kind, mut messages: &[Message]) -> Result<Vec<Value>, Error> {
+    let mut encoded = Vec::with_capacity(messages.len());
+    if kind == Kind::Vllm {
+        // Some templates only allow a single system message at index zero.
+        // Keep the instructions in order while combining the leading prefix.
+        let count = messages
+            .iter()
+            .take_while(|message| message.role == Role::System)
+            .count();
+        if count > 1 {
+            let (prefix, conversation) = messages.split_at(count);
+            let mut system = prefix[0].clone();
+            for message in &prefix[1..] {
+                system.content.push(Part {
+                    r#type: "text".into(),
+                    data: part_data(json!({"value": "\n\n"})),
+                    mime_type: None,
+                });
+                system.content.extend_from_slice(&message.content);
+            }
+            encoded.push(encode_message(kind, &system)?);
+            messages = conversation;
+        }
+    }
+    for message in messages {
+        encoded.push(encode_message(kind, message)?);
+    }
+    Ok(encoded)
 }
 
 pub(super) fn encode_message(kind: Kind, message: &Message) -> Result<Value, Error> {

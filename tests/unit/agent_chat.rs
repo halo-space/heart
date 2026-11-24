@@ -156,6 +156,11 @@ fn public_chat_builder_keeps_system_prompt_before_user_payload() {
     assert_eq!(messages.as_slice()[0].role, Role::System);
     assert_eq!(messages.as_slice()[0].content[0].data["value"], "你是助手");
     assert_eq!(messages.as_slice()[1].role, Role::User);
+
+    let default_messages = initial_messages(Input::default(), None, Vec::new());
+    assert_eq!(default_messages.as_slice()[0].role, Role::System);
+    assert!(!default_messages.as_slice()[0].content.is_empty());
+    assert_eq!(default_messages.as_slice()[1].role, Role::User);
 }
 
 #[test]
@@ -457,15 +462,17 @@ fn context_limit_keeps_summary_and_newest_message() {
         message
     }
 
+    let system = text(Role::System, "system instruction");
     let summary = text(Role::User, "[Session summary]\nprevious context");
     let newest = text(Role::User, "current question");
     let kept = Request {
-        messages: Messages::new([summary.clone(), newest.clone()]),
+        messages: Messages::new([system.clone(), summary.clone(), newest.clone()]),
         ..Request::default()
     };
     let limit = estimate_input_tokens(&kept);
     let request = Request {
         messages: Messages::new([
+            system,
             text(Role::User, "old history that should be removed"),
             summary,
             text(Role::Assistant, "old answer"),
@@ -474,15 +481,15 @@ fn context_limit_keeps_summary_and_newest_message() {
         ..Request::default()
     };
     let fitted = fit_request(request, Some(limit)).expect("history should be clipped");
-    assert_eq!(fitted.messages.as_slice().len(), 2);
+    assert_eq!(fitted.messages.as_slice().len(), 3);
     assert!(
-        fitted.messages.as_slice()[0].content[0].data["value"]
+        fitted.messages.as_slice()[1].content[0].data["value"]
             .as_str()
             .unwrap()
             .starts_with("[Session summary]")
     );
     assert_eq!(
-        fitted.messages.as_slice()[1].content[0].data["value"],
+        fitted.messages.as_slice()[2].content[0].data["value"],
         "current question"
     );
 }
@@ -496,7 +503,15 @@ fn context_limit_reports_when_pinned_messages_do_not_fit() {
         mime_type: None,
     });
     let request = Request {
-        messages: Messages::new([system]),
+        messages: Messages::new([system, {
+            let mut user = Message::new(Role::User);
+            user.content.push(Part {
+                r#type: "text".into(),
+                data: halo::agent::model::content::part::object(json!({"value":"question"})),
+                mime_type: None,
+            });
+            user
+        }]),
         ..Request::default()
     };
     let error = fit_request(request, Some(1)).expect_err("limit must be enforced");

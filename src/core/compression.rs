@@ -19,7 +19,7 @@ impl<C: Chat> Compressor<C> {
     /// Fixed instruction messages precede each call's explicit input. All other
     /// fields retain their normal chat::Request meanings, including options.
     pub fn new(chat: C, request: Request) -> Result<Self, Error> {
-        request.validate()?;
+        request.validate_fields()?;
         Ok(Self {
             chat,
             request,

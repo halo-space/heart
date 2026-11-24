@@ -102,7 +102,10 @@ pub struct Request {
 }
 
 impl Request {
-    pub fn validate(&self) -> Result<(), Error> {
+    /// Validate fields that are complete before the caller appends the current
+    /// user input. This keeps reusable model bindings valid during builder
+    /// construction while dispatch validation remains strict.
+    pub(crate) fn validate_fields(&self) -> Result<(), Error> {
         let mut names = std::collections::BTreeSet::new();
         for tool in &self.tools {
             tool.validate()?;
@@ -130,6 +133,67 @@ impl Request {
         }
         Ok(())
     }
+
+    /// Validate the complete message contract immediately before dispatch.
+    /// Heart requires an initial system message and at least one user query.
+    /// Later turns may end with assistant or tool messages.
+    pub fn validate(&self) -> Result<(), Error> {
+        self.validate_fields()?;
+        let messages = self.messages.as_slice();
+        if messages
+            .first()
+            .is_none_or(|message| message.role != Role::System)
+        {
+            return Err(Error::new(
+                "INVALID_ARGUMENTS",
+                "chat messages must start with a system message",
+            ));
+        }
+        let mut instruction_prefix = true;
+        let mut has_user = false;
+        for message in messages {
+            match message.role {
+                Role::System | Role::Developer if instruction_prefix => {}
+                Role::System => {
+                    return Err(Error::new(
+                        "INVALID_ARGUMENTS",
+                        "system messages must appear before conversation messages",
+                    ));
+                }
+                Role::User => {
+                    instruction_prefix = false;
+                    has_user |= is_user_query(message);
+                }
+                _ => instruction_prefix = false,
+            }
+        }
+        if !has_user {
+            return Err(Error::new(
+                "INVALID_ARGUMENTS",
+                "chat messages require a non-empty user message",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn is_user_query(message: &Message) -> bool {
+    message.role == Role::User
+        && (!message.values.is_empty()
+            || message.content.iter().any(|part| {
+                if part.r#type != "text" {
+                    return !part.data.is_empty();
+                }
+                part.data
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .is_some_and(|text| {
+                        let text = text.trim();
+                        !text.is_empty()
+                            && !(text.starts_with("<tool_response>")
+                                && text.ends_with("</tool_response>"))
+                    })
+            }))
 }
 
 /// A Provider chooses its concrete stream type. The public contract remains
@@ -182,6 +246,7 @@ pub fn estimate_input_tokens(request: &Request) -> u64 {
 /// create an orphaned tool result.
 #[doc(hidden)]
 pub fn fit_request(request: Request, context_limit: Option<u64>) -> Result<Request, Error> {
+    request.validate()?;
     let Some(context_limit) = context_limit.filter(|limit| *limit > 0) else {
         return Ok(request);
     };
@@ -204,6 +269,13 @@ pub fn fit_request(request: Request, context_limit: Option<u64>) -> Result<Reque
         }
     }
     keep[groups.len() - 1] = true;
+    // The newest user query anchors follow-up requests ending in tool results.
+    if let Some(index) = groups
+        .iter()
+        .rposition(|group| group.iter().any(is_user_query))
+    {
+        keep[index] = true;
+    }
 
     let estimate = |keep: &[bool]| {
         let messages = Messages::new(
@@ -241,6 +313,7 @@ pub fn fit_request(request: Request, context_limit: Option<u64>) -> Result<Reque
     if estimate_input_tokens(&fitted) > input_limit {
         return Err(context_limit_error());
     }
+    fitted.validate()?;
     Ok(fitted)
 }
 
@@ -306,6 +379,7 @@ pub trait Chat: Send + Sync {
         None
     }
 
+    /// Send a complete request. Implementations should validate it before I/O.
     fn stream(
         &self,
         request: Request,

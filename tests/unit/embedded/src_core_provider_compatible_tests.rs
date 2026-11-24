@@ -9,6 +9,22 @@ use crate::model::{
     content::part::{Part, object as part_data},
 };
 use serde_json::{Map, Value, json};
+
+fn chat_messages() -> Messages {
+    let mut system = Message::new(Role::System);
+    system.content.push(Part {
+        r#type: "text".into(),
+        data: part_data(json!({"value":"You are a test assistant."})),
+        mime_type: None,
+    });
+    let mut user = Message::new(Role::User);
+    user.content.push(Part {
+        r#type: "text".into(),
+        data: part_data(json!({"value":"Run the test."})),
+        mime_type: None,
+    });
+    Messages::new([system, user])
+}
 #[test]
 fn direct_tool_messages_do_not_acquire_a_tool_result_envelope() {
     let mut message = Message::function(json!({"temperature": 22}));
@@ -82,7 +98,7 @@ fn deepseek_required_tool_choice_uses_explicit_thinking_options() {
         options: Map::new(),
     };
     let mut request = Request {
-        messages: Messages::new([Message::new(Role::User)]),
+        messages: chat_messages(),
         tools: vec![model::chat::ToolDefinition {
             name: "weather".into(),
             description: "weather".into(),
@@ -127,7 +143,7 @@ fn vllm_options_and_reasoning_use_the_shared_chat_contract() {
         options: Map::new(),
     };
     let request = Request {
-        messages: Messages::new([Message::new(Role::User)]),
+        messages: chat_messages(),
         stream: true,
         max_tokens: Some(128),
         options: Map::from_iter([
@@ -170,7 +186,7 @@ fn vllm_options_and_reasoning_use_the_shared_chat_contract() {
 fn provider_options_are_forwarded_and_reserved_fields_are_rejected() {
     let config = model::chat::Config::new("test");
     let request = Request {
-        messages: Messages::new([Message::new(Role::User)]),
+        messages: chat_messages(),
         options: Map::from_iter([("provider_extension".into(), json!({"enabled": true}))]),
         ..Default::default()
     };
@@ -178,7 +194,7 @@ fn provider_options_are_forwarded_and_reserved_fields_are_rejected() {
     assert_eq!(wire["provider_extension"]["enabled"], true);
 
     let request = Request {
-        messages: Messages::new([Message::new(Role::User)]),
+        messages: chat_messages(),
         options: Map::from_iter([("messages".into(), json!([]))]),
         ..Default::default()
     };
@@ -285,7 +301,7 @@ fn named_tool_choice_and_deepseek_reasoning_history_are_translated() {
         options: Map::new(),
     };
     let request = Request {
-        messages: Messages::new([Message::new(Role::User)]),
+        messages: chat_messages(),
         tools: vec![model::chat::ToolDefinition {
             name: "weather".into(),
             description: "weather".into(),

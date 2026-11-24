@@ -67,7 +67,7 @@ pub(super) async fn model_prepare(
         request,
         saved.idx.unwrap_or(0),
         |idx, request: crate::model::chat::Request| {
-            request.validate()?;
+            request.validate_fields()?;
             saved.idx = Some(idx);
             saved.request = Some(Box::new(request));
             commit(saved.clone())
@@ -77,7 +77,7 @@ pub(super) async fn model_prepare(
     .await;
     match result {
         Ok(request) => {
-            request.validate()?;
+            request.validate_fields()?;
             saved.request = Some(Box::new(request.clone()));
             saved.stage = Some("call".into());
             saved.status = crate::runtime::agent::node::status::step::Status::Running;
