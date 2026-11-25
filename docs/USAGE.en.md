@@ -137,7 +137,7 @@ let input = halo::agent::Input {
 };
 ```
 
-`Payload.type` may be `text`, `image`, `audio`, `file`, or `json`; the corresponding value is in `data`, with an optional `mime_type`. Runtime projects the envelope into model `Messages`.
+`Payload.type` may be `text`, `image`, `audio`, `file`, or `json`; the corresponding value is in `data`, with an optional sibling `mime_type`. Model media uses `data.source.kind/value` without a nested MIME field; `base64` values contain raw Base64 and the Provider Adapter assembles the wire-specific Data URL or binary field. Runtime projects the envelope into model `Messages`.
 
 Each `Message` contains `role`, `content`, `values`, `metadata`, and optional `usage`. The common roles are `system`, `developer`, `user`, `assistant`, `tool`, and `function`. Provider-specific reasoning is normalized to a `content` part with `type = "think"`; normal output uses `type = "text"`.
 

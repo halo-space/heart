@@ -359,29 +359,25 @@ pub(super) fn encode_message(kind: Kind, message: &Message) -> Result<Value, Err
                 let source = part
                     .data
                     .get("source")
+                    .and_then(Value::as_object)
                     .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "image source is missing"))?;
-                let url = source.get("value").and_then(Value::as_str).ok_or_else(|| {
+                let value = source.get("value").and_then(Value::as_str).ok_or_else(|| {
                     Error::new("INVALID_ARGUMENTS", "image source value is missing")
                 })?;
-                if url.trim().is_empty() {
+                if value.trim().is_empty() {
                     return Err(Error::new(
                         "INVALID_ARGUMENTS",
                         "image source value is empty",
                     ));
                 }
-                match source.get("kind").and_then(Value::as_str) {
-                    Some("url") => {}
-                    Some("base64") => {
-                        let valid_data_url = url
-                            .strip_prefix("data:")
-                            .and_then(|value| value.split_once(";base64,"))
-                            .is_some_and(|(_, payload)| !payload.is_empty());
-                        if !valid_data_url {
-                            return Err(Error::new(
-                                "INVALID_ARGUMENTS",
-                                "base64 image source must be a nonempty data URL",
-                            ));
-                        }
+                let mime_type = part.mime_type.as_deref().ok_or_else(|| {
+                    Error::new("INVALID_ARGUMENTS", "image part requires mime_type")
+                })?;
+                let kind = source.get("kind").and_then(Value::as_str).unwrap_or("");
+                let url = match kind {
+                    "url" => value.to_owned(),
+                    "base64" => {
+                        format!("data:{mime_type};base64,{value}")
                     }
                     _ => {
                         return Err(Error::new(
@@ -389,7 +385,7 @@ pub(super) fn encode_message(kind: Kind, message: &Message) -> Result<Value, Err
                             "image source kind is unsupported",
                         ));
                     }
-                }
+                };
                 let mut image = json!({"url": url});
                 if let Some(detail) = source.get("detail") {
                     if !matches!(detail.as_str(), Some("auto" | "low" | "high")) {

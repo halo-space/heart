@@ -76,7 +76,7 @@ async fn main() -> Result<(), Error> {
         r#type: "image".into(),
         data: Map::from_iter([(
             String::from("source"),
-            json!({"kind":"url", "value":"https://example.invalid/image.png", "mime_type":"image/png"}),
+            json!({"kind":"url", "value":"https://example.invalid/image.png"}),
         )]),
         mime_type: Some("image/png".into()),
     });

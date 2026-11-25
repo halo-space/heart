@@ -222,7 +222,7 @@ let input = Input {
 };
 ```
 
-图片、音频、文件使用同一个 Payload 结构，数据放在 `data`，可选 MIME 放在 `mime_type`。未配置对应 Provider 或处理能力时，输入会被明确拒绝，不会静默转换。
+图片、音频、文件使用同一个 Payload 结构，数据放在 `data`，可选 MIME 放在同级 `mime_type`。模型 `Part` 的媒体来源使用 `data.source.kind/value`，不在 `source` 内重复 MIME；`base64` 的 value 使用原始 Base64。未配置对应 Provider 或处理能力时，输入会被明确拒绝，不会静默转换。
 
 ### 3.4 SubAgent 和 Team
 

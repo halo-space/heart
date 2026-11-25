@@ -46,6 +46,10 @@ fn image_message(data_url: String) -> Result<Message, Error> {
                 "GEMINI_TEST_IMAGE_DATA_URL must be a Data URL",
             )
         })?;
+    let value = data_url
+        .split_once(";base64,")
+        .map(|(_, payload)| payload.to_owned())
+        .unwrap_or(data_url);
     let mut message = text_message("请描述这张真实图片。");
     message.content.push(Part {
         r#type: "image".into(),
@@ -53,8 +57,7 @@ fn image_message(data_url: String) -> Result<Message, Error> {
             String::from("source"),
             json!({
                 "kind": "base64",
-                "value": data_url,
-                "mime_type": mime_type
+                "value": value
             }),
         )]),
         mime_type: Some(mime_type),

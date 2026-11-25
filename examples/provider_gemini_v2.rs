@@ -30,14 +30,21 @@ fn text_message(text: &str) -> Message {
 
 fn image_message(prompt: &str, source_kind: &str, source_value: &str, mime_type: &str) -> Message {
     let mut message = text_message(prompt);
+    let source_value = if source_kind == "base64" {
+        source_value
+            .split_once(";base64,")
+            .map(|(_, payload)| payload)
+            .unwrap_or(source_value)
+    } else {
+        source_value
+    };
     message.content.push(Part {
         r#type: "image".into(),
         data: Map::from_iter([(
             String::from("source"),
             json!({
                 "kind": source_kind,
-                "value": source_value,
-                "mime_type": mime_type
+                "value": source_value
             }),
         )]),
         mime_type: Some(mime_type.into()),

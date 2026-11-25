@@ -57,14 +57,14 @@ fn direct_tool_messages_do_not_acquire_a_tool_result_envelope() {
 }
 
 #[test]
-fn image_uses_nested_source_detail_and_does_not_invent_id_resolution() {
+fn image_uses_source_detail_and_does_not_invent_id_resolution() {
     let mut message = Message::new(Role::User);
     message.content.push(Part {
         r#type: "image".into(),
         data: part_data(
             json!({"source":{"kind":"url","value":"https://example.com/image.png","detail":"low"}}),
         ),
-        mime_type: None,
+        mime_type: Some("image/png".into()),
     });
     let wire = encode_message(Kind::OpenAI, &message).unwrap();
     assert_eq!(wire["content"][0]["image_url"]["detail"], "low");
@@ -78,12 +78,12 @@ fn image_uses_nested_source_detail_and_does_not_invent_id_resolution() {
         "UNSUPPORTED"
     );
     message.content[0].data["source"]["kind"] = json!("base64");
-    message.content[0].data["source"]["value"] = json!("not-a-data-url");
+    message.content[0].data["source"]["value"] = json!("");
     assert_eq!(
         encode_message(Kind::OpenAI, &message).unwrap_err().code,
         "INVALID_ARGUMENTS"
     );
-    message.content[0].data["source"]["value"] = json!("data:image/png;base64,ZmFrZQ==");
+    message.content[0].data["source"]["value"] = json!("ZmFrZQ==");
     assert_eq!(
         encode_message(Kind::OpenAI, &message).unwrap()["content"][0]["image_url"]["url"],
         "data:image/png;base64,ZmFrZQ=="
@@ -103,7 +103,7 @@ fn multimodal_reuses_openai_compatible_image_encoding_and_text_output() {
         data: part_data(json!({
             "source": {
                 "kind": "base64",
-                "value": "data:image/png;base64,ZmFrZQ==",
+                "value": "ZmFrZQ==",
                 "detail": "low"
             }
         })),

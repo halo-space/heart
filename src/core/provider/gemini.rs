@@ -555,9 +555,7 @@ fn part_to_input(part: &Part) -> Result<Value, Error> {
             let mime = part
                 .mime_type
                 .as_deref()
-                .or_else(|| source.get("mime_type").and_then(Value::as_str))
-                .or_else(|| part.data.get("mime_type").and_then(Value::as_str))
-                .unwrap_or("application/octet-stream");
+                .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "image part requires mime_type"))?;
             if value.trim().is_empty() {
                 return Err(Error::new(
                     "INVALID_ARGUMENTS",
@@ -566,13 +564,7 @@ fn part_to_input(part: &Part) -> Result<Value, Error> {
             }
             match kind {
                 "url" => Ok(json!({"type":part.r#type,"uri":value,"mime_type":mime})),
-                "base64" => {
-                    let raw = value
-                        .split_once(",")
-                        .map(|(_, payload)| payload)
-                        .unwrap_or(value);
-                    Ok(json!({"type":part.r#type,"data":raw,"mime_type":mime}))
-                }
+                "base64" => Ok(json!({"type":part.r#type,"data":value,"mime_type":mime})),
                 "id" => Err(Error::new(
                     "UNSUPPORTED",
                     "Gemini media id sources require application resolution",

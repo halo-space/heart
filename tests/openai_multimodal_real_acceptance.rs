@@ -27,6 +27,14 @@ fn text(value: &str) -> Part {
 }
 
 fn image(kind: &str, value: String, mime_type: &str) -> Part {
+    let value = if kind == "base64" {
+        value
+            .split_once(";base64,")
+            .map(|(_, payload)| payload.to_owned())
+            .unwrap_or(value)
+    } else {
+        value
+    };
     Part {
         r#type: "image".into(),
         data: Map::from_iter([(

@@ -12,17 +12,16 @@ fn config_redacts_key_and_uses_gemini_endpoint() {
 }
 
 #[test]
-fn media_input_preserves_nested_source_contract() {
+fn media_input_preserves_source_contract() {
     let part = Part {
         r#type: "image".into(),
         data: object(json!({
             "source": {
                 "kind": "base64",
-                "value": "data:image/png;base64,AAAA",
-                "mime_type": "image/png"
+                "value": "AAAA"
             }
         })),
-        mime_type: None,
+        mime_type: Some("image/png".into()),
     };
     let value = part_to_input(&part).unwrap();
     assert_eq!(value["type"], "image");
@@ -68,11 +67,10 @@ fn multimodal_body_preserves_image_url_input() {
         data: object(json!({
             "source": {
                 "kind": "url",
-                "value": "https://example.com/image.png",
-                "mime_type": "image/png"
+                "value": "https://example.com/image.png"
             }
         })),
-        mime_type: None,
+        mime_type: Some("image/png".into()),
     });
     let request = model::multimodal::Request {
         messages: Messages::new([message]),
@@ -96,8 +94,7 @@ fn multimodal_body_rejects_media_outside_the_v3_input_scope() {
         data: object(json!({
             "source": {
                 "kind": "base64",
-                "value": "data:audio/wav;base64,AAAA",
-                "mime_type": "audio/wav"
+                "value": "AAAA"
             }
         })),
         mime_type: Some("audio/wav".into()),
