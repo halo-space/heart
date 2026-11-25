@@ -90,6 +90,7 @@ cargo run --example provider_vllm
 | OpenAI-compatible Chat | [`examples/provider_chat.rs`](examples/provider_chat.rs) |
 | DeepSeek Chat Completions | [`examples/provider_deepseek.rs`](examples/provider_deepseek.rs) |
 | VLLM Chat Completions | [`examples/provider_vllm.rs`](examples/provider_vllm.rs) |
+| OpenAI-compatible 多模态图片输入 | [`examples/provider_multimodal.rs`](examples/provider_multimodal.rs) |
 | 真实天气问答（DeepSeek + Open-Meteo） | [`examples/real_weather_agent.rs`](examples/real_weather_agent.rs) |
 | AgentScope Console 风格 Harness | [`examples/console_harness.rs`](examples/console_harness.rs) |
 

@@ -71,6 +71,13 @@ impl OpenAI {
     pub fn embed(&self, config: model::embed::Config) -> Result<embed::Embed, model::Error> {
         self.connection.embed(config)
     }
+
+    pub fn multimodal(
+        &self,
+        config: model::multimodal::Config,
+    ) -> Result<multimodal::Multimodal, model::Error> {
+        self.connection.multimodal(config)
+    }
 }
 
 /// Fluent configuration for an OpenAI provider connection.
@@ -105,4 +112,8 @@ pub mod chat {
 
 pub mod embed {
     pub use super::super::compatible::Embed;
+}
+
+pub mod multimodal {
+    pub use super::super::compatible::Multimodal;
 }

@@ -3,7 +3,7 @@ use std::time::Duration;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use serde_json::{Map, Value};
 
-use super::{Chat, Embed};
+use super::{Chat, Embed, Multimodal};
 use crate::model;
 use crate::model::token::{InputDetails, OutputDetails, Usage};
 
@@ -98,6 +98,17 @@ impl Connection {
     pub(crate) fn embed(&self, config: model::embed::Config) -> Result<Embed, Error> {
         validate_model(&config.model_name)?;
         Ok(Embed {
+            connection: self.clone(),
+            config,
+        })
+    }
+
+    pub(crate) fn multimodal(
+        &self,
+        config: model::multimodal::Config,
+    ) -> Result<Multimodal, Error> {
+        validate_model(&config.model_name)?;
+        Ok(Multimodal {
             connection: self.clone(),
             config,
         })

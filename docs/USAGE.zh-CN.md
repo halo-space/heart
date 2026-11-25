@@ -531,6 +531,31 @@ let chat = provider.chat(halo::agent::model::chat::Config::new("model-name"))?;
 
 当前实现包含 DeepSeek、VLLM/OpenAI-compatible、OpenAI、Gemini 和 Zhipu。真实调用示例：[`provider_deepseek.rs`](../examples/provider_deepseek.rs)、[`provider_vllm.rs`](../examples/provider_vllm.rs)。
 
+OpenAI-compatible Provider 还提供首批多模态入口，支持图片输入和文本输出：
+
+```rust
+use halo::agent::model::multimodal::{self, Multimodal as _};
+use halo::agent::provider::openai::OpenAI;
+
+let provider = OpenAI::builder()
+    .base_url(std::env::var("HEART_MULTIMODAL_BASE_URL")?)
+    .api_key(std::env::var("HEART_MULTIMODAL_API_KEY")?)
+    .build()?;
+let model = provider.multimodal(multimodal::Config::new(
+    std::env::var("HEART_MULTIMODAL_MODEL")?,
+))?;
+let events = model
+    .stream(multimodal::Request {
+        messages,
+        modalities: vec!["text".into()],
+        stream: true,
+        ..multimodal::Request::default()
+    })
+    .await?;
+```
+
+图片使用 User Message 的 `image` Part，资源放在现有 `data.source` 中。视频、文件、音频输入和媒体输出当前返回 `UNSUPPORTED`。完整示例见 [`provider_multimodal.rs`](../examples/provider_multimodal.rs)。
+
 ### 13.2 Tool、Function 和 Permission
 
 Tool 必须提供稳定 `ToolDefinition` 和异步 `call`；参数 Schema 根必须是 object。`before` 可以校验/补齐参数，`after` 可以修改返回 Message，`eval` 可以反馈业务结果。
@@ -732,6 +757,7 @@ cargo run --example agent_live_tool
 | --- | --- | --- |
 | DeepSeek | `DEEPSEEK_API_KEY`；可选 `DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL` | Agent、Workflow、Memory、A2A |
 | VLLM/OpenAI-compatible | 独立 VLLM 示例使用 `HEART_VLLM_BASE_URL`、`HEART_VLLM_API_KEY`、`HEART_VLLM_MODEL`；统一真实验收使用 DeepSeek 配置 | Provider、Chat/ReAct、Team、Workflow |
+| OpenAI-compatible 多模态 | `HEART_MULTIMODAL_BASE_URL`、`HEART_MULTIMODAL_API_KEY`、`HEART_MULTIMODAL_MODEL`；另需真实图片 URL 或 Data URL | 图片输入、文本输出 |
 | Zhipu Embedding | `HEART_EMBED_API_KEY`；可选 `HEART_EMBED_BASE_URL`、`HEART_EMBED_MODEL` | 向量 Memory、Semantic Chunker |
 | OpenAI Embedding | `OPENAI_API_KEY`；可选 `OPENAI_BASE_URL`、`OPENAI_MODEL` | OpenAI Embedding |
 | Gemini TTS/多模态 | `GEMINI_API_KEY`；多模态另需真实 `GEMINI_TEST_IMAGE_DATA_URL` | TTS、多模态 |
@@ -893,6 +919,7 @@ Checkpoint 保存的是运行现场，不是任意 Rust Tool Future。尚未提�
 | [`short_memory.rs`](../examples/short_memory.rs) | Session/Chat/Long Memory CRUD |
 | [`provider_deepseek.rs`](../examples/provider_deepseek.rs) | DeepSeek Provider |
 | [`provider_vllm.rs`](../examples/provider_vllm.rs) | VLLM Provider |
+| [`provider_multimodal.rs`](../examples/provider_multimodal.rs) | OpenAI-compatible 图片输入与文本输出 |
 | [`real_weather_agent.rs`](../examples/real_weather_agent.rs) | DeepSeek + Open-Meteo 真实天气问答 |
 | [`console_harness.rs`](../examples/console_harness.rs) | AgentScope Console 风格的真实 Harness 终端交互 |
 | [`channel_dingtalk.rs`](../examples/channel_dingtalk.rs) | 钉钉 Stream 渠道和真实 DeepSeek Agent |

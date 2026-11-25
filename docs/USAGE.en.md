@@ -339,6 +339,31 @@ Before dispatch, a Chat request must contain a leading `system` message and at l
 
 Available provider implementations include DeepSeek, VLLM/OpenAI-compatible, OpenAI, Gemini, and Zhipu. Tool definitions must have an object-root parameter schema. `before` may validate or fill arguments; `after` may mutate the result Message; `eval` may return business feedback.
 
+OpenAI-compatible providers also expose the first multimodal scope, with image input and text output:
+
+```rust,no_run
+use halo::agent::model::multimodal::{self, Multimodal as _};
+use halo::agent::provider::openai::OpenAI;
+
+let provider = OpenAI::builder()
+    .base_url(std::env::var("HEART_MULTIMODAL_BASE_URL")?)
+    .api_key(std::env::var("HEART_MULTIMODAL_API_KEY")?)
+    .build()?;
+let model = provider.multimodal(multimodal::Config::new(
+    std::env::var("HEART_MULTIMODAL_MODEL")?,
+))?;
+let events = model
+    .stream(multimodal::Request {
+        messages,
+        modalities: vec!["text".into()],
+        stream: true,
+        ..multimodal::Request::default()
+    })
+    .await?;
+```
+
+Images use an `image` Part in a User Message and the existing `data.source` shape. Video, file, audio input, and media output currently return `UNSUPPORTED`. See [`provider_multimodal.rs`](../examples/provider_multimodal.rs) for a complete example.
+
 For a plain async Rust function, `#[halo::tool]` generates an adapter for the existing Tool contract:
 
 ```rust
@@ -443,6 +468,10 @@ cargo clippy --lib --all-features -- -D warnings
 ```
 
 Provider/MCP/ES/Sandbox acceptance tests read environment variables and should use real services. Deterministic local tests validate contracts and state transitions; they are not model acceptance tests. Before publishing, run `cargo package --allow-dirty` and `cargo publish --dry-run`.
+
+The OpenAI-compatible multimodal acceptance additionally requires `HEART_MULTIMODAL_BASE_URL`,
+`HEART_MULTIMODAL_API_KEY`, `HEART_MULTIMODAL_MODEL`, and a real image URL or Data URL. The
+configured model must support vision input.
 
 `bash scripts/test-real.sh` reads the Git-ignored `.env` and distinguishes three
 outcomes: missing required variables exits non-zero, a failing real test keeps a
@@ -592,6 +621,7 @@ See [`agent_live_handoff.rs`](../examples/agent_live_handoff.rs) for a complete 
 - [`tool_macro.rs`](../examples/tool_macro.rs): `#[halo::tool]` functional Tool adapter.
 - [`provider_deepseek.rs`](../examples/provider_deepseek.rs): DeepSeek provider.
 - [`provider_vllm.rs`](../examples/provider_vllm.rs): VLLM provider.
+- [`provider_multimodal.rs`](../examples/provider_multimodal.rs): OpenAI-compatible image input and text output.
 - [`real_weather_agent.rs`](../examples/real_weather_agent.rs): a real DeepSeek + Open-Meteo weather agent.
 - [`console_harness.rs`](../examples/console_harness.rs): an AgentScope-console-style live Harness session.
 - [`channel_dingtalk.rs`](../examples/channel_dingtalk.rs): DingTalk Stream channel with a live DeepSeek Agent.

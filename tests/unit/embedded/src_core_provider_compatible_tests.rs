@@ -91,6 +91,59 @@ fn image_uses_nested_source_detail_and_does_not_invent_id_resolution() {
 }
 
 #[test]
+fn multimodal_reuses_openai_compatible_image_encoding_and_text_output() {
+    let mut message = Message::new(Role::User);
+    message.content.push(Part {
+        r#type: "text".into(),
+        data: part_data(json!({"value": "描述图片"})),
+        mime_type: None,
+    });
+    message.content.push(Part {
+        r#type: "image".into(),
+        data: part_data(json!({
+            "source": {
+                "kind": "base64",
+                "value": "data:image/png;base64,ZmFrZQ==",
+                "detail": "low"
+            }
+        })),
+        mime_type: Some("image/png".into()),
+    });
+    let mut messages = chat_messages();
+    messages.0[1].content.extend(message.content);
+    let request = super::multimodal::into_chat(model::multimodal::Request {
+        messages,
+        modalities: vec!["text".into()],
+        ..model::multimodal::Request::default()
+    })
+    .unwrap();
+    let wire = encode_request(
+        Kind::OpenAI,
+        &model::chat::Config::new("vision-model"),
+        &request,
+    )
+    .unwrap();
+    assert_eq!(wire["messages"][1]["content"][2]["type"], "image_url");
+    assert_eq!(
+        wire["messages"][1]["content"][2]["image_url"]["detail"],
+        "low"
+    );
+}
+
+#[test]
+fn multimodal_rejects_non_text_output_for_openai_compatible_adapter() {
+    let request = model::multimodal::Request {
+        messages: chat_messages(),
+        modalities: vec!["audio".into()],
+        ..model::multimodal::Request::default()
+    };
+    assert_eq!(
+        super::multimodal::into_chat(request).unwrap_err().code,
+        "UNSUPPORTED"
+    );
+}
+
+#[test]
 fn deepseek_required_tool_choice_uses_explicit_thinking_options() {
     let config = model::chat::Config {
         model_name: "test".into(),
