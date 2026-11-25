@@ -12,7 +12,7 @@ use halo::agent::{
     event::Event,
     message::Role,
     middleware::Middleware,
-    model::chat,
+    model::chat::{self, Chat as ChatContract, Request},
     provider::vllm::{Config, Vllm, chat::Chat as VllmChat},
     tool::{Call, Tool, ToolDefinition},
 };
@@ -21,6 +21,25 @@ use serde_json::{Value, json};
 fn next_id() -> i64 {
     static NEXT: AtomicI64 = AtomicI64::new(9_200_100);
     NEXT.fetch_add(1, Ordering::SeqCst)
+}
+
+/// Keep real Team calls deterministic without replacing the live provider.
+/// Temperature is a request field, so the test wrapper sets it at dispatch
+/// time instead of putting a reserved field into model configuration options.
+#[derive(Clone)]
+struct StableChat(VllmChat);
+
+impl ChatContract for StableChat {
+    type Stream = <VllmChat as ChatContract>::Stream;
+
+    fn context_limit(&self) -> Option<u64> {
+        self.0.context_limit()
+    }
+
+    async fn stream(&self, mut request: Request) -> Result<Self::Stream, Error> {
+        request.temperature = Some(0.0);
+        self.0.stream(request).await
+    }
 }
 
 #[derive(Clone)]
@@ -54,30 +73,34 @@ fn provider() -> Result<Vllm, Error> {
     })
 }
 
-fn chat(provider: &Vllm) -> Result<VllmChat, Error> {
-    provider.chat(
-        chat::Config::new(
-            std::env::var("HEART_VLLM_MODEL")
-                .map_err(|_| Error::new("INVALID_ARGUMENTS", "set HEART_VLLM_MODEL"))?,
-        )
-        .options(serde_json::Map::from_iter([(
-            "chat_template_kwargs".into(),
-            json!({"enable_thinking": false}),
-        )])),
-    )
+fn chat(provider: &Vllm) -> Result<StableChat, Error> {
+    Ok(StableChat(
+        provider.chat(
+            chat::Config::new(
+                std::env::var("HEART_VLLM_MODEL")
+                    .map_err(|_| Error::new("INVALID_ARGUMENTS", "set HEART_VLLM_MODEL"))?,
+            )
+            .options(serde_json::Map::from_iter([(
+                "chat_template_kwargs".into(),
+                json!({"enable_thinking": false}),
+            )])),
+        )?,
+    ))
 }
 
-fn handoff_chat(provider: &Vllm) -> Result<VllmChat, Error> {
-    provider.chat(
-        chat::Config::new(
-            std::env::var("HEART_VLLM_MODEL")
-                .map_err(|_| Error::new("INVALID_ARGUMENTS", "set HEART_VLLM_MODEL"))?,
-        )
-        .options(serde_json::Map::from_iter([(
-            "chat_template_kwargs".into(),
-            json!({"enable_thinking": false}),
-        )])),
-    )
+fn handoff_chat(provider: &Vllm) -> Result<StableChat, Error> {
+    Ok(StableChat(
+        provider.chat(
+            chat::Config::new(
+                std::env::var("HEART_VLLM_MODEL")
+                    .map_err(|_| Error::new("INVALID_ARGUMENTS", "set HEART_VLLM_MODEL"))?,
+            )
+            .options(serde_json::Map::from_iter([(
+                "chat_template_kwargs".into(),
+                json!({"enable_thinking": false}),
+            )])),
+        )?,
+    ))
 }
 
 fn input() -> Input {
@@ -371,14 +394,29 @@ async fn real_team_member_waits_for_reply_then_leader_continues() {
     let mut reply = input();
     reply.metadata.insert("reply_id".into(), json!(reply_id));
     reply.payload[0].data = json!({"value":"批准发布。"});
-    team.reply(reply, cancellation)
+    team.reply(reply, cancellation.clone())
         .await
         .expect("reply to member");
-    let tail = tokio::time::timeout(std::time::Duration::from_secs(90), async {
-        events.collect::<Vec<_>>().await
-    })
-    .await
-    .expect("Team must continue after member reply");
+    let mut tail: Vec<Result<Event, Error>> = Vec::new();
+    while let Some(event) = tokio::time::timeout(std::time::Duration::from_secs(90), events.next())
+        .await
+        .expect("Team must continue after member reply")
+    {
+        let event = event.expect("Team failed after reply");
+        if let Event::Complete { message, .. } = &event
+            && let Some(reply_id) = message.metadata.get("reply_id").and_then(|v| v.as_i64())
+        {
+            let mut next_reply = input();
+            next_reply
+                .metadata
+                .insert("reply_id".into(), json!(reply_id));
+            next_reply.payload[0].data = json!({"value":"批准发布。"});
+            team.reply(next_reply, cancellation.clone())
+                .await
+                .expect("reply to the next Team approval");
+        }
+        tail.push(Ok(event));
+    }
     assert!(
         tail.iter().all(Result::is_ok),
         "Team failed after reply: {tail:?}"
@@ -456,19 +494,38 @@ async fn real_team_checkpoint_restores_waiting_member_without_replaying_complete
     assert_eq!(saved["status"], "waiting");
     drop(events);
 
-    let mut reply = first_input;
+    let mut reply = first_input.clone();
     reply.metadata.insert("reply_id".into(), json!(reply_id));
     reply.payload[0].data = json!({"value":"批准发布。"});
     let resumed = build_team();
+    let cancellation = Cancellation::new();
     let restored = resumed
-        .run(reply, true, Cancellation::new())
+        .run(reply, true, cancellation.clone())
         .await
         .expect("restore Team from Checkpoint");
-    let tail = tokio::time::timeout(std::time::Duration::from_secs(180), async {
-        restored.collect::<Vec<_>>().await
-    })
-    .await
-    .expect("restored Team must finish");
+    futures_util::pin_mut!(restored);
+    let mut tail: Vec<Result<Event, Error>> = Vec::new();
+    while let Some(event) =
+        tokio::time::timeout(std::time::Duration::from_secs(180), restored.next())
+            .await
+            .expect("restored Team must finish")
+    {
+        let event = event.expect("restored Team must not fail");
+        if let Event::Complete { message, .. } = &event
+            && let Some(reply_id) = message.metadata.get("reply_id").and_then(Value::as_i64)
+        {
+            let mut next_reply = first_input.clone();
+            next_reply
+                .metadata
+                .insert("reply_id".into(), json!(reply_id));
+            next_reply.payload[0].data = json!({"value":"批准发布。"});
+            resumed
+                .reply(next_reply, cancellation.clone())
+                .await
+                .expect("reply to the next Team approval");
+        }
+        tail.push(Ok(event));
+    }
     assert!(
         tail.iter().all(Result::is_ok),
         "restored Team failed: {tail:?}"

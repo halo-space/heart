@@ -431,7 +431,15 @@ fn react_uses_the_same_initialization_contract() {
             .iter()
             .all(Result::is_ok)
     );
-    assert_eq!(values(&model, 0), ["weather?", "sunny", "camping?"]);
+    assert_eq!(
+        values(&model, 0),
+        [
+            "You are a helpful assistant.",
+            "weather?",
+            "sunny",
+            "camping?"
+        ]
+    );
 }
 
 #[test]
@@ -456,6 +464,7 @@ fn summary_coverage_resolves_history_order_not_numeric_id_ranges() {
     assert_eq!(
         values(&model, 0),
         [
+            "You are a helpful assistant.",
             "[Session summary]\nprevious conversation",
             "recent",
             "c",
@@ -489,6 +498,7 @@ fn recall_scopes_are_exact_and_only_affect_long_memory() {
     assert_eq!(
         values(&model, 0),
         [
+            "You are a helpful assistant.",
             "short",
             "answer",
             "[Long-term memory]\nuser preference",
@@ -516,7 +526,7 @@ fn recall_scopes_are_exact_and_only_affect_long_memory() {
         ]
     );
     let requests = model.requests.lock().unwrap();
-    let recalled = &requests[0].messages.as_slice()[3];
+    let recalled = &requests[0].messages.as_slice()[4];
     assert_eq!(recalled.role, Role::User);
     assert_eq!(recalled.metadata["private"], "not prompt");
     assert!(recalled.values.is_empty());
@@ -530,7 +540,10 @@ fn no_configuration_keeps_agent_independent_of_memory_identity() {
     let mut question = input();
     question.metadata.clear();
     block_on(agent.run(question, true, Cancellation::new())).unwrap();
-    assert_eq!(values(&model, 0), ["camping?"]);
+    assert_eq!(
+        values(&model, 0),
+        ["You are a helpful assistant.", "camping?"]
+    );
 }
 
 #[test]
@@ -703,7 +716,10 @@ fn running_failed_stopped_incomplete_and_current_chats_are_not_replayed() {
         .build()
         .unwrap();
     block_on(agent.run(input(), true, Cancellation::new())).unwrap();
-    assert_eq!(values(&model, 0), ["good", "answer", "camping?"]);
+    assert_eq!(
+        values(&model, 0),
+        ["You are a helpful assistant.", "good", "answer", "camping?"]
+    );
 }
 
 #[test]
@@ -729,12 +745,12 @@ fn original_complete_assistant_fields_are_preserved() {
     block_on(agent.run(input(), true, Cancellation::new())).unwrap();
     let requests = model.requests.lock().unwrap();
     let messages = requests[0].messages.as_slice();
-    assert_eq!(messages[1], original);
+    assert_eq!(messages[2], original);
     let mut message_metadata = input().metadata;
     for key in ["chat_id", "node_id", "exec_id"] {
         message_metadata.remove(key);
     }
-    assert_eq!(messages[2].metadata, message_metadata);
+    assert_eq!(messages[3].metadata, message_metadata);
 }
 
 #[test]
@@ -835,8 +851,21 @@ fn config_clone_shares_stores_and_each_run_reads_a_fresh_snapshot() {
         .unwrap()
         .push(history(202, 2, "new", "b"));
     block_on(agent.run(input(), true, Cancellation::new())).unwrap();
-    assert_eq!(values(&model, 0), ["first", "a", "camping?"]);
-    assert_eq!(values(&model, 1), ["first", "a", "new", "b", "camping?"]);
+    assert_eq!(
+        values(&model, 0),
+        ["You are a helpful assistant.", "first", "a", "camping?"]
+    );
+    assert_eq!(
+        values(&model, 1),
+        [
+            "You are a helpful assistant.",
+            "first",
+            "a",
+            "new",
+            "b",
+            "camping?"
+        ]
+    );
     assert_eq!(
         *state.calls.lock().unwrap(),
         ["session", "chat", "session", "chat"]
@@ -954,7 +983,15 @@ fn later_memory_configuration_replaces_earlier_components() {
         .unwrap();
     block_on(agent.run(input(), true, Cancellation::new())).unwrap();
     assert!(first.calls.lock().unwrap().is_empty());
-    assert_eq!(values(&model, 0), ["last configured", "answer", "camping?"]);
+    assert_eq!(
+        values(&model, 0),
+        [
+            "You are a helpful assistant.",
+            "last configured",
+            "answer",
+            "camping?"
+        ]
+    );
 }
 
 #[tokio::test]
@@ -1043,7 +1080,10 @@ fn in_memory_backends_remain_directly_usable_through_the_config() {
         .build()
         .unwrap();
     block_on(agent.run(input(), true, Cancellation::new())).unwrap();
-    assert_eq!(values(&model, 0), ["camping?"]);
+    assert_eq!(
+        values(&model, 0),
+        ["You are a helpful assistant.", "camping?"]
+    );
     assert!(
         block_on(
             configured

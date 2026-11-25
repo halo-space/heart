@@ -207,6 +207,7 @@ fn request(id: i64, method: &str, params: Value) -> Value {
 }
 
 async fn wait_for_server(client: &Client, endpoint: &str) -> Result<(), Error> {
+    let mut last_error = None;
     for _ in 0..50 {
         match client
             .post(endpoint)
@@ -215,15 +216,20 @@ async fn wait_for_server(client: &Client, endpoint: &str) -> Result<(), Error> {
             .await
         {
             Ok(_) => return Ok(()),
-            Err(error) if error.is_connect() || error.is_request() => {
+            Err(error) => {
+                last_error = Some(error.to_string());
                 tokio::time::sleep(Duration::from_millis(20)).await;
             }
-            Err(error) => return Err(Error::new("TRANSPORT", error.to_string())),
         }
     }
     Err(Error::new(
         "TIMEOUT",
-        "A2A test server did not become ready",
+        format!(
+            "A2A test server did not become ready{}",
+            last_error
+                .map(|error| format!(": {error}"))
+                .unwrap_or_default()
+        ),
     ))
 }
 
