@@ -87,3 +87,52 @@ fn multimodal_body_preserves_image_url_input() {
     assert_eq!(body["input"][1]["uri"], "https://example.com/image.png");
     assert_eq!(body["input"][1]["mime_type"], "image/png");
 }
+
+#[test]
+fn multimodal_body_rejects_media_outside_the_v3_input_scope() {
+    let mut message = Message::new(Role::User);
+    message.content.push(Part {
+        r#type: "audio".into(),
+        data: object(json!({
+            "source": {
+                "kind": "base64",
+                "value": "data:audio/wav;base64,AAAA",
+                "mime_type": "audio/wav"
+            }
+        })),
+        mime_type: Some("audio/wav".into()),
+    });
+    let request = model::multimodal::Request {
+        messages: Messages::new([message]),
+        ..model::multimodal::Request::default()
+    };
+    let error = multimodal_body(
+        &model::multimodal::Config::new("gemini-3.5-flash"),
+        &request,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "UNSUPPORTED");
+}
+
+#[test]
+fn multimodal_body_rejects_unsupported_output_modalities() {
+    let request = model::multimodal::Request {
+        messages: Messages::new([{
+            let mut message = Message::new(Role::User);
+            message.content.push(Part {
+                r#type: "text".into(),
+                data: object(json!({"value": "描述图片"})),
+                mime_type: None,
+            });
+            message
+        }]),
+        modalities: vec!["image".into()],
+        ..model::multimodal::Request::default()
+    };
+    let error = multimodal_body(
+        &model::multimodal::Config::new("gemini-3.5-flash"),
+        &request,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "UNSUPPORTED");
+}

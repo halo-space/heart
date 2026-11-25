@@ -335,11 +335,15 @@ async fn next_stream_event(mut state: StreamState) -> Option<(Result<Event, Erro
             .and_then(Value::as_str)
             .unwrap_or("");
         if event_type == "step.delta" {
-            if let Some(part) = delta_part(value.get("delta"), state.kind) {
-                state.message.content.push(part.clone());
-                let mut delta = Message::new(Role::Assistant);
-                delta.content.push(part);
-                return Some((Ok(Event::Delta { message: delta }), state));
+            match delta_part(value.get("delta"), state.kind) {
+                Ok(Some(part)) => {
+                    state.message.content.push(part.clone());
+                    let mut delta = Message::new(Role::Assistant);
+                    delta.content.push(part);
+                    return Some((Ok(Event::Delta { message: delta }), state));
+                }
+                Ok(None) => {}
+                Err(error) => return Some((Err(error), state)),
             }
             continue;
         }
@@ -381,7 +385,7 @@ fn output_message(value: &Value, kind: OutputKind) -> Result<(Message, Option<Us
     for step in steps {
         if let Some(content) = step.get("content").and_then(Value::as_array) {
             for item in content {
-                if let Some(part) = output_part(item, kind) {
+                if let Some(part) = output_part(item, kind)? {
                     message.content.push(part);
                 }
             }
@@ -396,49 +400,72 @@ fn output_message(value: &Value, kind: OutputKind) -> Result<(Message, Option<Us
     Ok((message, value.get("usage").and_then(parse_usage)))
 }
 
-fn output_part(value: &Value, _kind: OutputKind) -> Option<Part> {
-    let kind = value.get("type")?.as_str()?;
-    match kind {
-        "text" => Some(Part {
+fn output_part(value: &Value, output_kind: OutputKind) -> Result<Option<Part>, Error> {
+    let Some(part_kind) = value.get("type").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    match part_kind {
+        "text" if matches!(output_kind, OutputKind::Multimodal) => Ok(Some(Part {
             r#type: "text".into(),
-            data: object(json!({"value": value.get("text")?})),
+            data: object(json!({
+                "value": value.get("text").ok_or_else(|| {
+                    Error::new("INVALID_RESPONSE", "Gemini text output has no text")
+                })?
+            })),
             mime_type: None,
-        }),
-        "audio" | "image" | "video" | "file" => {
-            let data = value.get("data")?.as_str()?;
+        })),
+        "audio" => {
+            let data = value
+                .get("data")
+                .and_then(Value::as_str)
+                .ok_or_else(|| Error::new("INVALID_RESPONSE", "Gemini audio output has no data"))?;
             let mime = value
                 .get("mime_type")
                 .and_then(Value::as_str)
-                .unwrap_or(match kind {
-                    "audio" => "audio/wav",
-                    "image" => "image/png",
-                    "video" => "video/mp4",
-                    _ => "application/octet-stream",
-                });
-            Some(media_part(kind, data, mime))
+                .unwrap_or("audio/wav");
+            Ok(Some(media_part(part_kind, data, mime)))
         }
-        _ => None,
+        "image" | "video" | "file" => Err(Error::new(
+            "UNSUPPORTED",
+            "Gemini output media type is outside the current V3 scope",
+        )),
+        _ => Ok(None),
     }
 }
 
-fn delta_part(value: Option<&Value>, _kind: OutputKind) -> Option<Part> {
-    let value = value?;
-    let kind = value.get("type")?.as_str()?;
-    match kind {
-        "text" => Some(Part {
+fn delta_part(value: Option<&Value>, kind: OutputKind) -> Result<Option<Part>, Error> {
+    let Some(value) = value else {
+        return Ok(None);
+    };
+    let Some(part_kind) = value.get("type").and_then(Value::as_str) else {
+        return Ok(None);
+    };
+    match part_kind {
+        "text" if matches!(kind, OutputKind::Multimodal) => Ok(Some(Part {
             r#type: "text".into(),
-            data: object(json!({"value": value.get("text")?})),
+            data: object(json!({
+                "value": value.get("text").ok_or_else(|| {
+                    Error::new("INVALID_RESPONSE", "Gemini text output has no text")
+                })?
+            })),
             mime_type: None,
-        }),
-        "audio" | "image" | "video" | "file" => {
-            let data = value.get("data")?.as_str()?;
+        })),
+        "audio" => {
+            let data = value
+                .get("data")
+                .and_then(Value::as_str)
+                .ok_or_else(|| Error::new("INVALID_RESPONSE", "Gemini audio output has no data"))?;
             let mime = value
                 .get("mime_type")
                 .and_then(Value::as_str)
-                .unwrap_or("application/octet-stream");
-            Some(media_part(kind, data, mime))
+                .unwrap_or("audio/wav");
+            Ok(Some(media_part(part_kind, data, mime)))
         }
-        _ => None,
+        "image" | "video" | "file" => Err(Error::new(
+            "UNSUPPORTED",
+            "Gemini output media type is outside the current V3 scope",
+        )),
+        _ => Ok(None),
     }
 }
 
@@ -517,7 +544,7 @@ fn messages_to_input(messages: &Messages) -> Result<Value, Error> {
 fn part_to_input(part: &Part) -> Result<Value, Error> {
     match part.r#type.as_str() {
         "text" => Ok(json!({"type":"text", "text": text_part(part)?})),
-        "image" | "audio" | "video" | "file" => {
+        "image" => {
             let source = part
                 .data
                 .get("source")
@@ -556,6 +583,10 @@ fn part_to_input(part: &Part) -> Result<Value, Error> {
                 )),
             }
         }
+        "audio" | "video" | "file" => Err(Error::new(
+            "UNSUPPORTED",
+            "Gemini input media type is outside the current V3 scope",
+        )),
         _ => Err(Error::new(
             "UNSUPPORTED",
             "Gemini does not support this content part",
@@ -635,6 +666,7 @@ fn multimodal_body(
     request: &model::multimodal::Request,
 ) -> Result<Value, Error> {
     request.validate()?;
+    validate_modalities(&request.modalities)?;
     let options = merge_options(&config.options, &request.options);
     let mut body = Value::Object(options);
     body["model"] = Value::String(config.model_name.clone());
@@ -679,6 +711,19 @@ fn multimodal_body(
         );
     }
     Ok(body)
+}
+
+fn validate_modalities(modalities: &[String]) -> Result<(), Error> {
+    if let Some(value) = modalities
+        .iter()
+        .find(|value| !matches!(value.as_str(), "text" | "audio"))
+    {
+        return Err(Error::new(
+            "UNSUPPORTED",
+            format!("Gemini output modality is not supported in the current V3 scope: {value}"),
+        ));
+    }
+    Ok(())
 }
 
 pub mod multimodal {
