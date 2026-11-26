@@ -12,7 +12,9 @@ use crate::Error;
 use crate::components::message::{Message, Messages, Role};
 use crate::components::model::content::part::Part;
 use crate::components::node::{Node, Signal};
-use crate::components::tool::{Call, Tool as ComponentTool, ToolDefinition, prepare_call};
+use crate::components::tool::{
+    Call, Tool as ComponentTool, ToolDefinition, prepare_call, validate_message,
+};
 use crate::runtime::lifecycle::{Methods, Phase, advance};
 
 // Working facts for this invocation only; every acknowledged change is handed
@@ -56,6 +58,7 @@ where
             call: |call: Call| async move { tool.call(&call, cancellation).await },
             after: |call: Call, mut message: Message| async move {
                 tool.after(&call, &mut message, cancellation).await?;
+                validate_message(&message)?;
                 Ok(message)
             },
             commit,

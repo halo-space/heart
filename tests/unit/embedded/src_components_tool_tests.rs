@@ -8,6 +8,7 @@ use serde_json::json;
 
 use super::*;
 use crate::components::message::Role;
+use crate::components::model::content::part::Part;
 use crate::tool::execute;
 
 #[test]
@@ -122,6 +123,53 @@ fn definition() -> ToolDefinition {
         }))
         .unwrap(),
     }
+}
+
+#[test]
+fn tool_media_accepts_only_inline_base64_image_and_audio() {
+    for media_type in ["image", "audio"] {
+        let message = Message {
+            role: Role::Tool,
+            content: vec![Part {
+                r#type: media_type.into(),
+                data: Map::from_iter([(
+                    "source".into(),
+                    json!({"kind": "base64", "value": "ZmFrZQ=="}),
+                )]),
+                mime_type: Some(if media_type == "image" {
+                    "image/png".into()
+                } else {
+                    "audio/wav".into()
+                }),
+            }],
+            values: Map::new(),
+            metadata: Map::new(),
+            usage: None,
+        };
+        assert!(validate_message(&message).is_ok());
+    }
+
+    let mut url = Message::new(Role::Tool);
+    url.content.push(Part {
+        r#type: "image".into(),
+        data: Map::from_iter([(
+            "source".into(),
+            json!({"kind": "url", "value": "https://example.com/image.png"}),
+        )]),
+        mime_type: Some("image/png".into()),
+    });
+    assert_eq!(validate_message(&url).unwrap_err().code, "UNSUPPORTED");
+
+    let mut video = Message::new(Role::Tool);
+    video.content.push(Part {
+        r#type: "video".into(),
+        data: Map::from_iter([(
+            "source".into(),
+            json!({"kind": "base64", "value": "ZmFrZQ=="}),
+        )]),
+        mime_type: Some("video/mp4".into()),
+    });
+    assert_eq!(validate_message(&video).unwrap_err().code, "UNSUPPORTED");
 }
 
 struct HookTool {

@@ -4,7 +4,7 @@
 //! provides this stateless convenience call for callers that need one direct
 //! Tool invocation without Runtime state.
 use crate::cancellation::cancellable;
-use crate::components::tool::{Call, Evaluation, Tool, prepare_call};
+use crate::components::tool::{Call, Evaluation, Tool, prepare_call, validate_message};
 use crate::{Cancellation, Error, Message};
 
 /// Run one Tool's before/call/after/eval lifecycle without retaining Runtime
@@ -18,6 +18,7 @@ pub async fn execute<T: Tool>(
     let call = prepare_call(tool, call, cancellation).await?;
     let mut message = cancellable(tool.call(&call, cancellation), cancellation).await?;
     cancellable(tool.after(&call, &mut message, cancellation), cancellation).await?;
+    validate_message(&message)?;
     let evaluation = cancellable(tool.eval(&call, &message, cancellation), cancellation).await?;
     Ok((message, evaluation))
 }

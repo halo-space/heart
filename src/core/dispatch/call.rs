@@ -5,6 +5,7 @@
 //! phases.
 
 use super::*;
+use crate::components::tool::validate_message;
 
 impl Dispatch {
     pub async fn execute(
@@ -77,6 +78,10 @@ impl Dispatch {
             cancellation,
         )
         .await
+        .and_then(|(call, message)| {
+            validate_message(&message)?;
+            Ok((call, message))
+        })
     }
 
     /// Preflight before optional Agent permission checks; no Tool/MCP hooks.
