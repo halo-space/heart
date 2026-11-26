@@ -475,7 +475,7 @@ fn media_part(kind: &str, data: &str, mime: &str) -> Part {
         data: object(json!({
             "source": {
                 "kind": "base64",
-                "value": format!("data:{mime};base64,{data}"),
+                "value": data,
             },
         })),
         mime_type: Some(mime.to_owned()),
@@ -544,7 +544,7 @@ fn messages_to_input(messages: &Messages) -> Result<Value, Error> {
 fn part_to_input(part: &Part) -> Result<Value, Error> {
     match part.r#type.as_str() {
         "text" => Ok(json!({"type":"text", "text": text_part(part)?})),
-        "image" => {
+        "image" | "audio" => {
             let source = part
                 .data
                 .get("source")
@@ -552,10 +552,12 @@ fn part_to_input(part: &Part) -> Result<Value, Error> {
                 .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "media source is required"))?;
             let kind = source.get("kind").and_then(Value::as_str).unwrap_or("");
             let value = source.get("value").and_then(Value::as_str).unwrap_or("");
-            let mime = part
-                .mime_type
-                .as_deref()
-                .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "image part requires mime_type"))?;
+            let mime = part.mime_type.as_deref().ok_or_else(|| {
+                Error::new(
+                    "INVALID_ARGUMENTS",
+                    format!("{} part requires mime_type", part.r#type),
+                )
+            })?;
             if value.trim().is_empty() {
                 return Err(Error::new(
                     "INVALID_ARGUMENTS",
@@ -575,7 +577,7 @@ fn part_to_input(part: &Part) -> Result<Value, Error> {
                 )),
             }
         }
-        "audio" | "video" | "file" => Err(Error::new(
+        "video" | "file" => Err(Error::new(
             "UNSUPPORTED",
             "Gemini input media type is outside the current V3 scope",
         )),

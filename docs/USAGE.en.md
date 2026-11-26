@@ -362,7 +362,7 @@ let events = model
     .await?;
 ```
 
-Images use an `image` Part in a User Message and the existing `data.source` shape. Video, file, audio input, and media output currently return `UNSUPPORTED`. See [`provider_multimodal.rs`](../examples/provider_multimodal.rs) for a complete example.
+Images and audio use an `image` or `audio` Part in a User Message and the existing `data.source` shape. Gemini accepts both inputs and audio output in its multimodal adapter; OpenAI-compatible adapters currently accept images and text output only. Video and file input remain `UNSUPPORTED`. See [`provider_multimodal.rs`](../examples/provider_multimodal.rs) for a complete image example.
 
 For a plain async Rust function, `#[halo::tool]` generates an adapter for the existing Tool contract:
 
@@ -486,7 +486,7 @@ Real acceptance matrix:
 | VLLM/OpenAI-compatible | `HEART_VLLM_BASE_URL`, `HEART_VLLM_API_KEY`, `HEART_VLLM_MODEL` | Provider, Chat/ReAct, Team, Workflow |
 | Zhipu Embedding | `HEART_EMBED_API_KEY`; optional `HEART_EMBED_BASE_URL`, `HEART_EMBED_MODEL` | Vector Memory, Semantic Chunker |
 | OpenAI Embedding | `OPENAI_API_KEY`; optional `OPENAI_BASE_URL`, `OPENAI_MODEL` | OpenAI Embedding |
-| Gemini TTS/multimodal | `GEMINI_API_KEY`; multimodal also needs a real `GEMINI_TEST_IMAGE_DATA_URL` | TTS, multimodal |
+| Gemini TTS/multimodal | `GEMINI_API_KEY`; image/audio acceptance additionally needs `GEMINI_TEST_IMAGE_DATA_URL` or `GEMINI_TEST_AUDIO_DATA_URL` | TTS, image/audio input, audio output |
 | Elasticsearch Workspace | `HEART_ES_URL`, an isolated `HEART_ES_TEST_INDEX`; optional `HEART_ES_API_KEY`, `HEART_ES_PIPELINE_TEST_INDEX` | Workspace/ES Harness |
 | Docker Workspace | Existing `HEART_WORKSPACE_TEST_IMAGE` and an available Docker daemon | Container, mount, cancellation |
 | MCP | The tests start real protocol-speaking service processes from the repository | HTTP MCP, stdio MCP |

@@ -55,6 +55,22 @@ fn tts_body_uses_gemini_interactions_audio_shape() {
 }
 
 #[test]
+fn audio_output_uses_raw_base64_source() {
+    let part = output_part(
+        &json!({
+            "type": "audio",
+            "data": "AAAA",
+            "mime_type": "audio/wav"
+        }),
+        OutputKind::Tts,
+    )
+    .unwrap()
+    .unwrap();
+    assert_eq!(part.mime_type.as_deref(), Some("audio/wav"));
+    assert_eq!(part.data["source"]["value"], Value::String("AAAA".into()));
+}
+
+#[test]
 fn multimodal_body_preserves_image_url_input() {
     let mut message = Message::new(Role::User);
     message.content.push(Part {
@@ -87,7 +103,7 @@ fn multimodal_body_preserves_image_url_input() {
 }
 
 #[test]
-fn multimodal_body_rejects_media_outside_the_v3_input_scope() {
+fn multimodal_body_accepts_audio_base64_input() {
     let mut message = Message::new(Role::User);
     message.content.push(Part {
         r#type: "audio".into(),
@@ -103,12 +119,41 @@ fn multimodal_body_rejects_media_outside_the_v3_input_scope() {
         messages: Messages::new([message]),
         ..model::multimodal::Request::default()
     };
-    let error = multimodal_body(
+    let body = multimodal_body(
         &model::multimodal::Config::new("gemini-3.5-flash"),
         &request,
     )
-    .unwrap_err();
-    assert_eq!(error.code, "UNSUPPORTED");
+    .unwrap();
+    assert_eq!(body["input"][0]["type"], "audio");
+    assert_eq!(body["input"][0]["data"], "AAAA");
+    assert_eq!(body["input"][0]["mime_type"], "audio/wav");
+}
+
+#[test]
+fn multimodal_body_rejects_video_and_file_input() {
+    for part_type in ["video", "file"] {
+        let mut message = Message::new(Role::User);
+        message.content.push(Part {
+            r#type: part_type.into(),
+            data: object(json!({
+                "source": {
+                    "kind": "base64",
+                    "value": "AAAA"
+                }
+            })),
+            mime_type: Some("application/octet-stream".into()),
+        });
+        let request = model::multimodal::Request {
+            messages: Messages::new([message]),
+            ..model::multimodal::Request::default()
+        };
+        let error = multimodal_body(
+            &model::multimodal::Config::new("gemini-3.5-flash"),
+            &request,
+        )
+        .unwrap_err();
+        assert_eq!(error.code, "UNSUPPORTED");
+    }
 }
 
 #[test]
