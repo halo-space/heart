@@ -339,7 +339,7 @@ Before dispatch, a Chat request must contain a leading `system` message and at l
 
 Available provider implementations include DeepSeek, VLLM/OpenAI-compatible, OpenAI, Gemini, and Zhipu. Tool definitions must have an object-root parameter schema. `before` may validate or fill arguments; `after` may mutate the result Message; `eval` may return business feedback.
 
-A Tool that succeeds with media still returns the shared `Message`. Tool media is limited to `image` and `audio` with top-level `mime_type` and a raw Base64 `data.source` value. URL sources, resource IDs, and `video` results are rejected. Tool execution failures remain direct `Error` values.
+A Tool that succeeds with media still returns the shared `Message`. Tool media is limited to `image` and `audio`, using either an `http/https` URL or a raw Base64 `data.source` value. Direct binary streams, resource IDs, and `video` results are rejected. Tool execution failures remain direct `Error` values.
 
 OpenAI-compatible providers also expose the first multimodal scope, with image input and text output:
 

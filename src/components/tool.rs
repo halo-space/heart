@@ -127,7 +127,7 @@ pub(crate) async fn prepare_call<T: Tool>(
 
 /// Validate media returned by a Tool before it enters Agent or Workflow
 /// message history. Tool media is deliberately narrower than model input:
-/// only inline Base64 images and audio are accepted.
+/// only URL or inline Base64 images and audio are accepted.
 pub(crate) fn validate_message(message: &Message) -> Result<(), Error> {
     for part in &message.content {
         match part.r#type.as_str() {
@@ -139,34 +139,46 @@ pub(crate) fn validate_message(message: &Message) -> Result<(), Error> {
                     .ok_or_else(|| {
                         Error::new("INVALID_ARGUMENTS", "tool media source is missing")
                     })?;
-                if source.get("kind").and_then(Value::as_str) != Some("base64") {
-                    return Err(Error::new(
-                        "UNSUPPORTED",
-                        "tool media must use base64 sources",
-                    ));
-                }
+                let kind = source.get("kind").and_then(Value::as_str).unwrap_or("");
                 let value = source
                     .get("value")
                     .and_then(Value::as_str)
                     .filter(|value| !value.trim().is_empty())
                     .ok_or_else(|| {
-                        Error::new("INVALID_ARGUMENTS", "tool media base64 value is empty")
+                        Error::new("INVALID_ARGUMENTS", "tool media source value is empty")
                     })?;
-                if value.starts_with("data:") {
-                    return Err(Error::new(
-                        "INVALID_ARGUMENTS",
-                        "tool media base64 value must not be a data URL",
-                    ));
-                }
-                if part
-                    .mime_type
-                    .as_deref()
-                    .is_none_or(|mime| mime.trim().is_empty())
-                {
-                    return Err(Error::new(
-                        "INVALID_ARGUMENTS",
-                        "tool media requires mime_type",
-                    ));
+                match kind {
+                    "url" if value.starts_with("http://") || value.starts_with("https://") => {}
+                    "base64" => {
+                        if value.starts_with("data:") {
+                            return Err(Error::new(
+                                "INVALID_ARGUMENTS",
+                                "tool media base64 value must be raw Base64",
+                            ));
+                        }
+                        if part
+                            .mime_type
+                            .as_deref()
+                            .is_none_or(|mime| mime.trim().is_empty())
+                        {
+                            return Err(Error::new(
+                                "INVALID_ARGUMENTS",
+                                "tool Base64 media requires mime_type",
+                            ));
+                        }
+                    }
+                    "url" => {
+                        return Err(Error::new(
+                            "INVALID_ARGUMENTS",
+                            "tool media URL must use http or https",
+                        ));
+                    }
+                    _ => {
+                        return Err(Error::new(
+                            "UNSUPPORTED",
+                            "tool media must use url or base64 sources",
+                        ));
+                    }
                 }
             }
             "video" | "file" => {

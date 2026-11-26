@@ -126,7 +126,7 @@ fn definition() -> ToolDefinition {
 }
 
 #[test]
-fn tool_media_accepts_only_inline_base64_image_and_audio() {
+fn tool_media_accepts_url_or_inline_base64_image_and_audio() {
     for media_type in ["image", "audio"] {
         let message = Message {
             role: Role::Tool,
@@ -158,7 +158,7 @@ fn tool_media_accepts_only_inline_base64_image_and_audio() {
         )]),
         mime_type: Some("image/png".into()),
     });
-    assert_eq!(validate_message(&url).unwrap_err().code, "UNSUPPORTED");
+    assert!(validate_message(&url).is_ok());
 
     let mut video = Message::new(Role::Tool);
     video.content.push(Part {

@@ -269,7 +269,7 @@ pub struct Message {
 
 角色固定为 `system`、`developer`、`user`、`assistant`、`tool`、`function`。Tool 调用消息和工具返回消息都使用这个统一 Message 结构，不再额外发明一套工具结果包装。
 
-Tool 成功返回媒体时，仍然返回 `Message`。媒体只允许 `image` 或 `audio`，并且必须使用顶层 `mime_type` 和 `data.source.kind = "base64"` 的原始 Base64 数据。Tool 不接受 URL、资源 ID 或 `video` 结果；工具执行错误仍直接返回 `Error`。
+Tool 成功返回媒体时，仍然返回 `Message`。媒体只允许 `image` 或 `audio`，来源可以是 `http/https URL` 或 `data.source.kind = "base64"` 的原始 Base64 数据。Tool 不接受直接二进制流、资源 ID 或 `video` 结果；工具执行错误仍直接返回 `Error`。
 
 ### 4.3 Event
 
