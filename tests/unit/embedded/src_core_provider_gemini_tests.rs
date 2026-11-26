@@ -130,8 +130,11 @@ fn multimodal_body_accepts_audio_base64_input() {
 }
 
 #[test]
-fn multimodal_body_rejects_video_and_file_input() {
-    for part_type in ["video", "file"] {
+fn multimodal_body_accepts_video_and_document_input() {
+    for (part_type, wire_type, mime) in [
+        ("video", "video", "video/mp4"),
+        ("file", "document", "application/pdf"),
+    ] {
         let mut message = Message::new(Role::User);
         message.content.push(Part {
             r#type: part_type.into(),
@@ -141,18 +144,20 @@ fn multimodal_body_rejects_video_and_file_input() {
                     "value": "AAAA"
                 }
             })),
-            mime_type: Some("application/octet-stream".into()),
+            mime_type: Some(mime.into()),
         });
         let request = model::multimodal::Request {
             messages: Messages::new([message]),
             ..model::multimodal::Request::default()
         };
-        let error = multimodal_body(
+        let body = multimodal_body(
             &model::multimodal::Config::new("gemini-3.5-flash"),
             &request,
         )
-        .unwrap_err();
-        assert_eq!(error.code, "UNSUPPORTED");
+        .unwrap();
+        assert_eq!(body["input"][0]["type"], wire_type);
+        assert_eq!(body["input"][0]["data"], "AAAA");
+        assert_eq!(body["input"][0]["mime_type"], mime);
     }
 }
 

@@ -93,6 +93,34 @@ fn audio_message(data_url: String) -> Result<Message, Error> {
     Ok(message)
 }
 
+fn video_message(data_url: String) -> Result<Message, Error> {
+    let mime_type = data_url
+        .strip_prefix("data:")
+        .and_then(|value| value.split_once(';'))
+        .map(|(mime, _)| mime.to_owned())
+        .filter(|mime| !mime.trim().is_empty())
+        .ok_or_else(|| {
+            Error::new(
+                "INVALID_ARGUMENTS",
+                "GEMINI_TEST_VIDEO_DATA_URL must be a Data URL",
+            )
+        })?;
+    let value = data_url
+        .split_once(";base64,")
+        .map(|(_, payload)| payload.to_owned())
+        .unwrap_or(data_url);
+    let mut message = text_message("请描述这段真实视频。");
+    message.content.push(Part {
+        r#type: "video".into(),
+        data: Map::from_iter([(
+            String::from("source"),
+            json!({"kind": "base64", "value": value}),
+        )]),
+        mime_type: Some(mime_type),
+    });
+    Ok(message)
+}
+
 fn has_audio(message: &Message) -> bool {
     message.content.iter().any(|part| {
         part.r#type == "audio"
@@ -203,5 +231,39 @@ async fn gemini_multimodal_accepts_real_audio_input() {
     assert!(
         message.content.iter().any(|part| part.r#type == "text"),
         "Gemini audio multimodal response must contain text"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires GEMINI_API_KEY and GEMINI_TEST_VIDEO_DATA_URL"]
+async fn gemini_multimodal_accepts_real_video_input() {
+    let provider = Gemini::builder()
+        .api_key(required("GEMINI_API_KEY").unwrap())
+        .build()
+        .unwrap();
+    let model =
+        std::env::var("GEMINI_MULTIMODAL_MODEL").unwrap_or_else(|_| "gemini-3.5-flash-lite".into());
+    let multimodal = provider.multimodal(multimodal::Config::new(model)).unwrap();
+    let mut events = multimodal
+        .stream(multimodal::Request {
+            messages: Messages::new([video_message(
+                required("GEMINI_TEST_VIDEO_DATA_URL").unwrap(),
+            )
+            .unwrap()]),
+            stream: false,
+            ..multimodal::Request::default()
+        })
+        .await
+        .unwrap();
+    let mut complete = None;
+    while let Some(event) = events.next().await {
+        if let Event::Complete { message, .. } = event.unwrap() {
+            complete = Some(message);
+        }
+    }
+    let message = complete.expect("Gemini video multimodal must emit Complete");
+    assert!(
+        message.content.iter().any(|part| part.r#type == "text"),
+        "Gemini video multimodal response must contain text"
     );
 }

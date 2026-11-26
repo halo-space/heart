@@ -554,7 +554,7 @@ let events = model
     .await?;
 ```
 
-图片、音频和文件都使用现有的 `Part` 与 `data.source` 结构。Gemini 多模态适配支持图片/音频输入和音频输出。DeepSeek-V4.1-Flash 的 Chat 适配支持图片和文件输入；通用 OpenAI-compatible 适配当前只支持图片输入和文本输出。视频输入仍返回 `UNSUPPORTED`。示例见 [`provider_multimodal.rs`](../examples/provider_multimodal.rs) 和 [`provider_deepseek_vision.rs`](../examples/provider_deepseek_vision.rs)。
+图片、音频、视频和文件都使用现有的 `Part` 与 `data.source` 结构。Gemini 多模态适配支持图片/音频/视频/文档输入和音频输出。DeepSeek-V4.1-Flash 的 Chat 适配支持图片和文件输入；通用 OpenAI-compatible 适配当前只支持图片输入和文本输出。示例见 [`provider_multimodal.rs`](../examples/provider_multimodal.rs) 和 [`provider_deepseek_vision.rs`](../examples/provider_deepseek_vision.rs)。
 
 ### 13.2 Tool、Function 和 Permission
 
@@ -761,7 +761,7 @@ cargo run --example agent_live_tool
 | OpenAI-compatible 多模态 | `HEART_MULTIMODAL_BASE_URL`、`HEART_MULTIMODAL_API_KEY`、`HEART_MULTIMODAL_MODEL`；另需真实图片 URL 或 Data URL | 图片输入、文本输出 |
 | Zhipu Embedding | `HEART_EMBED_API_KEY`；可选 `HEART_EMBED_BASE_URL`、`HEART_EMBED_MODEL` | 向量 Memory、Semantic Chunker |
 | OpenAI Embedding | `OPENAI_API_KEY`；可选 `OPENAI_BASE_URL`、`OPENAI_MODEL` | OpenAI Embedding |
-| Gemini TTS/多模态 | `GEMINI_API_KEY`；图片/音频验收另需真实 `GEMINI_TEST_IMAGE_DATA_URL` 或 `GEMINI_TEST_AUDIO_DATA_URL` | TTS、图片/音频输入、音频输出 |
+| Gemini TTS/多模态 | `GEMINI_API_KEY`；媒体验收另需真实 `GEMINI_TEST_IMAGE_DATA_URL`、`GEMINI_TEST_AUDIO_DATA_URL` 或 `GEMINI_TEST_VIDEO_DATA_URL` | TTS、图片/音频/视频/文档输入、音频输出 |
 | Elasticsearch Workspace | `HEART_ES_URL`、隔离的 `HEART_ES_TEST_INDEX`；可选 `HEART_ES_API_KEY`、`HEART_ES_PIPELINE_TEST_INDEX` | Workspace/ES Harness |
 | Docker Workspace | 已存在的 `HEART_WORKSPACE_TEST_IMAGE` 和可用 Docker daemon | 容器、挂载、取消 |
 | MCP | 测试会启动仓库内真实协议服务进程 | HTTP MCP、stdio MCP |

@@ -544,7 +544,7 @@ fn messages_to_input(messages: &Messages) -> Result<Value, Error> {
 fn part_to_input(part: &Part) -> Result<Value, Error> {
     match part.r#type.as_str() {
         "text" => Ok(json!({"type":"text", "text": text_part(part)?})),
-        "image" | "audio" => {
+        "image" | "audio" | "video" | "file" => {
             let source = part
                 .data
                 .get("source")
@@ -564,9 +564,14 @@ fn part_to_input(part: &Part) -> Result<Value, Error> {
                     "media source value is empty",
                 ));
             }
+            let wire_type = if part.r#type == "file" {
+                "document"
+            } else {
+                part.r#type.as_str()
+            };
             match kind {
-                "url" => Ok(json!({"type":part.r#type,"uri":value,"mime_type":mime})),
-                "base64" => Ok(json!({"type":part.r#type,"data":value,"mime_type":mime})),
+                "url" => Ok(json!({"type":wire_type,"uri":value,"mime_type":mime})),
+                "base64" => Ok(json!({"type":wire_type,"data":value,"mime_type":mime})),
                 "id" => Err(Error::new(
                     "UNSUPPORTED",
                     "Gemini media id sources require application resolution",
@@ -577,10 +582,6 @@ fn part_to_input(part: &Part) -> Result<Value, Error> {
                 )),
             }
         }
-        "video" | "file" => Err(Error::new(
-            "UNSUPPORTED",
-            "Gemini input media type is outside the current V3 scope",
-        )),
         _ => Err(Error::new(
             "UNSUPPORTED",
             "Gemini does not support this content part",
