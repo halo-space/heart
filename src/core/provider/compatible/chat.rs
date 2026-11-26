@@ -311,6 +311,7 @@ pub(super) fn encode_message(kind: Kind, message: &Message) -> Result<Value, Err
     let mut call_ids = BTreeSet::new();
     let mut think = String::new();
     let mut refusal = String::new();
+    let mut has_media = false;
     for part in &message.content {
         match part.r#type.as_str() {
             "text" => content.push(json!({"type": "text", "text": part_value(part)?})),
@@ -355,7 +356,10 @@ pub(super) fn encode_message(kind: Kind, message: &Message) -> Result<Value, Err
                 };
                 tool_calls.push(json!({"id": id, "type": "function", "function": {"name": name, "arguments": arguments}}));
             }
-            "image" if matches!(kind, Kind::OpenAI | Kind::Vllm) && message.role == Role::User => {
+            "image"
+                if matches!(kind, Kind::OpenAI | Kind::DeepSeek | Kind::Vllm)
+                    && message.role == Role::User =>
+            {
                 let source = part
                     .data
                     .get("source")
@@ -370,14 +374,19 @@ pub(super) fn encode_message(kind: Kind, message: &Message) -> Result<Value, Err
                         "image source value is empty",
                     ));
                 }
-                let mime_type = part.mime_type.as_deref().ok_or_else(|| {
-                    Error::new("INVALID_ARGUMENTS", "image part requires mime_type")
-                })?;
-                let kind = source.get("kind").and_then(Value::as_str).unwrap_or("");
-                let url = match kind {
-                    "url" => value.to_owned(),
+                let source_kind = source.get("kind").and_then(Value::as_str).unwrap_or("");
+                let mut image = match source_kind {
+                    "url" => json!({"url": value}),
                     "base64" => {
-                        format!("data:{mime_type};base64,{value}")
+                        let mime_type = part.mime_type.as_deref().ok_or_else(|| {
+                            Error::new("INVALID_ARGUMENTS", "image part requires mime_type")
+                        })?;
+                        json!({"url": format!("data:{mime_type};base64,{value}")})
+                    }
+                    "id" if kind == Kind::DeepSeek => {
+                        content.push(json!({"type": "file", "file_id": value}));
+                        has_media = true;
+                        continue;
                     }
                     _ => {
                         return Err(Error::new(
@@ -386,7 +395,6 @@ pub(super) fn encode_message(kind: Kind, message: &Message) -> Result<Value, Err
                         ));
                     }
                 };
-                let mut image = json!({"url": url});
                 if let Some(detail) = source.get("detail") {
                     if !matches!(detail.as_str(), Some("auto" | "low" | "high")) {
                         return Err(Error::new("INVALID_ARGUMENTS", "invalid image detail"));
@@ -394,6 +402,48 @@ pub(super) fn encode_message(kind: Kind, message: &Message) -> Result<Value, Err
                     image["detail"] = detail.clone();
                 }
                 content.push(json!({"type": "image_url", "image_url": image}));
+                has_media = true;
+            }
+            "file" if kind == Kind::DeepSeek && message.role == Role::User => {
+                let source = part
+                    .data
+                    .get("source")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "file source is missing"))?;
+                let value = source.get("value").and_then(Value::as_str).ok_or_else(|| {
+                    Error::new("INVALID_ARGUMENTS", "file source value is missing")
+                })?;
+                if value.trim().is_empty() {
+                    return Err(Error::new(
+                        "INVALID_ARGUMENTS",
+                        "file source value is empty",
+                    ));
+                }
+                let source_kind = source.get("kind").and_then(Value::as_str).unwrap_or("");
+                let file = match source_kind {
+                    "id" => json!({"type": "file", "file_id": value}),
+                    "base64" => {
+                        let mime_type = part.mime_type.as_deref().ok_or_else(|| {
+                            Error::new("INVALID_ARGUMENTS", "file part requires mime_type")
+                        })?;
+                        let mut file = json!({
+                            "type": "file",
+                            "file_data": format!("data:{mime_type};base64,{value}")
+                        });
+                        if let Some(filename) = source.get("filename") {
+                            file["filename"] = filename.clone();
+                        }
+                        file
+                    }
+                    _ => {
+                        return Err(Error::new(
+                            "UNSUPPORTED",
+                            "DeepSeek file source kind is unsupported",
+                        ));
+                    }
+                };
+                content.push(file);
+                has_media = true;
             }
             _ => {
                 return Err(Error::new(
@@ -415,8 +465,9 @@ pub(super) fn encode_message(kind: Kind, message: &Message) -> Result<Value, Err
     if !refusal.is_empty() {
         output["refusal"] = refusal.into();
     }
-    if kind == Kind::DeepSeek {
-        // DeepSeek accepts text content, not OpenAI multimodal content arrays.
+    if kind == Kind::DeepSeek && !has_media {
+        // DeepSeek keeps text-only requests in its compact string form. Once a
+        // media part is present, preserve the OpenAI-compatible content array.
         output["content"] = message
             .content
             .iter()

@@ -554,7 +554,7 @@ let events = model
     .await?;
 ```
 
-图片和音频使用 User Message 的 `image` 或 `audio` Part，资源放在现有 `data.source` 中。Gemini 多模态适配支持这两种输入和音频输出；OpenAI-compatible 适配当前只支持图片输入和文本输出。视频、文件输入仍返回 `UNSUPPORTED`。完整图片示例见 [`provider_multimodal.rs`](../examples/provider_multimodal.rs)。
+图片、音频和文件都使用现有的 `Part` 与 `data.source` 结构。Gemini 多模态适配支持图片/音频输入和音频输出。DeepSeek-V4.1-Flash 的 Chat 适配支持图片和文件输入；通用 OpenAI-compatible 适配当前只支持图片输入和文本输出。视频输入仍返回 `UNSUPPORTED`。示例见 [`provider_multimodal.rs`](../examples/provider_multimodal.rs) 和 [`provider_deepseek_vision.rs`](../examples/provider_deepseek_vision.rs)。
 
 ### 13.2 Tool、Function 和 Permission
 
@@ -755,7 +755,8 @@ cargo run --example agent_live_tool
 
 | 能力 | 必需环境或资源 | 覆盖测试 |
 | --- | --- | --- |
-| DeepSeek | `DEEPSEEK_API_KEY`；可选 `DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL` | Agent、Workflow、Memory、A2A |
+| DeepSeek | `DEEPSEEK_API_KEY`；可选 `DEEPSEEK_BASE_URL`、`DEEPSEEK_MODEL` | Chat、Agent、Workflow、Memory、A2A |
+| DeepSeek 视觉/文件 | `DEEPSEEK_API_KEY`、`DEEPSEEK_TEST_IMAGE_DATA_URL` | 真实图片和文件输入 |
 | VLLM/OpenAI-compatible | 独立 VLLM 示例使用 `HEART_VLLM_BASE_URL`、`HEART_VLLM_API_KEY`、`HEART_VLLM_MODEL`；统一真实验收使用 DeepSeek 配置 | Provider、Chat/ReAct、Team、Workflow |
 | OpenAI-compatible 多模态 | `HEART_MULTIMODAL_BASE_URL`、`HEART_MULTIMODAL_API_KEY`、`HEART_MULTIMODAL_MODEL`；另需真实图片 URL 或 Data URL | 图片输入、文本输出 |
 | Zhipu Embedding | `HEART_EMBED_API_KEY`；可选 `HEART_EMBED_BASE_URL`、`HEART_EMBED_MODEL` | 向量 Memory、Semantic Chunker |
@@ -918,6 +919,7 @@ Checkpoint 保存的是运行现场，不是任意 Rust Tool Future。尚未提�
 | [`compress.rs`](../examples/compress.rs) | Prompt 与压缩 |
 | [`short_memory.rs`](../examples/short_memory.rs) | Session/Chat/Long Memory CRUD |
 | [`provider_deepseek.rs`](../examples/provider_deepseek.rs) | DeepSeek Provider |
+| [`provider_deepseek_vision.rs`](../examples/provider_deepseek_vision.rs) | DeepSeek-V4.1-Flash 图片输入 |
 | [`provider_vllm.rs`](../examples/provider_vllm.rs) | VLLM Provider |
 | [`provider_multimodal.rs`](../examples/provider_multimodal.rs) | OpenAI-compatible 图片输入与文本输出 |
 | [`real_weather_agent.rs`](../examples/real_weather_agent.rs) | DeepSeek + Open-Meteo 真实天气问答 |

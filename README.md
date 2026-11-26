@@ -89,6 +89,7 @@ cargo run --example provider_vllm
 | Session/Memory CRUD | [`examples/short_memory.rs`](examples/short_memory.rs) |
 | OpenAI-compatible Chat | [`examples/provider_chat.rs`](examples/provider_chat.rs) |
 | DeepSeek Chat Completions | [`examples/provider_deepseek.rs`](examples/provider_deepseek.rs) |
+| DeepSeek-V4.1-Flash 视觉与文件输入 | [`examples/provider_deepseek_vision.rs`](examples/provider_deepseek_vision.rs) |
 | VLLM Chat Completions | [`examples/provider_vllm.rs`](examples/provider_vllm.rs) |
 | OpenAI-compatible 多模态图片输入 | [`examples/provider_multimodal.rs`](examples/provider_multimodal.rs) |
 | 真实天气问答（DeepSeek + Open-Meteo） | [`examples/real_weather_agent.rs`](examples/real_weather_agent.rs) |

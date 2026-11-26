@@ -362,7 +362,7 @@ let events = model
     .await?;
 ```
 
-Images and audio use an `image` or `audio` Part in a User Message and the existing `data.source` shape. Gemini accepts both inputs and audio output in its multimodal adapter; OpenAI-compatible adapters currently accept images and text output only. Video and file input remain `UNSUPPORTED`. See [`provider_multimodal.rs`](../examples/provider_multimodal.rs) for a complete image example.
+Images, audio, and files use the existing `Part` and `data.source` shape. Gemini accepts image/audio input and audio output in its multimodal adapter. DeepSeek-V4.1-Flash accepts image and file input through its Chat adapter. Generic OpenAI-compatible adapters currently accept images and text output only. Video input remains `UNSUPPORTED`. See [`provider_multimodal.rs`](../examples/provider_multimodal.rs) and [`provider_deepseek_vision.rs`](../examples/provider_deepseek_vision.rs).
 
 For a plain async Rust function, `#[halo::tool]` generates an adapter for the existing Tool contract:
 
@@ -482,7 +482,8 @@ Real acceptance matrix:
 
 | Capability | Required environment or resource | Covered tests |
 | --- | --- | --- |
-| DeepSeek | `DEEPSEEK_API_KEY`; optional `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL` | Agent, Workflow, Memory, A2A |
+| DeepSeek | `DEEPSEEK_API_KEY`; optional `DEEPSEEK_BASE_URL`, `DEEPSEEK_MODEL` | Chat, Agent, Workflow, Memory, A2A |
+| DeepSeek vision/files | `DEEPSEEK_API_KEY`, `DEEPSEEK_TEST_IMAGE_DATA_URL` | Real image and file input |
 | VLLM/OpenAI-compatible | `HEART_VLLM_BASE_URL`, `HEART_VLLM_API_KEY`, `HEART_VLLM_MODEL` | Provider, Chat/ReAct, Team, Workflow |
 | Zhipu Embedding | `HEART_EMBED_API_KEY`; optional `HEART_EMBED_BASE_URL`, `HEART_EMBED_MODEL` | Vector Memory, Semantic Chunker |
 | OpenAI Embedding | `OPENAI_API_KEY`; optional `OPENAI_BASE_URL`, `OPENAI_MODEL` | OpenAI Embedding |
@@ -620,6 +621,7 @@ See [`agent_live_handoff.rs`](../examples/agent_live_handoff.rs) for a complete 
 - [`component_contracts.rs`](../examples/component_contracts.rs): low-level contracts.
 - [`tool_macro.rs`](../examples/tool_macro.rs): `#[halo::tool]` functional Tool adapter.
 - [`provider_deepseek.rs`](../examples/provider_deepseek.rs): DeepSeek provider.
+- [`provider_deepseek_vision.rs`](../examples/provider_deepseek_vision.rs): DeepSeek-V4.1-Flash image input through the shared Chat contract.
 - [`provider_vllm.rs`](../examples/provider_vllm.rs): VLLM provider.
 - [`provider_multimodal.rs`](../examples/provider_multimodal.rs): OpenAI-compatible image input and text output.
 - [`real_weather_agent.rs`](../examples/real_weather_agent.rs): a real DeepSeek + Open-Meteo weather agent.

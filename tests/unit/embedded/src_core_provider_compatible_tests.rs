@@ -68,10 +68,8 @@ fn image_uses_source_detail_and_does_not_invent_id_resolution() {
     });
     let wire = encode_message(Kind::OpenAI, &message).unwrap();
     assert_eq!(wire["content"][0]["image_url"]["detail"], "low");
-    assert_eq!(
-        encode_message(Kind::DeepSeek, &message).unwrap_err().code,
-        "UNSUPPORTED"
-    );
+    let deepseek = encode_message(Kind::DeepSeek, &message).unwrap();
+    assert_eq!(deepseek["content"][0]["type"], "image_url");
     message.content[0].data["source"]["kind"] = json!("id");
     assert_eq!(
         encode_message(Kind::OpenAI, &message).unwrap_err().code,
@@ -88,6 +86,29 @@ fn image_uses_source_detail_and_does_not_invent_id_resolution() {
         encode_message(Kind::OpenAI, &message).unwrap()["content"][0]["image_url"]["url"],
         "data:image/png;base64,ZmFrZQ=="
     );
+}
+
+#[test]
+fn deepseek_file_sources_use_the_openai_compatible_file_blocks() {
+    let mut message = Message::new(Role::User);
+    message.content.push(Part {
+        r#type: "file".into(),
+        data: part_data(json!({
+            "source": {
+                "kind": "base64",
+                "value": "ZmFrZQ==",
+                "filename": "sample.txt"
+            }
+        })),
+        mime_type: Some("text/plain".into()),
+    });
+    let wire = encode_message(Kind::DeepSeek, &message).unwrap();
+    assert_eq!(wire["content"][0]["type"], "file");
+    assert_eq!(
+        wire["content"][0]["file_data"],
+        "data:text/plain;base64,ZmFrZQ=="
+    );
+    assert_eq!(wire["content"][0]["filename"], "sample.txt");
 }
 
 #[test]
