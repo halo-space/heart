@@ -271,6 +271,8 @@ pub struct Message {
 
 Tool 成功返回媒体时，仍然返回 `Message`。媒体只允许 `image` 或 `audio`，来源可以是 `http/https URL` 或 `data.source.kind = "base64"` 的原始 Base64 数据。Tool 不接受直接二进制流、资源 ID 或 `video` 结果；工具执行错误仍直接返回 `Error`。
 
+DeepSeek Chat 适配会把 Tool 图片转换为模型可读的图片内容块；Tool 音频是否能进入模型上下文取决于 Provider 能力，不支持时返回 `UNSUPPORTED`。
+
 ### 4.3 Event
 
 ```rust

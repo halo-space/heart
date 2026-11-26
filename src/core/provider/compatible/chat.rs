@@ -228,6 +228,55 @@ fn part_value(part: &Part) -> Result<&str, Error> {
         .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "content part requires a text value"))
 }
 
+fn encode_deepseek_tool_part(part: &Part) -> Result<Value, Error> {
+    match part.r#type.as_str() {
+        "text" => Ok(json!({"type": "text", "text": part_value(part)?})),
+        "image" => {
+            let source = part
+                .data
+                .get("source")
+                .and_then(Value::as_object)
+                .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "image source is missing"))?;
+            let value = source
+                .get("value")
+                .and_then(Value::as_str)
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "image source value is empty"))?;
+            let source_kind = source.get("kind").and_then(Value::as_str).unwrap_or("");
+            let mut image = match source_kind {
+                "url" => json!({"url": value}),
+                "base64" => {
+                    let mime_type = part.mime_type.as_deref().ok_or_else(|| {
+                        Error::new("INVALID_ARGUMENTS", "image part requires mime_type")
+                    })?;
+                    json!({"url": format!("data:{mime_type};base64,{value}")})
+                }
+                _ => {
+                    return Err(Error::new(
+                        "UNSUPPORTED",
+                        "DeepSeek tool image must use url or base64",
+                    ));
+                }
+            };
+            if let Some(detail) = source.get("detail") {
+                if !matches!(detail.as_str(), Some("auto" | "low" | "high")) {
+                    return Err(Error::new("INVALID_ARGUMENTS", "invalid image detail"));
+                }
+                image["detail"] = detail.clone();
+            }
+            Ok(json!({"type": "image_url", "image_url": image}))
+        }
+        "audio" => Err(Error::new(
+            "UNSUPPORTED",
+            "DeepSeek tool audio input is not supported by Chat Completions",
+        )),
+        _ => Err(Error::new(
+            "UNSUPPORTED",
+            "DeepSeek tool media supports text and image only",
+        )),
+    }
+}
+
 fn encode_messages(kind: Kind, mut messages: &[Message]) -> Result<Vec<Value>, Error> {
     let mut encoded = Vec::with_capacity(messages.len());
     if kind == Kind::Vllm {
@@ -270,28 +319,37 @@ pub(super) fn encode_message(kind: Kind, message: &Message) -> Result<Value, Err
         let call_id = call_id
             .filter(|id| !id.is_empty())
             .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "tool message requires call_id"))?;
-        let content = if message.content.is_empty() {
-            let mut values = message.values.clone();
-            values.remove("call_id");
-            values.remove("name");
-            serde_json::to_string(&values)
-                .map_err(|_| Error::new("INVALID_ARGUMENTS", "tool result cannot be encoded"))?
-        } else {
-            message
-                .content
-                .iter()
-                .map(|part| {
-                    if part.r#type != "text" {
-                        return Err(Error::new(
-                            "UNSUPPORTED",
-                            "tool multimodal input is not implemented",
-                        ));
-                    }
-                    part_value(part)
-                })
-                .collect::<Result<Vec<_>, _>>()?
-                .join("")
-        };
+        let content =
+            if message.content.is_empty() {
+                let mut values = message.values.clone();
+                values.remove("call_id");
+                values.remove("name");
+                Value::String(serde_json::to_string(&values).map_err(|_| {
+                    Error::new("INVALID_ARGUMENTS", "tool result cannot be encoded")
+                })?)
+            } else if message.content.iter().all(|part| part.r#type == "text") {
+                Value::String(
+                    message
+                        .content
+                        .iter()
+                        .map(part_value)
+                        .collect::<Result<Vec<_>, _>>()?
+                        .join(""),
+                )
+            } else if kind == Kind::DeepSeek {
+                Value::Array(
+                    message
+                        .content
+                        .iter()
+                        .map(encode_deepseek_tool_part)
+                        .collect::<Result<Vec<_>, _>>()?,
+                )
+            } else {
+                return Err(Error::new(
+                    "UNSUPPORTED",
+                    "tool media is not supported by this Provider",
+                ));
+            };
         return Ok(json!({"role": "tool", "tool_call_id": call_id, "content": content}));
     }
     if message.role == Role::Function {

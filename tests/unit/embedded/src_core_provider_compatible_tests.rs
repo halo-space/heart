@@ -57,6 +57,29 @@ fn direct_tool_messages_do_not_acquire_a_tool_result_envelope() {
 }
 
 #[test]
+fn deepseek_tool_image_uses_a_content_block() {
+    let mut message = Message::new(Role::Tool);
+    message.metadata.insert("call_id".into(), json!("call_1"));
+    message.content.push(Part {
+        r#type: "image".into(),
+        data: part_data(json!({
+            "source": {"kind": "url", "value": "https://example.com/image.png"}
+        })),
+        mime_type: Some("image/png".into()),
+    });
+    let wire = encode_message(Kind::DeepSeek, &message).unwrap();
+    assert_eq!(wire["content"][0]["type"], "image_url");
+    assert_eq!(
+        wire["content"][0]["image_url"]["url"],
+        "https://example.com/image.png"
+    );
+    assert_eq!(
+        encode_message(Kind::OpenAI, &message).unwrap_err().code,
+        "UNSUPPORTED"
+    );
+}
+
+#[test]
 fn image_uses_source_detail_and_does_not_invent_id_resolution() {
     let mut message = Message::new(Role::User);
     message.content.push(Part {

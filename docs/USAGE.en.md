@@ -341,6 +341,8 @@ Available provider implementations include DeepSeek, VLLM/OpenAI-compatible, Ope
 
 A Tool that succeeds with media still returns the shared `Message`. Tool media is limited to `image` and `audio`, using either an `http/https` URL or a raw Base64 `data.source` value. Direct binary streams, resource IDs, and `video` results are rejected. Tool execution failures remain direct `Error` values.
 
+The DeepSeek Chat adapter converts Tool images into model-readable image content blocks. Whether Tool audio can enter model context remains Provider-specific and returns `UNSUPPORTED` when unavailable.
+
 OpenAI-compatible providers also expose the first multimodal scope, with image input and text output:
 
 ```rust,no_run
