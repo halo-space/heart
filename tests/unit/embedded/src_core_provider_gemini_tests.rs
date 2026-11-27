@@ -1,4 +1,5 @@
 use super::*;
+use futures_util::StreamExt;
 
 #[test]
 fn config_redacts_key_and_uses_gemini_endpoint() {
@@ -225,6 +226,47 @@ fn multimodal_body_maps_tool_image_to_function_result() {
         body["input"][0]["result"][0]["uri"],
         "https://example.com/screenshot.png"
     );
+}
+
+#[test]
+fn multimodal_body_uses_the_latest_turn_id_for_continuation() {
+    let mut message = Message::new(Role::Assistant);
+    message.metadata.insert("turn_id".into(), json!("turn_001"));
+    message.content.push(Part {
+        r#type: "text".into(),
+        data: object(json!({"value": "上一轮回答"})),
+        mime_type: None,
+    });
+    let request = model::multimodal::Request {
+        messages: Messages::new([message]),
+        ..model::multimodal::Request::default()
+    };
+    let body = multimodal_body(
+        &model::multimodal::Config::new("gemini-3.8-flash"),
+        &request,
+    )
+    .unwrap();
+    assert_eq!(body["previous_interaction_id"], "turn_001");
+}
+
+#[test]
+fn complete_message_preserves_provider_turn_id() {
+    let events = complete_events(
+        json!({
+            "id": "turn_002",
+            "status": "completed",
+            "steps": [{"content": [{"type": "text", "text": "完成"}]}]
+        }),
+        Map::new(),
+        OutputKind::Chat,
+    )
+    .unwrap();
+    let mut events = Box::pin(events);
+    let event = futures_executor::block_on(events.next()).unwrap().unwrap();
+    let Event::Complete { message, .. } = event else {
+        panic!("expected Complete")
+    };
+    assert_eq!(message.metadata["turn_id"], "turn_002");
 }
 
 #[test]

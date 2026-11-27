@@ -272,10 +272,13 @@ impl Stream for Events {
 
 fn complete_events(
     value: Value,
-    metadata: Map<String, Value>,
+    mut metadata: Map<String, Value>,
     kind: OutputKind,
 ) -> Result<Events, Error> {
     let (message, usage) = output_message(&value, kind)?;
+    if let Some(turn_id) = value.get("id").and_then(Value::as_str) {
+        metadata.insert("turn_id".into(), Value::String(turn_id.into()));
+    }
     let finish_reason = value
         .get("status")
         .and_then(Value::as_str)
@@ -357,6 +360,16 @@ async fn next_stream_event(mut state: StreamState) -> Option<(Result<Event, Erro
         }
         if event_type == "interaction.completed" {
             state.completed = true;
+            if let Some(turn_id) = value
+                .get("interaction")
+                .and_then(|interaction| interaction.get("id"))
+                .and_then(Value::as_str)
+                .or_else(|| value.get("id").and_then(Value::as_str))
+            {
+                state
+                    .metadata
+                    .insert("turn_id".into(), Value::String(turn_id.into()));
+            }
             let usage = value.get("interaction").and_then(parse_usage);
             state.message.metadata.extend(state.metadata.clone());
             return Some((
@@ -611,6 +624,16 @@ fn messages_to_input(messages: &Messages) -> Result<Value, Error> {
     Ok(Value::Array(input))
 }
 
+fn last_turn_id(messages: &Messages) -> Option<&str> {
+    messages.as_slice().iter().rev().find_map(|message| {
+        message
+            .metadata
+            .get("turn_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+    })
+}
+
 fn part_to_input(part: &Part) -> Result<Value, Error> {
     match part.r#type.as_str() {
         "text" => Ok(json!({"type":"text", "text": text_part(part)?})),
@@ -853,6 +876,9 @@ fn multimodal_body(
     body["model"] = Value::String(config.model_name.clone());
     body["input"] = messages_to_input(&request.messages)?;
     body["stream"] = Value::Bool(request.stream);
+    if let Some(turn_id) = last_turn_id(&request.messages) {
+        body["previous_interaction_id"] = Value::String(turn_id.into());
+    }
     if !request.modalities.is_empty() {
         body["modalities"] = Value::Array(
             request
