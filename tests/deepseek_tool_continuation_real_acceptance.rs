@@ -47,15 +47,26 @@ fn tool_definition() -> ToolDefinition {
 }
 
 async fn complete(model: &impl chat::Chat, request: chat::Request) -> Result<Message, Error> {
+    Ok(complete_with_delta(model, request).await?.0)
+}
+
+async fn complete_with_delta(
+    model: &impl chat::Chat,
+    request: chat::Request,
+) -> Result<(Message, bool), Error> {
     let events = model.stream(request).await?;
     futures_util::pin_mut!(events);
     let mut complete = None;
+    let mut saw_delta = false;
     while let Some(event) = events.next().await {
-        if let Event::Complete { message, .. } = event? {
-            complete = Some(message);
+        match event? {
+            Event::Delta { .. } => saw_delta = true,
+            Event::Complete { message, .. } => complete = Some(message),
         }
     }
-    complete.ok_or_else(|| Error::new("INVALID_RESPONSE", "DeepSeek emitted no Complete"))
+    complete
+        .map(|message| (message, saw_delta))
+        .ok_or_else(|| Error::new("INVALID_RESPONSE", "DeepSeek emitted no Complete"))
 }
 
 fn tool_result(call_id: &str, name: &str, timestamp: u64) -> Message {
@@ -157,5 +168,99 @@ async fn deepseek_chat_continues_after_real_tool_call() {
                     .is_some_and(|value| !value.trim().is_empty())
         }),
         "DeepSeek must produce final text after the tool result"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires DEEPSEEK_API_KEY and sends two live streaming Chat requests"]
+async fn deepseek_stream_continues_after_real_tool_call() {
+    let provider = DeepSeek::builder()
+        .base_url(
+            std::env::var("DEEPSEEK_BASE_URL")
+                .unwrap_or_else(|_| "https://api.deepseek.com".into()),
+        )
+        .api_key(required("DEEPSEEK_API_KEY").unwrap())
+        .build()
+        .unwrap();
+    let tools = vec![tool_definition()];
+    let model = provider
+        .chat(
+            chat::Config::new(
+                std::env::var("DEEPSEEK_MODEL").unwrap_or_else(|_| "deepseek-flash".into()),
+            )
+            .options(Map::from_iter([(
+                "thinking".into(),
+                json!({"type": "disabled"}),
+            )])),
+        )
+        .unwrap();
+
+    let system = text_message(
+        Role::System,
+        "你是一个工具调用助手。需要时间时必须调用 current_time，不能猜测时间。",
+    );
+    let user = text_message(Role::User, "现在的 Unix 时间是多少？必须调用工具后再回答。");
+    let (first, first_delta) = complete_with_delta(
+        &model,
+        chat::Request {
+            messages: Messages::new([system.clone(), user.clone()]),
+            tools: tools.clone(),
+            tool_choice: Some(ToolChoice::Required),
+            stream: true,
+            ..chat::Request::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(first_delta, "streaming tool call must emit Delta");
+
+    let call = first
+        .content
+        .iter()
+        .find(|part| part.r#type == "tool_call")
+        .expect("DeepSeek must return a streamed tool call");
+    let call_id = call
+        .data
+        .get("call_id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .expect("tool call must include call_id")
+        .to_owned();
+    let name = call
+        .data
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .expect("tool call must include name")
+        .to_owned();
+    assert_eq!(name, "current_time");
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock must be after Unix epoch")
+        .as_secs();
+    let (second, second_delta) = complete_with_delta(
+        &model,
+        chat::Request {
+            messages: Messages::new([system, user, first, tool_result(&call_id, &name, timestamp)]),
+            tools,
+            tool_choice: Some(ToolChoice::None),
+            stream: true,
+            ..chat::Request::default()
+        },
+    )
+    .await
+    .unwrap();
+    assert!(second_delta, "streaming final answer must emit Delta");
+    assert!(
+        second.content.iter().any(|part| {
+            part.r#type == "text"
+                && part
+                    .data
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| !value.trim().is_empty())
+        }),
+        "DeepSeek must produce streamed final text after the tool result"
     );
 }
