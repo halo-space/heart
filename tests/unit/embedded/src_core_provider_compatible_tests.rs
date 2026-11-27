@@ -50,6 +50,31 @@ fn provider_errors_keep_safe_upstream_code_without_raw_body() {
             .contains("prompt")
     );
 }
+
+#[test]
+fn streaming_provider_errors_keep_safe_upstream_code() {
+    let mut accumulator = super::chat::Accumulator::new(Map::new());
+    let error = accumulator
+        .delta(&json!({
+            "error": {
+                "code": "engine_overloaded",
+                "message": "request prompt should not be copied"
+            }
+        }))
+        .unwrap_err();
+    assert_eq!(error.code, "PROVIDER");
+    assert_eq!(
+        error.details.as_deref(),
+        Some("http_status=0; provider_code=engine_overloaded")
+    );
+    assert!(
+        !error
+            .details
+            .as_deref()
+            .unwrap_or_default()
+            .contains("prompt")
+    );
+}
 #[test]
 fn direct_tool_messages_do_not_acquire_a_tool_result_envelope() {
     let mut message = Message::function(json!({"temperature": 22}));
