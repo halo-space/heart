@@ -393,6 +393,26 @@ fn malformed_stream_tool_fields_and_nonassistant_role_are_rejected() {
 }
 
 #[test]
+fn null_legacy_function_call_field_is_ignored() {
+    let value = json!({
+        "choices": [{
+            "message": {
+                "role": "assistant",
+                "content": "{\"answer\":\"北京\"}",
+                "function_call": null
+            },
+            "finish_reason": "stop"
+        }]
+    });
+    let Event::Complete { message, .. } =
+        complete_response(&value, Map::new(), Some(ResponseFormat::JsonObject)).unwrap()
+    else {
+        panic!()
+    };
+    assert_eq!(message.values["answer"], "北京");
+}
+
+#[test]
 fn json_object_fallback_and_usage_missing_values_remain_explicit() {
     for (content, expected) in [
         ("{\"x\":1}", json!({"x":1})),

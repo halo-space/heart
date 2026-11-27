@@ -625,7 +625,10 @@ impl Accumulator {
                 "chat response role is invalid",
             ));
         }
-        if delta.contains_key("function_call") {
+        if delta
+            .get("function_call")
+            .is_some_and(|value| !value.is_null())
+        {
             return Err(Error::new(
                 "UNSUPPORTED",
                 "legacy function_call output is unsupported",
