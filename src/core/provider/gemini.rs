@@ -524,13 +524,73 @@ fn messages_to_input(messages: &Messages) -> Result<Value, Error> {
     }
     let mut input = Vec::new();
     for message in messages.as_slice() {
-        input.extend(
-            message
+        let call_id = message
+            .metadata
+            .get("call_id")
+            .or_else(|| message.values.get("call_id"))
+            .and_then(Value::as_str);
+        let name = message
+            .metadata
+            .get("name")
+            .or_else(|| message.values.get("name"))
+            .and_then(Value::as_str);
+        if matches!(message.role, Role::Tool)
+            || (message.role == Role::Function && call_id.is_some())
+        {
+            let call_id = call_id
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    Error::new("INVALID_ARGUMENTS", "function result call_id is missing")
+                })?;
+            let name = name
+                .filter(|value| !value.trim().is_empty())
+                .ok_or_else(|| {
+                    Error::new("INVALID_ARGUMENTS", "function result name is missing")
+                })?;
+            let result = message
                 .content
                 .iter()
                 .map(part_to_input)
-                .collect::<Result<Vec<_>, _>>()?,
-        );
+                .collect::<Result<Vec<_>, _>>()?;
+            input.push(json!({
+                "type": "function_result",
+                "name": name,
+                "call_id": call_id,
+                "result": result
+            }));
+            continue;
+        }
+        for part in &message.content {
+            if part.r#type == "tool_call" && message.role == Role::Assistant {
+                let call_id = part
+                    .data
+                    .get("call_id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| {
+                        Error::new("INVALID_ARGUMENTS", "function call_id is missing")
+                    })?;
+                let name = part
+                    .data
+                    .get("name")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| Error::new("INVALID_ARGUMENTS", "function name is missing"))?;
+                let arguments = part
+                    .data
+                    .get("arguments")
+                    .cloned()
+                    .unwrap_or_else(|| json!({}));
+                input.push(json!({
+                    "type": "function_call",
+                    "name": name,
+                    "call_id": call_id,
+                    "arguments": arguments
+                }));
+            } else {
+                input.push(part_to_input(part)?);
+            }
+        }
     }
     if input.is_empty() {
         return Err(Error::new(

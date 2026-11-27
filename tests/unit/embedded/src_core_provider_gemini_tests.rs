@@ -162,6 +162,40 @@ fn multimodal_body_accepts_video_and_document_input() {
 }
 
 #[test]
+fn multimodal_body_maps_tool_image_to_function_result() {
+    let mut tool = Message::new(Role::Tool);
+    tool.metadata.insert("call_id".into(), json!("call_001"));
+    tool.metadata.insert("name".into(), json!("get_screenshot"));
+    tool.content.push(Part {
+        r#type: "image".into(),
+        data: object(json!({
+            "source": {
+                "kind": "url",
+                "value": "https://example.com/screenshot.png"
+            }
+        })),
+        mime_type: Some("image/png".into()),
+    });
+    let request = model::multimodal::Request {
+        messages: Messages::new([tool]),
+        ..model::multimodal::Request::default()
+    };
+    let body = multimodal_body(
+        &model::multimodal::Config::new("gemini-3.8-flash"),
+        &request,
+    )
+    .unwrap();
+    assert_eq!(body["input"][0]["type"], "function_result");
+    assert_eq!(body["input"][0]["name"], "get_screenshot");
+    assert_eq!(body["input"][0]["call_id"], "call_001");
+    assert_eq!(body["input"][0]["result"][0]["type"], "image");
+    assert_eq!(
+        body["input"][0]["result"][0]["uri"],
+        "https://example.com/screenshot.png"
+    );
+}
+
+#[test]
 fn multimodal_body_rejects_unsupported_output_modalities() {
     let request = model::multimodal::Request {
         messages: Messages::new([{
