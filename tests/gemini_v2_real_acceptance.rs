@@ -7,7 +7,7 @@ use futures_util::StreamExt;
 use halo::agent::event::Event;
 use halo::agent::message::{Message, Role};
 use halo::agent::model::{
-    chat::{self, Chat as _},
+    chat::{self, Chat},
     content::part::Part,
     multimodal::{self, Multimodal as _},
     tts::{self, Tts as _},
@@ -135,6 +135,24 @@ fn has_audio(message: &Message) -> bool {
     })
 }
 
+async fn complete_chat(model: &impl chat::Chat, messages: Messages) -> Result<Message, Error> {
+    let events = model
+        .stream(chat::Request {
+            messages,
+            stream: false,
+            ..chat::Request::default()
+        })
+        .await?;
+    futures_util::pin_mut!(events);
+    let mut complete = None;
+    while let Some(event) = events.next().await {
+        if let Event::Complete { message, .. } = event? {
+            complete = Some(message);
+        }
+    }
+    complete.ok_or_else(|| Error::new("INVALID_RESPONSE", "Gemini Chat emitted no Complete"))
+}
+
 #[tokio::test]
 #[ignore = "requires GEMINI_API_KEY and sends a live Gemini Chat request"]
 async fn gemini_chat_returns_real_text_complete() {
@@ -173,6 +191,74 @@ async fn gemini_chat_returns_real_text_complete() {
     assert!(
         message.content.iter().any(|part| part.r#type == "text"),
         "Gemini Chat response must contain text"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires GEMINI_API_KEY and sends two live Gemini Chat requests"]
+async fn gemini_chat_continues_with_turn_id() {
+    let provider = Gemini::builder()
+        .api_key(required("GEMINI_API_KEY").unwrap())
+        .build()
+        .unwrap();
+    let model = provider
+        .chat(chat::Config::new(
+            std::env::var("GEMINI_CHAT_MODEL")
+                .or_else(|_| std::env::var("GEMINI_MULTIMODAL_MODEL"))
+                .unwrap_or_else(|_| "gemini-3.8-flash".into()),
+        ))
+        .unwrap();
+
+    let mut system = Message::new(Role::System);
+    system.content.push(Part {
+        r#type: "text".into(),
+        data: Map::from_iter([(String::from("value"), json!("你是一个简短的助手。"))]),
+        mime_type: None,
+    });
+    let first_user = text_message("请记住这个暗号：蓝色河流。只回复已记住。");
+    let first = complete_chat(&model, Messages::new([system.clone(), first_user.clone()]))
+        .await
+        .unwrap();
+    assert!(
+        first
+            .metadata
+            .get("turn_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .is_some(),
+        "Gemini Chat Complete must include turn_id"
+    );
+
+    let second = complete_chat(
+        &model,
+        Messages::new([
+            system,
+            first_user,
+            first,
+            text_message("我刚才让你记住的暗号是什么？只回复暗号。"),
+        ]),
+    )
+    .await
+    .unwrap();
+    assert!(
+        second
+            .metadata
+            .get("turn_id")
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .is_some(),
+        "continued Gemini Chat Complete must include turn_id"
+    );
+    assert!(
+        second.content.iter().any(|part| {
+            part.r#type == "text"
+                && part
+                    .data
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .is_some_and(|value| value.contains("蓝色河流"))
+        }),
+        "continued Gemini Chat response must use the previous turn"
     );
 }
 
