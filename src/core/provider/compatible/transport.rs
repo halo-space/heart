@@ -180,8 +180,15 @@ pub(crate) fn api_error(status: u16, body: &Value) -> Error {
             _ => "PROVIDER",
         },
     };
-    // Do not copy raw Provider messages/body: they can echo credentials or prompts.
-    Error::new(code, "provider request failed").with_details(format!("http_status={status}"))
+    // Do not copy the raw Provider message/body: it can echo credentials or
+    // prompts. The stable provider error code is safe and enough to diagnose
+    // cases such as an overloaded upstream service.
+    let details = if raw_code.is_empty() {
+        format!("http_status={status}")
+    } else {
+        format!("http_status={status}; provider_code={raw_code}")
+    };
+    Error::new(code, "provider request failed").with_details(details)
 }
 
 fn count(value: Option<&Value>) -> Result<Option<u64>, Error> {

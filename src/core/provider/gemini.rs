@@ -229,17 +229,16 @@ fn transport_error(error: reqwest::Error) -> Error {
 }
 
 fn api_error(status: u16, body: &Value) -> Error {
-    let code = body
+    let provider_status = body
         .pointer("/error/status")
         .and_then(Value::as_str)
-        .map(|value| match value {
-            "UNAUTHENTICATED" => "AUTHENTICATION",
-            "PERMISSION_DENIED" => "PERMISSION_DENIED",
-            "RESOURCE_EXHAUSTED" => "RATE_LIMITED",
-            "INVALID_ARGUMENT" => "INVALID_ARGUMENTS",
-            _ => "PROVIDER",
-        })
-        .unwrap_or(match status {
+        .unwrap_or("");
+    let code = match provider_status {
+        "UNAUTHENTICATED" => "AUTHENTICATION",
+        "PERMISSION_DENIED" => "PERMISSION_DENIED",
+        "RESOURCE_EXHAUSTED" => "RATE_LIMITED",
+        "INVALID_ARGUMENT" => "INVALID_ARGUMENTS",
+        _ => match status {
             400 | 422 => "INVALID_ARGUMENTS",
             401 => "AUTHENTICATION",
             403 => "PERMISSION_DENIED",
@@ -247,8 +246,14 @@ fn api_error(status: u16, body: &Value) -> Error {
             429 => "RATE_LIMITED",
             500..=599 => "UNAVAILABLE",
             _ => "PROVIDER",
-        });
-    Error::new(code, "provider request failed").with_details(format!("http_status={status}"))
+        },
+    };
+    let details = if provider_status.is_empty() {
+        format!("http_status={status}")
+    } else {
+        format!("http_status={status}; provider_status={provider_status}")
+    };
+    Error::new(code, "provider request failed").with_details(details)
 }
 
 #[derive(Clone, Copy)]

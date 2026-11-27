@@ -13,6 +13,31 @@ fn config_redacts_key_and_uses_gemini_endpoint() {
 }
 
 #[test]
+fn provider_errors_keep_gemini_status_without_raw_body() {
+    let error = api_error(
+        503,
+        &json!({
+            "error": {
+                "status": "UNAVAILABLE",
+                "message": "request prompt should not be copied"
+            }
+        }),
+    );
+    assert_eq!(error.code, "UNAVAILABLE");
+    assert_eq!(
+        error.details.as_deref(),
+        Some("http_status=503; provider_status=UNAVAILABLE")
+    );
+    assert!(
+        !error
+            .details
+            .as_deref()
+            .unwrap_or_default()
+            .contains("prompt")
+    );
+}
+
+#[test]
 fn media_input_preserves_source_contract() {
     let part = Part {
         r#type: "image".into(),

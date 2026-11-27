@@ -1,6 +1,6 @@
 use super::chat::{Accumulator, complete_response, encode_message, encode_request};
 use super::embed::encode_embed_request;
-use super::transport::{Kind, parse_usage};
+use super::transport::{Kind, api_error, parse_usage};
 use crate::event::Event;
 use crate::message::{Message, Messages, Role};
 use crate::model::{
@@ -24,6 +24,31 @@ fn chat_messages() -> Messages {
         mime_type: None,
     });
     Messages::new([system, user])
+}
+
+#[test]
+fn provider_errors_keep_safe_upstream_code_without_raw_body() {
+    let error = api_error(
+        503,
+        &json!({
+            "error": {
+                "code": "engine_overloaded",
+                "message": "request prompt should not be copied"
+            }
+        }),
+    );
+    assert_eq!(error.code, "UNAVAILABLE");
+    assert_eq!(
+        error.details.as_deref(),
+        Some("http_status=503; provider_code=engine_overloaded")
+    );
+    assert!(
+        !error
+            .details
+            .as_deref()
+            .unwrap_or_default()
+            .contains("prompt")
+    );
 }
 #[test]
 fn direct_tool_messages_do_not_acquire_a_tool_result_envelope() {
