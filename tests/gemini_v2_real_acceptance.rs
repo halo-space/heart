@@ -7,6 +7,7 @@ use futures_util::StreamExt;
 use halo::agent::event::Event;
 use halo::agent::message::{Message, Role};
 use halo::agent::model::{
+    chat::{self, Chat as _},
     content::part::Part,
     multimodal::{self, Multimodal as _},
     tts::{self, Tts as _},
@@ -132,6 +133,47 @@ fn has_audio(message: &Message) -> bool {
                 .and_then(Value::as_str)
                 .is_some_and(|value| !value.trim().is_empty())
     })
+}
+
+#[tokio::test]
+#[ignore = "requires GEMINI_API_KEY and sends a live Gemini Chat request"]
+async fn gemini_chat_returns_real_text_complete() {
+    let provider = Gemini::builder()
+        .api_key(required("GEMINI_API_KEY").unwrap())
+        .build()
+        .unwrap();
+    let model = provider
+        .chat(chat::Config::new(
+            std::env::var("GEMINI_CHAT_MODEL")
+                .or_else(|_| std::env::var("GEMINI_MULTIMODAL_MODEL"))
+                .unwrap_or_else(|_| "gemini-3.8-flash".into()),
+        ))
+        .unwrap();
+    let mut system = Message::new(Role::System);
+    system.content.push(Part {
+        r#type: "text".into(),
+        data: Map::from_iter([(String::from("value"), json!("你是一个简短的助手。"))]),
+        mime_type: None,
+    });
+    let mut events = model
+        .stream(chat::Request {
+            messages: Messages::new([system, text_message("请只回复：Gemini Chat 已接通。")]),
+            stream: false,
+            ..chat::Request::default()
+        })
+        .await
+        .unwrap();
+    let mut complete = None;
+    while let Some(event) = events.next().await {
+        if let Event::Complete { message, .. } = event.unwrap() {
+            complete = Some(message);
+        }
+    }
+    let message = complete.expect("Gemini Chat must emit Complete");
+    assert!(
+        message.content.iter().any(|part| part.r#type == "text"),
+        "Gemini Chat response must contain text"
+    );
 }
 
 #[tokio::test]

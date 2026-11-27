@@ -1,8 +1,7 @@
 //! Gemini provider implementations for the V2 TTS and multimodal contracts.
 //!
 //! Gemini's current Interactions API is kept behind this module.  The rest of
-//! the crate only sees `model::tts::Tts`, `model::multimodal::Multimodal` and
-//! the shared `event::Event` stream.
+//! the crate only sees the model contracts and the shared `event::Event` stream.
 
 use std::fmt;
 use std::pin::Pin;
@@ -76,6 +75,14 @@ impl Gemini {
     pub fn tts(&self, config: model::tts::Config) -> Result<tts::Tts, Error> {
         validate_model(&config.model_name)?;
         Ok(tts::Tts {
+            connection: self.connection.clone(),
+            config,
+        })
+    }
+
+    pub fn chat(&self, config: model::chat::Config) -> Result<chat::Chat, Error> {
+        validate_model(&config.model_name)?;
+        Ok(chat::Chat {
             connection: self.connection.clone(),
             config,
         })
@@ -247,6 +254,7 @@ fn api_error(status: u16, body: &Value) -> Error {
 #[derive(Clone, Copy)]
 enum OutputKind {
     Tts,
+    Chat,
     Multimodal,
 }
 
@@ -405,15 +413,17 @@ fn output_part(value: &Value, output_kind: OutputKind) -> Result<Option<Part>, E
         return Ok(None);
     };
     match part_kind {
-        "text" if matches!(output_kind, OutputKind::Multimodal) => Ok(Some(Part {
-            r#type: "text".into(),
-            data: object(json!({
-                "value": value.get("text").ok_or_else(|| {
-                    Error::new("INVALID_RESPONSE", "Gemini text output has no text")
-                })?
-            })),
-            mime_type: None,
-        })),
+        "text" if matches!(output_kind, OutputKind::Chat | OutputKind::Multimodal) => {
+            Ok(Some(Part {
+                r#type: "text".into(),
+                data: object(json!({
+                    "value": value.get("text").ok_or_else(|| {
+                        Error::new("INVALID_RESPONSE", "Gemini text output has no text")
+                    })?
+                })),
+                mime_type: None,
+            }))
+        }
         "audio" => {
             let data = value
                 .get("data")
@@ -441,7 +451,7 @@ fn delta_part(value: Option<&Value>, kind: OutputKind) -> Result<Option<Part>, E
         return Ok(None);
     };
     match part_kind {
-        "text" if matches!(kind, OutputKind::Multimodal) => Ok(Some(Part {
+        "text" if matches!(kind, OutputKind::Chat | OutputKind::Multimodal) => Ok(Some(Part {
             r#type: "text".into(),
             data: object(json!({
                 "value": value.get("text").ok_or_else(|| {
@@ -646,6 +656,122 @@ fn part_to_input(part: &Part) -> Result<Value, Error> {
             "UNSUPPORTED",
             "Gemini does not support this content part",
         )),
+    }
+}
+
+fn chat_body(config: &model::chat::Config, request: &model::chat::Request) -> Result<Value, Error> {
+    request.validate()?;
+    if matches!(
+        request.tool_choice,
+        Some(model::chat::ToolChoice::Required | model::chat::ToolChoice::Named { .. })
+    ) {
+        return Err(Error::new(
+            "UNSUPPORTED",
+            "Gemini Chat does not support required or named tool choice in this adapter",
+        ));
+    }
+    let multimodal = model::multimodal::Request {
+        messages: request.messages.clone(),
+        tools: request.tools.clone(),
+        tool_choice: request.tool_choice.clone().map(|choice| match choice {
+            model::chat::ToolChoice::None => model::multimodal::ToolChoice::None,
+            model::chat::ToolChoice::Auto => model::multimodal::ToolChoice::Auto,
+            model::chat::ToolChoice::Required => model::multimodal::ToolChoice::Required,
+            model::chat::ToolChoice::Named { name } => {
+                model::multimodal::ToolChoice::Named { name }
+            }
+        }),
+        stream: request.stream,
+        temperature: request.temperature,
+        max_tokens: request.max_tokens,
+        top_p: request.top_p,
+        stop: request.stop.clone(),
+        modalities: Vec::new(),
+        response_format: request.response_format.clone().map(|format| match format {
+            model::chat::ResponseFormat::JsonObject => {
+                model::multimodal::ResponseFormat::JsonObject
+            }
+            model::chat::ResponseFormat::JsonSchema {
+                name,
+                schema,
+                strict,
+            } => model::multimodal::ResponseFormat::JsonSchema {
+                name,
+                schema,
+                strict,
+            },
+        }),
+        options: request.options.clone(),
+    };
+    let mut body = multimodal_body(
+        &model::multimodal::Config {
+            model_name: config.model_name.clone(),
+            context_limit: config.context_limit,
+            options: config.options.clone(),
+        },
+        &multimodal,
+    )?;
+    if request.temperature.is_some()
+        || request.max_tokens.is_some()
+        || request.top_p.is_some()
+        || request.stop.is_some()
+    {
+        let generation = body
+            .as_object_mut()
+            .expect("Gemini request body is an object")
+            .entry("generation_config")
+            .or_insert_with(|| json!({}));
+        let generation = generation.as_object_mut().ok_or_else(|| {
+            Error::new("INVALID_ARGUMENTS", "generation_config must be an object")
+        })?;
+        if let Some(value) = request.temperature {
+            generation.insert("temperature".into(), json!(value));
+        }
+        if let Some(value) = request.max_tokens {
+            generation.insert("max_output_tokens".into(), json!(value));
+        }
+        if let Some(value) = request.top_p {
+            generation.insert("top_p".into(), json!(value));
+        }
+        if let Some(value) = &request.stop {
+            generation.insert("stop_sequences".into(), json!(value));
+        }
+    }
+    Ok(body)
+}
+
+pub mod chat {
+    use super::*;
+
+    pub struct Chat {
+        pub(super) connection: Connection,
+        pub(super) config: model::chat::Config,
+    }
+
+    impl model::chat::Chat for Chat {
+        type Stream = Events;
+
+        fn context_limit(&self) -> Option<u64> {
+            self.config.context_limit.filter(|limit| *limit > 0)
+        }
+
+        async fn stream(&self, request: model::chat::Request) -> Result<Self::Stream, Error> {
+            let stream = request.stream;
+            let response = self
+                .connection
+                .post(chat_body(&self.config, &request)?, stream)
+                .await?;
+            let metadata = self.connection.metadata(&self.config.model_name);
+            if stream {
+                Ok(streamed_events(response, metadata, OutputKind::Chat))
+            } else {
+                complete_events(
+                    response.json().await.map_err(transport_error)?,
+                    metadata,
+                    OutputKind::Chat,
+                )
+            }
+        }
     }
 }
 

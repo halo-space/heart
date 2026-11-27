@@ -103,6 +103,38 @@ fn multimodal_body_preserves_image_url_input() {
 }
 
 #[test]
+fn chat_body_uses_the_shared_chat_request_contract() {
+    let mut system = Message::new(Role::System);
+    system.content.push(Part {
+        r#type: "text".into(),
+        data: object(json!({"value": "你是助手"})),
+        mime_type: None,
+    });
+    let mut user = Message::new(Role::User);
+    user.content.push(Part {
+        r#type: "text".into(),
+        data: object(json!({"value": "你好"})),
+        mime_type: None,
+    });
+    let request = model::chat::Request {
+        messages: Messages::new([system, user]),
+        stream: true,
+        temperature: Some(0.4),
+        max_tokens: Some(128),
+        top_p: Some(0.8),
+        stop: Some(vec!["END".into()]),
+        ..model::chat::Request::default()
+    };
+    let body = chat_body(&model::chat::Config::new("gemini-3.8-flash"), &request).unwrap();
+    assert_eq!(body["model"], "gemini-3.8-flash");
+    assert_eq!(body["stream"], true);
+    assert!((body["generation_config"]["temperature"].as_f64().unwrap() - 0.4).abs() < 1e-6);
+    assert_eq!(body["generation_config"]["max_output_tokens"], 128);
+    assert!((body["generation_config"]["top_p"].as_f64().unwrap() - 0.8).abs() < 1e-6);
+    assert_eq!(body["generation_config"]["stop_sequences"][0], "END");
+}
+
+#[test]
 fn multimodal_body_accepts_audio_base64_input() {
     let mut message = Message::new(Role::User);
     message.content.push(Part {
