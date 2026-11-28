@@ -515,7 +515,7 @@ A2A、AG-UI、JSON-RPC、SSE 和 Webhook 是协议/传输层适配，不改变 R
 以下内容属于后续版本或应用层职责，当前手册不把它们当作已完成能力：
 
 - 更完整的 Document Parser/布局解析和 OCR 策略；当前保留 Parser、Chunker、RAPTOR、Graph 的契约和 LiteParse 适配入口。
-- Provider 的完整 TTS、多模态输入输出和供应商特有字段扩展。
+- 未列入当前 Provider 能力矩阵的 TTS、多模态输入输出和供应商特有字段扩展。
 - Daemon 常驻进程、Heartbeat、Schedule 和完整任务队列；Server 已提供未完成 Task 查询与 Checkpoint 恢复入口，具体进程监管由应用或上层 Daemon 负责。
 - 业务应用的 DSL 编辑器、账号权限、数据库 schema、向量库/图数据库写入编排。
 - 更复杂的 Team 动态成员管理；当前 Team 成员在构建时确定。

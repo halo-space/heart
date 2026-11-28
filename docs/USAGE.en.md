@@ -324,7 +324,7 @@ Use `bind_node`, `bind_agent`, `bind_tool`, `bind_graph`, `bind_condition`, and 
 
 ## Current limits
 
-The current Alpha does not promise a complete OCR/layout parser suite, every provider's TTS/multimodal extension, Daemon heartbeats/schedules and a full distributed task queue, an application DSL editor, or dynamic Team member creation. Server exposes unfinished-task discovery and Checkpoint recovery hooks; process supervision remains an application or upper-level Daemon responsibility. These are extension/application concerns and do not prevent custom implementations of the public contracts.
+The current Alpha does not promise a complete OCR/layout parser suite, provider TTS/multimodal extensions outside the current capability matrix, Daemon heartbeats/schedules and a full distributed task queue, an application DSL editor, or dynamic Team member creation. Server exposes unfinished-task discovery and Checkpoint recovery hooks; process supervision remains an application or upper-level Daemon responsibility. These are extension/application concerns and do not prevent custom implementations of the public contracts.
 
 ---
 
