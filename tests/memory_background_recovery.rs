@@ -277,5 +277,21 @@ async fn persisted_memory_scene_recovers_in_a_fresh_process() {
 #[tokio::test]
 #[ignore = "explicit subprocess worker; invoked by persisted_memory_scene_recovers_in_a_fresh_process"]
 async fn persisted_memory_scene_worker() {
+    // This test is a child-process entry point. The parent test injects the
+    // isolated Elasticsearch indexes and IDs before spawning it. Running all
+    // ignored tests directly must not turn this implementation detail into a
+    // false failure caused by missing child-only environment variables.
+    if [
+        "HEART_ES_URL",
+        "HEART_I09_SUFFIX",
+        "HEART_I09_SESSION_ID",
+        "HEART_I09_CHAT_ID",
+    ]
+    .iter()
+    .any(|name| std::env::var_os(name).is_none())
+    {
+        eprintln!("I09 worker is only executed by its parent recovery test");
+        return;
+    }
     worker().await.expect("I09 worker recovery");
 }
