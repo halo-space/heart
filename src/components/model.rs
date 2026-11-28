@@ -1,3 +1,4 @@
+pub mod asr;
 pub mod chat;
 pub mod content;
 pub mod embed;

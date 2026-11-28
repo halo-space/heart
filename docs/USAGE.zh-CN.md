@@ -537,7 +537,7 @@ let chat = provider.chat(halo::agent::model::chat::Config::new("model-name"))?;
 
 当前实现包含 DeepSeek、VLLM/OpenAI-compatible、OpenAI、Gemini 和 Zhipu。真实调用示例：[`provider_deepseek.rs`](../examples/provider_deepseek.rs)、[`provider_vllm.rs`](../examples/provider_vllm.rs)。
 
-OpenAI-compatible Provider 还提供首批多模态入口，支持图片输入和文本输出：
+OpenAI-compatible Provider 还提供首批多模态入口，支持图片输入和文本输出；ASR 使用独立的 `model::asr` 契约，输入仍是音频 `Part`，输出仍是统一 `Event`/`Message`：
 
 ```rust
 use halo::agent::model::multimodal::{self, Multimodal as _};

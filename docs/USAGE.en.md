@@ -345,7 +345,7 @@ A Tool that succeeds with media still returns the shared `Message`. Tool media i
 
 The DeepSeek Chat adapter converts Tool images into model-readable image content blocks. Whether Tool audio can enter model context remains Provider-specific and returns `UNSUPPORTED` when unavailable.
 
-OpenAI-compatible providers also expose the first multimodal scope, with image input and text output:
+OpenAI-compatible providers also expose the first multimodal scope, with image input and text output. ASR uses the separate `model::asr` contract, while audio input and transcript output still use the shared `Part`, `Event`, and `Message` shapes:
 
 ```rust,no_run
 use halo::agent::model::multimodal::{self, Multimodal as _};
