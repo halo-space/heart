@@ -185,6 +185,48 @@ fn deepseek_file_sources_use_the_openai_compatible_file_blocks() {
 }
 
 #[test]
+fn provider_media_boundaries_reject_unsupported_inputs_without_network() {
+    let mut audio = Message::new(Role::User);
+    audio.content.push(Part {
+        r#type: "audio".into(),
+        data: part_data(json!({
+            "source": {"kind": "base64", "value": "ZmFrZQ=="}
+        })),
+        mime_type: Some("audio/wav".into()),
+    });
+    assert_eq!(
+        encode_message(Kind::DeepSeek, &audio).unwrap_err().code,
+        "UNSUPPORTED"
+    );
+
+    let mut video = Message::new(Role::User);
+    video.content.push(Part {
+        r#type: "video".into(),
+        data: part_data(json!({
+            "source": {"kind": "base64", "value": "ZmFrZQ=="}
+        })),
+        mime_type: Some("video/mp4".into()),
+    });
+    assert_eq!(
+        encode_message(Kind::DeepSeek, &video).unwrap_err().code,
+        "UNSUPPORTED"
+    );
+
+    let mut file = Message::new(Role::User);
+    file.content.push(Part {
+        r#type: "file".into(),
+        data: part_data(json!({
+            "source": {"kind": "base64", "value": "ZmFrZQ=="}
+        })),
+        mime_type: Some("text/plain".into()),
+    });
+    assert_eq!(
+        encode_message(Kind::OpenAI, &file).unwrap_err().code,
+        "UNSUPPORTED"
+    );
+}
+
+#[test]
 fn multimodal_reuses_openai_compatible_image_encoding_and_text_output() {
     let mut message = Message::new(Role::User);
     message.content.push(Part {

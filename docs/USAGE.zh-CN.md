@@ -224,6 +224,8 @@ let input = Input {
 
 图片、音频、文件使用同一个 Payload 结构，数据放在 `data`，可选 MIME 放在同级 `mime_type`。模型 `Part` 的媒体来源使用 `data.source.kind/value`，不在 `source` 内重复 MIME；`base64` 的 value 使用原始 Base64。未配置对应 Provider 或处理能力时，输入会被明确拒绝，不会静默转换。
 
+媒体边界由调用方和 Provider 适配器共同校验。`url` 只作为远端资源引用透传，Heart 不在 Message、Runtime 或 Checkpoint 中负责下载、缓存或清理；`base64` 只保存原始 Base64，适配器按 Provider 要求组装请求。大小、格式和资源有效期由调用方或具体 Provider 限制，不新增全局媒体生命周期或二进制流字段。
+
 ### 3.4 SubAgent 和 Team
 
 SubAgent 是一个已经构建好的 Agent 实例，通过 `.subagents(...)` 提供给父 Agent 的委派路径；它不是 Tool，也不是动态注册表。
@@ -559,6 +561,17 @@ let events = model
 ```
 
 图片、音频、视频和文件都使用现有的 `Part` 与 `data.source` 结构。Gemini 多模态适配支持图片/音频/视频/文档输入和音频输出。DeepSeek-V4.1-Flash 的 Chat 适配支持图片和文件输入；通用 OpenAI-compatible 适配当前只支持图片输入和文本输出。示例见 [`provider_multimodal.rs`](../examples/provider_multimodal.rs) 和 [`provider_deepseek_vision.rs`](../examples/provider_deepseek_vision.rs)。
+
+Provider 的能力边界由各自的适配器校验，不需要额外配置能力对象。当前范围如下：
+
+| Provider | 输入 | 输出 | 其他能力 |
+| --- | --- | --- | --- |
+| DeepSeek | text、image、file | text、think | Tool、结构化输出按适配器校验 |
+| Gemini | text、image、audio、video、file | text、audio | `turn_id` 续接、TTS |
+| VLLM/OpenAI-compatible | text、image（按模型） | text | Tool、结构化输出 |
+| Zhipu | Embed 输入 | vector | 不提供 Chat 多模态 |
+
+请求超出对应适配器的支持范围时返回 `UNSUPPORTED`，不会静默转成文本或伪造成功结果。
 
 ### 13.2 Tool、Function 和 Permission
 

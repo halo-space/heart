@@ -139,6 +139,8 @@ let input = halo::agent::Input {
 
 `Payload.type` may be `text`, `image`, `audio`, `file`, or `json`; the corresponding value is in `data`, with an optional sibling `mime_type`. Model media uses `data.source.kind/value` without a nested MIME field; `base64` values contain raw Base64 and the Provider Adapter assembles the wire-specific Data URL or binary field. Runtime projects the envelope into model `Messages`.
 
+Media limits are checked by the caller and the selected Provider adapter. A `url` is passed through as a remote reference. Heart does not download, cache, or clean up media from `Message`, Runtime, or Checkpoint. A `base64` source contains raw Base64 and is shaped for the provider only at the adapter boundary. Size, format, and resource lifetime remain caller/provider concerns, with no global binary-stream or media-lifecycle field.
+
 Each `Message` contains `role`, `content`, `values`, `metadata`, and optional `usage`. The common roles are `system`, `developer`, `user`, `assistant`, `tool`, and `function`. Provider-specific reasoning is normalized to a `content` part with `type = "think"`; normal output uses `type = "text"`.
 
 All stream-capable layers use the shared event:
@@ -367,6 +369,17 @@ let events = model
 ```
 
 Images, audio, video, and files use the existing `Part` and `data.source` shape. Gemini accepts image/audio/video/document input and audio output in its multimodal adapter. DeepSeek-V4.1-Flash accepts image and file input through its Chat adapter. Generic OpenAI-compatible adapters currently accept images and text output only. See [`provider_multimodal.rs`](../examples/provider_multimodal.rs) and [`provider_deepseek_vision.rs`](../examples/provider_deepseek_vision.rs).
+
+Provider boundaries are validated by each adapter. Applications do not configure a separate capability object:
+
+| Provider | Input | Output | Other support |
+| --- | --- | --- | --- |
+| DeepSeek | text, image, file | text, think | Tool and structured output are adapter-validated |
+| Gemini | text, image, audio, video, file | text, audio | `turn_id` continuation and TTS |
+| VLLM/OpenAI-compatible | text, image depending on the model | text | Tool and structured output |
+| Zhipu | Embed input | vector | No Chat multimodal endpoint |
+
+Requests outside an adapter's supported range return `UNSUPPORTED`. Heart does not silently convert them to text or fabricate success.
 
 For a plain async Rust function, `#[halo::tool]` generates an adapter for the existing Tool contract:
 
