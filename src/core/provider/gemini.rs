@@ -80,6 +80,15 @@ impl Gemini {
         })
     }
 
+    /// Build an ASR adapter backed by Gemini's audio-capable model input.
+    pub fn asr(&self, config: model::asr::Config) -> Result<asr::Asr, Error> {
+        validate_model(&config.model_name)?;
+        Ok(asr::Asr {
+            connection: self.connection.clone(),
+            config,
+        })
+    }
+
     pub fn chat(&self, config: model::chat::Config) -> Result<chat::Chat, Error> {
         validate_model(&config.model_name)?;
         Ok(chat::Chat {
@@ -261,6 +270,7 @@ enum OutputKind {
     Tts,
     Chat,
     Multimodal,
+    Asr,
 }
 
 pub struct Events {
@@ -431,7 +441,12 @@ fn output_part(value: &Value, output_kind: OutputKind) -> Result<Option<Part>, E
         return Ok(None);
     };
     match part_kind {
-        "text" if matches!(output_kind, OutputKind::Chat | OutputKind::Multimodal) => {
+        "text"
+            if matches!(
+                output_kind,
+                OutputKind::Chat | OutputKind::Multimodal | OutputKind::Asr
+            ) =>
+        {
             Ok(Some(Part {
                 r#type: "text".into(),
                 data: object(json!({
@@ -469,15 +484,22 @@ fn delta_part(value: Option<&Value>, kind: OutputKind) -> Result<Option<Part>, E
         return Ok(None);
     };
     match part_kind {
-        "text" if matches!(kind, OutputKind::Chat | OutputKind::Multimodal) => Ok(Some(Part {
-            r#type: "text".into(),
-            data: object(json!({
-                "value": value.get("text").ok_or_else(|| {
-                    Error::new("INVALID_RESPONSE", "Gemini text output has no text")
-                })?
-            })),
-            mime_type: None,
-        })),
+        "text"
+            if matches!(
+                kind,
+                OutputKind::Chat | OutputKind::Multimodal | OutputKind::Asr
+            ) =>
+        {
+            Ok(Some(Part {
+                r#type: "text".into(),
+                data: object(json!({
+                    "value": value.get("text").ok_or_else(|| {
+                        Error::new("INVALID_RESPONSE", "Gemini text output has no text")
+                    })?
+                })),
+                mime_type: None,
+            }))
+        }
         "audio" => {
             let data = value
                 .get("data")
@@ -925,6 +947,19 @@ fn multimodal_body(
     Ok(body)
 }
 
+fn asr_body(config: &model::asr::Config, request: &model::asr::Request) -> Result<Value, Error> {
+    request.validate()?;
+    multimodal_body(
+        &model::multimodal::Config::new(config.model_name.clone()).options(config.options.clone()),
+        &model::multimodal::Request {
+            messages: request.messages.clone(),
+            stream: request.stream,
+            options: request.options.clone(),
+            ..model::multimodal::Request::default()
+        },
+    )
+}
+
 fn validate_modalities(modalities: &[String]) -> Result<(), Error> {
     if let Some(value) = modalities
         .iter()
@@ -963,6 +998,37 @@ pub mod multimodal {
                     response.json().await.map_err(transport_error)?,
                     metadata,
                     OutputKind::Multimodal,
+                )
+            }
+        }
+    }
+}
+
+pub mod asr {
+    use super::*;
+
+    pub struct Asr {
+        pub(super) connection: Connection,
+        pub(super) config: model::asr::Config,
+    }
+
+    impl model::asr::Asr for Asr {
+        type Stream = Events;
+
+        async fn stream(&self, request: model::asr::Request) -> Result<Self::Stream, Error> {
+            let stream = request.stream;
+            let response = self
+                .connection
+                .post(asr_body(&self.config, &request)?, stream)
+                .await?;
+            let metadata = self.connection.metadata(&self.config.model_name);
+            if stream {
+                Ok(streamed_events(response, metadata, OutputKind::Asr))
+            } else {
+                complete_events(
+                    response.json().await.map_err(transport_error)?,
+                    metadata,
+                    OutputKind::Asr,
                 )
             }
         }

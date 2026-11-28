@@ -537,7 +537,7 @@ let chat = provider.chat(halo::agent::model::chat::Config::new("model-name"))?;
 
 当前实现包含 DeepSeek、VLLM/OpenAI-compatible、OpenAI、Gemini 和 Zhipu。真实调用示例：[`provider_deepseek.rs`](../examples/provider_deepseek.rs)、[`provider_vllm.rs`](../examples/provider_vllm.rs)。
 
-OpenAI-compatible Provider 还提供首批多模态入口，支持图片输入和文本输出；ASR 使用独立的 `model::asr` 契约，输入仍是音频 `Part`，输出仍是统一 `Event`/`Message`：
+OpenAI-compatible Provider 还提供首批多模态入口，支持图片输入和文本输出；ASR 使用独立的 `model::asr` 契约，输入仍是音频 `Part`，输出仍是统一 `Event`/`Message`。Gemini 已通过可接收音频的模型端点提供首个具体 ASR 适配：
 
 ```rust
 use halo::agent::model::multimodal::{self, Multimodal as _};
@@ -560,7 +560,7 @@ let events = model
     .await?;
 ```
 
-图片、音频、视频和文件都使用现有的 `Part` 与 `data.source` 结构。Gemini 多模态适配支持图片/音频/视频/文档输入和音频输出。DeepSeek-V4.1-Flash 的 Chat 适配支持图片和文件输入；通用 OpenAI-compatible 适配当前只支持图片输入和文本输出。示例见 [`provider_multimodal.rs`](../examples/provider_multimodal.rs) 和 [`provider_deepseek_vision.rs`](../examples/provider_deepseek_vision.rs)。
+图片、音频、视频和文件都使用现有的 `Part` 与 `data.source` 结构。Gemini 多模态适配支持图片/音频/视频/文档输入和音频输出，并通过 `model::asr` 返回转写文本。DeepSeek-V4.1-Flash 的 Chat 适配支持图片和文件输入；通用 OpenAI-compatible 适配当前只支持图片输入和文本输出。示例见 [`provider_multimodal.rs`](../examples/provider_multimodal.rs)、[`provider_gemini_asr.rs`](../examples/provider_gemini_asr.rs) 和 [`provider_deepseek_vision.rs`](../examples/provider_deepseek_vision.rs)。
 
 Provider 的能力边界由各自的适配器校验，不需要额外配置能力对象。当前范围如下：
 
@@ -778,7 +778,7 @@ cargo run --example agent_live_tool
 | OpenAI-compatible 多模态 | `HEART_MULTIMODAL_BASE_URL`、`HEART_MULTIMODAL_API_KEY`、`HEART_MULTIMODAL_MODEL`；另需真实图片 URL 或 Data URL | 图片输入、文本输出 |
 | Zhipu Embedding | `HEART_EMBED_API_KEY`；可选 `HEART_EMBED_BASE_URL`、`HEART_EMBED_MODEL` | 向量 Memory、Semantic Chunker |
 | OpenAI Embedding | `OPENAI_API_KEY`；可选 `OPENAI_BASE_URL`、`OPENAI_MODEL` | OpenAI Embedding |
-| Gemini TTS/多模态 | `GEMINI_API_KEY`；媒体验收另需真实 `GEMINI_TEST_IMAGE_DATA_URL`、`GEMINI_TEST_AUDIO_DATA_URL` 或 `GEMINI_TEST_VIDEO_DATA_URL` | TTS、图片/音频/视频/文档输入、音频输出 |
+| Gemini TTS/多模态/ASR | `GEMINI_API_KEY`；媒体验收另需真实 `GEMINI_TEST_IMAGE_DATA_URL`、`GEMINI_TEST_AUDIO_DATA_URL` 或 `GEMINI_TEST_VIDEO_DATA_URL` | TTS、图片/音频/视频/文档输入、音频输出、音频转写 |
 | Elasticsearch Workspace | `HEART_ES_URL`、隔离的 `HEART_ES_TEST_INDEX`；可选 `HEART_ES_API_KEY`、`HEART_ES_PIPELINE_TEST_INDEX` | Workspace/ES Harness |
 | Docker Workspace | 已存在的 `HEART_WORKSPACE_TEST_IMAGE` 和可用 Docker daemon | 容器、挂载、取消 |
 | MCP | 测试会启动仓库内真实协议服务进程 | HTTP MCP、stdio MCP |

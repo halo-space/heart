@@ -345,7 +345,7 @@ A Tool that succeeds with media still returns the shared `Message`. Tool media i
 
 The DeepSeek Chat adapter converts Tool images into model-readable image content blocks. Whether Tool audio can enter model context remains Provider-specific and returns `UNSUPPORTED` when unavailable.
 
-OpenAI-compatible providers also expose the first multimodal scope, with image input and text output. ASR uses the separate `model::asr` contract, while audio input and transcript output still use the shared `Part`, `Event`, and `Message` shapes:
+OpenAI-compatible providers also expose the first multimodal scope, with image input and text output. ASR uses the separate `model::asr` contract, while audio input and transcript output still use the shared `Part`, `Event`, and `Message` shapes. Gemini provides the first concrete ASR adapter through its audio-capable model endpoint:
 
 ```rust,no_run
 use halo::agent::model::multimodal::{self, Multimodal as _};
@@ -368,14 +368,14 @@ let events = model
     .await?;
 ```
 
-Images, audio, video, and files use the existing `Part` and `data.source` shape. Gemini accepts image/audio/video/document input and audio output in its multimodal adapter. DeepSeek-V4.1-Flash accepts image and file input through its Chat adapter. Generic OpenAI-compatible adapters currently accept images and text output only. See [`provider_multimodal.rs`](../examples/provider_multimodal.rs) and [`provider_deepseek_vision.rs`](../examples/provider_deepseek_vision.rs).
+Images, audio, video, and files use the existing `Part` and `data.source` shape. Gemini accepts image/audio/video/document input and audio output in its multimodal adapter, and returns transcript text through `model::asr`. DeepSeek-V4.1-Flash accepts image and file input through its Chat adapter. Generic OpenAI-compatible adapters currently accept images and text output only. See [`provider_multimodal.rs`](../examples/provider_multimodal.rs), [`provider_gemini_asr.rs`](../examples/provider_gemini_asr.rs), and [`provider_deepseek_vision.rs`](../examples/provider_deepseek_vision.rs).
 
 Provider boundaries are validated by each adapter. Applications do not configure a separate capability object:
 
 | Provider | Input | Output | Other support |
 | --- | --- | --- | --- |
 | DeepSeek | text, image, file | text, think | Tool and structured output are adapter-validated |
-| Gemini | text, image, audio, video, file | text, audio | `turn_id` continuation and TTS |
+| Gemini | text, image, audio, video, file | text, transcript text through ASR, audio | `turn_id` continuation and TTS |
 | VLLM/OpenAI-compatible | text, image depending on the model | text | Tool and structured output |
 | Zhipu | Embed input | vector | No Chat multimodal endpoint |
 
@@ -504,7 +504,7 @@ Real acceptance matrix:
 | VLLM/OpenAI-compatible | `HEART_VLLM_BASE_URL`, `HEART_VLLM_API_KEY`, `HEART_VLLM_MODEL` | Provider, Chat/ReAct, Team, Workflow |
 | Zhipu Embedding | `HEART_EMBED_API_KEY`; optional `HEART_EMBED_BASE_URL`, `HEART_EMBED_MODEL` | Vector Memory, Semantic Chunker |
 | OpenAI Embedding | `OPENAI_API_KEY`; optional `OPENAI_BASE_URL`, `OPENAI_MODEL` | OpenAI Embedding |
-| Gemini TTS/multimodal | `GEMINI_API_KEY`; media acceptance additionally needs `GEMINI_TEST_IMAGE_DATA_URL`, `GEMINI_TEST_AUDIO_DATA_URL` or `GEMINI_TEST_VIDEO_DATA_URL` | TTS, image/audio/video/document input, audio output |
+| Gemini TTS/multimodal/ASR | `GEMINI_API_KEY`; media acceptance additionally needs `GEMINI_TEST_IMAGE_DATA_URL`, `GEMINI_TEST_AUDIO_DATA_URL` or `GEMINI_TEST_VIDEO_DATA_URL` | TTS, image/audio/video/document input, audio output, transcription |
 | Elasticsearch Workspace | `HEART_ES_URL`, an isolated `HEART_ES_TEST_INDEX`; optional `HEART_ES_API_KEY`, `HEART_ES_PIPELINE_TEST_INDEX` | Workspace/ES Harness |
 | Docker Workspace | Existing `HEART_WORKSPACE_TEST_IMAGE` and an available Docker daemon | Container, mount, cancellation |
 | MCP | The tests start real protocol-speaking service processes from the repository | HTTP MCP, stdio MCP |

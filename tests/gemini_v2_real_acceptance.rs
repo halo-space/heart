@@ -1,4 +1,4 @@
-//! Live Gemini V2 TTS and multimodal acceptance tests.
+//! Live Gemini V2 TTS, multimodal, and ASR acceptance tests.
 //!
 //! These tests are intentionally ignored by default. They require a real
 //! Gemini API key and real image/audio Data URLs supplied by the caller.
@@ -7,6 +7,7 @@ use futures_util::StreamExt;
 use halo::agent::event::Event;
 use halo::agent::message::{Message, Role};
 use halo::agent::model::{
+    asr::{self, Asr as _},
     chat::{self, Chat},
     content::part::Part,
     multimodal::{self, Multimodal as _},
@@ -359,6 +360,40 @@ async fn gemini_multimodal_accepts_real_audio_input() {
     assert!(
         message.content.iter().any(|part| part.r#type == "text"),
         "Gemini audio multimodal response must contain text"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires GEMINI_API_KEY and GEMINI_TEST_AUDIO_DATA_URL"]
+async fn gemini_asr_returns_real_text_complete() {
+    let provider = Gemini::builder()
+        .api_key(required("GEMINI_API_KEY").unwrap())
+        .build()
+        .unwrap();
+    let model_name =
+        std::env::var("GEMINI_MULTIMODAL_MODEL").unwrap_or_else(|_| "gemini-3.5-flash-lite".into());
+    let asr = provider.asr(asr::Config::new(model_name)).unwrap();
+    let mut message = audio_message(required("GEMINI_TEST_AUDIO_DATA_URL").unwrap()).unwrap();
+    message.content[0].data["value"] =
+        json!("请完整转写这段音频中的语音，只输出转写文本，不要描述音频。");
+    let mut events = asr
+        .stream(asr::Request {
+            messages: Messages::new([message]),
+            stream: false,
+            ..asr::Request::default()
+        })
+        .await
+        .unwrap();
+    let mut complete = None;
+    while let Some(event) = events.next().await {
+        if let Event::Complete { message, .. } = event.unwrap() {
+            complete = Some(message);
+        }
+    }
+    let message = complete.expect("Gemini ASR must emit Complete");
+    assert!(
+        message.content.iter().any(|part| part.r#type == "text"),
+        "Gemini ASR must return transcript text"
     );
 }
 

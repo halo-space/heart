@@ -188,6 +188,26 @@ fn multimodal_body_accepts_audio_base64_input() {
 }
 
 #[test]
+fn asr_body_reuses_audio_input_and_requests_text_output() {
+    let mut message = Message::new(Role::User);
+    message.content.push(Part {
+        r#type: "audio".into(),
+        data: object(json!({
+            "source": {"kind": "base64", "value": "AAAA"}
+        })),
+        mime_type: Some("audio/wav".into()),
+    });
+    let request = model::asr::Request {
+        messages: Messages::new([message]),
+        ..model::asr::Request::default()
+    };
+    let body = asr_body(&model::asr::Config::new("gemini-3.5-flash-lite"), &request).unwrap();
+    assert!(body.get("modalities").is_none());
+    assert_eq!(body["input"][0]["type"], "audio");
+    assert_eq!(body["input"][0]["data"], "AAAA");
+}
+
+#[test]
 fn multimodal_body_accepts_video_and_document_input() {
     for (part_type, wire_type, mime) in [
         ("video", "video", "video/mp4"),
